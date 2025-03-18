@@ -6,6 +6,8 @@ A graphical user interface for the ResistaMet resistance measurement system.
 **Author:** Brenden Ferland  
 **Based on:** ResistaMet v0.9.2
 
+![ResistaMet GUI Screenshot](resistamet-gui-screenshot.png)
+
 ## Overview
 
 ResistaMet GUI is a PyQt-based graphical interface for the original ResistaMet resistance measurement system. It provides a user-friendly way to configure, run, and visualize resistance measurements through a Keithley measurement instrument, with all the functionality of the original command-line application now accessible through an intuitive graphical interface.
