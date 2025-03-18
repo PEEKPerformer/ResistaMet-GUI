@@ -186,4 +186,4 @@ ResistaMet GUI is provided under the MIT License with Academic Citation Clause, 
 
 ## Contact
 
-For support, bug reports, or feature requests, please contact the original author or create an issue in the repository.
+For support, bug reports, or feature requests, please contact the author or create an issue in the repository.
