@@ -6,7 +6,7 @@ A graphical user interface for the ResistaMet resistance measurement system.
 **Author:** Brenden Ferland  
 **Based on:** ResistaMet v0.9.2
 
-![ResistaMet GUI Screenshot](resistamet-gui-screenshot.png)
+![ResistaMet GUI Screenshot](resistamet-gui-screenshot.PNG)
 
 ## Overview
 
