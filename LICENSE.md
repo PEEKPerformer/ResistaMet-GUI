@@ -1,6 +1,6 @@
 # MIT License with Academic Recognition Clause
 ## ResistaMet: Resistance Measurement System
-## Copyright (c) 2025 Brenden Ferland and Dr. Douglas Adamson
+## Copyright (c) 2025 Brenden Ferland and Douglas Adamson
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -20,12 +20,12 @@ the work based on the significance of the Software's contribution:
 
 1. **Co-authorship**: For work where the Software forms a central or critical 
    component of the research methodology, consider including Brenden Ferland and/or 
-   Dr. Douglas Adamson as co-authors, if appropriate according to your field's authorship guidelines.
+   Douglas Adamson as co-authors, if appropriate according to your field's authorship guidelines.
 2. **Acknowledgement**: For work where the Software makes a substantial 
    contribution, include an acknowledgement in the paper.
 3. **Citation**: At minimum, cite the Software as follows:
 ```
-Ferland, B., & Adamson, D. (2025). ResistaMet: Resistance Measurement System. 
+Ferland, B., & Adamson, D. H. (2025). ResistaMet: Resistance Measurement System. 
 [Software]. Available from: https://github.com/PEEKPerformer/ResistaMet-GUI
 ```
 
