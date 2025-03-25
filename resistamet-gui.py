@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Enhanced ResistaMet GUI: Integrated Resistance, Voltage, and Current Measurement System
-Based on ResistaMet GUI v1.0.0 by Brenden Ferland
+ResistaMet GUI: Resistance Measurement System with Graphical User Interface
 
-This implementation adds tabbed interface for three measurement modes:
-1. Resistance measurement (original functionality)
-2. Voltage application (source voltage, measure current)
-3. Current application (source current, measure voltage)
+This implementation adds a PyQt-based GUI with tabbed functionality for
+Resistance Measurement, Voltage Source, and Current Source modes.
+
+Version: 1.1.0
 """
 
 import sys
@@ -24,2865 +23,2122 @@ from collections import deque
 from typing import List, Dict, Tuple, Optional, Union, Any
 
 import pyvisa
+# import matplotlib # Ensure matplotlib is imported if needed directly
+# matplotlib.use('Qt5Agg') # Set backend if necessary, usually handled by FigureCanvasQTAgg
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QPushButton, QLabel, QComboBox, QLineEdit, QTabWidget, 
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QComboBox, QLineEdit, QTabWidget,
     QGroupBox, QFormLayout, QCheckBox, QSpinBox, QDoubleSpinBox,
-    QMessageBox, QFileDialog, QStatusBar, QAction, QMenu, 
+    QMessageBox, QFileDialog, QStatusBar, QAction, QMenu,
     QDialog, QRadioButton, QButtonGroup, QFrame, QSplitter,
     QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit,
     QSizePolicy, QShortcut
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject # Added QObject
 from PyQt5.QtGui import QIcon, QFont, QColor, QPalette
 
 # Script version and metadata
-__version__ = "2.0.0"  # Enhanced GUI version
-__original_version__ = "1.0.0"  # Original GUI version
+__version__ = "1.1.0"  # GUI version with tabs
+__original_version__ = "0.9.2"  # Original script version
 __author__ = "Brenden Ferland"
 
 # Configuration file
 CONFIG_FILE = "config.json"
 
-# Default settings
+# Default settings (updated for new modes)
 DEFAULT_SETTINGS = {
-    "resistance_mode": {
-        "test_current": 1.0e-3,              # Test current in Amperes
-        "voltage_compliance": 5.0,           # Voltage compliance in Volts
-        "sampling_rate": 10.0,               # Sampling rate in Hz
-        "auto_range": True,                  # Enable auto-ranging
-        "nplc": 1,                           # Number of power line cycles
-        "settling_time": 0.2,                # Settling time in seconds
-        "measurement_type": "2-wire",        # Measurement type (2-wire or 4-wire)
-        "gpib_address": "GPIB1::3::INSTR"    # GPIB address of the instrument
-    },
-    "voltage_mode": {
-        "voltage": 10.0,                     # Source voltage in Volts
-        "current_compliance": 10.0,          # Current compliance in mA
-        "sampling_rate": 1.0,                # Sampling rate in Hz
-        "duration": 1.0,                     # Duration in hours
-        "auto_range": True,                  # Enable auto-ranging
-        "nplc": 1,                           # Number of power line cycles
-        "settling_time": 0.1,                # Settling time in seconds
-        "gpib_address": "GPIB0::24::INSTR"   # GPIB address of the instrument
-    },
-    "current_mode": {
-        "current": 1.0,                      # Source current in mA
-        "voltage_compliance": 10.0,          # Voltage compliance in Volts
-        "sampling_rate": 1.0,                # Sampling rate in Hz
-        "duration": 1.0,                     # Duration in hours
-        "auto_range": True,                  # Enable auto-ranging
-        "nplc": 1,                           # Number of power line cycles
-        "settling_time": 0.1,                # Settling time in seconds
-        "gpib_address": "GPIB0::24::INSTR"   # GPIB address of the instrument
+    "measurement": {
+        # Resistance Mode (Source I, Measure R)
+        "res_test_current": 1.0e-3,          # Test current in Amperes for R mode
+        "res_voltage_compliance": 5.0,       # Voltage compliance in Volts for R mode
+        "res_measurement_type": "2-wire",    # Measurement type (2-wire or 4-wire) for R mode
+        "res_auto_range": True,              # Enable resistance auto-ranging for R mode
+        # Voltage Source Mode (Source V, Measure I)
+        "vsource_voltage": 1.0,              # Source voltage in Volts
+        "vsource_current_compliance": 0.1,   # Current compliance in Amperes for V source mode
+        "vsource_current_range_auto": True,  # Auto range for current measurement
+        # Current Source Mode (Source I, Measure V) - Can reuse some R settings
+        "isource_current": 1.0e-3,           # Source current in Amperes
+        "isource_voltage_compliance": 5.0,   # Voltage compliance in Volts for I source mode
+        "isource_voltage_range_auto": True,  # Auto range for voltage measurement
+        # General
+        "sampling_rate": 10.0,               # Sampling rate in Hz (shared for now)
+        "nplc": 1,                           # Number of power line cycles (shared)
+        "settling_time": 0.2,                # Settling time in seconds (shared)
+        "gpib_address": "GPIB0::24::INSTR"   # GPIB address of the instrument (CHECK YOUR ADDRESS)
     },
     "display": {
-        "enable_plot": True,                 # Enable real-time plotting
+        "enable_plot": True,
         "plot_update_interval": 200,         # Plot update interval in milliseconds
-        "plot_colors": {                     # Plot line colors
-            "resistance": "red",
-            "voltage": "blue",
-            "current": "green"
-        },
-        "plot_figsize": [10, 6],             # Plot figure size [width, height]
-        "buffer_size": None                  # Data buffer size (None = unlimited)
+        "plot_color_r": "red",               # Plot line color for Resistance
+        "plot_color_v": "blue",              # Plot line color for Voltage Source (Current)
+        "plot_color_i": "green",             # Plot line color for Current Source (Voltage)
+        "plot_figsize": [8, 5],              # Plot figure size [width, height]
+        "buffer_size": 1000                  # Data buffer size (points, 0 or None = unlimited)
     },
     "file": {
         "auto_save_interval": 60,            # Auto-save interval in seconds
         "data_directory": "measurement_data" # Base directory for data storage
     },
-    "users": [],                            # List of users
-    "last_user": None                       # Last active user
+    "users": [],
+    "last_user": None
 }
 
-# ----- Enhanced Data Buffer Class -----
-class EnhancedDataBuffer:
-    def __init__(self, size: Optional[int] = None):
-        self.size = size
-        self.reset()
-        
-    def reset(self):
-        """Reset all data in the buffer."""
-        if self.size is not None:
-            self.timestamps = deque(maxlen=self.size)
-            self.resistance = deque(maxlen=self.size)
-            self.voltage = deque(maxlen=self.size)
-            self.current = deque(maxlen=self.size)
-            self.events = deque(maxlen=self.size)
-        else:
-            self.timestamps = deque()
-            self.resistance = deque()
-            self.voltage = deque()
-            self.current = deque()
-            self.events = deque()
-            
-        self.stats = {
-            'resistance': {'min': float('inf'), 'max': float('-inf'), 'avg': 0, 'count': 0},
-            'voltage': {'min': float('inf'), 'max': float('-inf'), 'avg': 0, 'count': 0},
-            'current': {'min': float('inf'), 'max': float('-inf'), 'avg': 0, 'count': 0}
-        }
-        
-    def add_resistance(self, timestamp: float, resistance: float, event: str = ""):
-        """Add resistance measurement to buffer."""
-        self.timestamps.append(timestamp)
-        self.resistance.append(resistance)
-        self.events.append(event)
-        
-        # Fill other values with None
-        self.voltage.append(None)
-        self.current.append(None)
-        
-        # Update statistics if value is valid
-        if np.isfinite(resistance) and resistance >= 0:
-            stats = self.stats['resistance']
-            stats['count'] += 1
-            stats['min'] = min(stats['min'], resistance)
-            stats['max'] = max(stats['max'], resistance)
-            stats['avg'] = (stats['avg'] * (stats['count'] - 1) + resistance) / stats['count']
-            
-    def add_voltage_current(self, timestamp: float, voltage: float, current: float, event: str = ""):
-        """Add voltage and current measurements to buffer."""
-        self.timestamps.append(timestamp)
-        self.voltage.append(voltage)
-        self.current.append(current)
-        self.events.append(event)
-        
-        # Calculate resistance if both values are valid
-        if np.isfinite(voltage) and np.isfinite(current) and current != 0:
-            resistance = voltage / current
-            self.resistance.append(resistance)
-            
-            # Update resistance statistics
-            if resistance >= 0:
-                stats = self.stats['resistance']
-                stats['count'] += 1
-                stats['min'] = min(stats['min'], resistance)
-                stats['max'] = max(stats['max'], resistance)
-                stats['avg'] = (stats['avg'] * (stats['count'] - 1) + resistance) / stats['count']
-        else:
-            self.resistance.append(None)
-            
-        # Update voltage statistics if valid
-        if np.isfinite(voltage):
-            stats = self.stats['voltage']
-            stats['count'] += 1
-            stats['min'] = min(stats['min'], voltage)
-            stats['max'] = max(stats['max'], voltage)
-            stats['avg'] = (stats['avg'] * (stats['count'] - 1) + voltage) / stats['count']
-            
-        # Update current statistics if valid
-        if np.isfinite(current):
-            stats = self.stats['current']
-            stats['count'] += 1
-            stats['min'] = min(stats['min'], current)
-            stats['max'] = max(stats['max'], current)
-            stats['avg'] = (stats['avg'] * (stats['count'] - 1) + current) / stats['count']
-            
-    def get_data_for_plot(self, data_type: str = 'resistance'):
-        """Get data for plotting."""
-        timestamps = list(self.timestamps)
-        
-        if not timestamps:
-            return [], []
-            
-        # Get elapsed times relative to the first data point
-        elapsed_times = [t - timestamps[0] for t in timestamps]
-        
-        if data_type == 'resistance':
-            values = list(self.resistance)
-        elif data_type == 'voltage':
-            values = list(self.voltage)
-        elif data_type == 'current':
-            values = list(self.current)
-        else:
-            values = []
-            
-        return elapsed_times, values
-        
-    def get_statistics(self, data_type: str = 'resistance'):
-        """Get statistics for the specified data type."""
-        if data_type in self.stats:
-            return self.stats[data_type]
-        return {'min': 0, 'max': 0, 'avg': 0, 'count': 0}
-        
-    def get_events(self):
-        """Get events list."""
-        return list(self.events)
-        
-    def clear(self):
-        """Clear all data."""
-        self.reset()
+# --- Constants for Keithley Compliance (Example for 2400, check your manual!) ---
+# Keithley 2400 might return 9.91e+37 or +/- 1.05 * compliance limit
+KEITHLEY_COMPLIANCE_MAGIC_NUMBER = 9.9e37 # Or None if using status bits
+COMPLIANCE_THRESHOLD_FACTOR = 1.0 # Check reading against (compliance * factor)
 
-# ----- Config Manager Class -----
+# ----- Data Buffer Class (Modified) -----
+class DataBuffer:
+    def __init__(self, size: Optional[int] = None):
+        self._max_len = size if size is not None and size > 0 else None
+        self.timestamps = deque(maxlen=self._max_len)
+        self.values = deque(maxlen=self._max_len) # Stores R, I, or V
+        self.compliance_status = deque(maxlen=self._max_len) # Stores 'OK', 'V_COMP', 'I_COMP'
+
+        self.stats = {'min': float('inf'), 'max': float('-inf'), 'avg': 0}
+        self.count = 0
+        self.last_compliance_hit = None
+
+    @property
+    def size(self):
+        return self._max_len
+
+    def add(self, timestamp: float, value: float, compliance: str = 'OK') -> None:
+        self.timestamps.append(timestamp)
+        self.values.append(value)
+        self.compliance_status.append(compliance)
+
+        if compliance != 'OK':
+            self.last_compliance_hit = compliance
+
+        # Update statistics only for valid numerical values
+        if np.isfinite(value):
+            self.count += 1
+            if value < self.stats['min']:
+                self.stats['min'] = value
+            if value > self.stats['max']:
+                self.stats['max'] = value
+            # Update running average robustly
+            if self.count == 1:
+                self.stats['avg'] = value
+            else:
+                 # Welford's online algorithm might be better for large datasets
+                 self.stats['avg'] += (value - self.stats['avg']) / self.count
+
+    def get_data_for_plot(self) -> Tuple[List[float], List[float], List[str]]:
+        return list(self.timestamps), list(self.values), list(self.compliance_status)
+
+    def clear(self) -> None:
+        """Clear all data from the buffer."""
+        self.timestamps.clear()
+        self.values.clear()
+        self.compliance_status.clear()
+        self.stats = {'min': float('inf'), 'max': float('-inf'), 'avg': 0}
+        self.count = 0
+        self.last_compliance_hit = None
+
+# ----- Config Manager Class (Mostly Unchanged) -----
 class ConfigManager:
     def __init__(self, config_file: str = CONFIG_FILE):
         self.config_file = config_file
         self.config = self.load_config()
-        
+
     def load_config(self) -> Dict:
         """Load configuration from file or create with defaults if not exists."""
         if os.path.exists(self.config_file):
             try:
                 with open(self.config_file, 'r') as f:
-                    config = json.load(f)
-                    
-                # Ensure all required sections and default values exist
+                    loaded_config = json.load(f)
+
+                # Merge with defaults to ensure all keys exist
+                config = dict(DEFAULT_SETTINGS)
                 for section, defaults in DEFAULT_SETTINGS.items():
-                    if section not in config:
-                        config[section] = defaults
-                    elif isinstance(defaults, dict):
-                        for key, value in defaults.items():
-                            if key not in config[section]:
-                                config[section][key] = value
-                                
+                    if section in loaded_config:
+                        if isinstance(defaults, dict):
+                           config[section].update(loaded_config[section])
+                        else:
+                           config[section] = loaded_config[section] # For lists like users
+                    # Keep default section if not in loaded config
+
+                # Ensure nested defaults are present
+                for section, defaults in DEFAULT_SETTINGS.items():
+                    if isinstance(defaults, dict):
+                         for key, value in defaults.items():
+                              if key not in config[section]:
+                                   config[section][key] = value
+
                 return config
             except Exception as e:
-                print(f"Error loading configuration: {str(e)}")
-                return dict(DEFAULT_SETTINGS)
+                print(f"Error loading configuration file '{self.config_file}': {str(e)}. Using defaults.")
+                return dict(DEFAULT_SETTINGS) # Return a deep copy
         else:
-            # Create new config with defaults
-            return dict(DEFAULT_SETTINGS)
-        
+            print(f"Configuration file '{self.config_file}' not found. Creating with defaults.")
+            new_config = dict(DEFAULT_SETTINGS) # Return a deep copy
+            self.config = new_config # Set self.config before saving
+            self.save_config()
+            return new_config
+
     def save_config(self) -> None:
         """Save configuration to file."""
         try:
             with open(self.config_file, 'w') as f:
-                json.dump(self.config, f, indent=4)
+                json.dump(self.config, f, indent=4, sort_keys=True)
         except Exception as e:
             print(f"Error saving configuration: {str(e)}")
-            
+
     def get_user_settings(self, username: str) -> Dict:
-        """Get settings for a specific user or global defaults if no user-specific settings exist."""
         user_settings = {}
-        
-        # Get global settings
-        for section in ['resistance_mode', 'voltage_mode', 'current_mode', 'display', 'file']:
-            user_settings[section] = dict(self.config[section])
-            
-        # Override with user-specific settings if they exist
+        for section in ['measurement', 'display', 'file']:
+            user_settings[section] = dict(self.config[section]) # Start with global
+
         if 'user_settings' in self.config and username in self.config['user_settings']:
-            for section, settings in self.config['user_settings'][username].items():
-                if section in user_settings:
-                    user_settings[section].update(settings)
-        
+            user_specific = self.config['user_settings'][username]
+            for section, settings in user_specific.items():
+                if section in user_settings and isinstance(user_settings[section], dict):
+                    user_settings[section].update(settings) # Override with user-specific
         return user_settings
-    
+
     def update_user_settings(self, username: str, settings: Dict) -> None:
-        """Update settings for a specific user."""
         if 'user_settings' not in self.config:
             self.config['user_settings'] = {}
-            
         if username not in self.config['user_settings']:
             self.config['user_settings'][username] = {}
-            
-        # Update each section provided
+
         for section, section_settings in settings.items():
-            if section in ['resistance_mode', 'voltage_mode', 'current_mode', 'display', 'file']:
+            if section in ['measurement', 'display', 'file']:
                 if section not in self.config['user_settings'][username]:
                     self.config['user_settings'][username][section] = {}
-                self.config['user_settings'][username][section].update(section_settings)
-                
+                # Only save differences from global defaults? Or save all? Save all is simpler.
+                self.config['user_settings'][username][section] = dict(section_settings) # Store a copy
+
         self.save_config()
-        
+
     def update_global_settings(self, settings: Dict) -> None:
-        """Update global default settings."""
-        # Update each section provided
         for section, section_settings in settings.items():
-            if section in ['resistance_mode', 'voltage_mode', 'current_mode', 'display', 'file']:
+            if section in ['measurement', 'display', 'file'] and isinstance(self.config[section], dict):
                 self.config[section].update(section_settings)
-                
         self.save_config()
-        
+
     def get_users(self) -> List[str]:
-        """Get list of users."""
         return self.config.get('users', [])
-    
+
     def get_last_user(self) -> Optional[str]:
-        """Get last active user."""
         return self.config.get('last_user')
-    
+
     def add_user(self, username: str) -> None:
-        """Add a new user if they don't already exist."""
         username = username.strip()
         if username and username not in self.config.get('users', []):
-            if 'users' not in self.config:
-                self.config['users'] = []
+            if 'users' not in self.config: self.config['users'] = []
             self.config['users'].append(username)
+            self.config['users'].sort() # Keep sorted
             self.save_config()
-            
+
     def set_last_user(self, username: str) -> None:
-        """Set the last used username."""
         if username in self.config.get('users', []):
             self.config['last_user'] = username
             self.save_config()
 
-# ----- Base Measurement Worker -----
-class BaseMeasurementWorker(QThread):
-    """Base worker thread for measurements."""
-    data_point = pyqtSignal(float, dict, str)  # timestamp, data_dict, event
+# ----- Measurement Worker Thread (Generalized) -----
+class MeasurementWorker(QThread):
+    """Worker thread for running measurements in different modes."""
+    # Signal: timestamp, value (R, I, or V), compliance_status ('OK', 'V_COMP', 'I_COMP'), event_marker
+    data_point = pyqtSignal(float, float, str, str)
     status_update = pyqtSignal(str)
-    measurement_complete = pyqtSignal()
+    measurement_complete = pyqtSignal(str) # Pass mode on complete
     error_occurred = pyqtSignal(str)
-    
-    def __init__(self, sample_name, username, settings, parent=None):
+    compliance_hit = pyqtSignal(str) # 'Voltage' or 'Current'
+
+    def __init__(self, mode, sample_name, username, settings, parent=None):
         super().__init__(parent)
+        if mode not in ['resistance', 'source_v', 'source_i']:
+            raise ValueError(f"Invalid measurement mode: {mode}")
+        self.mode = mode
         self.sample_name = sample_name
         self.username = username
-        self.settings = settings
+        self.settings = settings # Expects combined user/global settings
         self.running = False
         self.paused = False
-        self.event_marker = ""
+        self.max_compression_pressed = False # Keep for resistance mode? Or generalize?
         self.keithley = None
         self.csvfile = None
         self.writer = None
         self.start_time = 0
-        
-    def mark_event(self, event_name: str) -> None:
-        """Mark an event point."""
-        self.event_marker = event_name
-        self.status_update.emit(f"⭐ {event_name} MARKED ⭐")
-        
-    def pause_measurement(self) -> None:
-        """Pause the measurement."""
-        self.paused = True
-        self.status_update.emit("Measurement paused")
-        
-    def resume_measurement(self) -> None:
-        """Resume the measurement."""
-        self.paused = False
-        self.status_update.emit("Measurement resumed")
-        
-    def stop_measurement(self) -> None:
-        """Stop the measurement thread."""
-        self.running = False
-        
-    def _cleanup(self) -> None:
-        """Clean up resources when measurement is stopped."""
-        if self.keithley:
-            try:
-                self.keithley.write(":OUTP OFF")
-                self.keithley.write("*RST")
-                self.keithley.close()
-            except:
-                pass
-            self.keithley = None
-                
-        if self.csvfile:
-            try:
-                self.csvfile.close()
-            except:
-                pass
-            self.csvfile = None
-            
-    def _write_metadata(self, params: Dict) -> None:
-        """Write metadata to CSV file."""
-        if not self.writer:
-            return
-            
-        self.writer.writerow(['Test Parameters'])
-        for key, value in params.items():
-            self.writer.writerow([key, value])
-        self.writer.writerow([])  # Empty row for separation
+        self.filename = "" # Store filename
 
-# ----- Resistance Measurement Worker -----
-class ResistanceMeasurementWorker(BaseMeasurementWorker):
-    """Worker thread for resistance measurements."""
-    
     def run(self):
         self.running = True
-        
+        self.paused = False
+        instrument_ready = False
+        file_ready = False
+
         try:
-            # Extract settings
-            measurement_settings = self.settings['resistance_mode']
+            # Extract relevant settings based on mode
+            measurement_settings = self.settings['measurement']
             file_settings = self.settings['file']
-            
-            test_current = measurement_settings['test_current']
-            voltage_compliance = measurement_settings['voltage_compliance']
+            display_settings = self.settings['display']
+
             sampling_rate = measurement_settings['sampling_rate']
-            auto_range = measurement_settings['auto_range']
             nplc = measurement_settings['nplc']
             settling_time = measurement_settings['settling_time']
-            measurement_type = measurement_settings['measurement_type']
             gpib_address = measurement_settings['gpib_address']
-            
             auto_save_interval = file_settings['auto_save_interval']
-            
-            sample_interval = 1.0 / sampling_rate
-            
-            # Open instrument
+
+            sample_interval = 1.0 / sampling_rate if sampling_rate > 0 else 0.1
+
+            # --- Instrument Connection ---
             try:
+                self.status_update.emit(f"Connecting to instrument at {gpib_address}...")
                 rm = pyvisa.ResourceManager()
-                
-                # Check available resources
-                available_resources = rm.list_resources()
-                if not available_resources:
-                    self.error_occurred.emit("No GPIB or other instruments detected!")
+                resources = rm.list_resources()
+                if not resources:
+                    self.error_occurred.emit("No VISA instruments detected!")
                     return
-                elif gpib_address not in available_resources:
-                    self.error_occurred.emit(f"Configured GPIB address '{gpib_address}' not found!")
+                if gpib_address not in resources:
+                    self.error_occurred.emit(f"Instrument at '{gpib_address}' not found. Available: {', '.join(resources)}")
                     return
-                
+
                 self.keithley = rm.open_resource(gpib_address)
-                self.status_update.emit(f"Connected to instrument at {gpib_address}")
-                
-                line_freq = float(self.keithley.query(":SYST:LFR?"))
+                self.keithley.timeout = 5000 # ms
+                # self.keithley.read_termination = '\n' # Check if needed
+                # self.keithley.write_termination = '\n' # Check if needed
+
+                idn = self.keithley.query("*IDN?").strip()
+                self.status_update.emit(f"Connected to: {idn}")
+
+                line_freq = 50.0 # Default
+                try:
+                    line_freq = float(self.keithley.query(":SYST:LFR?"))
+                except Exception:
+                     self.status_update.emit("Warning: Could not query line frequency. Assuming 50Hz.")
+
+                self.keithley.write("*RST") # Reset instrument
+                time.sleep(0.5) # Wait for reset
+                self.keithley.write("*CLS") # Clear status registers
+                self.keithley.write(":SYST:AZER:STAT ON") # Enable autozero
+
+                instrument_ready = True
+            except pyvisa.errors.VisaIOError as e:
+                 self.error_occurred.emit(f"VISA Error connecting: {str(e)}")
+                 return
             except Exception as e:
                 self.error_occurred.emit(f"Error connecting to instrument: {str(e)}")
                 return
-            
-            # Instrument setup
-            self.keithley.write("*RST")
-            self.keithley.write(":SYST:AZER ON")  # Enable autozero
-            
-            # Set measurement type (2-wire or 4-wire)
-            if measurement_type == "4-wire":
-                self.keithley.write(":SYST:RSEN ON")  # 4-wire
-            else:
-                self.keithley.write(":SYST:RSEN OFF")  # 2-wire (default)
-                
-            self.keithley.write(":SENS:FUNC 'RES'")
-            self.keithley.write(":SENS:RES:MODE MAN")
-            
-            self.keithley.write(":SOUR:FUNC CURR")
-            self.keithley.write(f":SOUR:CURR {test_current}")
-            self.keithley.write(f":SENS:VOLT:PROT {voltage_compliance}")
-            
-            if auto_range:
-                self.keithley.write(":SENS:RES:RANG:AUTO ON")
-            else:
-                estimated_max_resistance = voltage_compliance / test_current
-                self.keithley.write(f":SENS:RES:RANG {estimated_max_resistance}")
-            
-            self.keithley.write(f":SENS:RES:NPLC {nplc}")
-            self.keithley.write(":FORM:ELEM RES")
-            
-            self.keithley.write(":TRIG:COUN 1")
-            self.keithley.write(":INIT:CONT ON")
 
-            # Create filename and open CSV file
-            filename = self._create_filename("RES")
-            self.csvfile = open(filename, 'w', newline='')
-            self.writer = csv.writer(self.csvfile)
-            
+            # --- Instrument Configuration based on Mode ---
+            self.status_update.emit(f"Configuring instrument for {self.mode} mode...")
+            metadata = {} # Store metadata for saving
+            csv_headers = []
+            source_value_str = "" # For filename/metadata
+
+            try:
+                if self.mode == 'resistance':
+                    # --- Resistance Mode ---
+                    test_current = measurement_settings['res_test_current']
+                    voltage_compliance = measurement_settings['res_voltage_compliance']
+                    measurement_type = measurement_settings['res_measurement_type']
+                    auto_range = measurement_settings['res_auto_range']
+
+                    if measurement_type == "4-wire":
+                        self.keithley.write(":SYST:RSEN ON") # 4-wire
+                    else:
+                        self.keithley.write(":SYST:RSEN OFF") # 2-wire (default)
+
+                    self.keithley.write(":SENS:FUNC 'RES'") # Sense Resistance
+                    self.keithley.write(":SOUR:FUNC CURR") # Source Current
+                    self.keithley.write(f":SOUR:CURR:MODE FIX") # Fixed source mode
+                    self.keithley.write(f":SOUR:CURR:RANG {abs(test_current)}") # Set source range
+                    self.keithley.write(f":SOUR:CURR {test_current}") # Set source level
+                    self.keithley.write(f":SENS:VOLT:PROT {voltage_compliance}") # Voltage compliance
+
+                    if auto_range:
+                        self.keithley.write(":SENS:RES:MODE AUTO") # Auto range for resistance
+                    else:
+                        self.keithley.write(":SENS:RES:MODE MAN")
+                        # Estimate range based on compliance V and test I
+                        max_r = voltage_compliance / abs(test_current) if abs(test_current) > 0 else 210e6
+                        self.keithley.write(f":SENS:RES:RANG {max_r}") # Manual range
+
+                    self.keithley.write(f":SENS:RES:NPLC {nplc}")
+                    self.keithley.write(":FORM:ELEM RES") # Read only resistance
+
+                    metadata = {
+                        'Mode': 'Resistance Measurement',
+                        'Test Current (A)': test_current,
+                        'Voltage Compliance (V)': voltage_compliance,
+                        'Measurement Type': measurement_type,
+                        'Resistance Auto Range': 'ON' if auto_range else 'OFF',
+                    }
+                    csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Resistance (Ohms)', 'Compliance Status', 'Event']
+                    source_value_str = f"{test_current*1000:.2f}mA"
+
+                elif self.mode == 'source_v':
+                    # --- Voltage Source Mode ---
+                    source_voltage = measurement_settings['vsource_voltage']
+                    current_compliance = measurement_settings['vsource_current_compliance']
+                    auto_range_curr = measurement_settings['vsource_current_range_auto']
+
+                    self.keithley.write(":SYST:RSEN OFF") # Usually 2-wire for V source
+                    self.keithley.write(":SENS:FUNC 'CURR:DC'") # Sense Current
+                    self.keithley.write(":SOUR:FUNC VOLT") # Source Voltage
+                    self.keithley.write(f":SOUR:VOLT:MODE FIX") # Fixed source mode
+                    self.keithley.write(f":SOUR:VOLT:RANG {abs(source_voltage)}") # Set source range (or AUTO?)
+                    self.keithley.write(f":SOUR:VOLT {source_voltage}") # Set source level
+                    self.keithley.write(f":SENS:CURR:PROT {current_compliance}") # Current compliance
+
+                    if auto_range_curr:
+                        self.keithley.write(":SENS:CURR:RANG:AUTO ON") # Auto range for current
+                    else:
+                        self.keithley.write(":SENS:CURR:RANG:AUTO OFF")
+                        self.keithley.write(f":SENS:CURR:RANG {current_compliance}") # Manual range based on compliance
+
+                    self.keithley.write(f":SENS:CURR:NPLC {nplc}")
+                    self.keithley.write(":FORM:ELEM CURR") # Read only current
+
+                    metadata = {
+                        'Mode': 'Voltage Source',
+                        'Source Voltage (V)': source_voltage,
+                        'Current Compliance (A)': current_compliance,
+                        'Current Auto Range': 'ON' if auto_range_curr else 'OFF',
+                    }
+                    csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Measured Current (A)', 'Compliance Status', 'Event']
+                    source_value_str = f"{source_voltage:.3f}V"
+
+
+                elif self.mode == 'source_i':
+                    # --- Current Source Mode ---
+                    source_current = measurement_settings['isource_current']
+                    voltage_compliance = measurement_settings['isource_voltage_compliance']
+                    auto_range_volt = measurement_settings['isource_voltage_range_auto']
+
+                    # Sensor type (2/4 wire) might matter depending on setup
+                    self.keithley.write(":SYST:RSEN OFF") # Assume 2-wire for voltage measure
+
+                    self.keithley.write(":SENS:FUNC 'VOLT:DC'") # Sense Voltage
+                    self.keithley.write(":SOUR:FUNC CURR") # Source Current
+                    self.keithley.write(f":SOUR:CURR:MODE FIX") # Fixed source mode
+                    self.keithley.write(f":SOUR:CURR:RANG {abs(source_current)}") # Set source range
+                    self.keithley.write(f":SOUR:CURR {source_current}") # Set source level
+                    self.keithley.write(f":SENS:VOLT:PROT {voltage_compliance}") # Voltage compliance
+
+                    if auto_range_volt:
+                        self.keithley.write(":SENS:VOLT:RANG:AUTO ON") # Auto range for voltage
+                    else:
+                        self.keithley.write(":SENS:VOLT:RANG:AUTO OFF")
+                        self.keithley.write(f":SENS:VOLT:RANG {voltage_compliance}") # Manual range based on compliance
+
+                    self.keithley.write(f":SENS:VOLT:NPLC {nplc}")
+                    self.keithley.write(":FORM:ELEM VOLT") # Read only voltage
+
+                    metadata = {
+                        'Mode': 'Current Source',
+                        'Source Current (A)': source_current,
+                        'Voltage Compliance (V)': voltage_compliance,
+                        'Voltage Auto Range': 'ON' if auto_range_volt else 'OFF',
+                    }
+                    csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Measured Voltage (V)', 'Compliance Status', 'Event']
+                    source_value_str = f"{source_current*1000:.2f}mA"
+
+                # Common settings after mode specifics
+                # self.keithley.write(":TRIG:COUN 1") # Single trigger per read
+                # self.keithley.write(":INIT:CONT OFF") # Ensure INITiate happens on READ?
+                self.keithley.write(":TRIG:DEL 0") # No trigger delay
+                self.keithley.write(":SOUR:DEL 0") # No source delay
+
+            except pyvisa.errors.VisaIOError as e:
+                 self.error_occurred.emit(f"VISA Error configuring instrument: {str(e)}")
+                 return
+            except Exception as e:
+                self.error_occurred.emit(f"Error configuring instrument: {str(e)}")
+                return
+
+            # --- File Setup ---
+            try:
+                self.filename = self._create_filename(source_value_str)
+                self.csvfile = open(self.filename, 'w', newline='')
+                self.writer = csv.writer(self.csvfile)
+                file_ready = True
+            except Exception as e:
+                self.error_occurred.emit(f"Error creating output file: {str(e)}")
+                return
+
+            # Write metadata
             self.start_time = time.time()
             start_unix_time = int(self.start_time)
-            
-            # Create metadata by combining all settings
-            metadata = {
+
+            full_metadata = {
                 'User': self.username,
                 'Sample Name': self.sample_name,
-                'Test Current (A)': test_current,
-                'Voltage Compliance (V)': voltage_compliance,
-                'Measurement Type': measurement_type,
-                'Sampling Rate (Hz)': sampling_rate,
-                'Line Frequency (Hz)': line_freq,
-                'NPLC': nplc,
-                'Auto Range': 'ON' if auto_range else 'OFF',
                 'Start Time (Unix)': start_unix_time,
                 'Start Time (Human Readable)': datetime.fromtimestamp(start_unix_time).isoformat(),
                 'Software Version': __version__,
-                'Author': __author__
+                'Original Script Version': __original_version__,
+                'Author': __author__,
+                'GPIB Address': gpib_address,
+                'Sampling Rate (Hz)': sampling_rate,
+                'NPLC': nplc,
+                'Line Frequency (Hz)': line_freq,
+                'Settling Time (s)': settling_time,
+                **metadata # Add mode-specific metadata
             }
-            self._write_metadata(metadata)
-            
-            self.writer.writerow([
-                'Timestamp (Unix)', 
-                'Elapsed Time (s)', 
-                'Resistance (Ohms)', 
-                'Event'
-            ])
-            
-            self.keithley.write(":OUTP ON")
-            time.sleep(settling_time)
-            
+            self._write_metadata(full_metadata)
+            self.writer.writerow(csv_headers)
+            self.csvfile.flush()
+
+            # --- Measurement Loop ---
+            self.status_update.emit("Starting measurement...")
+            try:
+                self.keithley.write(":OUTP ON") # Turn on output
+                self.status_update.emit(f"Waiting for settling time ({settling_time}s)...")
+                time.sleep(settling_time) # Wait for settling
+            except Exception as e:
+                 self.error_occurred.emit(f"Error turning on output: {str(e)}")
+                 return
+
             last_save = self.start_time
-            last_measurement = 0
-            
+            last_measurement_time = 0
+            loop_count = 0
+
             while self.running:
                 if self.paused:
                     time.sleep(0.1)
                     continue
-                    
+
                 now = time.time()
-                time_since_last = now - last_measurement
-                
+                time_since_last = now - last_measurement_time
+
                 if time_since_last >= sample_interval:
-                    resistance = float(self.keithley.query(":READ?"))
-                    last_measurement = now
-                    
-                    if resistance < 0 or resistance > 1e9:
-                        resistance = float('nan')
-                        self.status_update.emit("Invalid reading detected")
-                    
-                    now_unix = int(now)
+                    try:
+                        reading_str = self.keithley.query(":READ?").strip()
+                        value = float(reading_str)
+                        last_measurement_time = now # Update time after successful read
+                    except pyvisa.errors.VisaIOError as e:
+                        self.error_occurred.emit(f"VISA Read Error: {str(e)}. Stopping.")
+                        break # Stop on read error
+                    except ValueError:
+                        self.status_update.emit(f"Warning: Invalid reading received '{reading_str}'. Skipping.")
+                        value = float('nan') # Mark as invalid
+                        # Don't update last_measurement_time here? Or do? Let's skip point.
+                        time.sleep(0.01) # Small delay before retrying
+                        continue
+                    except Exception as e:
+                        self.error_occurred.emit(f"Unexpected Read Error: {str(e)}. Stopping.")
+                        break # Stop on other errors
+
                     elapsed_time = now - self.start_time
-                    
-                    event = self.event_marker
-                    if event:
-                        self.event_marker = ""
-                    
-                    # Write to CSV
+
+                    # --- Compliance Check ---
+                    compliance_status = 'OK'
+                    compliance_limit = None
+                    compliance_type = None
+
+                    if self.mode == 'resistance' or self.mode == 'source_i':
+                        # Check voltage compliance
+                        compliance_limit = measurement_settings.get('res_voltage_compliance') if self.mode == 'resistance' else measurement_settings.get('isource_voltage_compliance')
+                        compliance_type = 'Voltage'
+                        # Need to measure voltage separately if not already reading it
+                        # For simplicity, let's assume resistance > HUGE implies V compliance for R mode
+                        # And for I source mode, the reading *is* voltage
+                        if self.mode == 'resistance':
+                             # If resistance is abnormally high, assume compliance (crude)
+                             if value > KEITHLEY_COMPLIANCE_MAGIC_NUMBER * 0.9: # Check against magic number
+                                 compliance_status = 'V_COMP'
+                        elif self.mode == 'source_i':
+                             # The measured value is voltage
+                             if abs(value) >= compliance_limit * COMPLIANCE_THRESHOLD_FACTOR:
+                                 compliance_status = 'V_COMP'
+
+                    elif self.mode == 'source_v':
+                        # Check current compliance
+                        compliance_limit = measurement_settings.get('vsource_current_compliance')
+                        compliance_type = 'Current'
+                        # The measured value is current
+                        if abs(value) >= compliance_limit * COMPLIANCE_THRESHOLD_FACTOR:
+                             compliance_status = 'I_COMP'
+                         # Also check for magic number which might indicate compliance directly
+                        if abs(value) > KEITHLEY_COMPLIANCE_MAGIC_NUMBER * 0.9:
+                             compliance_status = 'I_COMP'
+
+
+                    if compliance_status != 'OK':
+                        self.compliance_hit.emit(compliance_type) # Emit signal for UI
+                        self.status_update.emit(f"⚠️ {compliance_type} Compliance Hit! Limit: {compliance_limit} { 'V' if compliance_type == 'Voltage' else 'A'}")
+                        # Option: Stop measurement on compliance?
+                        # self.running = False
+                        # self.status_update.emit("Measurement stopped due to compliance.")
+
+                    # Handle invalid readings (e.g., NaN from failed conversion, or negative resistance)
+                    if not np.isfinite(value) or (self.mode == 'resistance' and value < 0):
+                        # Keep NaN to plot gaps, or skip? Let's emit NaN.
+                        value = float('nan')
+                        self.status_update.emit(f"Invalid value detected ({reading_str})")
+
+                    # Event Marker
+                    event_marker = ""
+                    if self.max_compression_pressed and self.mode == 'resistance': # Only for resistance?
+                        event_marker = "MAX_COMPRESSION"
+                        self.max_compression_pressed = False
+                        self.status_update.emit(f"⭐ Event marked at {elapsed_time:.3f}s ⭐")
+
+                    # Prepare data row
+                    now_unix = int(now)
                     row_data = [
                         now_unix,
                         f"{elapsed_time:.3f}",
-                        f"{resistance:.6e}",
-                        event
+                        f"{value:.6e}" if np.isfinite(value) else "NaN",
+                        compliance_status,
+                        event_marker
                     ]
-                    
-                    self.writer.writerow(row_data)
-                    
-                    # Emit signal with the data
-                    data_dict = {'resistance': resistance, 'voltage': None, 'current': None}
-                    self.data_point.emit(now, data_dict, event)
-                    
-                    # Force save to file at configured interval
-                    if now - last_save >= auto_save_interval:
-                        self.csvfile.flush()
-                        os.fsync(self.csvfile.fileno())
-                        last_save = now
-                    
-                    elapsed_time_formatted = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
-                    self.status_update.emit(
-                        f"Running: {elapsed_time_formatted} | Resistance: {resistance:.6f} Ohms"
-                    )
-                
-                time.sleep(0.01)
 
-            # Finalize measurement
-            self.writer.writerow([])
-            end_unix_time = int(time.time())
-            metadata['End Time (Unix)'] = end_unix_time
-            metadata['End Time (Human Readable)'] = datetime.fromtimestamp(end_unix_time).isoformat()
-            self._write_metadata(metadata)
-            
-            self.status_update.emit(f"Measurement completed successfully! Data saved to: {filename}")
-            self.measurement_complete.emit()
+                    # Write to CSV
+                    try:
+                        self.writer.writerow(row_data)
+                    except Exception as e:
+                         self.error_occurred.emit(f"Error writing to CSV: {str(e)}")
+                         # Continue running? Or stop? Let's continue but warn.
+                         self.status_update.emit("Warning: Failed to write data point to CSV.")
+
+
+                    # Emit signal with the data for plotting/UI update
+                    self.data_point.emit(now, value, compliance_status, event_marker)
+
+                    # Auto-save
+                    if now - last_save >= auto_save_interval:
+                        try:
+                            self.csvfile.flush()
+                            os.fsync(self.csvfile.fileno()) # Force write to disk
+                            last_save = now
+                        except Exception as e:
+                             self.status_update.emit(f"Warning: Auto-save failed - {str(e)}")
+
+
+                    # Status update for the main window status bar
+                    elapsed_time_formatted = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
+                    unit = "Ohms" if self.mode == 'resistance' else ("A" if self.mode == 'source_v' else "V")
+                    status_msg = f"Running {self.mode}: {elapsed_time_formatted} | "
+                    if np.isfinite(value):
+                         status_msg += f"{value:.4f} {unit}"
+                    else:
+                         status_msg += "Invalid Reading"
+                    if compliance_status != 'OK':
+                         status_msg += f" ({compliance_status})"
+                    self.status_update.emit(status_msg)
+
+                    loop_count += 1
+
+                # Prevent busy-waiting if sample interval is very short or zero
+                if sample_interval > 0.001:
+                     # Sleep for a fraction of the interval, but check running flag often
+                     sleep_duration = max(0.001, sample_interval / 10.0)
+                     for _ in range(10):
+                          if not self.running: break
+                          time.sleep(sleep_duration / 10.0)
+                else:
+                     # Very high rate or zero interval, just yield
+                     time.sleep(0.001)
+                     if not self.running: break
+
+            # --- End of Measurement Loop ---
+            if instrument_ready and self.keithley:
+                 try:
+                      self.keithley.write(":OUTP OFF") # Turn off output
+                      self.status_update.emit("Output turned OFF.")
+                 except Exception as e:
+                      self.status_update.emit(f"Warning: Could not turn off output - {str(e)}")
+
+
+            final_message = f"Measurement ({self.mode}) stopped."
+            if file_ready and self.filename:
+                 try:
+                     # Write end metadata
+                     self.writer.writerow([])
+                     end_unix_time = int(time.time())
+                     full_metadata['End Time (Unix)'] = end_unix_time
+                     full_metadata['End Time (Human Readable)'] = datetime.fromtimestamp(end_unix_time).isoformat()
+                     self._write_metadata(full_metadata) # Write metadata again with end times
+                 except Exception as e:
+                     self.status_update.emit(f"Warning: Error writing final metadata - {str(e)}")
+
+                 final_message = f"Measurement ({self.mode}) completed! Data saved to: {self.filename}"
+
+            self.status_update.emit(final_message)
+            self.measurement_complete.emit(self.mode) # Signal completion with mode
 
         except Exception as e:
-            self.error_occurred.emit(f"Error occurred: {str(e)}")
-        
+            # Catch any unexpected errors during setup or loop
+            self.error_occurred.emit(f"Unexpected Worker Error ({self.mode}): {str(e)}")
+
         finally:
             self._cleanup()
-            
-    def _create_filename(self, prefix: str) -> str:
-        """Create filename for data storage."""
+            self.running = False # Ensure flag is false
+
+    def _create_filename(self, source_value_str: str) -> str:
+        """Create filename for data storage, including mode."""
         base_dir = Path(self.settings['file']['data_directory'])
-        base_dir.mkdir(exist_ok=True)
-        
-        # Create user-specific subdirectory
+        base_dir.mkdir(parents=True, exist_ok=True) # Ensure base dir exists
+
         user_dir = base_dir / self.username
-        user_dir.mkdir(exist_ok=True)
-        
+        user_dir.mkdir(exist_ok=True) # Ensure user dir exists
+
         timestamp = int(time.time())
         sanitized_name = ''.join(c if c.isalnum() else '_' for c in self.sample_name)
-        
-        # Include measurement type and current in filename
-        measurement_type = self.settings['resistance_mode']['measurement_type']
-        test_current_ma = self.settings['resistance_mode']['test_current'] * 1000  # Convert to mA
-        
-        filename = f"{timestamp}_{sanitized_name}_{prefix}_{measurement_type}_{test_current_ma:.1f}mA.csv"
+
+        mode_tag = "R"
+        if self.mode == 'source_v':
+            mode_tag = "VSRC"
+        elif self.mode == 'source_i':
+            mode_tag = "ISRC"
+
+        filename = f"{timestamp}_{sanitized_name}_{mode_tag}_{source_value_str}.csv"
         return user_dir / filename
 
-# ----- Voltage Application Worker -----
-class VoltageApplicationWorker(BaseMeasurementWorker):
-    """Worker thread for applying voltage and measuring current."""
-    
-    def run(self):
-        self.running = True
-        
+    def _write_metadata(self, params: Dict) -> None:
+        """Write metadata dictionary to CSV file."""
+        if not self.writer: return
         try:
-            # Extract settings
-            voltage_settings = self.settings['voltage_mode']
-            file_settings = self.settings['file']
-            
-            voltage = voltage_settings['voltage']
-            current_compliance = voltage_settings['current_compliance']
-            sampling_rate = voltage_settings['sampling_rate']
-            duration = voltage_settings['duration']
-            auto_range = voltage_settings['auto_range']
-            nplc = voltage_settings['nplc']
-            settling_time = voltage_settings['settling_time']
-            gpib_address = voltage_settings['gpib_address']
-            
-            auto_save_interval = file_settings['auto_save_interval']
-            
-            sample_interval = 1.0 / sampling_rate
-            
-            # Open instrument
-            try:
-                rm = pyvisa.ResourceManager()
-                
-                # Check available resources
-                available_resources = rm.list_resources()
-                if not available_resources:
-                    self.error_occurred.emit("No GPIB or other instruments detected!")
-                    return
-                elif gpib_address not in available_resources:
-                    self.error_occurred.emit(f"Configured GPIB address '{gpib_address}' not found!")
-                    return
-                
-                self.keithley = rm.open_resource(gpib_address)
-                self.status_update.emit(f"Connected to instrument at {gpib_address}")
-                
-                line_freq = float(self.keithley.query(":SYST:LFR?"))
-            except Exception as e:
-                self.error_occurred.emit(f"Error connecting to instrument: {str(e)}")
-                return
-                
-            # Validate inputs
-            if not -200 <= voltage <= 200:
-                self.error_occurred.emit("Voltage must be between -200V and 200V")
-                return
-            if not 0 < duration <= 168:  # max 1 week
-                self.error_occurred.emit("Duration must be between 0 and 168 hours")
-                return
-            if not 0 < current_compliance <= 1000:
-                self.error_occurred.emit("Compliance must be between 0 and 1000 mA")
-                return
-                
-            # Initialize instrument with optimal settings
-            self.keithley.write("*RST")
-            self.keithley.write(":SYST:AZER ON")  # Enable autozero
-            self.keithley.write(f":SENS:CURR:NPLC {nplc}")  # Set integration time
-            self.keithley.write(":SOUR:FUNC VOLT")
-            self.keithley.write(f":SOUR:VOLT {voltage}")
-            self.keithley.write(f":SENS:CURR:PROT {current_compliance * 1e-3}")  # Convert to A
-            self.keithley.write(":SENS:FUNC 'CURR'")
-            
-            if auto_range:
-                self.keithley.write(":SENS:CURR:RANG:AUTO ON")
-            
-            self.keithley.write(":FORM:ELEM CURR,VOLT")
-            self.keithley.write(":TRIG:COUN 1")
-            self.keithley.write(":INIT:CONT ON")
-            
-            # Create filename and open CSV file
-            filename = self._create_filename("VOLT")
-            self.csvfile = open(filename, 'w', newline='')
-            self.writer = csv.writer(self.csvfile)
-            
-            self.start_time = time.time()
-            start_unix_time = int(self.start_time)
-            
-            # Create metadata
-            metadata = {
-                'User': self.username,
-                'Sample Name': self.sample_name,
-                'Applied Voltage (V)': voltage,
-                'Current Compliance (mA)': current_compliance,
-                'Duration (hours)': duration,
-                'Sampling Rate (Hz)': sampling_rate,
-                'Line Frequency (Hz)': line_freq,
-                'NPLC': nplc,
-                'Auto Range': 'ON' if auto_range else 'OFF',
-                'Start Time (Unix)': start_unix_time,
-                'Start Time (Human Readable)': datetime.fromtimestamp(start_unix_time).isoformat(),
-                'Software Version': __version__,
-                'Author': __author__
-            }
-            self._write_metadata(metadata)
-            
-            # Write header
-            self.writer.writerow([
-                'Timestamp (Unix)', 
-                'Elapsed Time (s)', 
-                'Voltage (V)', 
-                'Current (A)', 
-                'Resistance (Ohms)', 
-                'Event'
-            ])
-            
-            # Turn on output
-            self.keithley.write(":OUTP ON")
-            time.sleep(settling_time)
-            
-            last_save = self.start_time
-            last_measurement = 0
-            end_time = self.start_time + duration * 3600  # Convert hours to seconds
-            
-            while time.time() < end_time and self.running:
-                if self.paused:
-                    time.sleep(0.1)
-                    continue
-                    
-                now = time.time()
-                time_since_last = now - last_measurement
-                
-                if time_since_last >= sample_interval:
-                    # Read both current and voltage
-                    results = self.keithley.query(":READ?").strip().split(',')
-                    current = float(results[0])
-                    measured_voltage = float(results[1]) if len(results) > 1 else voltage
-                    
-                    last_measurement = now
-                    
-                    # Calculate resistance
-                    resistance = measured_voltage / current if current != 0 else float('inf')
-                    
-                    now_unix = int(now)
-                    elapsed_time = now - self.start_time
-                    
-                    event = self.event_marker
-                    if event:
-                        self.event_marker = ""
-                    
-                    # Write to CSV
-                    row_data = [
-                        now_unix,
-                        f"{elapsed_time:.3f}",
-                        f"{measured_voltage:.6e}",
-                        f"{current:.6e}",
-                        f"{resistance:.6e}",
-                        event
-                    ]
-                    
-                    self.writer.writerow(row_data)
-                    
-                    # Emit signal with the data
-                    data_dict = {
-                        'voltage': measured_voltage, 
-                        'current': current, 
-                        'resistance': resistance
-                    }
-                    self.data_point.emit(now, data_dict, event)
-                    
-                    # Force save to file at configured interval
-                    if now - last_save >= auto_save_interval:
-                        self.csvfile.flush()
-                        os.fsync(self.csvfile.fileno())
-                        last_save = now
-                    
-                    # Calculate progress
-                    progress = (elapsed_time / (duration * 3600)) * 100
-                    elapsed_time_formatted = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
-                    
-                    self.status_update.emit(
-                        f"Progress: {progress:.1f}% | Time: {elapsed_time_formatted} | "
-                        f"Current: {current:.6e}A | Resistance: {resistance:.6f} Ohms"
-                    )
-                
-                time.sleep(0.01)
-                
-            # Finalize measurement
-            self.writer.writerow([])
-            end_unix_time = int(time.time())
-            metadata['End Time (Unix)'] = end_unix_time
-            metadata['End Time (Human Readable)'] = datetime.fromtimestamp(end_unix_time).isoformat()
-            self._write_metadata(metadata)
-            
-            self.status_update.emit(f"Measurement completed successfully! Data saved to: {filename}")
-            self.measurement_complete.emit()
-            
+            self.writer.writerow(['### METADATA START ###'])
+            for key, value in params.items():
+                self.writer.writerow([f'# {key}', value])
+            self.writer.writerow(['### METADATA END ###'])
+            self.writer.writerow([]) # Empty row for separation
         except Exception as e:
-            self.error_occurred.emit(f"Error occurred: {str(e)}")
-            
-        finally:
-            self._cleanup()
-            
-    def _create_filename(self, prefix: str) -> str:
-        """Create filename for data storage."""
-        base_dir = Path(self.settings['file']['data_directory'])
-        base_dir.mkdir(exist_ok=True)
-        
-        # Create user-specific subdirectory
-        user_dir = base_dir / self.username
-        user_dir.mkdir(exist_ok=True)
-        
-        timestamp = int(time.time())
-        sanitized_name = ''.join(c if c.isalnum() else '_' for c in self.sample_name)
-        
-        # Include voltage and compliance in filename
-        voltage = self.settings['voltage_mode']['voltage']
-        compliance = self.settings['voltage_mode']['current_compliance']
-        
-        filename = f"{timestamp}_{sanitized_name}_{prefix}_V{voltage:.1f}_C{compliance:.1f}mA.csv"
-        return user_dir / filename
+            self.status_update.emit(f"Warning: Failed to write metadata - {str(e)}")
 
-# ----- Current Application Worker -----
-class CurrentApplicationWorker(BaseMeasurementWorker):
-    """Worker thread for applying current and measuring voltage."""
-    
-    def run(self):
-        self.running = True
-        
-        try:
-            # Extract settings
-            current_settings = self.settings['current_mode']
-            file_settings = self.settings['file']
-            
-            current = current_settings['current'] * 1e-3  # Convert mA to A
-            voltage_compliance = current_settings['voltage_compliance']
-            sampling_rate = current_settings['sampling_rate']
-            duration = current_settings['duration']
-            auto_range = current_settings['auto_range']
-            nplc = current_settings['nplc']
-            settling_time = current_settings['settling_time']
-            gpib_address = current_settings['gpib_address']
-            
-            auto_save_interval = file_settings['auto_save_interval']
-            
-            sample_interval = 1.0 / sampling_rate
-            
-            # Open instrument
+
+    def mark_max_compression(self) -> None:
+        """Mark a max compression point (relevant for resistance mode)."""
+        if self.mode == 'resistance':
+            self.max_compression_pressed = True
+
+    def pause_measurement(self) -> None:
+        """Pause the measurement."""
+        if self.running:
+            self.paused = True
+            self.status_update.emit(f"Measurement ({self.mode}) paused")
+
+    def resume_measurement(self) -> None:
+        """Resume the measurement."""
+        if self.running:
+            self.paused = False
+            self.status_update.emit(f"Measurement ({self.mode}) resumed")
+
+    def stop_measurement(self) -> None:
+        """Stop the measurement thread."""
+        self.status_update.emit(f"Stopping measurement ({self.mode})...")
+        self.running = False # Signal the loop to exit
+
+    def _cleanup(self) -> None:
+        """Clean up resources."""
+        if self.keithley:
             try:
-                rm = pyvisa.ResourceManager()
-                
-                # Check available resources
-                available_resources = rm.list_resources()
-                if not available_resources:
-                    self.error_occurred.emit("No GPIB or other instruments detected!")
-                    return
-                elif gpib_address not in available_resources:
-                    self.error_occurred.emit(f"Configured GPIB address '{gpib_address}' not found!")
-                    return
-                
-                self.keithley = rm.open_resource(gpib_address)
-                self.status_update.emit(f"Connected to instrument at {gpib_address}")
-                
-                line_freq = float(self.keithley.query(":SYST:LFR?"))
+                # Try to turn off output and reset, but don't crash if it fails
+                self.keithley.write(":OUTP OFF")
+                # Optional: Reset? Might interfere if user wants to check settings after error
+                # self.keithley.write("*RST")
+                self.keithley.close()
+                self.status_update.emit("Instrument disconnected.")
             except Exception as e:
-                self.error_occurred.emit(f"Error connecting to instrument: {str(e)}")
-                return
-                
-            # Validate inputs
-            if not -1 <= current <= 1:  # ±1A should be a reasonable limit
-                self.error_occurred.emit("Current must be between -1A and 1A")
-                return
-            if not 0 < duration <= 168:  # max 1 week
-                self.error_occurred.emit("Duration must be between 0 and 168 hours")
-                return
-            if not 0 < voltage_compliance <= 200:
-                self.error_occurred.emit("Voltage compliance must be between 0 and 200V")
-                return
-                
-            # Initialize instrument with optimal settings
-            self.keithley.write("*RST")
-            self.keithley.write(":SYST:AZER ON")  # Enable autozero
-            self.keithley.write(f":SENS:VOLT:NPLC {nplc}")  # Set integration time
-            self.keithley.write(":SOUR:FUNC CURR")
-            self.keithley.write(f":SOUR:CURR {current}")
-            self.keithley.write(f":SENS:VOLT:PROT {voltage_compliance}")
-            self.keithley.write(":SENS:FUNC 'VOLT'")
-            
-            if auto_range:
-                self.keithley.write(":SENS:VOLT:RANG:AUTO ON")
-            
-            self.keithley.write(":FORM:ELEM VOLT,CURR")
-            self.keithley.write(":TRIG:COUN 1")
-            self.keithley.write(":INIT:CONT ON")
-            
-            # Create filename and open CSV file
-            filename = self._create_filename("CURR")
-            self.csvfile = open(filename, 'w', newline='')
-            self.writer = csv.writer(self.csvfile)
-            
-            self.start_time = time.time()
-            start_unix_time = int(self.start_time)
-            
-            # Create metadata
-            metadata = {
-                'User': self.username,
-                'Sample Name': self.sample_name,
-                'Applied Current (A)': current,
-                'Voltage Compliance (V)': voltage_compliance,
-                'Duration (hours)': duration,
-                'Sampling Rate (Hz)': sampling_rate,
-                'Line Frequency (Hz)': line_freq,
-                'NPLC': nplc,
-                'Auto Range': 'ON' if auto_range else 'OFF',
-                'Start Time (Unix)': start_unix_time,
-                'Start Time (Human Readable)': datetime.fromtimestamp(start_unix_time).isoformat(),
-                'Software Version': __version__,
-                'Author': __author__
-            }
-            self._write_metadata(metadata)
-            
-            # Write header
-            self.writer.writerow([
-                'Timestamp (Unix)', 
-                'Elapsed Time (s)', 
-                'Voltage (V)', 
-                'Current (A)', 
-                'Resistance (Ohms)', 
-                'Event'
-            ])
-            
-            # Turn on output
-            self.keithley.write(":OUTP ON")
-            time.sleep(settling_time)
-            
-            last_save = self.start_time
-            last_measurement = 0
-            end_time = self.start_time + duration * 3600  # Convert hours to seconds
-            
-            while time.time() < end_time and self.running:
-                if self.paused:
-                    time.sleep(0.1)
-                    continue
-                    
-                now = time.time()
-                time_since_last = now - last_measurement
-                
-                if time_since_last >= sample_interval:
-                    # Read both voltage and current
-                    results = self.keithley.query(":READ?").strip().split(',')
-                    voltage = float(results[0])
-                    measured_current = float(results[1]) if len(results) > 1 else current
-                    
-                    last_measurement = now
-                    
-                    # Calculate resistance
-                    resistance = voltage / measured_current if measured_current != 0 else float('inf')
-                    
-                    now_unix = int(now)
-                    elapsed_time = now - self.start_time
-                    
-                    event = self.event_marker
-                    if event:
-                        self.event_marker = ""
-                    
-                    # Write to CSV
-                    row_data = [
-                        now_unix,
-                        f"{elapsed_time:.3f}",
-                        f"{voltage:.6e}",
-                        f"{measured_current:.6e}",
-                        f"{resistance:.6e}",
-                        event
-                    ]
-                    
-                    self.writer.writerow(row_data)
-                    
-                    # Emit signal with the data
-                    data_dict = {
-                        'voltage': voltage, 
-                        'current': measured_current, 
-                        'resistance': resistance
-                    }
-                    self.data_point.emit(now, data_dict, event)
-                    
-                    # Force save to file at configured interval
-                    if now - last_save >= auto_save_interval:
-                        self.csvfile.flush()
-                        os.fsync(self.csvfile.fileno())
-                        last_save = now
-                    
-                    # Calculate progress
-                    progress = (elapsed_time / (duration * 3600)) * 100
-                    elapsed_time_formatted = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
-                    
-                    self.status_update.emit(
-                        f"Progress: {progress:.1f}% | Time: {elapsed_time_formatted} | "
-                        f"Voltage: {voltage:.6e}V | Resistance: {resistance:.6f} Ohms"
-                    )
-                
-                time.sleep(0.01)
-                
-            # Finalize measurement
-            self.writer.writerow([])
-            end_unix_time = int(time.time())
-            metadata['End Time (Unix)'] = end_unix_time
-            metadata['End Time (Human Readable)'] = datetime.fromtimestamp(end_unix_time).isoformat()
-            self._write_metadata(metadata)
-            
-            self.status_update.emit(f"Measurement completed successfully! Data saved to: {filename}")
-            self.measurement_complete.emit()
-            
-        except Exception as e:
-            self.error_occurred.emit(f"Error occurred: {str(e)}")
-            
-        finally:
-            self._cleanup()
-            
-    def _create_filename(self, prefix: str) -> str:
-        """Create filename for data storage."""
-        base_dir = Path(self.settings['file']['data_directory'])
-        base_dir.mkdir(exist_ok=True)
-        
-        # Create user-specific subdirectory
-        user_dir = base_dir / self.username
-        user_dir.mkdir(exist_ok=True)
-        
-        timestamp = int(time.time())
-        sanitized_name = ''.join(c if c.isalnum() else '_' for c in self.sample_name)
-        
-        # Include current and compliance in filename
-        current_ma = self.settings['current_mode']['current']
-        compliance = self.settings['current_mode']['voltage_compliance']
-        
-        filename = f"{timestamp}_{sanitized_name}_{prefix}_I{current_ma:.1f}mA_V{compliance:.1f}V.csv"
-        return user_dir / filename
+                 # Log error during cleanup but don't raise
+                 self.status_update.emit(f"Warning: Error during instrument cleanup: {str(e)}")
+            finally:
+                 self.keithley = None
 
-# ----- Enhanced Plot Canvas -----
-class EnhancedMplCanvas(FigureCanvas):
-    """Enhanced Matplotlib canvas with support for multiple data types."""
-    def __init__(self, parent=None, width=10, height=6, dpi=100):
+        if self.csvfile:
+            try:
+                self.csvfile.flush()
+                self.csvfile.close()
+            except Exception as e:
+                 self.status_update.emit(f"Warning: Error closing CSV file: {str(e)}")
+            finally:
+                 self.csvfile = None
+        self.writer = None
+
+# ----- Custom Matplotlib Canvas (Modified for Flexibility) -----
+class MplCanvas(FigureCanvas):
+    """Matplotlib canvas for embedding in Qt."""
+    def __init__(self, parent=None, width=8, height=5, dpi=100):
         self.fig = Figure(figsize=(width, height), dpi=dpi)
         self.axes = self.fig.add_subplot(111)
-        self.axes.ticklabel_format(useOffset=False, style='plain')
-        
-        super(EnhancedMplCanvas, self).__init__(self.fig)
-        
-        # Create initial empty plot
-        self.axes.set_title('Measurement Data')
-        self.axes.set_xlabel('Elapsed Time (s)')
-        self.axes.set_ylabel('Value')
-        self.axes.grid(True)
-        
-        # Create lines for different data types
-        self.lines = {
-            'resistance': self.axes.plot([], [], 'r-', label='Resistance (Ω)')[0],
-            'voltage': self.axes.plot([], [], 'b-', label='Voltage (V)')[0],
-            'current': self.axes.plot([], [], 'g-', label='Current (A)')[0]
-        }
-        
-        # Current visible line
-        self.visible_data = 'resistance'
-        
-        # Hide all lines initially
-        for line in self.lines.values():
-            line.set_visible(False)
-            
-        # Show default line
-        self.lines[self.visible_data].set_visible(True)
-        
-        # Add min/max/avg text annotations
-        self.min_text = self.axes.text(0.02, 0.95, 'Min: -- Ω', 
-                               transform=self.axes.transAxes, 
-                               ha='left', va='center')
-        self.max_text = self.axes.text(0.02, 0.90, 'Max: -- Ω', 
-                               transform=self.axes.transAxes, 
-                               ha='left', va='center')
-        self.avg_text = self.axes.text(0.02, 0.85, 'Avg: -- Ω', 
-                               transform=self.axes.transAxes, 
-                               ha='left', va='center')
-        self.info_text = self.axes.text(0.98, 0.95, 'User: --\nSample: --\nMode: --', 
-                                transform=self.axes.transAxes, 
-                                ha='right', va='center')
+        self.axes.ticklabel_format(useOffset=False, style='plain') # Prevent scientific notation on axes
+        super().__init__(self.fig)
+        self.parent = parent # Store parent if needed
 
-        # Add bbox
-        bbox_props = dict(boxstyle="round", fc="white", ec="black", alpha=0.5)
+        # Create initial empty plot elements
+        self.line, = self.axes.plot([], [], 'r-', label='Measurement') # Generic label initially
+        # self.compliance_markers, = self.axes.plot([], [], 'kx', markersize=8, label='Compliance Hit') # Optional markers
+        self.min_text = self.axes.text(0.02, 0.95, '', transform=self.axes.transAxes, ha='left', va='top', fontsize=9)
+        self.max_text = self.axes.text(0.02, 0.90, '', transform=self.axes.transAxes, ha='left', va='top', fontsize=9)
+        self.avg_text = self.axes.text(0.02, 0.85, '', transform=self.axes.transAxes, ha='left', va='top', fontsize=9)
+        self.info_text = self.axes.text(0.98, 0.95, '', transform=self.axes.transAxes, ha='right', va='top', fontsize=9)
+        self.compliance_indicator = self.axes.text(0.5, 1.02, '', transform=self.axes.transAxes, ha='center', va='bottom', fontsize=10, color='red', weight='bold')
+
+
+        # Add bbox to text for visibility
+        bbox_props = dict(boxstyle="round,pad=0.3", fc="white", ec="grey", alpha=0.7)
         self.min_text.set_bbox(bbox_props)
         self.max_text.set_bbox(bbox_props)
         self.avg_text.set_bbox(bbox_props)
         self.info_text.set_bbox(bbox_props)
 
-        # Add legend
         self.axes.legend(loc='upper right')
-        
-        # Adjust layout
-        self.fig.tight_layout()
-        
-    def update_plot(self, timestamps, data_values, stats, username, sample_name, mode, data_type='resistance'):
+        self.fig.tight_layout(rect=[0, 0, 1, 0.95]) # Adjust layout slightly for title/compliance indicator
+
+        self.set_plot_properties('Time (s)', 'Value', 'Measurement') # Set defaults
+
+    def set_plot_properties(self, xlabel, ylabel, title, color='blue'):
+        """Configure plot labels, title, and line color."""
+        self.axes.set_xlabel(xlabel)
+        self.axes.set_ylabel(ylabel)
+        self.axes.set_title(title)
+        self.line.set_label(title) # Update legend label
+        self.line.set_color(color)
+        self.axes.legend(loc='upper right') # Redraw legend
+        self.axes.grid(True)
+        self.draw_idle() # Use draw_idle for efficiency
+
+    def update_plot(self, timestamps, values, compliance_list, stats, username, sample_name):
         """Update the plot with new data."""
-        if not timestamps or not data_values:
+        if not timestamps:
+            self.clear_plot()
             return
-            
-        # Set the visible data type
-        self.visible_data = data_type
-        
-        # Hide all lines
-        for line in self.lines.values():
-            line.set_visible(False)
-            
-        # Show selected line and set data
-        self.lines[data_type].set_visible(True)
-        self.lines[data_type].set_data(timestamps, data_values)
-        
+
+        # Use elapsed time relative to the first point for x-axis
+        start_time = timestamps[0]
+        elapsed_times = [t - start_time for t in timestamps]
+
+        # Filter out NaNs for plotting line, keep for stats/buffer
+        valid_indices = [i for i, v in enumerate(values) if np.isfinite(v)]
+        if not valid_indices: # No valid data to plot
+             self.line.set_data([], [])
+        else:
+             plot_times = [elapsed_times[i] for i in valid_indices]
+             plot_values = [values[i] for i in valid_indices]
+             self.line.set_data(plot_times, plot_values)
+
+
         # Update axis limits
         self.axes.relim()
-        self.axes.autoscale_view(True, True, True)
-        
-        # Update y-axis label based on data type
-        if data_type == 'resistance':
-            self.axes.set_ylabel('Resistance (Ω)')
-            unit = 'Ω'
-        elif data_type == 'voltage':
-            self.axes.set_ylabel('Voltage (V)')
-            unit = 'V'
-        elif data_type == 'current':
-            self.axes.set_ylabel('Current (A)')
-            unit = 'A'
-            
-        # Update statistics text
-        if np.isfinite(stats['min']) and np.isfinite(stats['max']):
-            self.min_text.set_text(f'Min: {stats["min"]:.6g} {unit}')
-            self.max_text.set_text(f'Max: {stats["max"]:.6g} {unit}')
-            self.avg_text.set_text(f'Avg: {stats["avg"]:.6g} {unit}')
-        else:
-            self.min_text.set_text(f'Min: -- {unit}')
-            self.max_text.set_text(f'Max: -- {unit}')
-            self.avg_text.set_text(f'Avg: -- {unit}')
-            
-        self.info_text.set_text(f'User: {username}\nSample: {sample_name}\nMode: {mode}')
-        
-        # Draw the canvas
-        self.draw()
-        
-    def set_plot_color(self, data_type, color):
-        """Set the plot line color for the specified data type."""
-        if data_type in self.lines:
-            self.lines[data_type].set_color(color)
-            self.draw()
-            
-    def clear_plot(self):
-        """Clear the plot."""
-        for line in self.lines.values():
-            line.set_data([], [])
-            
-        self.min_text.set_text('Min: -- Ω')
-        self.max_text.set_text('Max: -- Ω')
-        self.avg_text.set_text('Avg: -- Ω')
-        self.info_text.set_text('User: --\nSample: --\nMode: --')
-        self.draw()
+        self.axes.autoscale_view(True, True, True) # Autoscale both axes
 
-# ----- Settings Dialog -----
+        # Update statistics text (use current ylabel unit)
+        unit = self.axes.get_ylabel()
+        unit = unit.split('(')[-1].split(')')[0] if '(' in unit else '' # Extract unit like Ohms, V, A
+
+        min_val = stats.get('min', float('inf'))
+        max_val = stats.get('max', float('-inf'))
+        avg_val = stats.get('avg', 0)
+
+        self.min_text.set_text(f'Min: {min_val:.3f} {unit}' if np.isfinite(min_val) else 'Min: --')
+        self.max_text.set_text(f'Max: {max_val:.3f} {unit}' if np.isfinite(max_val) else 'Max: --')
+        self.avg_text.set_text(f'Avg: {avg_val:.3f} {unit}' if np.isfinite(avg_val) else 'Avg: --')
+        self.info_text.set_text(f'User: {username}\nSample: {sample_name}')
+
+        # Update compliance indicator
+        last_compliance = compliance_list[-1] if compliance_list else 'OK'
+        comp_text = ""
+        if last_compliance == 'V_COMP':
+             comp_text = "VOLTAGE COMPLIANCE HIT!"
+        elif last_compliance == 'I_COMP':
+             comp_text = "CURRENT COMPLIANCE HIT!"
+        self.compliance_indicator.set_text(comp_text)
+
+        # Redraw the canvas
+        try:
+             self.draw_idle() # More efficient than draw() for frequent updates
+        except Exception as e:
+             print(f"Error drawing plot: {e}")
+
+
+    def clear_plot(self):
+        """Clear the plot and reset annotations."""
+        self.line.set_data([], [])
+        # self.compliance_markers.set_data([], [])
+        self.min_text.set_text('Min: --')
+        self.max_text.set_text('Max: --')
+        self.avg_text.set_text('Avg: --')
+        self.info_text.set_text('User: --\nSample: --')
+        self.compliance_indicator.set_text('')
+        self.axes.relim()
+        self.axes.autoscale_view(True, True, True)
+        self.draw_idle()
+
+# ----- Settings Dialog (Updated) -----
 class SettingsDialog(QDialog):
     """Dialog for editing configuration settings."""
     def __init__(self, config_manager, username=None, parent=None):
         super().__init__(parent)
         self.config_manager = config_manager
         self.username = username
-        
+
         if username:
-            self.settings = config_manager.get_user_settings(username)
+            # Load user settings, ensuring all keys exist by merging with defaults
+            global_settings = config_manager.config
+            user_settings_raw = config_manager.get_user_settings(username)
+            self.settings = {
+                 'measurement': {**global_settings['measurement'], **user_settings_raw.get('measurement', {})},
+                 'display': {**global_settings['display'], **user_settings_raw.get('display', {})},
+                 'file': {**global_settings['file'], **user_settings_raw.get('file', {})},
+            }
             self.setWindowTitle(f"Settings for {username}")
         else:
+            # Global settings are just the current config
             self.settings = {
-                'resistance_mode': dict(config_manager.config['resistance_mode']),
-                'voltage_mode': dict(config_manager.config['voltage_mode']),
-                'current_mode': dict(config_manager.config['current_mode']),
+                'measurement': dict(config_manager.config['measurement']),
                 'display': dict(config_manager.config['display']),
                 'file': dict(config_manager.config['file'])
             }
             self.setWindowTitle("Global Settings")
-            
+
         self.init_ui()
-        
+        self.load_settings() # Load data into widgets
+
     def init_ui(self):
-        """Initialize the UI."""
         self.setMinimumWidth(600)
-        
-        # Create tab widget
         self.tabs = QTabWidget()
-        
-        # Create tabs
-        self.resistance_tab = self.create_resistance_tab()
-        self.voltage_tab = self.create_voltage_tab()
-        self.current_tab = self.create_current_tab()
+        self.measurement_tab = self.create_measurement_tab()
         self.display_tab = self.create_display_tab()
         self.file_tab = self.create_file_tab()
-        
-        # Add tabs to widget
-        self.tabs.addTab(self.resistance_tab, "Resistance Mode")
-        self.tabs.addTab(self.voltage_tab, "Voltage Mode")
-        self.tabs.addTab(self.current_tab, "Current Mode")
+
+        self.tabs.addTab(self.measurement_tab, "Measurement")
         self.tabs.addTab(self.display_tab, "Display")
         self.tabs.addTab(self.file_tab, "File")
-        
-        # Create buttons
-        self.save_button = QPushButton("Save")
-        self.cancel_button = QPushButton("Cancel")
-        
-        # Connect signals
+
+        self.save_button = QPushButton(QIcon.fromTheme("document-save"), "Save")
+        self.cancel_button = QPushButton(QIcon.fromTheme("dialog-cancel"), "Cancel")
         self.save_button.clicked.connect(self.save_settings)
         self.cancel_button.clicked.connect(self.reject)
-        
-        # Create button layout
+
         button_layout = QHBoxLayout()
         button_layout.addStretch()
         button_layout.addWidget(self.save_button)
         button_layout.addWidget(self.cancel_button)
-        
-        # Create main layout
+
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.tabs)
         main_layout.addLayout(button_layout)
-        
         self.setLayout(main_layout)
-        
-    def create_resistance_tab(self):
-        """Create the resistance measurement settings tab."""
+
+    def create_measurement_tab(self):
         tab = QWidget()
-        layout = QFormLayout()
-        
-        # Test current
-        self.res_test_current = QDoubleSpinBox()
-        self.res_test_current.setRange(0.0001, 1.0)
-        self.res_test_current.setDecimals(6)
-        self.res_test_current.setSingleStep(0.001)
-        self.res_test_current.setValue(self.settings['resistance_mode']['test_current'])
-        layout.addRow("Test Current (A):", self.res_test_current)
-        
-        # Voltage compliance
-        self.res_voltage_compliance = QDoubleSpinBox()
-        self.res_voltage_compliance.setRange(0.1, 100.0)
-        self.res_voltage_compliance.setDecimals(2)
-        self.res_voltage_compliance.setSingleStep(0.1)
-        self.res_voltage_compliance.setValue(self.settings['resistance_mode']['voltage_compliance'])
-        layout.addRow("Voltage Compliance (V):", self.res_voltage_compliance)
-        
-        # Sampling rate
-        self.res_sampling_rate = QDoubleSpinBox()
-        self.res_sampling_rate.setRange(0.1, 100.0)
-        self.res_sampling_rate.setDecimals(1)
-        self.res_sampling_rate.setSingleStep(1.0)
-        self.res_sampling_rate.setValue(self.settings['resistance_mode']['sampling_rate'])
-        layout.addRow("Sampling Rate (Hz):", self.res_sampling_rate)
-        
-        # Auto-range
-        self.res_auto_range = QCheckBox()
-        self.res_auto_range.setChecked(self.settings['resistance_mode']['auto_range'])
-        layout.addRow("Auto Range:", self.res_auto_range)
-        
-        # NPLC
-        self.res_nplc = QDoubleSpinBox()
-        self.res_nplc.setRange(0.01, 10.0)
-        self.res_nplc.setDecimals(2)
-        self.res_nplc.setSingleStep(0.1)
-        self.res_nplc.setValue(self.settings['resistance_mode']['nplc'])
-        layout.addRow("NPLC:", self.res_nplc)
-        
-        # Settling time
-        self.res_settling_time = QDoubleSpinBox()
-        self.res_settling_time.setRange(0.0, 10.0)
-        self.res_settling_time.setDecimals(2)
-        self.res_settling_time.setSingleStep(0.1)
-        self.res_settling_time.setValue(self.settings['resistance_mode']['settling_time'])
-        layout.addRow("Settling Time (s):", self.res_settling_time)
-        
-        # Measurement type
+        main_layout = QVBoxLayout()
+
+        # --- General Settings ---
+        general_group = QGroupBox("General Instrument Settings")
+        form_layout = QFormLayout()
+        self.gpib_address = QLineEdit()
+        self.detect_gpib_button = QPushButton("Detect Devices")
+        self.detect_gpib_button.clicked.connect(self.detect_gpib_devices)
+        gpib_layout = QHBoxLayout()
+        gpib_layout.addWidget(self.gpib_address)
+        gpib_layout.addWidget(self.detect_gpib_button)
+        form_layout.addRow("GPIB Address:", gpib_layout)
+
+        self.sampling_rate = QDoubleSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
+        form_layout.addRow("Sampling Rate:", self.sampling_rate)
+        self.nplc = QDoubleSpinBox(decimals=2, minimum=0.01, maximum=10.0, singleStep=0.1)
+        form_layout.addRow("NPLC:", self.nplc)
+        self.settling_time = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=10.0, singleStep=0.1, suffix=" s")
+        form_layout.addRow("Settling Time:", self.settling_time)
+        general_group.setLayout(form_layout)
+        main_layout.addWidget(general_group)
+
+        # --- Resistance Mode Settings ---
+        res_group = QGroupBox("Resistance Mode (Source I, Measure R)")
+        form_layout = QFormLayout()
+        self.res_test_current = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=1.0, singleStep=1e-3, suffix=" A")
+        form_layout.addRow("Test Current:", self.res_test_current)
+        self.res_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=100.0, singleStep=0.1, suffix=" V")
+        form_layout.addRow("Voltage Compliance:", self.res_voltage_compliance)
         self.res_measurement_type = QComboBox()
         self.res_measurement_type.addItems(["2-wire", "4-wire"])
-        self.res_measurement_type.setCurrentText(self.settings['resistance_mode']['measurement_type'])
-        layout.addRow("Measurement Type:", self.res_measurement_type)
-        
-        # GPIB address
-        self.res_gpib_address = QLineEdit()
-        self.res_gpib_address.setText(self.settings['resistance_mode']['gpib_address'])
-        layout.addRow("GPIB Address:", self.res_gpib_address)
-        
-        # Detect GPIB button
-        self.res_detect_gpib_button = QPushButton("Detect GPIB Devices")
-        self.res_detect_gpib_button.clicked.connect(lambda: self.detect_gpib_devices(self.res_gpib_address))
-        layout.addRow("", self.res_detect_gpib_button)
-        
-        tab.setLayout(layout)
+        form_layout.addRow("Measurement Type:", self.res_measurement_type)
+        self.res_auto_range = QCheckBox("Auto Range Resistance")
+        form_layout.addRow(self.res_auto_range)
+        res_group.setLayout(form_layout)
+        main_layout.addWidget(res_group)
+
+        # --- Voltage Source Mode Settings ---
+        vsrc_group = QGroupBox("Voltage Source Mode (Source V, Measure I)")
+        form_layout = QFormLayout()
+        self.vsource_voltage = QDoubleSpinBox(decimals=3, minimum=-100.0, maximum=100.0, singleStep=0.1, suffix=" V")
+        form_layout.addRow("Source Voltage:", self.vsource_voltage)
+        self.vsource_current_compliance = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=1.0, singleStep=1e-3, suffix=" A")
+        form_layout.addRow("Current Compliance:", self.vsource_current_compliance)
+        self.vsource_current_range_auto = QCheckBox("Auto Range Current Measurement")
+        form_layout.addRow(self.vsource_current_range_auto)
+        vsrc_group.setLayout(form_layout)
+        main_layout.addWidget(vsrc_group)
+
+        # --- Current Source Mode Settings ---
+        isrc_group = QGroupBox("Current Source Mode (Source I, Measure V)")
+        form_layout = QFormLayout()
+        self.isource_current = QDoubleSpinBox(decimals=6, minimum=-1.0, maximum=1.0, singleStep=1e-3, suffix=" A")
+        form_layout.addRow("Source Current:", self.isource_current)
+        self.isource_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=100.0, singleStep=0.1, suffix=" V")
+        form_layout.addRow("Voltage Compliance:", self.isource_voltage_compliance)
+        self.isource_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
+        form_layout.addRow(self.isource_voltage_range_auto)
+        isrc_group.setLayout(form_layout)
+        main_layout.addWidget(isrc_group)
+
+        main_layout.addStretch() # Push groups to top
+        tab.setLayout(main_layout)
         return tab
-        
-    def create_voltage_tab(self):
-        """Create the voltage application settings tab."""
-        tab = QWidget()
-        layout = QFormLayout()
-        
-        # Voltage
-        self.volt_voltage = QDoubleSpinBox()
-        self.volt_voltage.setRange(-200.0, 200.0)
-        self.volt_voltage.setDecimals(3)
-        self.volt_voltage.setSingleStep(1.0)
-        self.volt_voltage.setValue(self.settings['voltage_mode']['voltage'])
-        layout.addRow("Applied Voltage (V):", self.volt_voltage)
-        
-        # Current compliance
-        self.volt_current_compliance = QDoubleSpinBox()
-        self.volt_current_compliance.setRange(0.001, 1000.0)
-        self.volt_current_compliance.setDecimals(3)
-        self.volt_current_compliance.setSingleStep(1.0)
-        self.volt_current_compliance.setValue(self.settings['voltage_mode']['current_compliance'])
-        layout.addRow("Current Compliance (mA):", self.volt_current_compliance)
-        
-        # Duration
-        self.volt_duration = QDoubleSpinBox()
-        self.volt_duration.setRange(0.01, 168.0)
-        self.volt_duration.setDecimals(2)
-        self.volt_duration.setSingleStep(0.5)
-        self.volt_duration.setValue(self.settings['voltage_mode']['duration'])
-        layout.addRow("Duration (hours):", self.volt_duration)
-        
-        # Sampling rate
-        self.volt_sampling_rate = QDoubleSpinBox()
-        self.volt_sampling_rate.setRange(0.01, 100.0)
-        self.volt_sampling_rate.setDecimals(2)
-        self.volt_sampling_rate.setSingleStep(0.1)
-        self.volt_sampling_rate.setValue(self.settings['voltage_mode']['sampling_rate'])
-        layout.addRow("Sampling Rate (Hz):", self.volt_sampling_rate)
-        
-        # Auto-range
-        self.volt_auto_range = QCheckBox()
-        self.volt_auto_range.setChecked(self.settings['voltage_mode']['auto_range'])
-        layout.addRow("Auto Range:", self.volt_auto_range)
-        
-        # NPLC
-        self.volt_nplc = QDoubleSpinBox()
-        self.volt_nplc.setRange(0.01, 10.0)
-        self.volt_nplc.setDecimals(2)
-        self.volt_nplc.setSingleStep(0.1)
-        self.volt_nplc.setValue(self.settings['voltage_mode']['nplc'])
-        layout.addRow("NPLC:", self.volt_nplc)
-        
-        # Settling time
-        self.volt_settling_time = QDoubleSpinBox()
-        self.volt_settling_time.setRange(0.0, 10.0)
-        self.volt_settling_time.setDecimals(2)
-        self.volt_settling_time.setSingleStep(0.1)
-        self.volt_settling_time.setValue(self.settings['voltage_mode']['settling_time'])
-        layout.addRow("Settling Time (s):", self.volt_settling_time)
-        
-        # GPIB address
-        self.volt_gpib_address = QLineEdit()
-        self.volt_gpib_address.setText(self.settings['voltage_mode']['gpib_address'])
-        layout.addRow("GPIB Address:", self.volt_gpib_address)
-        
-        # Detect GPIB button
-        self.volt_detect_gpib_button = QPushButton("Detect GPIB Devices")
-        self.volt_detect_gpib_button.clicked.connect(lambda: self.detect_gpib_devices(self.volt_gpib_address))
-        layout.addRow("", self.volt_detect_gpib_button)
-        
-        tab.setLayout(layout)
-        return tab
-        
-    def create_current_tab(self):
-        """Create the current application settings tab."""
-        tab = QWidget()
-        layout = QFormLayout()
-        
-        # Current
-        self.curr_current = QDoubleSpinBox()
-        self.curr_current.setRange(-1000.0, 1000.0)
-        self.curr_current.setDecimals(3)
-        self.curr_current.setSingleStep(1.0)
-        self.curr_current.setValue(self.settings['current_mode']['current'])
-        layout.addRow("Applied Current (mA):", self.curr_current)
-        
-        # Voltage compliance
-        self.curr_voltage_compliance = QDoubleSpinBox()
-        self.curr_voltage_compliance.setRange(0.1, 200.0)
-        self.curr_voltage_compliance.setDecimals(3)
-        self.curr_voltage_compliance.setSingleStep(1.0)
-        self.curr_voltage_compliance.setValue(self.settings['current_mode']['voltage_compliance'])
-        layout.addRow("Voltage Compliance (V):", self.curr_voltage_compliance)
-        
-        # Duration
-        self.curr_duration = QDoubleSpinBox()
-        self.curr_duration.setRange(0.01, 168.0)
-        self.curr_duration.setDecimals(2)
-        self.curr_duration.setSingleStep(0.5)
-        self.curr_duration.setValue(self.settings['current_mode']['duration'])
-        layout.addRow("Duration (hours):", self.curr_duration)
-        
-        # Sampling rate
-        self.curr_sampling_rate = QDoubleSpinBox()
-        self.curr_sampling_rate.setRange(0.01, 100.0)
-        self.curr_sampling_rate.setDecimals(2)
-        self.curr_sampling_rate.setSingleStep(0.1)
-        self.curr_sampling_rate.setValue(self.settings['current_mode']['sampling_rate'])
-        layout.addRow("Sampling Rate (Hz):", self.curr_sampling_rate)
-        
-        # Auto-range
-        self.curr_auto_range = QCheckBox()
-        self.curr_auto_range.setChecked(self.settings['current_mode']['auto_range'])
-        layout.addRow("Auto Range:", self.curr_auto_range)
-        
-        # NPLC
-        self.curr_nplc = QDoubleSpinBox()
-        self.curr_nplc.setRange(0.01, 10.0)
-        self.curr_nplc.setDecimals(2)
-        self.curr_nplc.setSingleStep(0.1)
-        self.curr_nplc.setValue(self.settings['current_mode']['nplc'])
-        layout.addRow("NPLC:", self.curr_nplc)
-        
-        # Settling time
-        self.curr_settling_time = QDoubleSpinBox()
-        self.curr_settling_time.setRange(0.0, 10.0)
-        self.curr_settling_time.setDecimals(2)
-        self.curr_settling_time.setSingleStep(0.1)
-        self.curr_settling_time.setValue(self.settings['current_mode']['settling_time'])
-        layout.addRow("Settling Time (s):", self.curr_settling_time)
-        
-        # GPIB address
-        self.curr_gpib_address = QLineEdit()
-        self.curr_gpib_address.setText(self.settings['current_mode']['gpib_address'])
-        layout.addRow("GPIB Address:", self.curr_gpib_address)
-        
-        # Detect GPIB button
-        self.curr_detect_gpib_button = QPushButton("Detect GPIB Devices")
-        self.curr_detect_gpib_button.clicked.connect(lambda: self.detect_gpib_devices(self.curr_gpib_address))
-        layout.addRow("", self.curr_detect_gpib_button)
-        
-        tab.setLayout(layout)
-        return tab
-        
+
     def create_display_tab(self):
-        """Create the display settings tab."""
         tab = QWidget()
         layout = QFormLayout()
-        
-        # Enable plot
+
         self.enable_plot = QCheckBox()
-        self.enable_plot.setChecked(self.settings['display']['enable_plot'])
-        layout.addRow("Enable Real-time Plot:", self.enable_plot)
-        
-        # Plot update interval
-        self.plot_update_interval = QSpinBox()
-        self.plot_update_interval.setRange(50, 2000)
-        self.plot_update_interval.setSingleStep(50)
-        self.plot_update_interval.setValue(self.settings['display']['plot_update_interval'])
-        layout.addRow("Plot Update Interval (ms):", self.plot_update_interval)
-        
+        layout.addRow("Enable Real-time Plots:", self.enable_plot)
+
+        self.plot_update_interval = QSpinBox(minimum=50, maximum=5000, singleStep=50, suffix=" ms")
+        layout.addRow("Plot Update Interval:", self.plot_update_interval)
+
         # Plot colors
-        colors = ["red", "blue", "green", "black", "purple", "orange", "darkblue", "darkred"]
-        
-        # Resistance color
-        self.resistance_color = QComboBox()
-        self.resistance_color.addItems(colors)
-        resistance_color = self.settings['display']['plot_colors']['resistance']
-        if resistance_color in colors:
-            self.resistance_color.setCurrentText(resistance_color)
-        layout.addRow("Resistance Plot Color:", self.resistance_color)
-        
-        # Voltage color
-        self.voltage_color = QComboBox()
-        self.voltage_color.addItems(colors)
-        voltage_color = self.settings['display']['plot_colors']['voltage']
-        if voltage_color in colors:
-            self.voltage_color.setCurrentText(voltage_color)
-        layout.addRow("Voltage Plot Color:", self.voltage_color)
-        
-        # Current color
-        self.current_color = QComboBox()
-        self.current_color.addItems(colors)
-        current_color = self.settings['display']['plot_colors']['current']
-        if current_color in colors:
-            self.current_color.setCurrentText(current_color)
-        layout.addRow("Current Plot Color:", self.current_color)
-        
-        # Plot figure size
+        colors = ["red", "blue", "green", "black", "purple", "orange", "cyan", "magenta"]
+        self.plot_color_r = QComboBox()
+        self.plot_color_r.addItems(colors)
+        layout.addRow("Resistance Plot Color:", self.plot_color_r)
+        self.plot_color_v = QComboBox()
+        self.plot_color_v.addItems(colors)
+        layout.addRow("V Source Plot Color:", self.plot_color_v)
+        self.plot_color_i = QComboBox()
+        self.plot_color_i.addItems(colors)
+        layout.addRow("I Source Plot Color:", self.plot_color_i)
+
+        # Plot figure size (simplified)
         figsize_layout = QHBoxLayout()
-        self.plot_width = QDoubleSpinBox()
-        self.plot_width.setRange(4, 20)
-        self.plot_width.setSingleStep(0.5)
-        self.plot_width.setValue(self.settings['display']['plot_figsize'][0])
-        
-        self.plot_height = QDoubleSpinBox()
-        self.plot_height.setRange(3, 15)
-        self.plot_height.setSingleStep(0.5)
-        self.plot_height.setValue(self.settings['display']['plot_figsize'][1])
-        
+        self.plot_width = QDoubleSpinBox(decimals=1, minimum=4, maximum=20, singleStep=0.5)
+        self.plot_height = QDoubleSpinBox(decimals=1, minimum=3, maximum=15, singleStep=0.5)
         figsize_layout.addWidget(QLabel("Width:"))
         figsize_layout.addWidget(self.plot_width)
+        figsize_layout.addSpacing(20)
         figsize_layout.addWidget(QLabel("Height:"))
         figsize_layout.addWidget(self.plot_height)
-        layout.addRow("Plot Figure Size:", figsize_layout)
-        
+        layout.addRow("Plot Figure Size (inches):", figsize_layout)
+
         # Buffer size
-        self.buffer_size = QSpinBox()
-        self.buffer_size.setRange(0, 100000)
-        self.buffer_size.setSingleStep(100)
-        buffer_size = self.settings['display']['buffer_size']
-        self.buffer_size.setValue(0 if buffer_size is None else buffer_size)
-        self.buffer_size.setSpecialValueText("Unlimited")
-        layout.addRow("Buffer Size (points):", self.buffer_size)
-        
+        self.buffer_size = QSpinBox(minimum=0, maximum=1000000, singleStep=100)
+        self.buffer_size.setSpecialValueText("Unlimited (Use with caution!)")
+        layout.addRow("Data Buffer Size (points):", self.buffer_size)
+
         tab.setLayout(layout)
         return tab
-        
+
     def create_file_tab(self):
-        """Create the file settings tab."""
         tab = QWidget()
         layout = QFormLayout()
-        
-        # Auto-save interval
-        self.auto_save_interval = QSpinBox()
-        self.auto_save_interval.setRange(1, 3600)
-        self.auto_save_interval.setSingleStep(10)
-        self.auto_save_interval.setValue(self.settings['file']['auto_save_interval'])
-        layout.addRow("Auto-save Interval (s):", self.auto_save_interval)
-        
-        # Data directory
+
+        self.auto_save_interval = QSpinBox(minimum=1, maximum=3600, singleStep=10, suffix=" s")
+        layout.addRow("Auto-save Interval:", self.auto_save_interval)
+
         self.data_directory = QLineEdit()
-        self.data_directory.setText(self.settings['file']['data_directory'])
-        
-        self.browse_button = QPushButton("Browse...")
+        self.browse_button = QPushButton(QIcon.fromTheme("folder-open"), "Browse...")
         self.browse_button.clicked.connect(self.browse_directory)
-        
         dir_layout = QHBoxLayout()
         dir_layout.addWidget(self.data_directory)
         dir_layout.addWidget(self.browse_button)
-        
         layout.addRow("Data Directory:", dir_layout)
-        
+
         tab.setLayout(layout)
         return tab
-        
-    def browse_directory(self):
-        """Open a directory browser dialog."""
-        current_dir = self.data_directory.text()
-        directory = QFileDialog.getExistingDirectory(
-            self, "Select Data Directory", current_dir
-        )
-        
-        if directory:
-            self.data_directory.setText(directory)
-            
-    def detect_gpib_devices(self, gpib_field):
-        """Detect and list available GPIB devices."""
-        try:
-            rm = pyvisa.ResourceManager()
-            resources = rm.list_resources()
-            
-            if not resources:
-                QMessageBox.warning(self, "GPIB Detection", "No GPIB or other instruments detected!")
-                return
-                
-            # Create dialog to select from available devices
-            dialog = QDialog(self)
-            dialog.setWindowTitle("Select GPIB Device")
-            
-            layout = QVBoxLayout()
-            
-            # Create list of radio buttons
-            button_group = QButtonGroup(dialog)
-            
-            for i, resource in enumerate(resources):
-                radio = QRadioButton(resource)
-                if resource == gpib_field.text():
-                    radio.setChecked(True)
-                button_group.addButton(radio, i)
-                layout.addWidget(radio)
-                
-            # Create buttons
-            button_box = QHBoxLayout()
-            select_button = QPushButton("Select")
-            cancel_button = QPushButton("Cancel")
-            
-            select_button.clicked.connect(dialog.accept)
-            cancel_button.clicked.connect(dialog.reject)
-            
-            button_box.addStretch()
-            button_box.addWidget(select_button)
-            button_box.addWidget(cancel_button)
-            
-            layout.addLayout(button_box)
-            dialog.setLayout(layout)
-            
-            # Show dialog
-            if dialog.exec_():
-                selected_button = button_group.checkedButton()
-                if selected_button:
-                    gpib_field.setText(selected_button.text())
-        
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error detecting GPIB devices: {str(e)}")
-            
+
+    def load_settings(self):
+        """Load current settings into the UI widgets."""
+        # Measurement Tab
+        m_cfg = self.settings['measurement']
+        self.gpib_address.setText(m_cfg['gpib_address'])
+        self.sampling_rate.setValue(m_cfg['sampling_rate'])
+        self.nplc.setValue(m_cfg['nplc'])
+        self.settling_time.setValue(m_cfg['settling_time'])
+
+        self.res_test_current.setValue(m_cfg['res_test_current'])
+        self.res_voltage_compliance.setValue(m_cfg['res_voltage_compliance'])
+        self.res_measurement_type.setCurrentText(m_cfg['res_measurement_type'])
+        self.res_auto_range.setChecked(m_cfg['res_auto_range'])
+
+        self.vsource_voltage.setValue(m_cfg['vsource_voltage'])
+        self.vsource_current_compliance.setValue(m_cfg['vsource_current_compliance'])
+        self.vsource_current_range_auto.setChecked(m_cfg['vsource_current_range_auto'])
+
+        self.isource_current.setValue(m_cfg['isource_current'])
+        self.isource_voltage_compliance.setValue(m_cfg['isource_voltage_compliance'])
+        self.isource_voltage_range_auto.setChecked(m_cfg['isource_voltage_range_auto'])
+
+        # Display Tab
+        d_cfg = self.settings['display']
+        self.enable_plot.setChecked(d_cfg['enable_plot'])
+        self.plot_update_interval.setValue(d_cfg['plot_update_interval'])
+        self.plot_color_r.setCurrentText(d_cfg['plot_color_r'])
+        self.plot_color_v.setCurrentText(d_cfg['plot_color_v'])
+        self.plot_color_i.setCurrentText(d_cfg['plot_color_i'])
+        self.plot_width.setValue(d_cfg['plot_figsize'][0])
+        self.plot_height.setValue(d_cfg['plot_figsize'][1])
+        buffer_size = d_cfg['buffer_size']
+        self.buffer_size.setValue(0 if buffer_size is None or buffer_size <= 0 else buffer_size)
+
+        # File Tab
+        f_cfg = self.settings['file']
+        self.auto_save_interval.setValue(f_cfg['auto_save_interval'])
+        self.data_directory.setText(f_cfg['data_directory'])
+
     def save_settings(self):
-        """Save the settings and close the dialog."""
-        # Update settings dictionary
-        
-        # Resistance mode settings
-        self.settings['resistance_mode']['test_current'] = self.res_test_current.value()
-        self.settings['resistance_mode']['voltage_compliance'] = self.res_voltage_compliance.value()
-        self.settings['resistance_mode']['sampling_rate'] = self.res_sampling_rate.value()
-        self.settings['resistance_mode']['auto_range'] = self.res_auto_range.isChecked()
-        self.settings['resistance_mode']['nplc'] = self.res_nplc.value()
-        self.settings['resistance_mode']['settling_time'] = self.res_settling_time.value()
-        self.settings['resistance_mode']['measurement_type'] = self.res_measurement_type.currentText()
-        self.settings['resistance_mode']['gpib_address'] = self.res_gpib_address.text()
-        
-        # Voltage mode settings
-        self.settings['voltage_mode']['voltage'] = self.volt_voltage.value()
-        self.settings['voltage_mode']['current_compliance'] = self.volt_current_compliance.value()
-        self.settings['voltage_mode']['duration'] = self.volt_duration.value()
-        self.settings['voltage_mode']['sampling_rate'] = self.volt_sampling_rate.value()
-        self.settings['voltage_mode']['auto_range'] = self.volt_auto_range.isChecked()
-        self.settings['voltage_mode']['nplc'] = self.volt_nplc.value()
-        self.settings['voltage_mode']['settling_time'] = self.volt_settling_time.value()
-        self.settings['voltage_mode']['gpib_address'] = self.volt_gpib_address.text()
-        
-        # Current mode settings
-        self.settings['current_mode']['current'] = self.curr_current.value()
-        self.settings['current_mode']['voltage_compliance'] = self.curr_voltage_compliance.value()
-        self.settings['current_mode']['duration'] = self.curr_duration.value()
-        self.settings['current_mode']['sampling_rate'] = self.curr_sampling_rate.value()
-        self.settings['current_mode']['auto_range'] = self.curr_auto_range.isChecked()
-        self.settings['current_mode']['nplc'] = self.curr_nplc.value()
-        self.settings['current_mode']['settling_time'] = self.curr_settling_time.value()
-        self.settings['current_mode']['gpib_address'] = self.curr_gpib_address.text()
-        
-        # Display settings
-        self.settings['display']['enable_plot'] = self.enable_plot.isChecked()
-        self.settings['display']['plot_update_interval'] = self.plot_update_interval.value()
-        self.settings['display']['plot_colors'] = {
-            'resistance': self.resistance_color.currentText(),
-            'voltage': self.voltage_color.currentText(),
-            'current': self.current_color.currentText()
-        }
-        self.settings['display']['plot_figsize'] = [self.plot_width.value(), self.plot_height.value()]
-        buffer_size = self.buffer_size.value()
-        self.settings['display']['buffer_size'] = None if buffer_size == 0 else buffer_size
-        
-        # File settings
-        self.settings['file']['auto_save_interval'] = self.auto_save_interval.value()
-        self.settings['file']['data_directory'] = self.data_directory.text()
-        
-        # Save settings to config
+        """Gather settings from UI and save them."""
+        # Measurement Tab
+        m_cfg = self.settings['measurement'] # Get reference to modify
+        m_cfg['gpib_address'] = self.gpib_address.text()
+        m_cfg['sampling_rate'] = self.sampling_rate.value()
+        m_cfg['nplc'] = self.nplc.value()
+        m_cfg['settling_time'] = self.settling_time.value()
+
+        m_cfg['res_test_current'] = self.res_test_current.value()
+        m_cfg['res_voltage_compliance'] = self.res_voltage_compliance.value()
+        m_cfg['res_measurement_type'] = self.res_measurement_type.currentText()
+        m_cfg['res_auto_range'] = self.res_auto_range.isChecked()
+
+        m_cfg['vsource_voltage'] = self.vsource_voltage.value()
+        m_cfg['vsource_current_compliance'] = self.vsource_current_compliance.value()
+        m_cfg['vsource_current_range_auto'] = self.vsource_current_range_auto.isChecked()
+
+        m_cfg['isource_current'] = self.isource_current.value()
+        m_cfg['isource_voltage_compliance'] = self.isource_voltage_compliance.value()
+        m_cfg['isource_voltage_range_auto'] = self.isource_voltage_range_auto.isChecked()
+
+        # Display Tab
+        d_cfg = self.settings['display']
+        d_cfg['enable_plot'] = self.enable_plot.isChecked()
+        d_cfg['plot_update_interval'] = self.plot_update_interval.value()
+        d_cfg['plot_color_r'] = self.plot_color_r.currentText()
+        d_cfg['plot_color_v'] = self.plot_color_v.currentText()
+        d_cfg['plot_color_i'] = self.plot_color_i.currentText()
+        d_cfg['plot_figsize'] = [self.plot_width.value(), self.plot_height.value()]
+        buffer_val = self.buffer_size.value()
+        d_cfg['buffer_size'] = None if buffer_val == 0 else buffer_val
+
+        # File Tab
+        f_cfg = self.settings['file']
+        f_cfg['auto_save_interval'] = self.auto_save_interval.value()
+        f_cfg['data_directory'] = self.data_directory.text()
+
+        # Save using ConfigManager
         if self.username:
             self.config_manager.update_user_settings(self.username, self.settings)
         else:
             self.config_manager.update_global_settings(self.settings)
-            
-        # Accept dialog
-        self.accept()
 
-# ----- User Selection Dialog -----
+        QMessageBox.information(self, "Settings Saved", "Settings have been updated successfully.")
+        self.accept() # Close dialog
+
+    def browse_directory(self):
+        current_dir = self.data_directory.text()
+        if not os.path.isdir(current_dir):
+             current_dir = os.path.expanduser("~") # Default to home dir
+
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select Data Directory", current_dir
+        )
+        if directory:
+            self.data_directory.setText(directory)
+
+    def detect_gpib_devices(self):
+        try:
+            self.setEnabled(False) # Disable dialog during scan
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            rm = pyvisa.ResourceManager()
+            resources = rm.list_resources()
+            QApplication.restoreOverrideCursor()
+            self.setEnabled(True)
+
+            if not resources:
+                QMessageBox.information(self, "GPIB Detection", "No VISA instruments detected.")
+                return
+
+            # Simple selection dialog
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Select GPIB Device")
+            layout = QVBoxLayout()
+            list_widget = QComboBox(dialog)
+            list_widget.addItems(resources)
+            current_addr = self.gpib_address.text()
+            if current_addr in resources:
+                 list_widget.setCurrentText(current_addr)
+
+            layout.addWidget(QLabel("Select the instrument address:"))
+            layout.addWidget(list_widget)
+
+            button_box = QHBoxLayout()
+            select_button = QPushButton("Select")
+            cancel_button = QPushButton("Cancel")
+            select_button.clicked.connect(dialog.accept)
+            cancel_button.clicked.connect(dialog.reject)
+            button_box.addStretch()
+            button_box.addWidget(select_button)
+            button_box.addWidget(cancel_button)
+            layout.addLayout(button_box)
+            dialog.setLayout(layout)
+
+            if dialog.exec_():
+                self.gpib_address.setText(list_widget.currentText())
+
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            self.setEnabled(True)
+            QMessageBox.critical(self, "Error", f"Error detecting GPIB devices: {str(e)}")
+
+# ----- User Selection Dialog (Unchanged) -----
 class UserSelectionDialog(QDialog):
     """Dialog for selecting or creating a user."""
     def __init__(self, config_manager, parent=None):
         super().__init__(parent)
         self.config_manager = config_manager
         self.selected_user = None
-        
+
         self.setWindowTitle("User Selection")
         self.init_ui()
-        
+
     def init_ui(self):
         """Initialize the UI."""
         layout = QVBoxLayout()
-        
+
         # Get users and last user
         users = self.config_manager.get_users()
         last_user = self.config_manager.get_last_user()
-        
+
         # Create user list
         self.user_combo = QComboBox()
         if users:
             self.user_combo.addItems(users)
             if last_user and last_user in users:
                 self.user_combo.setCurrentText(last_user)
-                
+        else:
+             layout.addWidget(QLabel("No users found. Please create one."))
+
         # Create new user section
         new_user_group = QGroupBox("Create New User")
         new_user_layout = QHBoxLayout()
         self.new_user_input = QLineEdit()
-        self.create_user_button = QPushButton("Create")
+        self.new_user_input.setPlaceholderText("Enter new username")
+        self.create_user_button = QPushButton("Create && Select")
         self.create_user_button.clicked.connect(self.create_new_user)
-        
+
+        new_user_layout.addWidget(QLabel("Name:"))
         new_user_layout.addWidget(self.new_user_input)
         new_user_layout.addWidget(self.create_user_button)
         new_user_group.setLayout(new_user_layout)
-        
+
         # Create buttons
-        self.select_button = QPushButton("Select User")
+        self.select_button = QPushButton("Select Existing User")
         self.select_button.clicked.connect(self.select_user)
         self.select_button.setEnabled(len(users) > 0)
-        
-        self.settings_button = QPushButton("Global Settings")
-        self.settings_button.clicked.connect(self.open_settings)
-        
+
+        self.settings_button = QPushButton("Global Settings...")
+        self.settings_button.clicked.connect(self.open_global_settings)
+
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.reject)
-        
+
         # Create button layout
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.settings_button)
         button_layout.addStretch()
         button_layout.addWidget(self.select_button)
         button_layout.addWidget(self.cancel_button)
-        
+
         # Add widgets to layout
         if users:
-            layout.addWidget(QLabel("Select User:"))
+            layout.addWidget(QLabel("Select Existing User:"))
             layout.addWidget(self.user_combo)
-            
+
         layout.addWidget(new_user_group)
         layout.addLayout(button_layout)
-        
+
         self.setLayout(layout)
-        
+        self.new_user_input.setFocus() # Focus on new user input initially
+
     def create_new_user(self):
         """Create a new user."""
         username = self.new_user_input.text().strip()
-        
+
         if not username:
-            QMessageBox.warning(self, "Invalid Username", "Please enter a username.")
+            QMessageBox.warning(self, "Invalid Username", "Please enter a valid username.")
             return
-            
+
+        if username in self.config_manager.get_users():
+             QMessageBox.warning(self, "User Exists", f"User '{username}' already exists. Please choose a different name or select the existing user.")
+             return
+
         # Add user to config
         self.config_manager.add_user(username)
         self.selected_user = username
-        
-        # Accept dialog
-        self.accept()
-        
+        self.config_manager.set_last_user(self.selected_user) # Set as last user
+
+        QMessageBox.information(self, "User Created", f"User '{username}' created and selected.")
+        self.accept() # Accept dialog
+
     def select_user(self):
         """Select an existing user."""
         if self.user_combo.count() == 0:
-            QMessageBox.warning(self, "No Users", "Please create a new user first.")
+            QMessageBox.warning(self, "No Users", "No existing users to select.")
             return
-            
+
         self.selected_user = self.user_combo.currentText()
         self.config_manager.set_last_user(self.selected_user)
-        
-        # Accept dialog
-        self.accept()
-        
-    def open_settings(self):
+
+        self.accept() # Accept dialog
+
+    def open_global_settings(self):
         """Open the global settings dialog."""
+        # This dialog is modal, so it blocks the user selection dialog
         dialog = SettingsDialog(self.config_manager, parent=self)
         dialog.exec_()
+        # No action needed after global settings close here
 
-# ----- Main Application Window -----
-class EnhancedResistanceMeterApp(QMainWindow):
-    """Enhanced application window with tabbed interface for different measurement modes."""
+
+# ----- Main Application Window (Modified for Tabs) -----
+class ResistanceMeterApp(QMainWindow):
+    """Main application window for ResistaMet with multiple modes."""
     def __init__(self):
         super().__init__()
-        
+
         self.config_manager = ConfigManager()
-        self.data_buffer = EnhancedDataBuffer()
+        self.data_buffers = { # Separate buffer for each mode
+             'resistance': DataBuffer(),
+             'source_v': DataBuffer(),
+             'source_i': DataBuffer()
+        }
         self.measurement_worker = None
-        self.plot_timer = None
+        self.plot_timer = QTimer(self)
+        self.plot_timer.timeout.connect(self.update_active_plot)
+
         self.current_user = None
         self.user_settings = None
-        self.current_mode = "resistance"
-        self.plot_data_type = "resistance"
-        
-        self.setWindowTitle(f"Enhanced ResistaMet GUI v{__version__}")
-        self.setMinimumSize(1000, 700)
-        
+        self.measurement_running = False
+        self.active_mode = None # Track which mode's worker is running
+
+        self.setWindowTitle(f"ResistaMet GUI v{__version__}")
+        self.setMinimumSize(900, 700)
+        self.setWindowIcon(QIcon.fromTheme("accessories-voltmeter")) # Use a standard icon
+
         self.init_ui()
-        
-        # Select user on startup
-        self.select_user()
-        
+        self.select_user() # Prompt for user on startup
+
     def init_ui(self):
         """Initialize the UI."""
-        # Create central widget with tab interface
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
-        
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+
+        # --- Top Section: User and Sample ---
+        top_panel = QHBoxLayout()
+        user_group = QGroupBox("User")
+        user_layout = QHBoxLayout()
+        self.user_label = QLabel("User: <None Selected>")
+        self.change_user_button = QPushButton(QIcon.fromTheme("system-users"), "Change User")
+        self.change_user_button.clicked.connect(self.select_user)
+        user_layout.addWidget(self.user_label)
+        user_layout.addWidget(self.change_user_button)
+        user_group.setLayout(user_layout)
+
+        sample_group = QGroupBox("Sample")
+        sample_layout = QHBoxLayout()
+        self.sample_input = QLineEdit()
+        self.sample_input.setPlaceholderText("Enter sample name before starting")
+        sample_layout.addWidget(self.sample_input)
+        sample_group.setLayout(sample_layout)
+
+        top_panel.addWidget(user_group)
+        top_panel.addWidget(sample_group, 1) # Allow sample group to stretch
+        main_layout.addLayout(top_panel)
+
+        # --- Main Tabbed Interface ---
+        self.main_tabs = QTabWidget()
+        self.main_tabs.currentChanged.connect(self.handle_tab_change)
+
         # Create tabs
-        self.resistance_tab = self.create_resistance_tab()
-        self.voltage_tab = self.create_voltage_tab()
-        self.current_tab = self.create_current_tab()
-        
-        # Add tabs
-        self.tabs.addTab(self.resistance_tab, "Resistance Measurement")
-        self.tabs.addTab(self.voltage_tab, "Voltage Application")
-        self.tabs.addTab(self.current_tab, "Current Application")
-        
-        # Connect tab change signal
-        self.tabs.currentChanged.connect(self.on_tab_changed)
-        
-        # Create status bar
+        self.tab_resistance = self.create_resistance_tab()
+        self.tab_voltage_source = self.create_voltage_source_tab()
+        self.tab_current_source = self.create_current_source_tab()
+
+        self.main_tabs.addTab(self.tab_resistance, "Resistance Measurement")
+        self.main_tabs.addTab(self.tab_voltage_source, "Voltage Source")
+        self.main_tabs.addTab(self.tab_current_source, "Current Source")
+
+        main_layout.addWidget(self.main_tabs, 1) # Allow tabs to stretch vertically
+
+        # --- Status Display ---
+        status_group = QGroupBox("Status Log")
+        status_layout = QVBoxLayout()
+        self.status_display = QTextEdit()
+        self.status_display.setReadOnly(True)
+        self.status_display.setAcceptRichText(True) # Allow basic HTML/colors
+        self.status_display.setMaximumHeight(150) # Limit height
+        status_layout.addWidget(self.status_display)
+        status_group.setLayout(status_layout)
+        main_layout.addWidget(status_group)
+
+        # --- Status Bar ---
         self.statusBar().showMessage("Ready")
-        
-        # Create menu bar
+
+        # --- Menu Bar ---
+        self.create_menus()
+
+        # --- Keyboard Shortcuts ---
+        self.shortcut_max = QShortcut(Qt.Key_M, self)
+        self.shortcut_max.activated.connect(self.mark_max_compression_shortcut)
+        self.shortcut_max.setEnabled(False) # Disabled initially
+
+    def create_tab_widget(self, mode: str) -> QWidget:
+        """Helper to create the basic structure of a measurement tab."""
+        tab_widget = QWidget()
+        tab_layout = QVBoxLayout(tab_widget)
+
+        # --- Parameter Inputs ---
+        param_group = QGroupBox("Parameters")
+        param_layout = QFormLayout()
+        param_group.setLayout(param_layout)
+        # Widgets will be added by specific create_*_tab methods
+
+        # --- Plot Area ---
+        plot_group = QGroupBox("Real-time Data")
+        plot_layout = QVBoxLayout()
+        canvas = MplCanvas(self, width=8, height=5, dpi=90) # Create canvas instance
+        toolbar = NavigationToolbar(canvas, self)
+        plot_layout.addWidget(toolbar)
+        plot_layout.addWidget(canvas)
+        plot_group.setLayout(plot_layout)
+
+        # --- Controls ---
+        control_group = QGroupBox("Control")
+        control_layout = QHBoxLayout()
+        start_button = QPushButton(QIcon.fromTheme("media-playback-start"), "Start")
+        stop_button = QPushButton(QIcon.fromTheme("media-playback-stop"), "Stop")
+        stop_button.setEnabled(False)
+        # pause_button = QPushButton(QIcon.fromTheme("media-playback-pause"), "Pause") # Add if needed per mode
+        # pause_button.setEnabled(False)
+        # pause_button.setCheckable(True)
+        status_label = QLabel("Status: Idle") # Compliance/status indicator for the tab
+        status_label.setStyleSheet("font-weight: bold;")
+
+        control_layout.addWidget(start_button)
+        control_layout.addWidget(stop_button)
+        # control_layout.addWidget(pause_button)
+        control_layout.addStretch()
+        control_layout.addWidget(status_label)
+        control_group.setLayout(control_layout)
+
+
+        tab_layout.addWidget(param_group)
+        tab_layout.addWidget(plot_group, 1) # Allow plot to stretch
+        tab_layout.addWidget(control_group)
+
+        # Store references to widgets within the tab_widget itself for easy access
+        tab_widget.mode = mode
+        tab_widget.param_layout = param_layout
+        tab_widget.canvas = canvas
+        tab_widget.start_button = start_button
+        tab_widget.stop_button = stop_button
+        # tab_widget.pause_button = pause_button
+        tab_widget.status_label = status_label
+
+        return tab_widget
+
+    def create_resistance_tab(self):
+        widget = self.create_tab_widget('resistance')
+        layout = widget.param_layout
+
+        # Add specific widgets for Resistance mode
+        widget.res_test_current = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=1.0, singleStep=1e-3, suffix=" A")
+        layout.addRow("Test Current:", widget.res_test_current)
+        widget.res_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=100.0, singleStep=0.1, suffix=" V")
+        layout.addRow("Voltage Compliance:", widget.res_voltage_compliance)
+        widget.res_measurement_type = QComboBox()
+        widget.res_measurement_type.addItems(["2-wire", "4-wire"])
+        layout.addRow("Measurement Type:", widget.res_measurement_type)
+        widget.res_auto_range = QCheckBox("Auto Range Resistance")
+        layout.addRow(widget.res_auto_range)
+        widget.mark_max_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Max Compression (M)")
+        widget.mark_max_button.setEnabled(False)
+        layout.addRow(widget.mark_max_button)
+
+
+        # Connect signals for this tab
+        widget.start_button.clicked.connect(lambda: self.start_measurement('resistance'))
+        widget.stop_button.clicked.connect(self.stop_current_measurement)
+        widget.mark_max_button.clicked.connect(self.mark_max_compression_shortcut)
+        # widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
+
+        return widget
+
+    def create_voltage_source_tab(self):
+        widget = self.create_tab_widget('source_v')
+        layout = widget.param_layout
+
+        # Add specific widgets for V Source mode
+        widget.vsource_voltage = QDoubleSpinBox(decimals=3, minimum=-100.0, maximum=100.0, singleStep=0.1, suffix=" V")
+        layout.addRow("Source Voltage:", widget.vsource_voltage)
+        widget.vsource_current_compliance = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=1.0, singleStep=1e-3, suffix=" A")
+        layout.addRow("Current Compliance:", widget.vsource_current_compliance)
+        widget.vsource_current_range_auto = QCheckBox("Auto Range Current Measurement")
+        layout.addRow(widget.vsource_current_range_auto)
+
+        # Connect signals
+        widget.start_button.clicked.connect(lambda: self.start_measurement('source_v'))
+        widget.stop_button.clicked.connect(self.stop_current_measurement)
+        # widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
+
+        return widget
+
+    def create_current_source_tab(self):
+        widget = self.create_tab_widget('source_i')
+        layout = widget.param_layout
+
+        # Add specific widgets for I Source mode
+        widget.isource_current = QDoubleSpinBox(decimals=6, minimum=-1.0, maximum=1.0, singleStep=1e-3, suffix=" A")
+        layout.addRow("Source Current:", widget.isource_current)
+        widget.isource_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=100.0, singleStep=0.1, suffix=" V")
+        layout.addRow("Voltage Compliance:", widget.isource_voltage_compliance)
+        widget.isource_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
+        layout.addRow(widget.isource_voltage_range_auto)
+
+        # Connect signals
+        widget.start_button.clicked.connect(lambda: self.start_measurement('source_i'))
+        widget.stop_button.clicked.connect(self.stop_current_measurement)
+        # widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
+
+        return widget
+
+    def create_menus(self):
         menu_bar = self.menuBar()
-        
-        # File menu
-        file_menu = menu_bar.addMenu("File")
-        
-        save_plot_action = QAction("Save Plot...", self)
-        save_plot_action.triggered.connect(self.save_plot)
-        
-        exit_action = QAction("Exit", self)
+        # File Menu
+        file_menu = menu_bar.addMenu("&File")
+        save_plot_action = QAction(QIcon.fromTheme("document-save"), "Save Plot...", self)
+        save_plot_action.triggered.connect(self.save_active_plot)
+        exit_action = QAction(QIcon.fromTheme("application-exit"), "Exit", self)
         exit_action.triggered.connect(self.close)
-        
         file_menu.addAction(save_plot_action)
         file_menu.addSeparator()
         file_menu.addAction(exit_action)
-        
-        # Settings menu
-        settings_menu = menu_bar.addMenu("Settings")
-        
-        user_settings_action = QAction("User Settings...", self)
+
+        # Settings Menu
+        settings_menu = menu_bar.addMenu("&Settings")
+        user_settings_action = QAction(QIcon.fromTheme("preferences-system"), "User Settings...", self)
         user_settings_action.triggered.connect(self.open_user_settings)
-        
-        global_settings_action = QAction("Global Settings...", self)
+        global_settings_action = QAction(QIcon.fromTheme("preferences-system-windows"), "Global Settings...", self)
         global_settings_action.triggered.connect(self.open_global_settings)
-        
         settings_menu.addAction(user_settings_action)
         settings_menu.addAction(global_settings_action)
-        
-        # View menu
-        view_menu = menu_bar.addMenu("View")
-        
-        view_resistance_action = QAction("Show Resistance", self)
-        view_resistance_action.triggered.connect(lambda: self.change_plot_data_type("resistance"))
-        
-        view_voltage_action = QAction("Show Voltage", self)
-        view_voltage_action.triggered.connect(lambda: self.change_plot_data_type("voltage"))
-        
-        view_current_action = QAction("Show Current", self)
-        view_current_action.triggered.connect(lambda: self.change_plot_data_type("current"))
-        
-        view_menu.addAction(view_resistance_action)
-        view_menu.addAction(view_voltage_action)
-        view_menu.addAction(view_current_action)
-        
-        # Help menu
-        help_menu = menu_bar.addMenu("Help")
-        
-        about_action = QAction("About", self)
+
+        # Help Menu
+        help_menu = menu_bar.addMenu("&Help")
+        about_action = QAction(QIcon.fromTheme("help-about"), "About", self)
         about_action.triggered.connect(self.show_about)
-        
         help_menu.addAction(about_action)
-        
-    def create_resistance_tab(self):
-        """Create the resistance measurement tab."""
-        tab = QWidget()
-        layout = QVBoxLayout()
-        
-        # Top section with user and sample info
-        top_layout = QHBoxLayout()
-        
-        # User info
-        user_group = QGroupBox("User")
-        user_layout = QHBoxLayout()
-        self.res_user_label = QLabel("No user selected")
-        self.res_change_user_button = QPushButton("Change User")
-        self.res_change_user_button.clicked.connect(self.select_user)
-        
-        user_layout.addWidget(self.res_user_label)
-        user_layout.addWidget(self.res_change_user_button)
-        user_group.setLayout(user_layout)
-        
-        # Sample info
-        sample_group = QGroupBox("Sample")
-        sample_layout = QHBoxLayout()
-        self.res_sample_input = QLineEdit()
-        self.res_sample_input.setPlaceholderText("Enter sample name")
-        
-        sample_layout.addWidget(self.res_sample_input)
-        sample_group.setLayout(sample_layout)
-        
-        # Measurement type and current display
-        info_group = QGroupBox("Measurement Info")
-        info_layout = QHBoxLayout()
-        self.res_measurement_type_label = QLabel("Type: --")
-        self.res_test_current_label = QLabel("Current: -- mA")
-        
-        info_layout.addWidget(self.res_measurement_type_label)
-        info_layout.addWidget(self.res_test_current_label)
-        info_group.setLayout(info_layout)
-        
-        top_layout.addWidget(user_group)
-        top_layout.addWidget(sample_group)
-        top_layout.addWidget(info_group)
-        
-        # Create plot canvas (shared across tabs)
-        if not hasattr(self, 'canvas'):
-            self.canvas = EnhancedMplCanvas(self, width=10, height=6, dpi=100)
-            self.toolbar = NavigationToolbar(self.canvas, self)
-            
-        plot_layout = QVBoxLayout()
-        plot_layout.addWidget(self.toolbar)
-        plot_layout.addWidget(self.canvas)
-        
-        # Control panel
-        control_panel = QGroupBox("Controls")
-        control_layout = QVBoxLayout()
-        
-        # Buttons
-        button_layout = QHBoxLayout()
-        
-        self.res_start_button = QPushButton("Start Measurement")
-        self.res_start_button.clicked.connect(self.start_resistance_measurement)
-        
-        self.res_pause_button = QPushButton("Pause")
-        self.res_pause_button.clicked.connect(self.pause_measurement)
-        self.res_pause_button.setEnabled(False)
-        
-        self.res_mark_button = QPushButton("Mark Point (M)")
-        self.res_mark_button.clicked.connect(lambda: self.mark_event("MARKED_POINT"))
-        self.res_mark_button.setEnabled(False)
-        
-        self.res_stop_button = QPushButton("Stop Measurement")
-        self.res_stop_button.clicked.connect(self.stop_measurement)
-        self.res_stop_button.setEnabled(False)
-        
-        button_layout.addWidget(self.res_start_button)
-        button_layout.addWidget(self.res_pause_button)
-        button_layout.addWidget(self.res_mark_button)
-        button_layout.addWidget(self.res_stop_button)
-        
-        # Settings button
-        settings_layout = QHBoxLayout()
-        
-        self.res_settings_button = QPushButton("Settings")
-        self.res_settings_button.clicked.connect(self.open_user_settings)
-        
-        settings_layout.addStretch()
-        settings_layout.addWidget(self.res_settings_button)
-        
-        # Add layouts to control panel
-        control_layout.addLayout(button_layout)
-        control_layout.addLayout(settings_layout)
-        
-        control_panel.setLayout(control_layout)
-        
-        # Create status display (shared across tabs)
-        if not hasattr(self, 'status_display'):
-            self.status_display = QTextEdit()
-            self.status_display.setReadOnly(True)
-            self.status_display.setMaximumHeight(100)
-            
-        # Add widgets to main layout
-        layout.addLayout(top_layout)
-        layout.addLayout(plot_layout, stretch=1)
-        layout.addWidget(control_panel)
-        layout.addWidget(QLabel("Status:"))
-        layout.addWidget(self.status_display)
-        
-        tab.setLayout(layout)
-        return tab
-        
-    def create_voltage_tab(self):
-        """Create the voltage application tab."""
-        tab = QWidget()
-        layout = QVBoxLayout()
-        
-        # Top section with user and sample info
-        top_layout = QHBoxLayout()
-        
-        # User info
-        user_group = QGroupBox("User")
-        user_layout = QHBoxLayout()
-        self.volt_user_label = QLabel("No user selected")
-        self.volt_change_user_button = QPushButton("Change User")
-        self.volt_change_user_button.clicked.connect(self.select_user)
-        
-        user_layout.addWidget(self.volt_user_label)
-        user_layout.addWidget(self.volt_change_user_button)
-        user_group.setLayout(user_layout)
-        
-        # Sample info
-        sample_group = QGroupBox("Sample")
-        sample_layout = QHBoxLayout()
-        self.volt_sample_input = QLineEdit()
-        self.volt_sample_input.setPlaceholderText("Enter sample name")
-        
-        sample_layout.addWidget(self.volt_sample_input)
-        sample_group.setLayout(sample_layout)
-        
-        # Voltage and compliance display
-        info_group = QGroupBox("Application Info")
-        info_layout = QVBoxLayout()
-        
-        voltage_layout = QHBoxLayout()
-        self.volt_voltage_label = QLabel("Voltage: -- V")
-        self.volt_compliance_label = QLabel("Compliance: -- mA")
-        voltage_layout.addWidget(self.volt_voltage_label)
-        voltage_layout.addWidget(self.volt_compliance_label)
-        
-        duration_layout = QHBoxLayout()
-        self.volt_duration_label = QLabel("Duration: -- hours")
-        duration_layout.addWidget(self.volt_duration_label)
-        duration_layout.addStretch()
-        
-        info_layout.addLayout(voltage_layout)
-        info_layout.addLayout(duration_layout)
-        info_group.setLayout(info_layout)
-        
-        top_layout.addWidget(user_group)
-        top_layout.addWidget(sample_group)
-        top_layout.addWidget(info_group)
-        
-        # Use shared canvas
-        plot_layout = QVBoxLayout()
-        plot_layout.addWidget(self.toolbar)
-        plot_layout.addWidget(self.canvas)
-        
-        # Control panel
-        control_panel = QGroupBox("Controls")
-        control_layout = QVBoxLayout()
-        
-        # Parameters
-        params_layout = QHBoxLayout()
-        
-        # Voltage
-        voltage_group = QGroupBox("Voltage (V)")
-        voltage_group_layout = QVBoxLayout()
-        self.volt_voltage_input = QDoubleSpinBox()
-        self.volt_voltage_input.setRange(-200.0, 200.0)
-        self.volt_voltage_input.setDecimals(3)
-        self.volt_voltage_input.setSingleStep(1.0)
-        self.volt_voltage_input.setValue(10.0)
-        voltage_group_layout.addWidget(self.volt_voltage_input)
-        voltage_group.setLayout(voltage_group_layout)
-        
-        # Compliance
-        compliance_group = QGroupBox("Current Compliance (mA)")
-        compliance_group_layout = QVBoxLayout()
-        self.volt_compliance_input = QDoubleSpinBox()
-        self.volt_compliance_input.setRange(0.001, 1000.0)
-        self.volt_compliance_input.setDecimals(3)
-        self.volt_compliance_input.setSingleStep(1.0)
-        self.volt_compliance_input.setValue(10.0)
-        compliance_group_layout.addWidget(self.volt_compliance_input)
-        compliance_group.setLayout(compliance_group_layout)
-        
-        # Duration
-        duration_group = QGroupBox("Duration (hours)")
-        duration_group_layout = QVBoxLayout()
-        self.volt_duration_input = QDoubleSpinBox()
-        self.volt_duration_input.setRange(0.01, 168.0)
-        self.volt_duration_input.setDecimals(2)
-        self.volt_duration_input.setSingleStep(0.5)
-        self.volt_duration_input.setValue(1.0)
-        duration_group_layout.addWidget(self.volt_duration_input)
-        duration_group.setLayout(duration_group_layout)
-        
-        params_layout.addWidget(voltage_group)
-        params_layout.addWidget(compliance_group)
-        params_layout.addWidget(duration_group)
-        
-        # Buttons
-        button_layout = QHBoxLayout()
-        
-        self.volt_start_button = QPushButton("Start Voltage Application")
-        self.volt_start_button.clicked.connect(self.start_voltage_application)
-        
-        self.volt_pause_button = QPushButton("Pause")
-        self.volt_pause_button.clicked.connect(self.pause_measurement)
-        self.volt_pause_button.setEnabled(False)
-        
-        self.volt_mark_button = QPushButton("Mark Event (M)")
-        self.volt_mark_button.clicked.connect(lambda: self.mark_event("VOLTAGE_EVENT"))
-        self.volt_mark_button.setEnabled(False)
-        
-        self.volt_stop_button = QPushButton("Stop Application")
-        self.volt_stop_button.clicked.connect(self.stop_measurement)
-        self.volt_stop_button.setEnabled(False)
-        
-        button_layout.addWidget(self.volt_start_button)
-        button_layout.addWidget(self.volt_pause_button)
-        button_layout.addWidget(self.volt_mark_button)
-        button_layout.addWidget(self.volt_stop_button)
-        
-        # Settings button
-        settings_layout = QHBoxLayout()
-        
-        self.volt_settings_button = QPushButton("Settings")
-        self.volt_settings_button.clicked.connect(self.open_user_settings)
-        
-        settings_layout.addStretch()
-        settings_layout.addWidget(self.volt_settings_button)
-        
-        # Add layouts to control panel
-        control_layout.addLayout(params_layout)
-        control_layout.addLayout(button_layout)
-        control_layout.addLayout(settings_layout)
-        
-        control_panel.setLayout(control_layout)
-        
-        # Add widgets to main layout
-        layout.addLayout(top_layout)
-        layout.addLayout(plot_layout, stretch=1)
-        layout.addWidget(control_panel)
-        layout.addWidget(QLabel("Status:"))
-        layout.addWidget(self.status_display)
-        
-        tab.setLayout(layout)
-        return tab
-        
-    def create_current_tab(self):
-        """Create the current application tab."""
-        tab = QWidget()
-        layout = QVBoxLayout()
-        
-        # Top section with user and sample info
-        top_layout = QHBoxLayout()
-        
-        # User info
-        user_group = QGroupBox("User")
-        user_layout = QHBoxLayout()
-        self.curr_user_label = QLabel("No user selected")
-        self.curr_user_label = QLabel("No user selected")
-        self.curr_change_user_button = QPushButton("Change User")
-        self.curr_change_user_button.clicked.connect(self.select_user)
-        
-        user_layout.addWidget(self.curr_user_label)
-        user_layout.addWidget(self.curr_change_user_button)
-        user_group.setLayout(user_layout)
-        
-        # Sample info
-        sample_group = QGroupBox("Sample")
-        sample_layout = QHBoxLayout()
-        self.curr_sample_input = QLineEdit()
-        self.curr_sample_input.setPlaceholderText("Enter sample name")
-        
-        sample_layout.addWidget(self.curr_sample_input)
-        sample_group.setLayout(sample_layout)
-        
-        # Current and compliance display
-        info_group = QGroupBox("Application Info")
-        info_layout = QVBoxLayout()
-        
-        current_layout = QHBoxLayout()
-        self.curr_current_label = QLabel("Current: -- mA")
-        self.curr_compliance_label = QLabel("Compliance: -- V")
-        current_layout.addWidget(self.curr_current_label)
-        current_layout.addWidget(self.curr_compliance_label)
-        
-        duration_layout = QHBoxLayout()
-        self.curr_duration_label = QLabel("Duration: -- hours")
-        duration_layout.addWidget(self.curr_duration_label)
-        duration_layout.addStretch()
-        
-        info_layout.addLayout(current_layout)
-        info_layout.addLayout(duration_layout)
-        info_group.setLayout(info_layout)
-        
-        top_layout.addWidget(user_group)
-        top_layout.addWidget(sample_group)
-        top_layout.addWidget(info_group)
-        
-        # Use shared canvas
-        plot_layout = QVBoxLayout()
-        plot_layout.addWidget(self.toolbar)
-        plot_layout.addWidget(self.canvas)
-        
-        # Control panel
-        control_panel = QGroupBox("Controls")
-        control_layout = QVBoxLayout()
-        
-        # Parameters
-        params_layout = QHBoxLayout()
-        
-        # Current
-        current_group = QGroupBox("Current (mA)")
-        current_group_layout = QVBoxLayout()
-        self.curr_current_input = QDoubleSpinBox()
-        self.curr_current_input.setRange(-1000.0, 1000.0)
-        self.curr_current_input.setDecimals(3)
-        self.curr_current_input.setSingleStep(1.0)
-        self.curr_current_input.setValue(1.0)
-        current_group_layout.addWidget(self.curr_current_input)
-        current_group.setLayout(current_group_layout)
-        
-        # Compliance
-        compliance_group = QGroupBox("Voltage Compliance (V)")
-        compliance_group_layout = QVBoxLayout()
-        self.curr_compliance_input = QDoubleSpinBox()
-        self.curr_compliance_input.setRange(0.1, 200.0)
-        self.curr_compliance_input.setDecimals(3)
-        self.curr_compliance_input.setSingleStep(1.0)
-        self.curr_compliance_input.setValue(10.0)
-        compliance_group_layout.addWidget(self.curr_compliance_input)
-        compliance_group.setLayout(compliance_group_layout)
-        
-        # Duration
-        duration_group = QGroupBox("Duration (hours)")
-        duration_group_layout = QVBoxLayout()
-        self.curr_duration_input = QDoubleSpinBox()
-        self.curr_duration_input.setRange(0.01, 168.0)
-        self.curr_duration_input.setDecimals(2)
-        self.curr_duration_input.setSingleStep(0.5)
-        self.curr_duration_input.setValue(1.0)
-        duration_group_layout.addWidget(self.curr_duration_input)
-        duration_group.setLayout(duration_group_layout)
-        
-        params_layout.addWidget(current_group)
-        params_layout.addWidget(compliance_group)
-        params_layout.addWidget(duration_group)
-        
-        # Buttons
-        button_layout = QHBoxLayout()
-        
-        self.curr_start_button = QPushButton("Start Current Application")
-        self.curr_start_button.clicked.connect(self.start_current_application)
-        
-        self.curr_pause_button = QPushButton("Pause")
-        self.curr_pause_button.clicked.connect(self.pause_measurement)
-        self.curr_pause_button.setEnabled(False)
-        
-        self.curr_mark_button = QPushButton("Mark Event (M)")
-        self.curr_mark_button.clicked.connect(lambda: self.mark_event("CURRENT_EVENT"))
-        self.curr_mark_button.setEnabled(False)
-        
-        self.curr_stop_button = QPushButton("Stop Application")
-        self.curr_stop_button.clicked.connect(self.stop_measurement)
-        self.curr_stop_button.setEnabled(False)
-        
-        button_layout.addWidget(self.curr_start_button)
-        button_layout.addWidget(self.curr_pause_button)
-        button_layout.addWidget(self.curr_mark_button)
-        button_layout.addWidget(self.curr_stop_button)
-        
-        # Settings button
-        settings_layout = QHBoxLayout()
-        
-        self.curr_settings_button = QPushButton("Settings")
-        self.curr_settings_button.clicked.connect(self.open_user_settings)
-        
-        settings_layout.addStretch()
-        settings_layout.addWidget(self.curr_settings_button)
-        
-        # Add layouts to control panel
-        control_layout.addLayout(params_layout)
-        control_layout.addLayout(button_layout)
-        control_layout.addLayout(settings_layout)
-        
-        control_panel.setLayout(control_layout)
-        
-        # Add widgets to main layout
-        layout.addLayout(top_layout)
-        layout.addLayout(plot_layout, stretch=1)
-        layout.addWidget(control_panel)
-        layout.addWidget(QLabel("Status:"))
-        layout.addWidget(self.status_display)
-        
-        tab.setLayout(layout)
-        return tab
-        
-    def on_tab_changed(self, index):
-        """Handle tab change."""
-        if index == 0:
-            self.current_mode = "resistance"
-        elif index == 1:
-            self.current_mode = "voltage"
-        elif index == 2:
-            self.current_mode = "current"
-            
-        # Update plot based on the selected mode
-        self.update_plot()
-        
+
     def select_user(self):
-        """Open user selection dialog."""
+        """Open user selection dialog and update UI."""
+        # If a measurement is running, prevent changing user
+        if self.measurement_running:
+            QMessageBox.warning(self, "Action Denied", "Cannot change user while a measurement is running.")
+            return
+
         dialog = UserSelectionDialog(self.config_manager, self)
-        
         if dialog.exec_():
             username = dialog.selected_user
-            
             if username:
                 self.current_user = username
+                self.user_label.setText(f"User: <b>{username}</b>")
                 self.user_settings = self.config_manager.get_user_settings(username)
-                
-                # Update user labels
-                self.res_user_label.setText(f"User: {username}")
-                self.volt_user_label.setText(f"User: {username}")
-                self.curr_user_label.setText(f"User: {username}")
-                
-                # Update displayed settings
-                self.update_settings_display()
-                
-                # Reset plot
-                buffer_size = self.user_settings['display']['buffer_size']
-                self.data_buffer = EnhancedDataBuffer(size=buffer_size)
-                self.canvas.clear_plot()
-                
-                # Update status
                 self.log_status(f"User selected: {username}")
-                self.statusBar().showMessage(f"User: {username}")
-                
-    def update_settings_display(self):
-        """Update the displayed settings in the UI."""
-        if not self.user_settings:
-            return
-            
-        # Update resistance mode display
-        measurement_type = self.user_settings['resistance_mode']['measurement_type']
-        self.res_measurement_type_label.setText(f"Type: {measurement_type}")
-        
-        test_current_ma = self.user_settings['resistance_mode']['test_current'] * 1000
-        self.res_test_current_label.setText(f"Current: {test_current_ma:.2f} mA")
-        
-        # Update voltage mode display
-        voltage = self.user_settings['voltage_mode']['voltage']
-        self.volt_voltage_label.setText(f"Voltage: {voltage:.3f} V")
-        
-        current_compliance = self.user_settings['voltage_mode']['current_compliance']
-        self.volt_compliance_label.setText(f"Compliance: {current_compliance:.3f} mA")
-        
-        duration = self.user_settings['voltage_mode']['duration']
-        self.volt_duration_label.setText(f"Duration: {duration:.2f} hours")
-        
-        # Set voltage mode inputs
-        self.volt_voltage_input.setValue(voltage)
-        self.volt_compliance_input.setValue(current_compliance)
-        self.volt_duration_input.setValue(duration)
-        
-        # Update current mode display
-        current = self.user_settings['current_mode']['current']
-        self.curr_current_label.setText(f"Current: {current:.3f} mA")
-        
-        voltage_compliance = self.user_settings['current_mode']['voltage_compliance']
-        self.curr_compliance_label.setText(f"Compliance: {voltage_compliance:.3f} V")
-        
-        duration = self.user_settings['current_mode']['duration']
-        self.curr_duration_label.setText(f"Duration: {duration:.2f} hours")
-        
-        # Set current mode inputs
-        self.curr_current_input.setValue(current)
-        self.curr_compliance_input.setValue(voltage_compliance)
-        self.curr_duration_input.setValue(duration)
-        
-        # Update plot colors
-        for data_type, color in self.user_settings['display']['plot_colors'].items():
-            self.canvas.set_plot_color(data_type, color)
-            
+                self.statusBar().showMessage(f"User: {username} | Ready")
+                self.update_ui_from_settings()
+                # Clear all data buffers on user change
+                for buffer in self.data_buffers.values():
+                    buffer.clear()
+                self.clear_all_plots()
+        else:
+             # If no user is selected on first launch, disable start buttons
+             if not self.current_user:
+                  self.log_status("No user selected. Please select or create a user.")
+                  self.set_all_controls_enabled(False) # Disable all start buttons
+
+
+    def update_ui_from_settings(self):
+        """Load settings into the relevant UI widgets on the tabs."""
+        if not self.user_settings: return
+
+        m_cfg = self.user_settings['measurement']
+        d_cfg = self.user_settings['display']
+
+        # Resistance Tab
+        self.tab_resistance.res_test_current.setValue(m_cfg['res_test_current'])
+        self.tab_resistance.res_voltage_compliance.setValue(m_cfg['res_voltage_compliance'])
+        self.tab_resistance.res_measurement_type.setCurrentText(m_cfg['res_measurement_type'])
+        self.tab_resistance.res_auto_range.setChecked(m_cfg['res_auto_range'])
+        self.tab_resistance.canvas.set_plot_properties(
+            'Elapsed Time (s)', 'Resistance (Ohms)', 'Resistance Measurement', d_cfg['plot_color_r'])
+
+        # Voltage Source Tab
+        self.tab_voltage_source.vsource_voltage.setValue(m_cfg['vsource_voltage'])
+        self.tab_voltage_source.vsource_current_compliance.setValue(m_cfg['vsource_current_compliance'])
+        self.tab_voltage_source.vsource_current_range_auto.setChecked(m_cfg['vsource_current_range_auto'])
+        self.tab_voltage_source.canvas.set_plot_properties(
+            'Elapsed Time (s)', 'Measured Current (A)', 'Voltage Source Output', d_cfg['plot_color_v'])
+
+        # Current Source Tab
+        self.tab_current_source.isource_current.setValue(m_cfg['isource_current'])
+        self.tab_current_source.isource_voltage_compliance.setValue(m_cfg['isource_voltage_compliance'])
+        self.tab_current_source.isource_voltage_range_auto.setChecked(m_cfg['isource_voltage_range_auto'])
+        self.tab_current_source.canvas.set_plot_properties(
+            'Elapsed Time (s)', 'Measured Voltage (V)', 'Current Source Output', d_cfg['plot_color_i'])
+
+        # Update buffer sizes
+        buffer_size = d_cfg.get('buffer_size')
+        new_size = None if buffer_size is None or buffer_size <= 0 else buffer_size
+        for mode, buffer in self.data_buffers.items():
+            if buffer.size != new_size:
+                self.data_buffers[mode] = DataBuffer(size=new_size) # Recreate buffer
+
+        self.clear_all_plots()
+        self.log_status("User settings loaded into UI.")
+
+
     def open_user_settings(self):
-        """Open settings dialog for current user."""
         if not self.current_user:
-            QMessageBox.warning(self, "No User Selected", "Please select a user first.")
+            QMessageBox.warning(self, "No User Selected", "Please select a user first to edit their settings.")
             return
-            
+        if self.measurement_running:
+            QMessageBox.warning(self, "Action Denied", "Cannot change settings while a measurement is running.")
+            return
+
         dialog = SettingsDialog(self.config_manager, self.current_user, self)
-        
         if dialog.exec_():
-            # Reload settings
+            self.log_status(f"User settings for {self.current_user} updated.")
+            # Reload settings and update UI
             self.user_settings = self.config_manager.get_user_settings(self.current_user)
-            
-            # Update displayed settings
-            self.update_settings_display()
-            
-            # Update data buffer size if changed
-            new_buffer_size = self.user_settings['display']['buffer_size']
-            if new_buffer_size != self.data_buffer.size:
-                old_data = None
-                if self.data_buffer.timestamps:  # If we have data, try to preserve it
-                    old_data = {
-                        'timestamps': list(self.data_buffer.timestamps),
-                        'resistance': list(self.data_buffer.resistance),
-                        'voltage': list(self.data_buffer.voltage),
-                        'current': list(self.data_buffer.current),
-                        'events': list(self.data_buffer.events)
-                    }
-                
-                self.data_buffer = EnhancedDataBuffer(size=new_buffer_size)
-                
-                # Restore data if available
-                if old_data and old_data['timestamps']:
-                    for i, timestamp in enumerate(old_data['timestamps']):
-                        if old_data['resistance'][i] is not None:
-                            self.data_buffer.add_resistance(
-                                timestamp, 
-                                old_data['resistance'][i], 
-                                old_data['events'][i]
-                            )
-                        elif old_data['voltage'][i] is not None and old_data['current'][i] is not None:
-                            self.data_buffer.add_voltage_current(
-                                timestamp, 
-                                old_data['voltage'][i], 
-                                old_data['current'][i], 
-                                old_data['events'][i]
-                            )
-                
-                # Update plot
-                self.update_plot()
-            
+            self.update_ui_from_settings()
+
     def open_global_settings(self):
-        """Open global settings dialog."""
+        if self.measurement_running:
+            QMessageBox.warning(self, "Action Denied", "Cannot change settings while a measurement is running.")
+            return
+
         dialog = SettingsDialog(self.config_manager, parent=self)
-        dialog.exec_()
-        
-    def start_resistance_measurement(self):
-        """Start resistance measurement."""
+        if dialog.exec_():
+            self.log_status("Global settings updated.")
+            # If a user is selected, reload their effective settings
+            if self.current_user:
+                 self.user_settings = self.config_manager.get_user_settings(self.current_user)
+                 self.update_ui_from_settings()
+
+    def get_widget_for_mode(self, mode: str) -> Optional[QWidget]:
+        """Get the main widget for a given mode."""
+        if mode == 'resistance': return self.tab_resistance
+        if mode == 'source_v': return self.tab_voltage_source
+        if mode == 'source_i': return self.tab_current_source
+        return None
+
+    def gather_settings_for_mode(self, mode:str) -> Dict:
+        """Gathers current settings from UI AND merges with non-UI settings."""
+        if not self.user_settings:
+            raise ValueError("User settings not loaded.")
+
+        # Start with a copy of the full user settings
+        effective_settings = {
+            'measurement': dict(self.user_settings['measurement']),
+            'display': dict(self.user_settings['display']),
+            'file': dict(self.user_settings['file'])
+        }
+        m_cfg = effective_settings['measurement'] # Get reference
+
+        # Override with current values from the UI for the *active* tab
+        widget = self.get_widget_for_mode(mode)
+        if not widget:
+             raise ValueError(f"Invalid mode specified: {mode}")
+
+        try:
+            if mode == 'resistance':
+                m_cfg['res_test_current'] = widget.res_test_current.value()
+                m_cfg['res_voltage_compliance'] = widget.res_voltage_compliance.value()
+                m_cfg['res_measurement_type'] = widget.res_measurement_type.currentText()
+                m_cfg['res_auto_range'] = widget.res_auto_range.isChecked()
+            elif mode == 'source_v':
+                m_cfg['vsource_voltage'] = widget.vsource_voltage.value()
+                m_cfg['vsource_current_compliance'] = widget.vsource_current_compliance.value()
+                m_cfg['vsource_current_range_auto'] = widget.vsource_current_range_auto.isChecked()
+            elif mode == 'source_i':
+                m_cfg['isource_current'] = widget.isource_current.value()
+                m_cfg['isource_voltage_compliance'] = widget.isource_voltage_compliance.value()
+                m_cfg['isource_voltage_range_auto'] = widget.isource_voltage_range_auto.isChecked()
+        except AttributeError as e:
+             raise ValueError(f"UI Widgets not found for mode {mode}: {e}")
+
+
+        # Ensure general settings are present (they aren't directly on tabs)
+        m_cfg['sampling_rate'] = self.user_settings['measurement']['sampling_rate']
+        m_cfg['nplc'] = self.user_settings['measurement']['nplc']
+        m_cfg['settling_time'] = self.user_settings['measurement']['settling_time']
+        m_cfg['gpib_address'] = self.user_settings['measurement']['gpib_address']
+
+        return effective_settings # Return the full dict
+
+    def start_measurement(self, mode: str):
+        """Start the measurement process for the specified mode."""
+        if self.measurement_running:
+            QMessageBox.warning(self, "Measurement Active", f"A measurement ({self.active_mode}) is already running. Please stop it first.")
+            return
         if not self.current_user:
-            QMessageBox.warning(self, "No User Selected", "Please select a user first.")
+            QMessageBox.warning(self, "No User Selected", "Please select or create a user first.")
             return
-            
-        sample_name = self.res_sample_input.text().strip()
+
+        sample_name = self.sample_input.text().strip()
         if not sample_name:
-            QMessageBox.warning(self, "No Sample Name", "Please enter a sample name.")
+            self.sample_input.setFocus()
+            QMessageBox.warning(self, "Sample Name Required", "Please enter a sample name.")
             return
-            
-        # Disable controls across all tabs
-        self.res_start_button.setEnabled(False)
-        self.res_settings_button.setEnabled(False)
-        self.res_change_user_button.setEnabled(False)
-        self.res_sample_input.setEnabled(False)
-        
-        self.volt_start_button.setEnabled(False)
-        self.volt_settings_button.setEnabled(False)
-        self.volt_change_user_button.setEnabled(False)
-        self.volt_sample_input.setEnabled(False)
-        self.volt_voltage_input.setEnabled(False)
-        self.volt_compliance_input.setEnabled(False)
-        self.volt_duration_input.setEnabled(False)
-        
-        self.curr_start_button.setEnabled(False)
-        self.curr_settings_button.setEnabled(False)
-        self.curr_change_user_button.setEnabled(False)
-        self.curr_sample_input.setEnabled(False)
-        self.curr_current_input.setEnabled(False)
-        self.curr_compliance_input.setEnabled(False)
-        self.curr_duration_input.setEnabled(False)
-        
-        # Enable appropriate control buttons
-        self.res_pause_button.setEnabled(True)
-        self.res_pause_button.setText("Pause")
-        self.res_mark_button.setEnabled(True)
-        self.res_stop_button.setEnabled(True)
-        
-        # Clear old data
-        self.data_buffer.clear()
-        self.canvas.clear_plot()
-        
-        # Set mode
-        self.current_mode = "resistance"
-        
-        # Create and start worker thread
-        self.measurement_worker = ResistanceMeasurementWorker(
-            sample_name, self.current_user, self.user_settings
+
+        widget = self.get_widget_for_mode(mode)
+        if not widget:
+             self.log_status(f"Error: Could not find UI for mode {mode}")
+             return
+
+        # Gather settings from UI + config just before starting
+        try:
+            current_settings = self.gather_settings_for_mode(mode)
+        except ValueError as e:
+            QMessageBox.critical(self, "Settings Error", f"Failed to gather settings: {e}")
+            return
+
+        # --- UI Updates ---
+        self.active_mode = mode
+        self.measurement_running = True
+        self.set_controls_for_mode(mode, running=True) # Disable start, enable stop for this mode
+        self.set_all_controls_enabled(False, except_mode=mode) # Disable controls on other tabs
+        self.sample_input.setEnabled(False)
+        self.change_user_button.setEnabled(False)
+        self.shortcut_max.setEnabled(mode == 'resistance') # Enable 'M' key only for resistance mode
+
+        # Clear buffer and plot for the specific mode
+        self.data_buffers[mode].clear()
+        widget.canvas.clear_plot()
+        widget.status_label.setText("Status: Running")
+        widget.status_label.setStyleSheet("font-weight: bold; color: green;")
+        if mode == 'resistance':
+             widget.mark_max_button.setEnabled(True)
+
+
+        # --- Worker Setup ---
+        self.log_status(f"Starting {mode} measurement for sample: {sample_name}...")
+        self.statusBar().showMessage(f"Measurement running ({mode})...")
+
+        self.measurement_worker = MeasurementWorker(
+            mode=mode,
+            sample_name=sample_name,
+            username=self.current_user,
+            settings=current_settings # Pass the combined settings
         )
-        
-        # Connect signals
-        self.connect_worker_signals()
-        
-        # Start worker
-        self.measurement_worker.start()
-        
-        # Start plot update timer
-        self.start_plot_timer()
-        
-        # Update status
-        self.log_status(f"Resistance measurement started with sample: {sample_name}")
-        self.statusBar().showMessage("Resistance measurement running...")
-        
-    def start_voltage_application(self):
-        """Start voltage application."""
-        if not self.current_user:
-            QMessageBox.warning(self, "No User Selected", "Please select a user first.")
-            return
-            
-        sample_name = self.volt_sample_input.text().strip()
-        if not sample_name:
-            QMessageBox.warning(self, "No Sample Name", "Please enter a sample name.")
-            return
-            
-        # Get input values
-        voltage = self.volt_voltage_input.value()
-        current_compliance = self.volt_compliance_input.value()
-        duration = self.volt_duration_input.value()
-        
-        # Update settings
-        self.user_settings['voltage_mode']['voltage'] = voltage
-        self.user_settings['voltage_mode']['current_compliance'] = current_compliance
-        self.user_settings['voltage_mode']['duration'] = duration
-        
-        # Disable controls across all tabs
-        self.res_start_button.setEnabled(False)
-        self.res_settings_button.setEnabled(False)
-        self.res_change_user_button.setEnabled(False)
-        self.res_sample_input.setEnabled(False)
-        
-        self.volt_start_button.setEnabled(False)
-        self.volt_settings_button.setEnabled(False)
-        self.volt_change_user_button.setEnabled(False)
-        self.volt_sample_input.setEnabled(False)
-        self.volt_voltage_input.setEnabled(False)
-        self.volt_compliance_input.setEnabled(False)
-        self.volt_duration_input.setEnabled(False)
-        
-        self.curr_start_button.setEnabled(False)
-        self.curr_settings_button.setEnabled(False)
-        self.curr_change_user_button.setEnabled(False)
-        self.curr_sample_input.setEnabled(False)
-        self.curr_current_input.setEnabled(False)
-        self.curr_compliance_input.setEnabled(False)
-        self.curr_duration_input.setEnabled(False)
-        
-        # Enable appropriate control buttons
-        self.volt_pause_button.setEnabled(True)
-        self.volt_pause_button.setText("Pause")
-        self.volt_mark_button.setEnabled(True)
-        self.volt_stop_button.setEnabled(True)
-        
-        # Clear old data
-        self.data_buffer.clear()
-        self.canvas.clear_plot()
-        
-        # Set mode
-        self.current_mode = "voltage"
-        
-        # Create and start worker thread
-        self.measurement_worker = VoltageApplicationWorker(
-            sample_name, self.current_user, self.user_settings
-        )
-        
-        # Connect signals
-        self.connect_worker_signals()
-        
-        # Start worker
-        self.measurement_worker.start()
-        
-        # Start plot update timer
-        self.start_plot_timer()
-        
-        # Update status
-        self.log_status(f"Voltage application started with sample: {sample_name}")
-        self.statusBar().showMessage(f"Applying {voltage}V to sample...")
-        
-    def start_current_application(self):
-        """Start current application."""
-        if not self.current_user:
-            QMessageBox.warning(self, "No User Selected", "Please select a user first.")
-            return
-            
-        sample_name = self.curr_sample_input.text().strip()
-        if not sample_name:
-            QMessageBox.warning(self, "No Sample Name", "Please enter a sample name.")
-            return
-            
-        # Get input values
-        current = self.curr_current_input.value()
-        voltage_compliance = self.curr_compliance_input.value()
-        duration = self.curr_duration_input.value()
-        
-        # Update settings
-        self.user_settings['current_mode']['current'] = current
-        self.user_settings['current_mode']['voltage_compliance'] = voltage_compliance
-        self.user_settings['current_mode']['duration'] = duration
-        
-        # Disable controls across all tabs
-        self.res_start_button.setEnabled(False)
-        self.res_settings_button.setEnabled(False)
-        self.res_change_user_button.setEnabled(False)
-        self.res_sample_input.setEnabled(False)
-        
-        self.volt_start_button.setEnabled(False)
-        self.volt_settings_button.setEnabled(False)
-        self.volt_change_user_button.setEnabled(False)
-        self.volt_sample_input.setEnabled(False)
-        self.volt_voltage_input.setEnabled(False)
-        self.volt_compliance_input.setEnabled(False)
-        self.volt_duration_input.setEnabled(False)
-        
-        self.curr_start_button.setEnabled(False)
-        self.curr_settings_button.setEnabled(False)
-        self.curr_change_user_button.setEnabled(False)
-        self.curr_sample_input.setEnabled(False)
-        self.curr_current_input.setEnabled(False)
-        self.curr_compliance_input.setEnabled(False)
-        self.curr_duration_input.setEnabled(False)
-        
-        # Enable appropriate control buttons
-        self.curr_pause_button.setEnabled(True)
-        self.curr_pause_button.setText("Pause")
-        self.curr_mark_button.setEnabled(True)
-        self.curr_stop_button.setEnabled(True)
-        
-        # Clear old data
-        self.data_buffer.clear()
-        self.canvas.clear_plot()
-        
-        # Set mode
-        self.current_mode = "current"
-        
-        # Create and start worker thread
-        self.measurement_worker = CurrentApplicationWorker(
-            sample_name, self.current_user, self.user_settings
-        )
-        
-        # Connect signals
-        self.connect_worker_signals()
-        
-        # Start worker
-        self.measurement_worker.start()
-        
-        # Start plot update timer
-        self.start_plot_timer()
-        
-        # Update status
-        self.log_status(f"Current application started with sample: {sample_name}")
-        self.statusBar().showMessage(f"Applying {current}mA to sample...")
-        
-    def connect_worker_signals(self):
-        """Connect signals from the measurement worker."""
-        if not self.measurement_worker:
-            return
-            
+
+        # Connect signals from worker
         self.measurement_worker.data_point.connect(self.update_data)
-        self.measurement_worker.status_update.connect(self.log_status)
+        self.measurement_worker.status_update.connect(self.log_status_from_worker) # Use different slot for worker messages
         self.measurement_worker.measurement_complete.connect(self.on_measurement_complete)
         self.measurement_worker.error_occurred.connect(self.on_error)
-        
-    def start_plot_timer(self):
-        """Start the plot update timer."""
-        if self.plot_timer and self.plot_timer.isActive():
-            self.plot_timer.stop()
-            
-        update_interval = self.user_settings['display']['plot_update_interval']
-        self.plot_timer = QTimer()
-        self.plot_timer.timeout.connect(self.update_plot)
-        self.plot_timer.start(update_interval)
-        
-    def mark_event(self, event_name):
-        """Mark an event."""
-        if not self.measurement_worker or self.measurement_worker.paused:
-            return
-            
-        self.measurement_worker.mark_event(event_name)
-        
-    def pause_measurement(self):
-        """Pause or resume the measurement."""
-        if not self.measurement_worker:
-            return
-            
-        if self.measurement_worker.paused:
-            # Resume
-            self.measurement_worker.resume_measurement()
-            
-            # Update button texts
-            self.res_pause_button.setText("Pause")
-            self.volt_pause_button.setText("Pause")
-            self.curr_pause_button.setText("Pause")
+        self.measurement_worker.compliance_hit.connect(self.on_compliance_hit)
+        self.measurement_worker.finished.connect(self.on_worker_finished) # Cleanup signal
+
+        # Start worker thread
+        self.measurement_worker.start()
+
+        # Start plot update timer
+        update_interval = current_settings['display']['plot_update_interval']
+        if current_settings['display']['enable_plot']:
+            self.plot_timer.start(update_interval)
         else:
-            # Pause
-            self.measurement_worker.pause_measurement()
-            
-            # Update button texts
-            self.res_pause_button.setText("Resume")
-            self.volt_pause_button.setText("Resume")
-            self.curr_pause_button.setText("Resume")
-            
-    def stop_measurement(self):
-        """Stop the measurement."""
-        if not self.measurement_worker:
+             self.log_status("Plotting disabled in settings.")
+
+    def stop_current_measurement(self):
+        """Stops the currently running measurement."""
+        if self.measurement_worker and self.measurement_running:
+            self.log_status(f"Attempting to stop {self.active_mode} measurement...")
+            self.statusBar().showMessage(f"Stopping {self.active_mode} measurement...")
+
+            # Disable stop button immediately to prevent multiple clicks
+            widget = self.get_widget_for_mode(self.active_mode)
+            if widget:
+                 widget.stop_button.setEnabled(False)
+                 widget.status_label.setText("Status: Stopping...")
+                 widget.status_label.setStyleSheet("font-weight: bold; color: orange;")
+                 if self.active_mode == 'resistance':
+                      widget.mark_max_button.setEnabled(False)
+
+
+            self.shortcut_max.setEnabled(False)
+            self.plot_timer.stop() # Stop plot updates
+
+            # Signal the worker thread to stop
+            self.measurement_worker.stop_measurement()
+            # Don't reset flags here, wait for on_measurement_complete or on_error
+        else:
+            self.log_status("No measurement currently running.")
+
+    # def pause_resume_measurement(self, pause: bool):
+    #     """Handles the pause/resume button toggle."""
+    #     if not self.measurement_running or not self.measurement_worker:
+    #         return
+    #
+    #     widget = self.get_widget_for_mode(self.active_mode)
+    #     if not widget: return
+    #
+    #     if pause:
+    #         self.measurement_worker.pause_measurement()
+    #         widget.pause_button.setText("Resume")
+    #         widget.pause_button.setIcon(QIcon.fromTheme("media-playback-start"))
+    #         widget.status_label.setText("Status: Paused")
+    #         widget.status_label.setStyleSheet("font-weight: bold; color: blue;")
+    #     else:
+    #         self.measurement_worker.resume_measurement()
+    #         widget.pause_button.setText("Pause")
+    #         widget.pause_button.setIcon(QIcon.fromTheme("media-playback-pause"))
+    #         widget.status_label.setText("Status: Running")
+    #         widget.status_label.setStyleSheet("font-weight: bold; color: green;")
+
+
+    def mark_max_compression_shortcut(self):
+        """Marks max compression if resistance measurement is active."""
+        if self.measurement_running and self.active_mode == 'resistance' and self.measurement_worker:
+            self.measurement_worker.mark_max_compression()
+            self.log_status("⭐ Max Compression event marked.", color="purple")
+            # Optional: visual feedback like flashing the button
+            widget = self.get_widget_for_mode('resistance')
+            if widget:
+                 original_style = widget.mark_max_button.styleSheet()
+                 widget.mark_max_button.setStyleSheet("background-color: yellow;")
+                 QTimer.singleShot(500, lambda: widget.mark_max_button.setStyleSheet(original_style))
+
+
+    def update_data(self, timestamp: float, value: float, compliance_status: str, event: str):
+        """Slot to receive data points from the worker thread."""
+        if not self.measurement_running or self.active_mode is None:
+             return # Ignore data if not running or mode unknown
+
+        # Add data to the buffer corresponding to the active mode
+        self.data_buffers[self.active_mode].add(timestamp, value, compliance_status)
+
+        # No plotting here, handled by the timer calling update_active_plot
+
+    def update_active_plot(self):
+        """Update the plot for the currently active measurement mode."""
+        if not self.measurement_running or self.active_mode is None or not self.user_settings:
             return
-            
-        # Stop worker thread
-        self.measurement_worker.stop_measurement()
-        
-        # Update UI buttons
-        self.res_pause_button.setEnabled(False)
-        self.res_mark_button.setEnabled(False)
-        self.res_stop_button.setEnabled(False)
-        
-        self.volt_pause_button.setEnabled(False)
-        self.volt_mark_button.setEnabled(False)
-        self.volt_stop_button.setEnabled(False)
-        
-        self.curr_pause_button.setEnabled(False)
-        self.curr_mark_button.setEnabled(False)
-        self.curr_stop_button.setEnabled(False)
-        
-        # Show stopping message
-        self.log_status("Stopping measurement...")
-        self.statusBar().showMessage("Stopping measurement...")
-        
-    def update_data(self, timestamp, data_dict, event):
-        """Update data buffer with new measurement data."""
-        # Add data to buffer based on what we received
-        if 'resistance' in data_dict and data_dict['resistance'] is not None and \
-           'voltage' not in data_dict or 'current' not in data_dict:
-            # Resistance-only measurement
-            self.data_buffer.add_resistance(timestamp, data_dict['resistance'], event)
-        elif 'voltage' in data_dict and 'current' in data_dict:
-            # Voltage and current measurements
-            self.data_buffer.add_voltage_current(
-                timestamp, 
-                data_dict['voltage'], 
-                data_dict['current'], 
-                event
+
+        mode = self.active_mode
+        widget = self.get_widget_for_mode(mode)
+        buffer = self.data_buffers[mode]
+
+        if not widget or not buffer:
+            return
+
+        if self.user_settings['display']['enable_plot']:
+            timestamps, values, compliance_list = buffer.get_data_for_plot()
+            widget.canvas.update_plot(
+                timestamps,
+                values,
+                compliance_list, # Pass compliance info
+                buffer.stats,
+                self.current_user,
+                self.sample_input.text()
             )
-            
-    def update_plot(self):
-        """Update the plot with current data."""
-        if not self.data_buffer or not self.data_buffer.timestamps:
-            return
-            
-        # Get sample name based on current mode
-        if self.current_mode == "resistance":
-            sample_name = self.res_sample_input.text()
-        elif self.current_mode == "voltage":
-            sample_name = self.volt_sample_input.text()
-        elif self.current_mode == "current":
-            sample_name = self.curr_sample_input.text()
-        else:
-            sample_name = "Unknown"
-            
-        # Get plot data
-        timestamps, values = self.data_buffer.get_data_for_plot(self.plot_data_type)
-        stats = self.data_buffer.get_statistics(self.plot_data_type)
-        
-        # Format mode name for display
-        if self.current_mode == "resistance":
-            mode_display = "Resistance Measurement"
-        elif self.current_mode == "voltage":
-            mode_display = "Voltage Application"
-        elif self.current_mode == "current":
-            mode_display = "Current Application"
-        else:
-            mode_display = "Unknown Mode"
-        
-        # Update the plot
-        self.canvas.update_plot(
-            timestamps,
-            values,
-            stats,
-            self.current_user,
-            sample_name,
-            mode_display,
-            self.plot_data_type
-        )
-        
-    def change_plot_data_type(self, data_type):
-        """Change the type of data shown in the plot."""
-        self.plot_data_type = data_type
-        self.update_plot()
-        
-        # Update status
-        self.log_status(f"Plot display changed to {data_type}")
-        
-    def on_measurement_complete(self):
-        """Handle measurement completion."""
-        # Stop plot timer
-        if self.plot_timer:
-            self.plot_timer.stop()
-            
-        # Update UI in all tabs
-        self.res_start_button.setEnabled(True)
-        self.res_settings_button.setEnabled(True)
-        self.res_change_user_button.setEnabled(True)
-        self.res_sample_input.setEnabled(True)
-        self.res_pause_button.setEnabled(False)
-        self.res_mark_button.setEnabled(False)
-        self.res_stop_button.setEnabled(False)
-        
-        self.volt_start_button.setEnabled(True)
-        self.volt_settings_button.setEnabled(True)
-        self.volt_change_user_button.setEnabled(True)
-        self.volt_sample_input.setEnabled(True)
-        self.volt_voltage_input.setEnabled(True)
-        self.volt_compliance_input.setEnabled(True)
-        self.volt_duration_input.setEnabled(True)
-        self.volt_pause_button.setEnabled(False)
-        self.volt_mark_button.setEnabled(False)
-        self.volt_stop_button.setEnabled(False)
-        
-        self.curr_start_button.setEnabled(True)
-        self.curr_settings_button.setEnabled(True)
-        self.curr_change_user_button.setEnabled(True)
-        self.curr_sample_input.setEnabled(True)
-        self.curr_current_input.setEnabled(True)
-        self.curr_compliance_input.setEnabled(True)
-        self.curr_duration_input.setEnabled(True)
-        self.curr_pause_button.setEnabled(False)
-        self.curr_mark_button.setEnabled(False)
-        self.curr_stop_button.setEnabled(False)
-        
-        # Update status
-        self.log_status("Measurement completed successfully!")
-        self.statusBar().showMessage("Measurement completed")
-        
-        # Make sure final plot is updated
-        self.update_plot()
-        
-    def on_error(self, error_message):
-        """Handle measurement errors."""
-        # Stop plot timer
-        if self.plot_timer:
-            self.plot_timer.stop()
-            
-        # Update UI in all tabs
-        self.res_start_button.setEnabled(True)
-        self.res_settings_button.setEnabled(True)
-        self.res_change_user_button.setEnabled(True)
-        self.res_sample_input.setEnabled(True)
-        self.res_pause_button.setEnabled(False)
-        self.res_mark_button.setEnabled(False)
-        self.res_stop_button.setEnabled(False)
-        
-        self.volt_start_button.setEnabled(True)
-        self.volt_settings_button.setEnabled(True)
-        self.volt_change_user_button.setEnabled(True)
-        self.volt_sample_input.setEnabled(True)
-        self.volt_voltage_input.setEnabled(True)
-        self.volt_compliance_input.setEnabled(True)
-        self.volt_duration_input.setEnabled(True)
-        self.volt_pause_button.setEnabled(False)
-        self.volt_mark_button.setEnabled(False)
-        self.volt_stop_button.setEnabled(False)
-        
-        self.curr_start_button.setEnabled(True)
-        self.curr_settings_button.setEnabled(True)
-        self.curr_change_user_button.setEnabled(True)
-        self.curr_sample_input.setEnabled(True)
-        self.curr_current_input.setEnabled(True)
-        self.curr_compliance_input.setEnabled(True)
-        self.curr_duration_input.setEnabled(True)
-        self.curr_pause_button.setEnabled(False)
-        self.curr_mark_button.setEnabled(False)
-        self.curr_stop_button.setEnabled(False)
-        
-        # Log error
-        self.log_status(f"ERROR: {error_message}")
-        self.statusBar().showMessage("Measurement error")
-        
-        # Show error message
+
+    def on_measurement_complete(self, mode: str):
+        """Handles the measurement_complete signal from the worker."""
+        self.log_status(f"Worker reported measurement complete for mode: {mode}", color="darkGreen")
+        self.statusBar().showMessage(f"Measurement ({mode}) completed | Ready", 5000) # Timeout message
+
+        # No need to call worker.stop() here, it finished naturally
+        # Worker thread will exit, triggering on_worker_finished for cleanup
+
+    def on_error(self, error_message: str):
+        """Handles the error_occurred signal from the worker."""
+        self.log_status(f"ERROR: {error_message}", color="red")
+        self.statusBar().showMessage(f"Measurement Error ({self.active_mode})", 5000)
+
+        # Ensure timer is stopped
+        self.plot_timer.stop()
+        # Worker thread will likely exit soon after error, triggering on_worker_finished
+
+        # Show critical message box
         QMessageBox.critical(self, "Measurement Error", error_message)
-        
-    def log_status(self, message):
-        """Add a message to the status display."""
+
+        # Reset UI state (similar to on_worker_finished, maybe call it?)
+        # self.reset_ui_after_measurement() # Call cleanup manually just in case worker hangs? No, wait for finished.
+
+
+    def on_compliance_hit(self, compliance_type: str):
+        """Handles the compliance_hit signal."""
+        mode = self.active_mode
+        widget = self.get_widget_for_mode(mode)
+        if widget:
+             widget.status_label.setText(f"Status: {compliance_type.upper()} COMPLIANCE")
+             widget.status_label.setStyleSheet("font-weight: bold; color: red;")
+
+        self.log_status(f"⚠️ {compliance_type} Compliance Hit during {mode} measurement!", color="orange")
+        QMessageBox.warning(self, f"{compliance_type} Compliance Warning",
+                            f"The {compliance_type.lower()} compliance limit was reached during the {mode} measurement.")
+
+    def on_worker_finished(self):
+        """Slot connected to the QThread.finished signal."""
+        self.log_status(f"Measurement worker thread ({self.active_mode}) finished.", color="grey")
+        self.reset_ui_after_measurement()
+
+    def reset_ui_after_measurement(self):
+         """Resets the UI state after a measurement stops or completes."""
+         if not self.active_mode: # If already reset
+              return
+
+         finished_mode = self.active_mode
+         self.measurement_running = False
+         self.active_mode = None
+         self.measurement_worker = None # Clear worker reference
+
+         # Ensure timer is stopped
+         self.plot_timer.stop()
+
+         # Re-enable global controls
+         self.sample_input.setEnabled(True)
+         self.change_user_button.setEnabled(True)
+
+         # Reset the UI state for the tab that was running
+         widget = self.get_widget_for_mode(finished_mode)
+         if widget:
+              widget.status_label.setText("Status: Idle")
+              widget.status_label.setStyleSheet("font-weight: bold; color: black;")
+              widget.start_button.setEnabled(True)
+              widget.stop_button.setEnabled(False)
+              # widget.pause_button.setEnabled(False)
+              # widget.pause_button.setChecked(False)
+              if finished_mode == 'resistance':
+                   widget.mark_max_button.setEnabled(False)
+
+
+         # Re-enable controls on ALL tabs
+         self.set_all_controls_enabled(True)
+
+         self.shortcut_max.setEnabled(False) # Disable M key generally
+
+         self.statusBar().showMessage("Ready", 0) # Persistent Ready message
+         self.log_status("Measurement stopped. UI controls re-enabled.")
+
+
+    def set_controls_for_mode(self, mode: str, running: bool):
+        """Enable/disable controls for a specific mode tab."""
+        widget = self.get_widget_for_mode(mode)
+        if widget:
+             widget.start_button.setEnabled(not running)
+             widget.stop_button.setEnabled(running)
+             # widget.pause_button.setEnabled(running)
+             # Disable parameter inputs while running
+             for i in range(widget.param_layout.rowCount()):
+                 field = widget.param_layout.itemAt(i, QFormLayout.FieldRole)
+                 if field and field.widget():
+                      field.widget().setEnabled(not running)
+                 label = widget.param_layout.itemAt(i, QFormLayout.LabelRole)
+                 if label and label.widget():
+                      label.widget().setEnabled(not running) # Also disable labels? Optional.
+             # Re-enable mark button specifically if running resistance
+             if mode == 'resistance':
+                  widget.mark_max_button.setEnabled(running)
+
+    def set_all_controls_enabled(self, enabled: bool, except_mode: Optional[str] = None):
+         """Enable/disable start buttons and parameters on ALL tabs, optionally skipping one."""
+         for mode in ['resistance', 'source_v', 'source_i']:
+              if mode == except_mode:
+                   continue
+              widget = self.get_widget_for_mode(mode)
+              if widget:
+                   widget.start_button.setEnabled(enabled)
+                   widget.stop_button.setEnabled(False) # Stop always disabled if not running
+                   # widget.pause_button.setEnabled(False)
+                   # widget.pause_button.setChecked(False)
+                   if mode == 'resistance': widget.mark_max_button.setEnabled(False)
+
+                   # Enable/disable parameter inputs
+                   for i in range(widget.param_layout.rowCount()):
+                       field = widget.param_layout.itemAt(i, QFormLayout.FieldRole)
+                       if field and field.widget():
+                            field.widget().setEnabled(enabled)
+                       label = widget.param_layout.itemAt(i, QFormLayout.LabelRole)
+                       if label and label.widget():
+                           label.widget().setEnabled(enabled)
+
+
+    def handle_tab_change(self, index):
+        """Called when the user switches tabs."""
+        # Important: Prevent switching tabs while a measurement is running?
+        # Or stop the measurement automatically? Let's prevent it for safety.
+        if self.measurement_running:
+            current_widget = self.main_tabs.widget(index)
+            # Check if the new tab corresponds to the running mode
+            if not hasattr(current_widget, 'mode') or current_widget.mode != self.active_mode:
+                QMessageBox.warning(self, "Measurement Active",
+                                    f"Cannot switch tabs while a measurement ({self.active_mode}) is running. "
+                                    "Please stop the current measurement first.")
+                # Find the index of the active tab and switch back
+                for i in range(self.main_tabs.count()):
+                    widget = self.main_tabs.widget(i)
+                    if hasattr(widget, 'mode') and widget.mode == self.active_mode:
+                        self.main_tabs.blockSignals(True) # Prevent recursion
+                        self.main_tabs.setCurrentIndex(i)
+                        self.main_tabs.blockSignals(False)
+                        break
+            # else: switching to the tab that IS running is okay.
+        # else: Okay to switch tabs if nothing is running.
+
+
+    def log_status(self, message: str, color: str = "black"):
+        """Add a timestamped message to the status display."""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.status_display.append(f"[{timestamp}] {message}")
-        
-        # Scroll to bottom
-        scroll_bar = self.status_display.verticalScrollBar()
-        scroll_bar.setValue(scroll_bar.maximum())
-        
-    def save_plot(self):
-        """Save the current plot to a file."""
-        filename, _ = QFileDialog.getSaveFileName(
-            self, "Save Plot", "", "PNG Files (*.png);;PDF Files (*.pdf);;All Files (*)"
+        # Use simple HTML for color
+        colored_message = f'<font color="{color}">[{timestamp}] {message}</font>'
+        self.status_display.append(colored_message)
+        # Auto-scroll to bottom
+        self.status_display.verticalScrollBar().setValue(self.status_display.verticalScrollBar().maximum())
+
+    def log_status_from_worker(self, message: str):
+        """Log status messages coming directly from the worker thread."""
+        # Use default color for worker messages unless it's an error/warning
+        color = "black"
+        if "error" in message.lower(): color="red"
+        elif "warn" in message.lower() or "compliance" in message.lower(): color="orange"
+        self.log_status(message, color=color)
+        # Also update the main status bar briefly
+        self.statusBar().showMessage(message, 3000) # Show for 3 seconds
+
+
+    def save_active_plot(self):
+        """Save the plot from the currently visible tab."""
+        if self.measurement_running:
+             # Maybe allow saving even if running? Or disable? Let's allow it.
+             pass # Allow saving while running
+
+        current_tab_widget = self.main_tabs.currentWidget()
+        if not hasattr(current_tab_widget, 'canvas'):
+             QMessageBox.warning(self, "Save Error", "Could not find plot canvas on the current tab.")
+             return
+
+        # Suggest a filename based on sample and mode
+        mode = getattr(current_tab_widget, 'mode', 'unknown')
+        sample_name = self.sample_input.text().strip().replace(' ','_') or "plot"
+        timestamp = int(time.time())
+        suggested_filename = f"{timestamp}_{sample_name}_{mode}.png"
+
+        # Default directory could be the data directory or last used location
+        default_dir = self.user_settings['file']['data_directory'] if self.user_settings else "."
+
+        filename, selected_filter = QFileDialog.getSaveFileName(
+            self, "Save Plot", os.path.join(default_dir, suggested_filename),
+             "PNG Files (*.png);;PDF Files (*.pdf);;JPEG Files (*.jpg);;All Files (*)"
         )
-        
+
         if filename:
-            self.canvas.fig.savefig(filename)
-            self.log_status(f"Plot saved to: {filename}")
-            
+            try:
+                current_tab_widget.canvas.fig.savefig(filename, dpi=300) # Save with higher DPI
+                self.log_status(f"Plot saved to: {filename}", color="blue")
+            except Exception as e:
+                 QMessageBox.critical(self, "Save Error", f"Failed to save plot: {str(e)}")
+                 self.log_status(f"Error saving plot: {str(e)}", color="red")
+
+    def clear_all_plots(self):
+        """Clears plots on all tabs."""
+        self.tab_resistance.canvas.clear_plot()
+        self.tab_voltage_source.canvas.clear_plot()
+        self.tab_current_source.canvas.clear_plot()
+        self.log_status("All plots cleared.")
+
+
     def show_about(self):
         """Show about dialog."""
         about_text = f"""
-        <h2>Enhanced ResistaMet GUI</h2>
+        <h2>ResistaMet GUI (Tabbed)</h2>
         <p>Version: {__version__}</p>
-        <p>Based on original version: {__original_version__}</p>
-        <p>Author: {__author__}</p>
-        <p>An integrated interface for resistance measurement and voltage/current application.</p>
+        <p>Original Author: {__author__.split('(')[0]}</p>
+        <hr>
+        <p>A graphical interface for controlling Keithley SourceMeasure Units,
+        providing modes for:</p>
+        <ul>
+            <li>Resistance Measurement (Source Current, Measure Resistance)</li>
+            <li>Voltage Source (Source Voltage, Measure Current)</li>
+            <li>Current Source (Source Current, Measure Voltage)</li>
+        </ul>
+        <p>Supports real-time plotting, data logging, user profiles, and compliance monitoring.</p>
         """
-        
-        QMessageBox.about(self, "About Enhanced ResistaMet GUI", about_text)
-        
+        QMessageBox.about(self, f"About ResistaMet GUI v{__version__}", about_text)
+
     def closeEvent(self, event):
         """Handle window close event."""
-        # Stop measurement if running
-        if self.measurement_worker and self.measurement_worker.isRunning():
+        if self.measurement_running:
             reply = QMessageBox.question(
                 self, "Exit Confirmation",
-                "A measurement is still running. Are you sure you want to exit?",
+                f"A measurement ({self.active_mode}) is currently running.\n"
+                "Stopping the measurement may result in incomplete data.\n\n"
+                "Are you sure you want to exit?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
-            
+
             if reply == QMessageBox.Yes:
-                self.measurement_worker.stop_measurement()
-                self.measurement_worker.wait()
+                self.log_status("Exit requested during measurement. Stopping worker...", color="orange")
+                if self.measurement_worker:
+                     self.measurement_worker.stop_measurement()
+                     # Wait briefly for the worker to potentially clean up?
+                     if not self.measurement_worker.wait(2000): # Wait up to 2s
+                           self.log_status("Worker did not stop gracefully. Forcing exit.", color="red")
+                           # self.measurement_worker.terminate() # Use terminate as last resort - may corrupt data/state
                 event.accept()
             else:
                 event.ignore()
         else:
+            self.log_status("Exiting application.")
             event.accept()
+
 
 def main():
     """Main application entry point."""
+    # Handle high DPI scaling
+    if hasattr(Qt, 'AA_EnableHighDpiScaling'):
+        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
+        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
     app = QApplication(sys.argv)
-    
-    # Set application style
+
+    # Apply a style
+    # Available styles depend on the OS: "Fusion", "Windows", "WindowsVista" (Windows only), "Macintosh" (macOS only)
     app.setStyle("Fusion")
-    
-    # Create and show main window
-    window = EnhancedResistanceMeterApp()
+
+    # Optional: Set a dark theme palette (basic example)
+    # dark_palette = QPalette()
+    # dark_palette.setColor(QPalette.Window, QColor(53, 53, 53))
+    # # ... set other colors ...
+    # app.setPalette(dark_palette)
+
+
+    # Ensure SIGINT (Ctrl+C) can be caught if running from terminal
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+    window = ResistanceMeterApp()
     window.show()
-    
-    sys.exit(app.exec_())
+
+    try:
+        sys.exit(app.exec_())
+    except KeyboardInterrupt:
+         print("Ctrl+C detected, exiting.")
+         # Perform any necessary cleanup if needed upon Ctrl+C
 
 if __name__ == "__main__":
     main()
