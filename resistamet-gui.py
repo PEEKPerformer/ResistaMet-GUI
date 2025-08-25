@@ -62,10 +62,12 @@ DEFAULT_SETTINGS = {
         "vsource_voltage": 1.0,              # Source voltage in Volts
         "vsource_current_compliance": 0.1,   # Current compliance in Amperes for V source mode
         "vsource_current_range_auto": True,  # Auto range for current measurement
+        "vsource_duration_hours": 1.0,       # Duration to apply voltage in hours
         # Current Source Mode (Source I, Measure V) - Can reuse some R settings
         "isource_current": 1.0e-3,           # Source current in Amperes
         "isource_voltage_compliance": 5.0,   # Voltage compliance in Volts for I source mode
         "isource_voltage_range_auto": True,  # Auto range for voltage measurement
+        "isource_duration_hours": 1.0,       # Duration to apply current in hours
         # General
         "sampling_rate": 10.0,               # Sampling rate in Hz (shared for now)
         "nplc": 1,                           # Number of power line cycles (shared)
@@ -94,55 +96,107 @@ DEFAULT_SETTINGS = {
 KEITHLEY_COMPLIANCE_MAGIC_NUMBER = 9.9e37 # Or None if using status bits
 COMPLIANCE_THRESHOLD_FACTOR = 1.0 # Check reading against (compliance * factor)
 
-# ----- Data Buffer Class (Modified) -----
-class DataBuffer:
+# ----- Enhanced Data Buffer (Multi-channel) -----
+class EnhancedDataBuffer:
+    """Stores timestamps, resistance, voltage, current, events, and compliance per point.
+
+    Provides per-channel statistics and plotting data selection.
+    """
     def __init__(self, size: Optional[int] = None):
         self._max_len = size if size is not None and size > 0 else None
-        self.timestamps = deque(maxlen=self._max_len)
-        self.values = deque(maxlen=self._max_len) # Stores R, I, or V
-        self.compliance_status = deque(maxlen=self._max_len) # Stores 'OK', 'V_COMP', 'I_COMP'
+        self.reset()
 
-        self.stats = {'min': float('inf'), 'max': float('-inf'), 'avg': 0}
-        self.count = 0
+    def reset(self):
+        self.timestamps = deque(maxlen=self._max_len)
+        self.resistance = deque(maxlen=self._max_len)
+        self.voltage = deque(maxlen=self._max_len)
+        self.current = deque(maxlen=self._max_len)
+        self.events = deque(maxlen=self._max_len)
+        self.compliance_status = deque(maxlen=self._max_len)  # 'OK', 'V_COMP', 'I_COMP'
+
+        # Stats per channel
+        self.stats = {
+            'resistance': {'min': float('inf'), 'max': float('-inf'), 'avg': 0.0, 'count': 0},
+            'voltage': {'min': float('inf'), 'max': float('-inf'), 'avg': 0.0, 'count': 0},
+            'current': {'min': float('inf'), 'max': float('-inf'), 'avg': 0.0, 'count': 0},
+        }
         self.last_compliance_hit = None
 
     @property
     def size(self):
         return self._max_len
 
-    def add(self, timestamp: float, value: float, compliance: str = 'OK') -> None:
-        self.timestamps.append(timestamp)
-        self.values.append(value)
-        self.compliance_status.append(compliance)
+    def _update_stat(self, key: str, value: float):
+        if np.isfinite(value):
+            st = self.stats[key]
+            st['count'] += 1
+            if value < st['min']:
+                st['min'] = value
+            if value > st['max']:
+                st['max'] = value
+            # Running average
+            if st['count'] == 1:
+                st['avg'] = value
+            else:
+                st['avg'] += (value - st['avg']) / st['count']
 
+    def add_resistance(self, timestamp: float, resistance: float, compliance: str = 'OK', event: str = "") -> None:
+        self.timestamps.append(timestamp)
+        self.resistance.append(resistance if np.isfinite(resistance) and resistance >= 0 else float('nan'))
+        self.voltage.append(None)
+        self.current.append(None)
+        self.events.append(event)
+        self.compliance_status.append(compliance)
         if compliance != 'OK':
             self.last_compliance_hit = compliance
+        if np.isfinite(resistance) and resistance >= 0:
+            self._update_stat('resistance', resistance)
 
-        # Update statistics only for valid numerical values
-        if np.isfinite(value):
-            self.count += 1
-            if value < self.stats['min']:
-                self.stats['min'] = value
-            if value > self.stats['max']:
-                self.stats['max'] = value
-            # Update running average robustly
-            if self.count == 1:
-                self.stats['avg'] = value
-            else:
-                 # Welford's online algorithm might be better for large datasets
-                 self.stats['avg'] += (value - self.stats['avg']) / self.count
+    def add_voltage_current(self, timestamp: float, voltage: float, current: float, compliance: str = 'OK', event: str = "") -> None:
+        self.timestamps.append(timestamp)
+        v = voltage if np.isfinite(voltage) else float('nan')
+        i = current if np.isfinite(current) else float('nan')
+        self.voltage.append(v)
+        self.current.append(i)
+        # Calculate resistance if possible
+        r = (v / i) if (np.isfinite(v) and np.isfinite(i) and i != 0) else float('nan')
+        self.resistance.append(r)
+        self.events.append(event)
+        self.compliance_status.append(compliance)
+        if compliance != 'OK':
+            self.last_compliance_hit = compliance
+        if np.isfinite(v):
+            self._update_stat('voltage', v)
+        if np.isfinite(i):
+            self._update_stat('current', i)
+        if np.isfinite(r) and r >= 0:
+            self._update_stat('resistance', r)
 
-    def get_data_for_plot(self) -> Tuple[List[float], List[float], List[str]]:
-        return list(self.timestamps), list(self.values), list(self.compliance_status)
+    def get_data_for_plot(self, data_type: str = 'resistance') -> Tuple[List[float], List[float], List[str]]:
+        ts = list(self.timestamps)
+        if not ts:
+            return [], [], []
+        # elapsed times relative to first timestamp
+        elapsed = [t - ts[0] for t in ts]
+        if data_type == 'resistance':
+            values = [x if x is not None else float('nan') for x in list(self.resistance)]
+        elif data_type == 'voltage':
+            values = [x if x is not None else float('nan') for x in list(self.voltage)]
+        elif data_type == 'current':
+            values = [x if x is not None else float('nan') for x in list(self.current)]
+        else:
+            values = []
+        return elapsed, values, list(self.compliance_status)
+
+    def get_statistics(self, data_type: str = 'resistance') -> Dict[str, float]:
+        st = self.stats.get(data_type, None)
+        if not st:
+            return {'min': float('inf'), 'max': float('-inf'), 'avg': 0.0}
+        # Return compatible structure for canvas
+        return {'min': st['min'], 'max': st['max'], 'avg': st['avg']}
 
     def clear(self) -> None:
-        """Clear all data from the buffer."""
-        self.timestamps.clear()
-        self.values.clear()
-        self.compliance_status.clear()
-        self.stats = {'min': float('inf'), 'max': float('-inf'), 'avg': 0}
-        self.count = 0
-        self.last_compliance_hit = None
+        self.reset()
 
 # ----- Config Manager Class (Mostly Unchanged) -----
 class ConfigManager:
@@ -248,8 +302,8 @@ class ConfigManager:
 # ----- Measurement Worker Thread (Generalized) -----
 class MeasurementWorker(QThread):
     """Worker thread for running measurements in different modes."""
-    # Signal: timestamp, value (R, I, or V), compliance_status ('OK', 'V_COMP', 'I_COMP'), event_marker
-    data_point = pyqtSignal(float, float, str, str)
+    # Signal: timestamp, data_dict (may contain resistance/voltage/current), compliance_status, event_marker
+    data_point = pyqtSignal(float, dict, str, str)
     status_update = pyqtSignal(str)
     measurement_complete = pyqtSignal(str) # Pass mode on complete
     error_occurred = pyqtSignal(str)
@@ -265,7 +319,7 @@ class MeasurementWorker(QThread):
         self.settings = settings # Expects combined user/global settings
         self.running = False
         self.paused = False
-        self.max_compression_pressed = False # Keep for resistance mode? Or generalize?
+        self.event_marker = ""
         self.keithley = None
         self.csvfile = None
         self.writer = None
@@ -383,9 +437,10 @@ class MeasurementWorker(QThread):
                     source_voltage = measurement_settings['vsource_voltage']
                     current_compliance = measurement_settings['vsource_current_compliance']
                     auto_range_curr = measurement_settings['vsource_current_range_auto']
+                    duration_hours = max(0.0, float(measurement_settings.get('vsource_duration_hours', 0.0)))
 
                     self.keithley.write(":SYST:RSEN OFF") # Usually 2-wire for V source
-                    self.keithley.write(":SENS:FUNC 'CURR:DC'") # Sense Current
+                    self.keithley.write(":SENS:FUNC 'CURR:DC'") # Measure Current (voltage still available in elements)
                     self.keithley.write(":SOUR:FUNC VOLT") # Source Voltage
                     self.keithley.write(f":SOUR:VOLT:MODE FIX") # Fixed source mode
                     self.keithley.write(f":SOUR:VOLT:RANG {abs(source_voltage)}") # Set source range (or AUTO?)
@@ -399,7 +454,10 @@ class MeasurementWorker(QThread):
                         self.keithley.write(f":SENS:CURR:RANG {current_compliance}") # Manual range based on compliance
 
                     self.keithley.write(f":SENS:CURR:NPLC {nplc}")
-                    self.keithley.write(":FORM:ELEM CURR") # Read only current
+                    # Read current and voltage in one query (current, voltage)
+                    self.keithley.write(":FORM:ELEM CURR,VOLT")
+                    self.keithley.write(":TRIG:COUN 1")
+                    self.keithley.write(":INIT:CONT ON")
 
                     metadata = {
                         'Mode': 'Voltage Source',
@@ -407,7 +465,7 @@ class MeasurementWorker(QThread):
                         'Current Compliance (A)': current_compliance,
                         'Current Auto Range': 'ON' if auto_range_curr else 'OFF',
                     }
-                    csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Measured Current (A)', 'Compliance Status', 'Event']
+                    csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Voltage (V)', 'Current (A)', 'Resistance (Ohms)', 'Compliance Status', 'Event']
                     source_value_str = f"{source_voltage:.3f}V"
 
 
@@ -416,11 +474,12 @@ class MeasurementWorker(QThread):
                     source_current = measurement_settings['isource_current']
                     voltage_compliance = measurement_settings['isource_voltage_compliance']
                     auto_range_volt = measurement_settings['isource_voltage_range_auto']
+                    duration_hours = max(0.0, float(measurement_settings.get('isource_duration_hours', 0.0)))
 
                     # Sensor type (2/4 wire) might matter depending on setup
                     self.keithley.write(":SYST:RSEN OFF") # Assume 2-wire for voltage measure
 
-                    self.keithley.write(":SENS:FUNC 'VOLT:DC'") # Sense Voltage
+                    self.keithley.write(":SENS:FUNC 'VOLT:DC'") # Measure Voltage (current also available via elements)
                     self.keithley.write(":SOUR:FUNC CURR") # Source Current
                     self.keithley.write(f":SOUR:CURR:MODE FIX") # Fixed source mode
                     self.keithley.write(f":SOUR:CURR:RANG {abs(source_current)}") # Set source range
@@ -434,7 +493,10 @@ class MeasurementWorker(QThread):
                         self.keithley.write(f":SENS:VOLT:RANG {voltage_compliance}") # Manual range based on compliance
 
                     self.keithley.write(f":SENS:VOLT:NPLC {nplc}")
-                    self.keithley.write(":FORM:ELEM VOLT") # Read only voltage
+                    # Read voltage and current in one query (voltage, current)
+                    self.keithley.write(":FORM:ELEM VOLT,CURR")
+                    self.keithley.write(":TRIG:COUN 1")
+                    self.keithley.write(":INIT:CONT ON")
 
                     metadata = {
                         'Mode': 'Current Source',
@@ -442,7 +504,7 @@ class MeasurementWorker(QThread):
                         'Voltage Compliance (V)': voltage_compliance,
                         'Voltage Auto Range': 'ON' if auto_range_volt else 'OFF',
                     }
-                    csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Measured Voltage (V)', 'Compliance Status', 'Event']
+                    csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Voltage (V)', 'Current (A)', 'Resistance (Ohms)', 'Compliance Status', 'Event']
                     source_value_str = f"{source_current*1000:.2f}mA"
 
                 # Common settings after mode specifics
@@ -504,6 +566,16 @@ class MeasurementWorker(QThread):
             last_save = self.start_time
             last_measurement_time = 0
             loop_count = 0
+            # End time for source modes if duration provided (>0)
+            end_time = None
+            if self.mode in ('source_v', 'source_i'):
+                dur = measurement_settings.get('vsource_duration_hours') if self.mode == 'source_v' else measurement_settings.get('isource_duration_hours')
+                try:
+                    dur_s = float(dur) * 3600.0
+                    if dur_s > 0:
+                        end_time = self.start_time + dur_s
+                except Exception:
+                    end_time = None
 
             while self.running:
                 if self.paused:
@@ -516,16 +588,13 @@ class MeasurementWorker(QThread):
                 if time_since_last >= sample_interval:
                     try:
                         reading_str = self.keithley.query(":READ?").strip()
-                        value = float(reading_str)
                         last_measurement_time = now # Update time after successful read
                     except pyvisa.errors.VisaIOError as e:
                         self.error_occurred.emit(f"VISA Read Error: {str(e)}. Stopping.")
                         break # Stop on read error
                     except ValueError:
                         self.status_update.emit(f"Warning: Invalid reading received '{reading_str}'. Skipping.")
-                        value = float('nan') # Mark as invalid
-                        # Don't update last_measurement_time here? Or do? Let's skip point.
-                        time.sleep(0.01) # Small delay before retrying
+                        time.sleep(0.01)
                         continue
                     except Exception as e:
                         self.error_occurred.emit(f"Unexpected Read Error: {str(e)}. Stopping.")
@@ -533,80 +602,105 @@ class MeasurementWorker(QThread):
 
                     elapsed_time = now - self.start_time
 
-                    # --- Compliance Check ---
+                    # Parse readings and compliance per mode
                     compliance_status = 'OK'
-                    compliance_limit = None
                     compliance_type = None
-
-                    if self.mode == 'resistance' or self.mode == 'source_i':
-                        # Check voltage compliance
-                        compliance_limit = measurement_settings.get('res_voltage_compliance') if self.mode == 'resistance' else measurement_settings.get('isource_voltage_compliance')
+                    data_dict: Dict[str, float] = {}
+                    if self.mode == 'resistance':
+                        # Expect a single resistance value
+                        try:
+                            value = float(reading_str)
+                        except Exception:
+                            value = float('nan')
+                        # Compliance heuristic for resistance
+                        comp_limit_v = measurement_settings.get('res_voltage_compliance')
                         compliance_type = 'Voltage'
-                        # Need to measure voltage separately if not already reading it
-                        # For simplicity, let's assume resistance > HUGE implies V compliance for R mode
-                        # And for I source mode, the reading *is* voltage
-                        if self.mode == 'resistance':
-                             # If resistance is abnormally high, assume compliance (crude)
-                             if value > KEITHLEY_COMPLIANCE_MAGIC_NUMBER * 0.9: # Check against magic number
-                                 compliance_status = 'V_COMP'
-                        elif self.mode == 'source_i':
-                             # The measured value is voltage
-                             if abs(value) >= compliance_limit * COMPLIANCE_THRESHOLD_FACTOR:
-                                 compliance_status = 'V_COMP'
-
+                        if np.isfinite(value) and value > KEITHLEY_COMPLIANCE_MAGIC_NUMBER * 0.9:
+                            compliance_status = 'V_COMP'
+                        if not np.isfinite(value) or value < 0:
+                            value = float('nan')
+                            self.status_update.emit(f"Invalid value detected ({reading_str})")
+                        data_dict = {'resistance': value}
                     elif self.mode == 'source_v':
-                        # Check current compliance
-                        compliance_limit = measurement_settings.get('vsource_current_compliance')
+                        # Expect "current,voltage"
+                        parts = [p for p in reading_str.split(',') if p.strip()]
+                        try:
+                            current = float(parts[0])
+                            voltage = float(parts[1]) if len(parts) > 1 else float('nan')
+                        except Exception:
+                            current = float('nan'); voltage = float('nan')
+                        comp_limit_i = measurement_settings.get('vsource_current_compliance')
                         compliance_type = 'Current'
-                        # The measured value is current
-                        if abs(value) >= compliance_limit * COMPLIANCE_THRESHOLD_FACTOR:
-                             compliance_status = 'I_COMP'
-                         # Also check for magic number which might indicate compliance directly
-                        if abs(value) > KEITHLEY_COMPLIANCE_MAGIC_NUMBER * 0.9:
-                             compliance_status = 'I_COMP'
+                        if np.isfinite(current) and abs(current) >= comp_limit_i * COMPLIANCE_THRESHOLD_FACTOR:
+                            compliance_status = 'I_COMP'
+                        if np.isfinite(current) and abs(current) > KEITHLEY_COMPLIANCE_MAGIC_NUMBER * 0.9:
+                            compliance_status = 'I_COMP'
+                        data_dict = {'current': current, 'voltage': voltage}
+                    elif self.mode == 'source_i':
+                        # Expect "voltage,current"
+                        parts = [p for p in reading_str.split(',') if p.strip()]
+                        try:
+                            voltage = float(parts[0])
+                            current = float(parts[1]) if len(parts) > 1 else float('nan')
+                        except Exception:
+                            voltage = float('nan'); current = float('nan')
+                        comp_limit_v = measurement_settings.get('isource_voltage_compliance')
+                        compliance_type = 'Voltage'
+                        if np.isfinite(voltage) and abs(voltage) >= comp_limit_v * COMPLIANCE_THRESHOLD_FACTOR:
+                            compliance_status = 'V_COMP'
+                        if np.isfinite(voltage) and abs(voltage) > KEITHLEY_COMPLIANCE_MAGIC_NUMBER * 0.9:
+                            compliance_status = 'V_COMP'
+                        data_dict = {'voltage': voltage, 'current': current}
 
-
-                    if compliance_status != 'OK':
-                        self.compliance_hit.emit(compliance_type) # Emit signal for UI
-                        self.status_update.emit(f"⚠️ {compliance_type} Compliance Hit! Limit: {compliance_limit} { 'V' if compliance_type == 'Voltage' else 'A'}")
-                        # Option: Stop measurement on compliance?
-                        # self.running = False
-                        # self.status_update.emit("Measurement stopped due to compliance.")
-
-                    # Handle invalid readings (e.g., NaN from failed conversion, or negative resistance)
-                    if not np.isfinite(value) or (self.mode == 'resistance' and value < 0):
-                        # Keep NaN to plot gaps, or skip? Let's emit NaN.
-                        value = float('nan')
-                        self.status_update.emit(f"Invalid value detected ({reading_str})")
+                    # Notify UI on compliance
+                    if compliance_status != 'OK' and compliance_type:
+                        try:
+                            self.compliance_hit.emit(compliance_type)
+                            self.status_update.emit(f"⚠️ {compliance_type} Compliance Hit!")
+                        except Exception:
+                            pass
 
                     # Event Marker
                     event_marker = ""
-                    if self.max_compression_pressed and self.mode == 'resistance': # Only for resistance?
-                        event_marker = "MAX_COMPRESSION"
-                        self.max_compression_pressed = False
+                    if self.event_marker:
+                        event_marker = self.event_marker
+                        self.event_marker = ""
                         self.status_update.emit(f"⭐ Event marked at {elapsed_time:.3f}s ⭐")
 
-                    # Prepare data row
+                    # Prepare data row for CSV
                     now_unix = int(now)
-                    row_data = [
-                        now_unix,
-                        f"{elapsed_time:.3f}",
-                        f"{value:.6e}" if np.isfinite(value) else "NaN",
-                        compliance_status,
-                        event_marker
-                    ]
+                    if self.mode == 'resistance':
+                        r = data_dict.get('resistance', float('nan'))
+                        row_data = [
+                            now_unix,
+                            f"{elapsed_time:.3f}",
+                            f"{r:.6e}" if np.isfinite(r) else "NaN",
+                            compliance_status,
+                            event_marker
+                        ]
+                    else:
+                        v = data_dict.get('voltage', float('nan'))
+                        i = data_dict.get('current', float('nan'))
+                        r = (v / i) if (np.isfinite(v) and np.isfinite(i) and i != 0) else float('nan')
+                        row_data = [
+                            now_unix,
+                            f"{elapsed_time:.3f}",
+                            f"{v:.6e}" if np.isfinite(v) else "NaN",
+                            f"{i:.6e}" if np.isfinite(i) else "NaN",
+                            f"{r:.6e}" if np.isfinite(r) else "NaN",
+                            compliance_status,
+                            event_marker
+                        ]
 
                     # Write to CSV
                     try:
                         self.writer.writerow(row_data)
                     except Exception as e:
                          self.error_occurred.emit(f"Error writing to CSV: {str(e)}")
-                         # Continue running? Or stop? Let's continue but warn.
                          self.status_update.emit("Warning: Failed to write data point to CSV.")
 
-
                     # Emit signal with the data for plotting/UI update
-                    self.data_point.emit(now, value, compliance_status, event_marker)
+                    self.data_point.emit(now, data_dict, compliance_status, event_marker)
 
                     # Auto-save
                     if now - last_save >= auto_save_interval:
@@ -620,12 +714,20 @@ class MeasurementWorker(QThread):
 
                     # Status update for the main window status bar
                     elapsed_time_formatted = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
-                    unit = "Ohms" if self.mode == 'resistance' else ("A" if self.mode == 'source_v' else "V")
-                    status_msg = f"Running {self.mode}: {elapsed_time_formatted} | "
-                    if np.isfinite(value):
-                         status_msg += f"{value:.4f} {unit}"
+                    status_msg = f"Running {self.mode}: {elapsed_time_formatted}"
+                    if self.mode == 'resistance':
+                        rv = data_dict.get('resistance', float('nan'))
+                        status_msg += f" | R: {rv:.4f} Ohms" if np.isfinite(rv) else " | R: Invalid"
+                    elif self.mode == 'source_v':
+                        cv = data_dict.get('current', float('nan'))
+                        vv = data_dict.get('voltage', float('nan'))
+                        status_msg += (f" | I: {cv:.4e} A" if np.isfinite(cv) else " | I: Invalid")
+                        status_msg += (f" | V: {vv:.4e} V" if np.isfinite(vv) else " | V: Invalid")
                     else:
-                         status_msg += "Invalid Reading"
+                        vv = data_dict.get('voltage', float('nan'))
+                        iv = data_dict.get('current', float('nan'))
+                        status_msg += (f" | V: {vv:.4e} V" if np.isfinite(vv) else " | V: Invalid")
+                        status_msg += (f" | I: {iv:.4e} A" if np.isfinite(iv) else " | I: Invalid")
                     if compliance_status != 'OK':
                          status_msg += f" ({compliance_status})"
                     self.status_update.emit(status_msg)
@@ -643,6 +745,11 @@ class MeasurementWorker(QThread):
                      # Very high rate or zero interval, just yield
                      time.sleep(0.001)
                      if not self.running: break
+
+                # Check duration end for source modes
+                if end_time is not None and time.time() >= end_time:
+                    self.status_update.emit("Reached configured duration. Stopping.")
+                    self.running = False
 
             # --- End of Measurement Loop ---
             if instrument_ready and self.keithley:
@@ -711,10 +818,9 @@ class MeasurementWorker(QThread):
             self.status_update.emit(f"Warning: Failed to write metadata - {str(e)}")
 
 
-    def mark_max_compression(self) -> None:
-        """Mark a max compression point (relevant for resistance mode)."""
-        if self.mode == 'resistance':
-            self.max_compression_pressed = True
+    def mark_event(self, name: str = "MARK") -> None:
+        """Mark a generic event to be recorded next data point."""
+        self.event_marker = name
 
     def pause_measurement(self) -> None:
         """Pause the measurement."""
@@ -972,6 +1078,8 @@ class SettingsDialog(QDialog):
         form_layout.addRow("Current Compliance:", self.vsource_current_compliance)
         self.vsource_current_range_auto = QCheckBox("Auto Range Current Measurement")
         form_layout.addRow(self.vsource_current_range_auto)
+        self.vsource_duration_hours = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
+        form_layout.addRow("Duration (hours):", self.vsource_duration_hours)
         vsrc_group.setLayout(form_layout)
         main_layout.addWidget(vsrc_group)
 
@@ -984,6 +1092,8 @@ class SettingsDialog(QDialog):
         form_layout.addRow("Voltage Compliance:", self.isource_voltage_compliance)
         self.isource_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
         form_layout.addRow(self.isource_voltage_range_auto)
+        self.isource_duration_hours = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
+        form_layout.addRow("Duration (hours):", self.isource_duration_hours)
         isrc_group.setLayout(form_layout)
         main_layout.addWidget(isrc_group)
 
@@ -1067,10 +1177,14 @@ class SettingsDialog(QDialog):
         self.vsource_voltage.setValue(m_cfg['vsource_voltage'])
         self.vsource_current_compliance.setValue(m_cfg['vsource_current_compliance'])
         self.vsource_current_range_auto.setChecked(m_cfg['vsource_current_range_auto'])
+        if hasattr(self, 'vsource_duration_hours'):
+            self.vsource_duration_hours.setValue(m_cfg.get('vsource_duration_hours', 0.0))
 
         self.isource_current.setValue(m_cfg['isource_current'])
         self.isource_voltage_compliance.setValue(m_cfg['isource_voltage_compliance'])
         self.isource_voltage_range_auto.setChecked(m_cfg['isource_voltage_range_auto'])
+        if hasattr(self, 'isource_duration_hours'):
+            self.isource_duration_hours.setValue(m_cfg.get('isource_duration_hours', 0.0))
 
         # Display Tab
         d_cfg = self.settings['display']
@@ -1106,10 +1220,14 @@ class SettingsDialog(QDialog):
         m_cfg['vsource_voltage'] = self.vsource_voltage.value()
         m_cfg['vsource_current_compliance'] = self.vsource_current_compliance.value()
         m_cfg['vsource_current_range_auto'] = self.vsource_current_range_auto.isChecked()
+        if hasattr(self, 'vsource_duration_hours'):
+            m_cfg['vsource_duration_hours'] = self.vsource_duration_hours.value()
 
         m_cfg['isource_current'] = self.isource_current.value()
         m_cfg['isource_voltage_compliance'] = self.isource_voltage_compliance.value()
         m_cfg['isource_voltage_range_auto'] = self.isource_voltage_range_auto.isChecked()
+        if hasattr(self, 'isource_duration_hours'):
+            m_cfg['isource_duration_hours'] = self.isource_duration_hours.value()
 
         # Display Tab
         d_cfg = self.settings['display']
@@ -1308,10 +1426,10 @@ class ResistanceMeterApp(QMainWindow):
         super().__init__()
 
         self.config_manager = ConfigManager()
-        self.data_buffers = { # Separate buffer for each mode
-             'resistance': DataBuffer(),
-             'source_v': DataBuffer(),
-             'source_i': DataBuffer()
+        self.data_buffers = { # Separate buffer for each mode (multi-channel capable)
+             'resistance': EnhancedDataBuffer(),
+             'source_v': EnhancedDataBuffer(),
+             'source_i': EnhancedDataBuffer()
         }
         self.measurement_worker = None
         self.plot_timer = QTimer(self)
@@ -1390,9 +1508,9 @@ class ResistanceMeterApp(QMainWindow):
         self.create_menus()
 
         # --- Keyboard Shortcuts ---
-        self.shortcut_max = QShortcut(Qt.Key_M, self)
-        self.shortcut_max.activated.connect(self.mark_max_compression_shortcut)
-        self.shortcut_max.setEnabled(False) # Disabled initially
+        self.shortcut_mark = QShortcut(Qt.Key_M, self)
+        self.shortcut_mark.activated.connect(self.mark_event_shortcut)
+        self.shortcut_mark.setEnabled(False) # Disabled initially
 
     def create_tab_widget(self, mode: str) -> QWidget:
         """Helper to create the basic structure of a measurement tab."""
@@ -1420,15 +1538,15 @@ class ResistanceMeterApp(QMainWindow):
         start_button = QPushButton(QIcon.fromTheme("media-playback-start"), "Start")
         stop_button = QPushButton(QIcon.fromTheme("media-playback-stop"), "Stop")
         stop_button.setEnabled(False)
-        # pause_button = QPushButton(QIcon.fromTheme("media-playback-pause"), "Pause") # Add if needed per mode
-        # pause_button.setEnabled(False)
-        # pause_button.setCheckable(True)
+        pause_button = QPushButton(QIcon.fromTheme("media-playback-pause"), "Pause")
+        pause_button.setEnabled(False)
+        pause_button.setCheckable(True)
         status_label = QLabel("Status: Idle") # Compliance/status indicator for the tab
         status_label.setStyleSheet("font-weight: bold;")
 
         control_layout.addWidget(start_button)
         control_layout.addWidget(stop_button)
-        # control_layout.addWidget(pause_button)
+        control_layout.addWidget(pause_button)
         control_layout.addStretch()
         control_layout.addWidget(status_label)
         control_group.setLayout(control_layout)
@@ -1444,7 +1562,7 @@ class ResistanceMeterApp(QMainWindow):
         tab_widget.canvas = canvas
         tab_widget.start_button = start_button
         tab_widget.stop_button = stop_button
-        # tab_widget.pause_button = pause_button
+        tab_widget.pause_button = pause_button
         tab_widget.status_label = status_label
 
         return tab_widget
@@ -1463,16 +1581,16 @@ class ResistanceMeterApp(QMainWindow):
         layout.addRow("Measurement Type:", widget.res_measurement_type)
         widget.res_auto_range = QCheckBox("Auto Range Resistance")
         layout.addRow(widget.res_auto_range)
-        widget.mark_max_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Max Compression (M)")
-        widget.mark_max_button.setEnabled(False)
-        layout.addRow(widget.mark_max_button)
+        widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
+        widget.mark_event_button.setEnabled(False)
+        layout.addRow(widget.mark_event_button)
 
 
         # Connect signals for this tab
         widget.start_button.clicked.connect(lambda: self.start_measurement('resistance'))
         widget.stop_button.clicked.connect(self.stop_current_measurement)
-        widget.mark_max_button.clicked.connect(self.mark_max_compression_shortcut)
-        # widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
+        widget.mark_event_button.clicked.connect(self.mark_event_shortcut)
+        widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
 
         return widget
 
@@ -1487,11 +1605,22 @@ class ResistanceMeterApp(QMainWindow):
         layout.addRow("Current Compliance:", widget.vsource_current_compliance)
         widget.vsource_current_range_auto = QCheckBox("Auto Range Current Measurement")
         layout.addRow(widget.vsource_current_range_auto)
+        widget.vsource_duration = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
+        layout.addRow("Duration (hours):", widget.vsource_duration)
+
+        widget.v_plot_var = QComboBox()
+        widget.v_plot_var.addItems(["current", "voltage", "resistance"])  # default to current
+        layout.addRow("Plot Variable:", widget.v_plot_var)
+        widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
+        widget.mark_event_button.setEnabled(False)
+        layout.addRow(widget.mark_event_button)
 
         # Connect signals
         widget.start_button.clicked.connect(lambda: self.start_measurement('source_v'))
         widget.stop_button.clicked.connect(self.stop_current_measurement)
-        # widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
+        widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
+        widget.mark_event_button.clicked.connect(self.mark_event_shortcut)
+        widget.v_plot_var.currentTextChanged.connect(lambda _: self.update_canvas_labels_for_mode('source_v'))
 
         return widget
 
@@ -1506,11 +1635,22 @@ class ResistanceMeterApp(QMainWindow):
         layout.addRow("Voltage Compliance:", widget.isource_voltage_compliance)
         widget.isource_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
         layout.addRow(widget.isource_voltage_range_auto)
+        widget.isource_duration = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
+        layout.addRow("Duration (hours):", widget.isource_duration)
+
+        widget.i_plot_var = QComboBox()
+        widget.i_plot_var.addItems(["voltage", "current", "resistance"])  # default to voltage
+        layout.addRow("Plot Variable:", widget.i_plot_var)
+        widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
+        widget.mark_event_button.setEnabled(False)
+        layout.addRow(widget.mark_event_button)
 
         # Connect signals
         widget.start_button.clicked.connect(lambda: self.start_measurement('source_i'))
         widget.stop_button.clicked.connect(self.stop_current_measurement)
-        # widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
+        widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
+        widget.mark_event_button.clicked.connect(self.mark_event_shortcut)
+        widget.i_plot_var.currentTextChanged.connect(lambda _: self.update_canvas_labels_for_mode('source_i'))
 
         return widget
 
@@ -1588,6 +1728,11 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_voltage_source.vsource_voltage.setValue(m_cfg['vsource_voltage'])
         self.tab_voltage_source.vsource_current_compliance.setValue(m_cfg['vsource_current_compliance'])
         self.tab_voltage_source.vsource_current_range_auto.setChecked(m_cfg['vsource_current_range_auto'])
+        # Duration and default plot variable
+        if hasattr(self.tab_voltage_source, 'vsource_duration'):
+            self.tab_voltage_source.vsource_duration.setValue(m_cfg.get('vsource_duration_hours', 0.0))
+        if hasattr(self.tab_voltage_source, 'v_plot_var'):
+            self.tab_voltage_source.v_plot_var.setCurrentText('current')
         self.tab_voltage_source.canvas.set_plot_properties(
             'Elapsed Time (s)', 'Measured Current (A)', 'Voltage Source Output', d_cfg['plot_color_v'])
 
@@ -1595,15 +1740,19 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_current_source.isource_current.setValue(m_cfg['isource_current'])
         self.tab_current_source.isource_voltage_compliance.setValue(m_cfg['isource_voltage_compliance'])
         self.tab_current_source.isource_voltage_range_auto.setChecked(m_cfg['isource_voltage_range_auto'])
+        if hasattr(self.tab_current_source, 'isource_duration'):
+            self.tab_current_source.isource_duration.setValue(m_cfg.get('isource_duration_hours', 0.0))
+        if hasattr(self.tab_current_source, 'i_plot_var'):
+            self.tab_current_source.i_plot_var.setCurrentText('voltage')
         self.tab_current_source.canvas.set_plot_properties(
             'Elapsed Time (s)', 'Measured Voltage (V)', 'Current Source Output', d_cfg['plot_color_i'])
 
         # Update buffer sizes
         buffer_size = d_cfg.get('buffer_size')
         new_size = None if buffer_size is None or buffer_size <= 0 else buffer_size
-        for mode, buffer in self.data_buffers.items():
+        for mode, buffer in list(self.data_buffers.items()):
             if buffer.size != new_size:
-                self.data_buffers[mode] = DataBuffer(size=new_size) # Recreate buffer
+                self.data_buffers[mode] = EnhancedDataBuffer(size=new_size) # Recreate buffer
 
         self.clear_all_plots()
         self.log_status("User settings loaded into UI.")
@@ -1672,10 +1821,14 @@ class ResistanceMeterApp(QMainWindow):
                 m_cfg['vsource_voltage'] = widget.vsource_voltage.value()
                 m_cfg['vsource_current_compliance'] = widget.vsource_current_compliance.value()
                 m_cfg['vsource_current_range_auto'] = widget.vsource_current_range_auto.isChecked()
+                if hasattr(widget, 'vsource_duration'):
+                    m_cfg['vsource_duration_hours'] = widget.vsource_duration.value()
             elif mode == 'source_i':
                 m_cfg['isource_current'] = widget.isource_current.value()
                 m_cfg['isource_voltage_compliance'] = widget.isource_voltage_compliance.value()
                 m_cfg['isource_voltage_range_auto'] = widget.isource_voltage_range_auto.isChecked()
+                if hasattr(widget, 'isource_duration'):
+                    m_cfg['isource_duration_hours'] = widget.isource_duration.value()
         except AttributeError as e:
              raise ValueError(f"UI Widgets not found for mode {mode}: {e}")
 
@@ -1722,15 +1875,15 @@ class ResistanceMeterApp(QMainWindow):
         self.set_all_controls_enabled(False, except_mode=mode) # Disable controls on other tabs
         self.sample_input.setEnabled(False)
         self.change_user_button.setEnabled(False)
-        self.shortcut_max.setEnabled(mode == 'resistance') # Enable 'M' key only for resistance mode
+        self.shortcut_mark.setEnabled(True)
 
         # Clear buffer and plot for the specific mode
         self.data_buffers[mode].clear()
         widget.canvas.clear_plot()
         widget.status_label.setText("Status: Running")
         widget.status_label.setStyleSheet("font-weight: bold; color: green;")
-        if mode == 'resistance':
-             widget.mark_max_button.setEnabled(True)
+        if hasattr(widget, 'mark_event_button'):
+             widget.mark_event_button.setEnabled(True)
 
 
         # --- Worker Setup ---
@@ -1774,11 +1927,13 @@ class ResistanceMeterApp(QMainWindow):
                  widget.stop_button.setEnabled(False)
                  widget.status_label.setText("Status: Stopping...")
                  widget.status_label.setStyleSheet("font-weight: bold; color: orange;")
-                 if self.active_mode == 'resistance':
-                      widget.mark_max_button.setEnabled(False)
+                 if hasattr(widget, 'mark_event_button'):
+                      widget.mark_event_button.setEnabled(False)
+                 if hasattr(widget, 'pause_button'):
+                      widget.pause_button.setEnabled(False)
 
 
-            self.shortcut_max.setEnabled(False)
+            self.shortcut_mark.setEnabled(False)
             self.plot_timer.stop() # Stop plot updates
 
             # Signal the worker thread to stop
@@ -1807,28 +1962,30 @@ class ResistanceMeterApp(QMainWindow):
     #         widget.pause_button.setIcon(QIcon.fromTheme("media-playback-pause"))
     #         widget.status_label.setText("Status: Running")
     #         widget.status_label.setStyleSheet("font-weight: bold; color: green;")
-
-
-    def mark_max_compression_shortcut(self):
-        """Marks max compression if resistance measurement is active."""
-        if self.measurement_running and self.active_mode == 'resistance' and self.measurement_worker:
-            self.measurement_worker.mark_max_compression()
-            self.log_status("⭐ Max Compression event marked.", color="purple")
+    def mark_event_shortcut(self):
+        """Marks a generic event for the running measurement."""
+        if self.measurement_running and self.measurement_worker:
+            self.measurement_worker.mark_event("MARK")
+            self.log_status("⭐ Event marked.", color="purple")
             # Optional: visual feedback like flashing the button
-            widget = self.get_widget_for_mode('resistance')
-            if widget:
-                 original_style = widget.mark_max_button.styleSheet()
-                 widget.mark_max_button.setStyleSheet("background-color: yellow;")
-                 QTimer.singleShot(500, lambda: widget.mark_max_button.setStyleSheet(original_style))
+            widget = self.get_widget_for_mode(self.active_mode)
+            if widget and hasattr(widget, 'mark_event_button'):
+                 original_style = widget.mark_event_button.styleSheet()
+                 widget.mark_event_button.setStyleSheet("background-color: yellow;")
+                 QTimer.singleShot(500, lambda: widget.mark_event_button.setStyleSheet(original_style))
 
 
-    def update_data(self, timestamp: float, value: float, compliance_status: str, event: str):
+    def update_data(self, timestamp: float, value: Dict[str, float], compliance_status: str, event: str):
         """Slot to receive data points from the worker thread."""
         if not self.measurement_running or self.active_mode is None:
              return # Ignore data if not running or mode unknown
 
         # Add data to the buffer corresponding to the active mode
-        self.data_buffers[self.active_mode].add(timestamp, value, compliance_status)
+        buffer = self.data_buffers[self.active_mode]
+        if 'resistance' in value and ('voltage' not in value and 'current' not in value):
+            buffer.add_resistance(timestamp, value.get('resistance', float('nan')), compliance_status)
+        else:
+            buffer.add_voltage_current(timestamp, value.get('voltage', float('nan')), value.get('current', float('nan')), compliance_status)
 
         # No plotting here, handled by the timer calling update_active_plot
 
@@ -1845,12 +2002,21 @@ class ResistanceMeterApp(QMainWindow):
             return
 
         if self.user_settings['display']['enable_plot']:
-            timestamps, values, compliance_list = buffer.get_data_for_plot()
+            # Decide which variable to plot per mode
+            if mode == 'resistance':
+                var = 'resistance'
+            elif mode == 'source_v':
+                var = widget.v_plot_var.currentText() if hasattr(widget, 'v_plot_var') else 'current'
+            else:
+                var = widget.i_plot_var.currentText() if hasattr(widget, 'i_plot_var') else 'voltage'
+
+            timestamps, values, compliance_list = buffer.get_data_for_plot(var)
+            stats = buffer.get_statistics(var)
             widget.canvas.update_plot(
                 timestamps,
                 values,
-                compliance_list, # Pass compliance info
-                buffer.stats,
+                compliance_list,
+                stats,
                 self.current_user,
                 self.sample_input.text()
             )
@@ -1920,16 +2086,17 @@ class ResistanceMeterApp(QMainWindow):
               widget.status_label.setStyleSheet("font-weight: bold; color: black;")
               widget.start_button.setEnabled(True)
               widget.stop_button.setEnabled(False)
-              # widget.pause_button.setEnabled(False)
-              # widget.pause_button.setChecked(False)
-              if finished_mode == 'resistance':
-                   widget.mark_max_button.setEnabled(False)
+              if hasattr(widget, 'pause_button'):
+                  widget.pause_button.setEnabled(False)
+                  widget.pause_button.setChecked(False)
+              if hasattr(widget, 'mark_event_button'):
+                   widget.mark_event_button.setEnabled(False)
 
 
          # Re-enable controls on ALL tabs
          self.set_all_controls_enabled(True)
 
-         self.shortcut_max.setEnabled(False) # Disable M key generally
+         self.shortcut_mark.setEnabled(False) # Disable M key generally
 
          self.statusBar().showMessage("Ready", 0) # Persistent Ready message
          self.log_status("Measurement stopped. UI controls re-enabled.")
@@ -1941,7 +2108,8 @@ class ResistanceMeterApp(QMainWindow):
         if widget:
              widget.start_button.setEnabled(not running)
              widget.stop_button.setEnabled(running)
-             # widget.pause_button.setEnabled(running)
+             if hasattr(widget, 'pause_button'):
+                 widget.pause_button.setEnabled(running)
              # Disable parameter inputs while running
              for i in range(widget.param_layout.rowCount()):
                  field = widget.param_layout.itemAt(i, QFormLayout.FieldRole)
@@ -1950,9 +2118,9 @@ class ResistanceMeterApp(QMainWindow):
                  label = widget.param_layout.itemAt(i, QFormLayout.LabelRole)
                  if label and label.widget():
                       label.widget().setEnabled(not running) # Also disable labels? Optional.
-             # Re-enable mark button specifically if running resistance
-             if mode == 'resistance':
-                  widget.mark_max_button.setEnabled(running)
+             # Enable mark button when running
+             if hasattr(widget, 'mark_event_button'):
+                  widget.mark_event_button.setEnabled(running)
 
     def set_all_controls_enabled(self, enabled: bool, except_mode: Optional[str] = None):
          """Enable/disable start buttons and parameters on ALL tabs, optionally skipping one."""
@@ -1963,9 +2131,11 @@ class ResistanceMeterApp(QMainWindow):
               if widget:
                    widget.start_button.setEnabled(enabled)
                    widget.stop_button.setEnabled(False) # Stop always disabled if not running
-                   # widget.pause_button.setEnabled(False)
-                   # widget.pause_button.setChecked(False)
-                   if mode == 'resistance': widget.mark_max_button.setEnabled(False)
+                   if hasattr(widget, 'pause_button'):
+                       widget.pause_button.setEnabled(False)
+                       widget.pause_button.setChecked(False)
+                   if hasattr(widget, 'mark_event_button'):
+                       widget.mark_event_button.setEnabled(False)
 
                    # Enable/disable parameter inputs
                    for i in range(widget.param_layout.rowCount()):
@@ -1998,6 +2168,33 @@ class ResistanceMeterApp(QMainWindow):
                         break
             # else: switching to the tab that IS running is okay.
         # else: Okay to switch tabs if nothing is running.
+
+    def update_canvas_labels_for_mode(self, mode: str):
+        """Update canvas labels based on selected plot variable for the given mode."""
+        if not self.user_settings:
+            return
+        d_cfg = self.user_settings['display']
+        widget = self.get_widget_for_mode(mode)
+        if not widget:
+            return
+        if mode == 'source_v':
+            var = widget.v_plot_var.currentText()
+            color = d_cfg['plot_color_v']
+            if var == 'current':
+                widget.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Current (A)', 'Voltage Source Output', color)
+            elif var == 'voltage':
+                widget.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Voltage (V)', 'Voltage Source Output', color)
+            else:
+                widget.canvas.set_plot_properties('Elapsed Time (s)', 'Resistance (Ohms)', 'Voltage Source Output', color)
+        elif mode == 'source_i':
+            var = widget.i_plot_var.currentText()
+            color = d_cfg['plot_color_i']
+            if var == 'voltage':
+                widget.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Voltage (V)', 'Current Source Output', color)
+            elif var == 'current':
+                widget.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Current (A)', 'Current Source Output', color)
+            else:
+                widget.canvas.set_plot_properties('Elapsed Time (s)', 'Resistance (Ohms)', 'Current Source Output', color)
 
 
     def log_status(self, message: str, color: str = "black"):
