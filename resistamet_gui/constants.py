@@ -30,7 +30,8 @@ DEFAULT_SETTINGS = {
         "sampling_rate": 10.0,               # Sampling rate in Hz (shared for now)
         "nplc": 1,                           # Number of power line cycles (shared)
         "settling_time": 0.2,                # Settling time in seconds (shared)
-        "gpib_address": "GPIB0::24::INSTR"   # GPIB address of the instrument
+        "gpib_address": "GPIB0::24::INSTR",  # GPIB address of the instrument
+        "stop_on_compliance": false          # Stop run when compliance is hit
     },
     "display": {
         "enable_plot": True,
@@ -52,4 +53,3 @@ DEFAULT_SETTINGS = {
 # Keithley compliance heuristics
 KEITHLEY_COMPLIANCE_MAGIC_NUMBER = 9.9e37
 COMPLIANCE_THRESHOLD_FACTOR = 1.0
-

@@ -2,7 +2,7 @@ import os
 from PyQt5.QtWidgets import (
     QDialog, QTabWidget, QWidget, QVBoxLayout, QFormLayout, QHBoxLayout,
     QLineEdit, QPushButton, QDoubleSpinBox, QSpinBox, QComboBox, QLabel,
-    QFileDialog, QMessageBox
+    QFileDialog, QMessageBox, QCheckBox
 )
 from PyQt5.QtCore import Qt
 
@@ -90,8 +90,7 @@ class SettingsDialog(QDialog):
         self.res_measurement_type = QComboBox()
         self.res_measurement_type.addItems(["2-wire", "4-wire"])
         form_layout.addRow("Measurement Type:", self.res_measurement_type)
-        self.res_auto_range = QCheckBox("Auto Range Resistance") if False else None
-        # Keep UI minimal; auto-range available in main window per-mode
+        self.res_auto_range = None  # controlled per-mode in the main UI
         main_layout.addLayout(form_layout)
 
         vsrc_group = QWidget()
@@ -100,8 +99,7 @@ class SettingsDialog(QDialog):
         form_layout.addRow("Source Voltage:", self.vsource_voltage)
         self.vsource_current_compliance = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=1.0, singleStep=1e-3, suffix=" A")
         form_layout.addRow("Current Compliance:", self.vsource_current_compliance)
-        self.vsource_current_range_auto = QComboBox()
-        # main UI controls auto-range; leave here for reference
+        # autorange controlled in main UI
         self.vsource_duration_hours = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
         form_layout.addRow("Duration (hours):", self.vsource_duration_hours)
         main_layout.addLayout(form_layout)
@@ -114,6 +112,8 @@ class SettingsDialog(QDialog):
         form_layout.addRow("Voltage Compliance:", self.isource_voltage_compliance)
         self.isource_duration_hours = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
         form_layout.addRow("Duration (hours):", self.isource_duration_hours)
+        self.stop_on_compliance = QCheckBox("Stop on compliance")
+        main_layout.addWidget(self.stop_on_compliance)
         main_layout.addLayout(form_layout)
 
         main_layout.addStretch()
@@ -178,6 +178,7 @@ class SettingsDialog(QDialog):
         self.isource_current.setValue(m_cfg['isource_current'])
         self.isource_voltage_compliance.setValue(m_cfg['isource_voltage_compliance'])
         self.isource_duration_hours.setValue(m_cfg.get('isource_duration_hours', 0.0))
+        self.stop_on_compliance.setChecked(bool(m_cfg.get('stop_on_compliance', False)))
         d_cfg = self.settings['display']
         self.enable_plot.setCurrentText("True" if d_cfg['enable_plot'] else "False")
         self.plot_update_interval.setValue(d_cfg['plot_update_interval'])
@@ -206,6 +207,7 @@ class SettingsDialog(QDialog):
         m_cfg['isource_current'] = self.isource_current.value()
         m_cfg['isource_voltage_compliance'] = self.isource_voltage_compliance.value()
         m_cfg['isource_duration_hours'] = self.isource_duration_hours.value()
+        m_cfg['stop_on_compliance'] = self.stop_on_compliance.isChecked()
         d_cfg = self.settings['display']
         d_cfg['enable_plot'] = (self.enable_plot.currentText() == "True")
         d_cfg['plot_update_interval'] = self.plot_update_interval.value()
@@ -337,4 +339,3 @@ class UserSelectionDialog(QDialog):
     def open_global_settings(self):
         dialog = SettingsDialog(self.config_manager, parent=self)
         dialog.exec_()
-

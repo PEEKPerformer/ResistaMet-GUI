@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Dict
 
 import numpy as np
-import pyvisa
 from PyQt5.QtCore import QThread, pyqtSignal
 
 from .constants import (
@@ -16,6 +15,7 @@ from .constants import (
     KEITHLEY_COMPLIANCE_MAGIC_NUMBER,
     COMPLIANCE_THRESHOLD_FACTOR,
 )
+from .instrument import Keithley2400
 
 
 class MeasurementWorker(QThread):
@@ -64,34 +64,18 @@ class MeasurementWorker(QThread):
             # Connect instrument
             try:
                 self.status_update.emit(f"Connecting to instrument at {gpib_address}...")
-                rm = pyvisa.ResourceManager()
-                resources = rm.list_resources()
-                if not resources:
-                    self.error_occurred.emit("No VISA instruments detected!")
-                    return
-                if gpib_address not in resources:
-                    self.error_occurred.emit(f"Instrument at '{gpib_address}' not found. Available: {', '.join(resources)}")
-                    return
-
-                self.keithley = rm.open_resource(gpib_address)
-                self.keithley.timeout = 5000
+                self.keithley = Keithley2400(gpib_address).connect()
                 idn = self.keithley.query("*IDN?").strip()
                 self.status_update.emit(f"Connected to: {idn}")
-
                 try:
                     line_freq = float(self.keithley.query(":SYST:LFR?"))
                 except Exception:
                     line_freq = 50.0
                     self.status_update.emit("Warning: Could not query line frequency. Assuming 50Hz.")
-
-                self.keithley.write("*RST")
-                time.sleep(0.5)
+                self.keithley.write("*RST"); time.sleep(0.5)
                 self.keithley.write("*CLS")
                 self.keithley.write(":SYST:AZER:STAT ON")
                 instrument_ready = True
-            except pyvisa.errors.VisaIOError as e:
-                self.error_occurred.emit(f"VISA Error connecting: {str(e)}")
-                return
             except Exception as e:
                 self.error_occurred.emit(f"Error connecting to instrument: {str(e)}")
                 return
@@ -109,19 +93,28 @@ class MeasurementWorker(QThread):
                     measurement_type = measurement_settings['res_measurement_type']
                     auto_range = measurement_settings['res_auto_range']
 
-                    self.keithley.write(":SYST:RSEN ON" if measurement_type == "4-wire" else ":SYST:RSEN OFF")
-                    self.keithley.write(":SENS:FUNC 'RES'")
-                    self.keithley.write(":SOUR:FUNC CURR")
-                    self.keithley.write(f":SOUR:CURR:MODE FIX")
-                    self.keithley.write(f":SOUR:CURR:RANG {abs(test_current)}")
-                    self.keithley.write(f":SOUR:CURR {test_current}")
-                    self.keithley.write(f":SENS:VOLT:PROT {voltage_compliance}")
-                    self.keithley.write(":SENS:RES:MODE AUTO" if auto_range else ":SENS:RES:MODE MAN")
-                    if not auto_range:
-                        max_r = voltage_compliance / abs(test_current) if abs(test_current) > 0 else 210e6
-                        self.keithley.write(f":SENS:RES:RANG {max_r}")
-                    self.keithley.write(f":SENS:RES:NPLC {nplc}")
-                    self.keithley.write(":FORM:ELEM RES")
+                    # Delegate setup to instrument helper
+                    try:
+                        from .instrument import Keithley2400 as _K
+                    except Exception:
+                        pass
+                    # Use direct writes if helper import fails
+                    try:
+                        self.keithley.write(":SYST:RSEN ON" if measurement_type == "4-wire" else ":SYST:RSEN OFF")
+                        self.keithley.write(":SENS:FUNC 'RES'")
+                        self.keithley.write(":SOUR:FUNC CURR")
+                        self.keithley.write(f":SOUR:CURR:MODE FIX")
+                        self.keithley.write(f":SOUR:CURR:RANG {abs(test_current)}")
+                        self.keithley.write(f":SOUR:CURR {test_current}")
+                        self.keithley.write(f":SENS:VOLT:PROT {voltage_compliance}")
+                        self.keithley.write(":SENS:RES:MODE AUTO" if auto_range else ":SENS:RES:MODE MAN")
+                        if not auto_range:
+                            max_r = voltage_compliance / abs(test_current) if abs(test_current) > 0 else 210e6
+                            self.keithley.write(f":SENS:RES:RANG {max_r}")
+                        self.keithley.write(f":SENS:RES:NPLC {nplc}")
+                        self.keithley.write(":FORM:ELEM RES")
+                    except Exception as _:
+                        raise
 
                     metadata = {
                         'Mode': 'Resistance Measurement',
@@ -312,12 +305,16 @@ class MeasurementWorker(QThread):
                             compliance_status = 'V_COMP'
                         data_dict = {'voltage': voltage, 'current': current}
 
+                    stop_on_comp = bool(measurement_settings.get('stop_on_compliance', False))
                     if compliance_status != 'OK' and compliance_type:
                         try:
                             self.compliance_hit.emit(compliance_type)
                             self.status_update.emit(f"⚠️ {compliance_type} Compliance Hit!")
                         except Exception:
                             pass
+                        if stop_on_comp:
+                            self.status_update.emit("Stopping due to compliance (per settings).")
+                            self.running = False
 
                     event_marker = ""
                     if self.event_marker:
@@ -469,4 +466,3 @@ class MeasurementWorker(QThread):
             finally:
                 self.csvfile = None
         self.writer = None
-

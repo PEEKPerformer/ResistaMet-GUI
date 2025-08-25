@@ -139,17 +139,200 @@ class ResistanceMeterApp(QMainWindow):
         return widget
 
     def create_menus(self):
-        menu_bar = self.menuBar(); file_menu = menu_bar.addMenu("&File")
-        save_plot_action = QAction(QIcon.fromTheme("document-save"), "Save Plot...", self); save_plot_action.triggered.connect(self.save_active_plot)
-        exit_action = QAction(QIcon.fromTheme("application-exit"), "Exit", self); exit_action.triggered.connect(self.close)
-        file_menu.addAction(save_plot_action); file_menu.addSeparator(); file_menu.addAction(exit_action)
+        menu_bar = self.menuBar()
+        # File
+        file_menu = menu_bar.addMenu("&File")
+        save_plot_action = QAction(QIcon.fromTheme("document-save"), "Save Plot...", self)
+        save_plot_action.triggered.connect(self.save_active_plot)
+        open_result_action = QAction(QIcon.fromTheme("document-open"), "Open Result (CSV)...", self)
+        open_result_action.triggered.connect(self.open_result_csv)
+        exit_action = QAction(QIcon.fromTheme("application-exit"), "Exit", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(save_plot_action)
+        file_menu.addAction(open_result_action)
+        file_menu.addSeparator()
+        file_menu.addAction(exit_action)
+        # Profiles
+        profiles_menu = menu_bar.addMenu("&Profiles")
+        save_prof_action = QAction("Save Profile for Current Mode...", self)
+        save_prof_action.triggered.connect(self.save_profile_for_mode)
+        load_prof_action = QAction("Load Profile to Current Mode...", self)
+        load_prof_action.triggered.connect(self.load_profile_to_mode)
+        profiles_menu.addAction(save_prof_action)
+        profiles_menu.addAction(load_prof_action)
+        # Settings
         settings_menu = menu_bar.addMenu("&Settings")
-        user_settings_action = QAction(QIcon.fromTheme("preferences-system"), "User Settings...", self); user_settings_action.triggered.connect(self.open_user_settings)
-        global_settings_action = QAction(QIcon.fromTheme("preferences-system-windows"), "Global Settings...", self); global_settings_action.triggered.connect(self.open_global_settings)
-        settings_menu.addAction(user_settings_action); settings_menu.addAction(global_settings_action)
+        user_settings_action = QAction(QIcon.fromTheme("preferences-system"), "User Settings...", self)
+        user_settings_action.triggered.connect(self.open_user_settings)
+        global_settings_action = QAction(QIcon.fromTheme("preferences-system-windows"), "Global Settings...", self)
+        global_settings_action.triggered.connect(self.open_global_settings)
+        settings_menu.addAction(user_settings_action)
+        settings_menu.addAction(global_settings_action)
+        # Help
         help_menu = menu_bar.addMenu("&Help")
-        about_action = QAction(QIcon.fromTheme("help-about"), "About", self); about_action.triggered.connect(self.show_about)
+        about_action = QAction(QIcon.fromTheme("help-about"), "About", self)
+        about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
+
+        # Results viewer tab
+        self.tab_results = self.create_results_tab()
+        self.main_tabs.addTab(self.tab_results, "Results Viewer")
+
+    def create_results_tab(self):
+        tab = QWidget(); layout = QVBoxLayout(tab)
+        # Controls
+        controls = QHBoxLayout()
+        open_btn = QPushButton(QIcon.fromTheme("document-open"), "Open CSV...")
+        open_btn.clicked.connect(self.open_result_csv)
+        controls.addWidget(open_btn)
+        controls.addStretch()
+        layout.addLayout(controls)
+        # Plot variable selector
+        form = QFormLayout()
+        self.results_var = QComboBox(); self.results_var.currentTextChanged.connect(self.update_results_plot)
+        form.addRow("Y Variable:", self.results_var)
+        layout.addLayout(form)
+        # Plot canvas
+        self.results_canvas = MplCanvas(self, width=8, height=5, dpi=90)
+        layout.addWidget(NavigationToolbar(self.results_canvas, self))
+        layout.addWidget(self.results_canvas)
+        # Storage
+        self.results_data = {"time": [], "columns": {}, "order": []}
+        return tab
+
+    def open_result_csv(self):
+        filename, _ = QFileDialog.getOpenFileName(self, "Open Result CSV", self.user_settings['file']['data_directory'] if self.user_settings else ".", "CSV Files (*.csv);;All Files (*)")
+        if not filename:
+            return
+        try:
+            import csv
+            times = []
+            columns = {}
+            order = []
+            with open(filename, 'r') as f:
+                reader = csv.reader(f)
+                headers = None
+                for row in reader:
+                    if not row:
+                        continue
+                    if row[0].startswith('###') or row[0].startswith('#') or row[0] in ('Test Parameters',):
+                        continue
+                    if headers is None:
+                        headers = row
+                        # Build indices of known columns
+                        # Expect at least: 'Elapsed Time (s)'
+                        for h in headers:
+                            columns[h] = []
+                            order.append(h)
+                        continue
+                    # Data row length mismatch guard
+                    if headers and len(row) == len(headers):
+                        for i, h in enumerate(headers):
+                            val = row[i]
+                            try:
+                                valf = float(val)
+                            except Exception:
+                                valf = float('nan')
+                            columns[h].append(valf)
+            # Map elapsed time
+            tkey = None
+            for k in columns.keys():
+                if 'Elapsed Time' in k:
+                    tkey = k; break
+            if not tkey:
+                QMessageBox.warning(self, "Open Result", "Could not find 'Elapsed Time' column in CSV.")
+                return
+            self.results_data = {"time": columns[tkey], "columns": columns, "order": order}
+            # Populate variable choices (exclude time)
+            y_choices = [k for k in order if k != tkey]
+            self.results_var.blockSignals(True)
+            self.results_var.clear(); self.results_var.addItems(y_choices)
+            self.results_var.blockSignals(False)
+            if y_choices:
+                self.results_var.setCurrentIndex(0)
+            self.update_results_plot()
+            self.log_status(f"Loaded results from: {filename}")
+        except Exception as e:
+            QMessageBox.critical(self, "Open Error", f"Failed to open CSV: {e}")
+
+    def update_results_plot(self):
+        data = self.results_data
+        if not data or not data.get('time'):
+            self.results_canvas.clear_plot(); return
+        var = self.results_var.currentText()
+        if not var or var not in data['columns']:
+            return
+        t = data['time']; y = data['columns'][var]
+        # Update labels heuristically
+        ylabel = var
+        title = "Results Viewer"
+        color = 'blue'
+        self.results_canvas.set_plot_properties('Elapsed Time (s)', ylabel, title, color)
+        # Canvas expects absolute timestamps; give it time baseline
+        # Wrap to the API used elsewhere
+        timestamps = list(range(len(t)))
+        # Override timestamps with actual elapsed seconds as 'values' are used with elapsed offset, but canvas subtracts first value
+        # So we pass t directly as 'timestamps' and canvas does elapsed (t - t0)
+        timestamps = t
+        compliance = ['OK'] * len(t)
+        stats = {
+            'min': min([v for v in y if isinstance(v, (int, float)) and not np.isnan(v)], default=float('inf')),
+            'max': max([v for v in y if isinstance(v, (int, float)) and not np.isnan(v)], default=float('-inf')),
+            'avg': (sum([v for v in y if isinstance(v, (int, float)) and not np.isnan(v)]) / max(1, len([v for v in y if isinstance(v, (int, float)) and not np.isnan(v)]))) if y else 0,
+        }
+        self.results_canvas.update_plot(timestamps, y, compliance, stats, self.current_user or '-', self.sample_input.text() or '-')
+
+    def save_profile_for_mode(self):
+        mode_widget = self.main_tabs.currentWidget()
+        mode = getattr(mode_widget, 'mode', None)
+        if mode not in ('resistance', 'source_v', 'source_i'):
+            QMessageBox.warning(self, "Save Profile", "Please switch to a measurement tab to save a profile.")
+            return
+        settings = self.gather_settings_for_mode(mode)
+        filename, _ = QFileDialog.getSaveFileName(self, "Save Profile", f"{mode}_profile.json", "JSON Files (*.json)")
+        if not filename:
+            return
+        try:
+            import json
+            with open(filename, 'w') as f:
+                json.dump(settings['measurement'], f, indent=2)
+            self.log_status(f"Profile saved: {filename}")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Profile", f"Failed to save profile: {e}")
+
+    def load_profile_to_mode(self):
+        mode_widget = self.main_tabs.currentWidget()
+        mode = getattr(mode_widget, 'mode', None)
+        if mode not in ('resistance', 'source_v', 'source_i'):
+            QMessageBox.warning(self, "Load Profile", "Please switch to a measurement tab to load a profile.")
+            return
+        filename, _ = QFileDialog.getOpenFileName(self, "Load Profile", "", "JSON Files (*.json)")
+        if not filename:
+            return
+        try:
+            import json
+            with open(filename, 'r') as f:
+                prof = json.load(f)
+            # Apply known fields to current tab UI
+            w = mode_widget
+            if mode == 'resistance':
+                if 'res_test_current' in prof: w.res_test_current.setValue(float(prof['res_test_current']))
+                if 'res_voltage_compliance' in prof: w.res_voltage_compliance.setValue(float(prof['res_voltage_compliance']))
+                if 'res_measurement_type' in prof: w.res_measurement_type.setCurrentText(str(prof['res_measurement_type']))
+                if 'res_auto_range' in prof: w.res_auto_range.setChecked(bool(prof['res_auto_range']))
+            elif mode == 'source_v':
+                if 'vsource_voltage' in prof: w.vsource_voltage.setValue(float(prof['vsource_voltage']))
+                if 'vsource_current_compliance' in prof: w.vsource_current_compliance.setValue(float(prof['vsource_current_compliance']))
+                if 'vsource_current_range_auto' in prof: w.vsource_current_range_auto.setChecked(bool(prof['vsource_current_range_auto']))
+                if 'vsource_duration_hours' in prof: w.vsource_duration.setValue(float(prof['vsource_duration_hours']))
+            elif mode == 'source_i':
+                if 'isource_current' in prof: w.isource_current.setValue(float(prof['isource_current']))
+                if 'isource_voltage_compliance' in prof: w.isource_voltage_compliance.setValue(float(prof['isource_voltage_compliance']))
+                if 'isource_voltage_range_auto' in prof: w.isource_voltage_range_auto.setChecked(bool(prof['isource_voltage_range_auto']))
+                if 'isource_duration_hours' in prof: w.isource_duration.setValue(float(prof['isource_duration_hours']))
+            self.log_status(f"Profile loaded: {filename}")
+        except Exception as e:
+            QMessageBox.critical(self, "Load Profile", f"Failed to load profile: {e}")
 
     def select_user(self):
         if self.measurement_running:
@@ -526,4 +709,3 @@ class ResistanceMeterApp(QMainWindow):
                 event.ignore()
         else:
             self.log_status("Exiting application."); event.accept()
-
