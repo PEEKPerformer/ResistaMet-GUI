@@ -234,11 +234,11 @@ class ResistanceMeterApp(QMainWindow):
         widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
         widget.mark_event_button.clicked.connect(self.mark_event_shortcut)
         widget.fpp_plot_var.currentTextChanged.connect(lambda _: self.update_canvas_labels_for_mode('four_point'))
-        widget.fpp_model.currentTextChanged.connect(self.update_four_point_model_info)
-        widget.fpp_alpha.valueChanged.connect(self.update_four_point_model_info)
-        widget.fpp_k_factor.valueChanged.connect(self.update_four_point_model_info)
-        widget.fpp_spacing_cm.valueChanged.connect(self.update_four_point_model_info)
-        widget.fpp_thickness_um.valueChanged.connect(self.update_four_point_model_info)
+        widget.fpp_model.currentTextChanged.connect(lambda *_: self.update_four_point_model_info())
+        widget.fpp_alpha.valueChanged.connect(lambda *_: self.update_four_point_model_info())
+        widget.fpp_k_factor.valueChanged.connect(lambda *_: self.update_four_point_model_info())
+        widget.fpp_spacing_cm.valueChanged.connect(lambda *_: self.update_four_point_model_info())
+        widget.fpp_thickness_um.valueChanged.connect(lambda *_: self.update_four_point_model_info())
 
         # Data table and summary for 4PP
         widget.fpp_table = QTableWidget(0, 9)
@@ -922,9 +922,12 @@ class ResistanceMeterApp(QMainWindow):
         w.fpp_rho_label.setText(fmt(rho_s))
         w.fpp_sigma_label.setText(fmt(sig_s))
 
-    def update_four_point_model_info(self, w=None):
-        if w is None:
-            w = self.tab_four_point
+    def update_four_point_model_info(self, w=None, *args):
+        # Robustly resolve the 4PP widget whether called with a widget, a value from a signal, or no args.
+        if w is None or not hasattr(w, 'fpp_spacing_cm'):
+            w = getattr(self, 'tab_four_point', None)
+        if w is None or not hasattr(w, 'fpp_spacing_cm'):
+            return
         s = w.fpp_spacing_cm.value(); t_um = w.fpp_thickness_um.value(); t_cm = t_um*1e-4
         k = w.fpp_k_factor.value() or 4.532; alpha = w.fpp_alpha.value(); model = w.fpp_model.currentText()
         txt = ""
