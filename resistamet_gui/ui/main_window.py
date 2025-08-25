@@ -153,10 +153,12 @@ class ResistanceMeterApp(QMainWindow):
         # Probe geometry & calc params
         widget.fpp_spacing_cm = QDoubleSpinBox(decimals=5, minimum=0.001, maximum=5.0, singleStep=0.001, suffix=" cm")
         layout.addRow("Probe Spacing s:", widget.fpp_spacing_cm)
-        widget.fpp_thickness_cm = QDoubleSpinBox(decimals=6, minimum=0.0, maximum=5.0, singleStep=0.0001, suffix=" cm")
-        layout.addRow("Thickness t (optional):", widget.fpp_thickness_cm)
+        widget.fpp_thickness_um = QDoubleSpinBox(decimals=3, minimum=0.0, maximum=5000.0, singleStep=0.1, suffix=" µm")
+        layout.addRow("Thickness t (optional):", widget.fpp_thickness_um)
         widget.fpp_alpha = QDoubleSpinBox(decimals=4, minimum=0.0, maximum=10.0, singleStep=0.01)
         layout.addRow("Correction Factor α (optional):", widget.fpp_alpha)
+        widget.fpp_k_factor = QDoubleSpinBox(decimals=4, minimum=0.1, maximum=50.0, singleStep=0.001)
+        layout.addRow("K Factor (default 4.532):", widget.fpp_k_factor)
         widget.fpp_model = QComboBox()
         widget.fpp_model.addItems(["thin_film", "semi_infinite", "finite_thin", "finite_alpha"])
         layout.addRow("Model:", widget.fpp_model)
@@ -434,9 +436,14 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_four_point.fpp_voltage_compliance.setValue(m_cfg['fpp_voltage_compliance'])
         self.tab_four_point.fpp_voltage_range_auto.setChecked(m_cfg['fpp_voltage_range_auto'])
         self.tab_four_point.fpp_spacing_cm.setValue(m_cfg['fpp_spacing_cm'])
-        self.tab_four_point.fpp_thickness_cm.setValue(m_cfg.get('fpp_thickness_cm', 0.0))
+        # Support legacy cm setting if present
+        t_um = m_cfg.get('fpp_thickness_um', None)
+        if t_um is None:
+            t_um = float(m_cfg.get('fpp_thickness_cm', 0.0)) * 1e4
+        self.tab_four_point.fpp_thickness_um.setValue(t_um)
         self.tab_four_point.fpp_alpha.setValue(m_cfg.get('fpp_alpha', 1.0))
         self.tab_four_point.fpp_model.setCurrentText(m_cfg.get('fpp_model', 'thin_film'))
+        self.tab_four_point.fpp_k_factor.setValue(m_cfg.get('fpp_k_factor', 4.532))
         self.tab_four_point.fpp_plot_var.setCurrentText('sheet_Rs')
         self.tab_four_point.canvas.set_plot_properties('Elapsed Time (s)', 'Sheet Resistance (Ω/□)', '4-Point Probe', d_cfg['plot_color_r'])
         buffer_size = d_cfg.get('buffer_size')
@@ -510,9 +517,10 @@ class ResistanceMeterApp(QMainWindow):
                 m_cfg['fpp_voltage_compliance'] = widget.fpp_voltage_compliance.value()
                 m_cfg['fpp_voltage_range_auto'] = widget.fpp_voltage_range_auto.isChecked()
                 m_cfg['fpp_spacing_cm'] = widget.fpp_spacing_cm.value()
-                m_cfg['fpp_thickness_cm'] = widget.fpp_thickness_cm.value()
+                m_cfg['fpp_thickness_um'] = widget.fpp_thickness_um.value()
                 m_cfg['fpp_alpha'] = widget.fpp_alpha.value()
                 m_cfg['fpp_model'] = widget.fpp_model.currentText()
+                m_cfg['fpp_k_factor'] = widget.fpp_k_factor.value()
         except AttributeError as e:
             raise ValueError(f"UI Widgets not found for mode {mode}: {e}")
         m_cfg['sampling_rate'] = self.user_settings['measurement']['sampling_rate']
@@ -647,18 +655,24 @@ class ResistanceMeterApp(QMainWindow):
                     else:
                         ratio.append(float('nan'))
                 s = self.tab_four_point.fpp_spacing_cm.value()
-                t_thick = self.tab_four_point.fpp_thickness_cm.value()
+                t_um = self.tab_four_point.fpp_thickness_um.value()
+                t_thick = t_um * 1e-4  # convert µm to cm
+                k_factor = self.tab_four_point.fpp_k_factor.value() or 4.532
                 alpha = self.tab_four_point.fpp_alpha.value()
                 model = self.tab_four_point.fpp_model.currentText()
                 if var == 'V/I':
                     values = ratio
                 elif var == 'sheet_Rs':
-                    values = [4.532 * r if np.isfinite(r) else float('nan') for r in ratio]
+                    # Allow custom correction (alpha) and K factor in thin_film mode
+                    k_eff = k_factor * (alpha if (model == 'thin_film' and alpha and alpha != 1.0) else 1.0)
+                    values = [k_eff * r if np.isfinite(r) else float('nan') for r in ratio]
                 elif var == 'rho':
                     if model == 'semi_infinite':
                         values = [2*np.pi*s*r if np.isfinite(r) else float('nan') for r in ratio]
                     elif model in ('thin_film','finite_thin'):
-                        values = [4.532 * t_thick * r if np.isfinite(r) else float('nan') for r in ratio]
+                        # Apply alpha for thin_film when provided and use K factor
+                        k = k_factor * (alpha if (model == 'thin_film' and alpha and alpha != 1.0) else 1.0)
+                        values = [k * t_thick * r if np.isfinite(r) else float('nan') for r in ratio]
                     else:
                         values = [alpha * 2*np.pi*s*r if np.isfinite(r) else float('nan') for r in ratio]
                 elif var == 'voltage':
@@ -774,14 +788,20 @@ class ResistanceMeterApp(QMainWindow):
             else:
                 ratio.append(float('nan'))
         s = self.tab_four_point.fpp_spacing_cm.value()
-        t_thick = self.tab_four_point.fpp_thickness_cm.value()
+        t_um = self.tab_four_point.fpp_thickness_um.value()
+        t_thick = t_um * 1e-4
         alpha = self.tab_four_point.fpp_alpha.value()
         model = self.tab_four_point.fpp_model.currentText()
-        Rs = np.array([4.532 * r if np.isfinite(r) else np.nan for r in ratio])
+        k_factor = self.tab_four_point.fpp_k_factor.value() or 4.532
+        if model == 'thin_film' and alpha and alpha != 1.0:
+            Rs = np.array([k_factor * alpha * r if np.isfinite(r) else np.nan for r in ratio])
+        else:
+            Rs = np.array([k_factor * r if np.isfinite(r) else np.nan for r in ratio])
         if model == 'semi_infinite':
             rho = np.array([2*np.pi*s*r if np.isfinite(r) else np.nan for r in ratio])
         elif model in ('thin_film','finite_thin'):
-            rho = np.array([4.532 * t_thick * r if np.isfinite(r) else np.nan for r in ratio])
+            k = k_factor * (alpha if (model == 'thin_film' and alpha and alpha != 1.0) else 1.0)
+            rho = np.array([k * t_thick * r if np.isfinite(r) else np.nan for r in ratio])
         else:
             rho = np.array([alpha * 2*np.pi*s*r if np.isfinite(r) else np.nan for r in ratio])
         sigma = np.where(np.isfinite(rho) & (rho != 0), 1.0 / rho, np.nan)

@@ -37,8 +37,9 @@ DEFAULT_SETTINGS = {
         "fpp_voltage_compliance": 5.0,       # Voltage compliance (V)
         "fpp_voltage_range_auto": true,      # Auto range for voltage measurement
         "fpp_spacing_cm": 0.1016,            # s = 0.040 inches = 0.1016 cm
-        "fpp_thickness_cm": 0.0,             # optional, 0 means unknown
+        "fpp_thickness_um": 0.0,            # thin-film thickness in micrometers (µm); 0 = unknown
         "fpp_alpha": 1.0,                    # thickness correction factor
+        "fpp_k_factor": 4.532,              # geometric coefficient replacing 4.532 when needed
         "fpp_model": "thin_film"             # one of: thin_film, semi_infinite, finite_thin, finite_alpha
     },
     "display": {

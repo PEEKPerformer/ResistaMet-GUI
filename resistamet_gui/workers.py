@@ -160,7 +160,8 @@ class MeasurementWorker(QThread):
                     voltage_compliance = measurement_settings['isource_voltage_compliance']
                     auto_range_volt = measurement_settings['isource_voltage_range_auto']
 
-                    self.keithley.write(":SYST:RSEN OFF")
+                    # Use remote sense (Kelvin) so inner probes connect to sense
+                    self.keithley.write(":SYST:RSEN ON")
                     self.keithley.write(":SENS:FUNC 'VOLT:DC'")
                     self.keithley.write(":SOUR:FUNC CURR")
                     self.keithley.write(f":SOUR:CURR:MODE FIX")
@@ -210,8 +211,9 @@ class MeasurementWorker(QThread):
                         'Source Current (A)': source_current,
                         'Voltage Compliance (V)': voltage_compliance,
                         'Spacing s (cm)': measurement_settings.get('fpp_spacing_cm'),
-                        'Thickness t (cm)': measurement_settings.get('fpp_thickness_cm'),
+                        'Thickness t (µm)': measurement_settings.get('fpp_thickness_um'),
                         'Alpha': measurement_settings.get('fpp_alpha'),
+                        'K Factor': measurement_settings.get('fpp_k_factor'),
                         'Model': measurement_settings.get('fpp_model'),
                     }
                     csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Voltage (V)', 'Current (A)', 'V/I (Ohms)', 'Sheet Rs (Ohms/sq)', 'Resistivity (Ohm*cm)', 'Conductivity (S/cm)', 'Compliance Status', 'Event']
@@ -370,15 +372,19 @@ class MeasurementWorker(QThread):
                         if self.mode == 'four_point':
                             # compute derived per 4-pt probe
                             s = float(measurement_settings.get('fpp_spacing_cm') or 0.0)
-                            tcm = float(measurement_settings.get('fpp_thickness_cm') or 0.0)
+                            tum = float(measurement_settings.get('fpp_thickness_um') or 0.0)
+                            tcm = tum * 1e-4
                             alpha = float(measurement_settings.get('fpp_alpha') or 1.0)
+                            kfac = float(measurement_settings.get('fpp_k_factor') or 4.532)
                             model = str(measurement_settings.get('fpp_model') or 'thin_film')
                             ratio = r
-                            Rs = 4.532 * ratio if np.isfinite(ratio) else float('nan')
+                            # Apply alpha only in thin_film for Rs if provided
+                            k_eff = kfac * (alpha if (model == 'thin_film' and alpha and alpha != 1.0) else 1.0)
+                            Rs = k_eff * ratio if np.isfinite(ratio) else float('nan')
                             if model == 'semi_infinite':
                                 rho = 2*np.pi*s*ratio if np.isfinite(ratio) else float('nan')
                             elif model in ('thin_film','finite_thin'):
-                                rho = 4.532 * tcm * ratio if np.isfinite(ratio) else float('nan')
+                                rho = (kfac * (alpha if (model == 'thin_film' and alpha and alpha != 1.0) else 1.0)) * tcm * ratio if np.isfinite(ratio) else float('nan')
                             else:
                                 rho = alpha * 2*np.pi*s*ratio if np.isfinite(ratio) else float('nan')
                             sigma = (1.0/rho) if (np.isfinite(rho) and rho != 0) else float('nan')
