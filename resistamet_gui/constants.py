@@ -31,11 +31,11 @@ DEFAULT_SETTINGS = {
         "nplc": 1,                           # Number of power line cycles (shared)
         "settling_time": 0.2,                # Settling time in seconds (shared)
         "gpib_address": "GPIB0::24::INSTR",  # GPIB address of the instrument
-        "stop_on_compliance": false,         # Stop run when compliance is hit
+        "stop_on_compliance": False,         # Stop run when compliance is hit
         # Four-Point Probe (FPP) defaults (SP4-40085TBQ)
         "fpp_current": 1.0e-3,               # Source current in Amperes
         "fpp_voltage_compliance": 5.0,       # Voltage compliance (V)
-        "fpp_voltage_range_auto": true,      # Auto range for voltage measurement
+        "fpp_voltage_range_auto": True,      # Auto range for voltage measurement
         "fpp_spacing_cm": 0.1016,            # s = 0.040 inches = 0.1016 cm
         "fpp_thickness_um": 0.0,            # thin-film thickness in micrometers (µm); 0 = unknown
         "fpp_alpha": 1.0,                    # thickness correction factor

@@ -328,6 +328,46 @@ class ResistanceMeterApp(QMainWindow):
         }
         self.results_canvas.update_plot(timestamps, y, compliance, stats, self.current_user or '-', self.sample_input.text() or '-')
 
+    def update_canvas_labels_for_mode(self, mode: str):
+        # Update current tab canvas labels based on selected plot variable
+        if not self.user_settings:
+            return
+        d_cfg = self.user_settings['display']
+        w = self.get_widget_for_mode(mode)
+        if not w or not hasattr(w, 'canvas'):
+            return
+        if mode == 'source_v':
+            var = w.v_plot_var.currentText() if hasattr(w, 'v_plot_var') else 'current'
+            color = d_cfg.get('plot_color_v', 'blue')
+            if var == 'current':
+                w.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Current (A)', 'Voltage Source Output', color)
+            elif var == 'voltage':
+                w.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Voltage (V)', 'Voltage Source Output', color)
+            else:
+                w.canvas.set_plot_properties('Elapsed Time (s)', 'Resistance (Ω)', 'Voltage Source Output', color)
+        elif mode == 'source_i':
+            var = w.i_plot_var.currentText() if hasattr(w, 'i_plot_var') else 'voltage'
+            color = d_cfg.get('plot_color_i', 'green')
+            if var == 'voltage':
+                w.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Voltage (V)', 'Current Source Output', color)
+            elif var == 'current':
+                w.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Current (A)', 'Current Source Output', color)
+            else:
+                w.canvas.set_plot_properties('Elapsed Time (s)', 'Resistance (Ω)', 'Current Source Output', color)
+        elif mode == 'four_point':
+            var = w.fpp_plot_var.currentText() if hasattr(w, 'fpp_plot_var') else 'sheet_Rs'
+            color = d_cfg.get('plot_color_r', 'red')
+            if var == 'sheet_Rs':
+                w.canvas.set_plot_properties('Elapsed Time (s)', 'Sheet Resistance (Ω/□)', '4-Point Probe', color)
+            elif var == 'rho':
+                w.canvas.set_plot_properties('Elapsed Time (s)', 'Resistivity (Ω·cm)', '4-Point Probe', color)
+            elif var == 'V/I':
+                w.canvas.set_plot_properties('Elapsed Time (s)', 'V/I (Ω)', '4-Point Probe', color)
+            elif var == 'voltage':
+                w.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Voltage (V)', '4-Point Probe', color)
+            else:
+                w.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Current (A)', '4-Point Probe', color)
+
     def save_profile_for_mode(self):
         mode_widget = self.main_tabs.currentWidget()
         mode = getattr(mode_widget, 'mode', None)
@@ -381,8 +421,13 @@ class ResistanceMeterApp(QMainWindow):
                 if 'fpp_voltage_compliance' in prof: w.fpp_voltage_compliance.setValue(float(prof['fpp_voltage_compliance']))
                 if 'fpp_voltage_range_auto' in prof: w.fpp_voltage_range_auto.setChecked(bool(prof['fpp_voltage_range_auto']))
                 if 'fpp_spacing_cm' in prof: w.fpp_spacing_cm.setValue(float(prof['fpp_spacing_cm']))
-                if 'fpp_thickness_cm' in prof: w.fpp_thickness_cm.setValue(float(prof['fpp_thickness_cm']))
+                # Accept either µm or legacy cm
+                if 'fpp_thickness_um' in prof:
+                    w.fpp_thickness_um.setValue(float(prof['fpp_thickness_um']))
+                elif 'fpp_thickness_cm' in prof:
+                    w.fpp_thickness_um.setValue(float(prof['fpp_thickness_cm']) * 1e4)
                 if 'fpp_alpha' in prof: w.fpp_alpha.setValue(float(prof['fpp_alpha']))
+                if 'fpp_k_factor' in prof: w.fpp_k_factor.setValue(float(prof['fpp_k_factor']))
                 if 'fpp_model' in prof: w.fpp_model.setCurrentText(str(prof['fpp_model']))
             self.log_status(f"Profile loaded: {filename}")
         except Exception as e:
@@ -745,7 +790,7 @@ class ResistanceMeterApp(QMainWindow):
                 widget.mark_event_button.setEnabled(running)
 
     def set_all_controls_enabled(self, enabled: bool, except_mode: Optional[str] = None):
-        for mode in ['resistance', 'source_v', 'source_i']:
+        for mode in ['resistance', 'source_v', 'source_i', 'four_point']:
             if mode == except_mode: continue
             widget = self.get_widget_for_mode(mode)
             if widget:
