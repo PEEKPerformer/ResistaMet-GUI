@@ -272,8 +272,8 @@ class ResistanceMeterApp(QMainWindow):
         widget.plot_group.setVisible(False)
         # Internal storage for quick stats
         widget._fpp_rows = []  # list of tuples (time, v, i, ratio, rs, rho, sigma, comp, event)
-        # Initialize model info text
-        self.update_four_point_model_info()
+        # Initialize model info text using this widget (before self.tab_four_point is assigned)
+        self.update_four_point_model_info(widget)
 
         return widget
 
@@ -922,8 +922,9 @@ class ResistanceMeterApp(QMainWindow):
         w.fpp_rho_label.setText(fmt(rho_s))
         w.fpp_sigma_label.setText(fmt(sig_s))
 
-    def update_four_point_model_info(self):
-        w = self.tab_four_point
+    def update_four_point_model_info(self, w=None):
+        if w is None:
+            w = self.tab_four_point
         s = w.fpp_spacing_cm.value(); t_um = w.fpp_thickness_um.value(); t_cm = t_um*1e-4
         k = w.fpp_k_factor.value() or 4.532; alpha = w.fpp_alpha.value(); model = w.fpp_model.currentText()
         txt = ""
