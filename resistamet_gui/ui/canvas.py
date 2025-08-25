@@ -9,7 +9,12 @@ class MplCanvas(FigureCanvas):
         self.axes = self.fig.add_subplot(111)
         self.axes.ticklabel_format(useOffset=False, style='plain')
         super().__init__(self.fig)
-        self.parent = parent
+        # Set Qt parent properly and avoid shadowing QWidget.parent()
+        if parent is not None:
+            try:
+                self.setParent(parent)
+            except Exception:
+                pass
 
         self.line, = self.axes.plot([], [], 'r-', label='Measurement')
         self.min_text = self.axes.text(0.02, 0.95, '', transform=self.axes.transAxes, ha='left', va='top', fontsize=9)
@@ -80,4 +85,3 @@ class MplCanvas(FigureCanvas):
         self.axes.relim()
         self.axes.autoscale_view(True, True, True)
         self.draw_idle()
-

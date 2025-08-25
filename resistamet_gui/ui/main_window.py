@@ -99,6 +99,15 @@ class ResistanceMeterApp(QMainWindow):
         pause_button = QPushButton(QIcon.fromTheme("media-playback-pause"), "Pause"); pause_button.setEnabled(False); pause_button.setCheckable(True)
         status_label = QLabel("Status: Idle"); status_label.setStyleSheet("font-weight: bold;")
         control_layout.addWidget(start_button); control_layout.addWidget(stop_button); control_layout.addWidget(pause_button)
+        # Hide buttons for quicker collapsing
+        hide_params_btn = QPushButton("Hide Params")
+        hide_params_btn.setToolTip("Hide parameters section")
+        hide_params_btn.clicked.connect(lambda: self.toggle_section_visibility('params', False))
+        hide_controls_btn = QPushButton("Hide Controls")
+        hide_controls_btn.setToolTip("Hide controls section")
+        hide_controls_btn.clicked.connect(lambda: self.toggle_section_visibility('controls', False))
+        control_layout.addWidget(hide_params_btn)
+        control_layout.addWidget(hide_controls_btn)
         control_layout.addStretch(); control_layout.addWidget(status_label); control_group.setLayout(control_layout)
 
         # Vertical splitter to resize/collapse sections per tab
@@ -184,10 +193,20 @@ class ResistanceMeterApp(QMainWindow):
         widget.fpp_model = QComboBox()
         widget.fpp_model.addItems(["thin_film", "semi_infinite", "finite_thin", "finite_alpha"])
         layout.addRow("Model:", widget.fpp_model)
-        # Plot variable
+        # Plot variable and plot visibility
         widget.fpp_plot_var = QComboBox()
         widget.fpp_plot_var.addItems(["voltage", "current", "V/I", "sheet_Rs", "rho"])
         layout.addRow("Plot Variable:", widget.fpp_plot_var)
+        widget.fpp_show_plot = QCheckBox("Show Plot")
+        widget.fpp_show_plot.setChecked(False)
+        # The plot section will be hidden by default; checkbox toggles it
+        widget.fpp_show_plot.toggled.connect(lambda v: widget.plot_group.setVisible(v))
+        layout.addRow(widget.fpp_show_plot)
+
+        # Model info
+        widget.fpp_model_info = QLabel("")
+        widget.fpp_model_info.setWordWrap(True)
+        layout.addRow("Model Info:", widget.fpp_model_info)
         # Mark event
         widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
         widget.mark_event_button.setEnabled(False)
@@ -203,6 +222,35 @@ class ResistanceMeterApp(QMainWindow):
         widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
         widget.mark_event_button.clicked.connect(self.mark_event_shortcut)
         widget.fpp_plot_var.currentTextChanged.connect(lambda _: self.update_canvas_labels_for_mode('four_point'))
+        widget.fpp_model.currentTextChanged.connect(self.update_four_point_model_info)
+        widget.fpp_alpha.valueChanged.connect(self.update_four_point_model_info)
+        widget.fpp_k_factor.valueChanged.connect(self.update_four_point_model_info)
+        widget.fpp_spacing_cm.valueChanged.connect(self.update_four_point_model_info)
+        widget.fpp_thickness_um.valueChanged.connect(self.update_four_point_model_info)
+
+        # Data table and summary for 4PP
+        widget.fpp_table = QTableWidget(0, 9)
+        widget.fpp_table.setHorizontalHeaderLabels([
+            'Time (s)', 'V (V)', 'I (A)', 'V/I (Ω)', 'Rs (Ω/□)', 'ρ (Ω·cm)', 'σ (S/cm)', 'Comp', 'Event'
+        ])
+        layout.addRow(QLabel("Measurements:"))
+        layout.addRow(widget.fpp_table)
+
+        widget.fpp_summary = QGroupBox("Summary Stats")
+        sum_layout = QFormLayout()
+        widget.fpp_n_label = QLabel("0")
+        widget.fpp_rs_label = QLabel("--")
+        widget.fpp_rho_label = QLabel("--")
+        widget.fpp_sigma_label = QLabel("--")
+        sum_layout.addRow("N:", widget.fpp_n_label)
+        sum_layout.addRow("Rs mean±std (Ω/□; RSD%):", widget.fpp_rs_label)
+        sum_layout.addRow("ρ mean±std (Ω·cm; RSD%):", widget.fpp_rho_label)
+        sum_layout.addRow("σ mean±std (S/cm; RSD%):", widget.fpp_sigma_label)
+        widget.fpp_summary.setLayout(sum_layout)
+        layout.addRow(widget.fpp_summary)
+
+        # Internal storage for quick stats
+        widget._fpp_rows = []  # list of tuples (time, v, i, ratio, rs, rho, sigma, comp, event)
 
         return widget
 
@@ -722,11 +770,43 @@ class ResistanceMeterApp(QMainWindow):
         else:
             buffer.add_voltage_current(timestamp, value.get('voltage', float('nan')), value.get('current', float('nan')), compliance_status)
 
+        # Append a row to 4PP table and update stats live
+        if self.active_mode == 'four_point':
+            w = self.tab_four_point
+            v = value.get('voltage', float('nan'))
+            i = value.get('current', float('nan'))
+            ratio = (v / i) if (isinstance(i, (int, float)) and i != 0 and not np.isnan(i)) else float('nan')
+            s = w.fpp_spacing_cm.value()
+            t_um = w.fpp_thickness_um.value(); t_cm = t_um * 1e-4
+            alpha = w.fpp_alpha.value(); k = w.fpp_k_factor.value() or 4.532
+            model = w.fpp_model.currentText()
+            if model == 'thin_film' and alpha and alpha != 1.0:
+                rs = (k * alpha * ratio) if np.isfinite(ratio) else float('nan')
+            else:
+                rs = (k * ratio) if np.isfinite(ratio) else float('nan')
+            if model == 'semi_infinite':
+                rho = 2*np.pi*s*ratio if np.isfinite(ratio) else float('nan')
+            elif model in ('thin_film','finite_thin'):
+                k_eff = k * (alpha if (model == 'thin_film' and alpha and alpha != 1.0) else 1.0)
+                rho = (k_eff * t_cm * ratio) if np.isfinite(ratio) else float('nan')
+            else:
+                rho = (alpha * 2*np.pi*s*ratio) if np.isfinite(ratio) else float('nan')
+            sigma = (1.0 / rho) if (np.isfinite(rho) and rho != 0) else float('nan')
+            # Elapsed time relative to first timestamp in buffer
+            ts, _, _ = buffer.get_data_for_plot('voltage')
+            elapsed = (timestamp - ts[0]) if ts else 0.0
+            row = (elapsed, v, i, ratio, rs, rho, sigma, compliance_status, event)
+            w._fpp_rows.append(row)
+            self._append_four_point_row(row)
+            self._update_four_point_stats()
+
     def update_active_plot(self):
         if not self.measurement_running or self.active_mode is None or not self.user_settings:
             return
         mode = self.active_mode; widget = self.get_widget_for_mode(mode); buffer = self.data_buffers[mode]
         if not widget or not buffer:
+            return
+        if mode == 'four_point' and hasattr(widget, 'fpp_show_plot') and not widget.fpp_show_plot.isChecked():
             return
         if self.user_settings['display']['enable_plot']:
             if mode == 'resistance':
@@ -785,6 +865,56 @@ class ResistanceMeterApp(QMainWindow):
                 }
             widget.canvas.update_plot(timestamps, values, compliance_list, stats, self.current_user, self.sample_input.text())
 
+    def _append_four_point_row(self, row):
+        w = self.tab_four_point
+        table = w.fpp_table
+        table.insertRow(table.rowCount())
+        for col, val in enumerate(row):
+            if isinstance(val, float):
+                text = f"{val:.6g}"
+            else:
+                text = str(val)
+            table.setItem(table.rowCount()-1, col, QTableWidgetItem(text))
+        table.scrollToBottom()
+
+    def _update_four_point_stats(self):
+        w = self.tab_four_point
+        rows = w._fpp_rows
+        n = len(rows)
+        w.fpp_n_label.setText(str(n))
+        import math
+        def stats(idx):
+            arr = [r[idx] for r in rows]
+            arr = [a for a in arr if isinstance(a, (int, float)) and not math.isnan(a)]
+            if not arr:
+                return None
+            import numpy as np
+            mean = float(np.mean(arr)); std = float(np.std(arr, ddof=1)) if len(arr)>1 else 0.0
+            rsd = (std/mean*100.0) if mean != 0 else 0.0
+            return mean, std, rsd
+        rs_s = stats(4); rho_s = stats(5); sig_s = stats(6)
+        def fmt(s):
+            return f"{s[0]:.6g} ± {s[1]:.6g}  ({s[2]:.2f}%)" if s else "--"
+        w.fpp_rs_label.setText(fmt(rs_s))
+        w.fpp_rho_label.setText(fmt(rho_s))
+        w.fpp_sigma_label.setText(fmt(sig_s))
+
+    def update_four_point_model_info(self):
+        w = self.tab_four_point
+        s = w.fpp_spacing_cm.value(); t_um = w.fpp_thickness_um.value(); t_cm = t_um*1e-4
+        k = w.fpp_k_factor.value() or 4.532; alpha = w.fpp_alpha.value(); model = w.fpp_model.currentText()
+        txt = ""
+        if model == 'semi_infinite':
+            txt = f"ρ = 2π·s·(V/I) = {2*3.1416*s:.4g}·(V/I) Ω·cm"
+        elif model in ('thin_film','finite_thin'):
+            # Show both Rs and rho forms
+            txt = f"Rs = {k:.4g}·(V/I) Ω/□\nρ = {k:.4g}·t·(V/I) = {k*t_cm:.4g}·(V/I) Ω·cm"
+            if model == 'thin_film' and alpha and alpha != 1.0:
+                txt += f"\n(α applied: Rs = {k*alpha:.4g}·(V/I), ρ = {k*alpha:.4g}·t·(V/I))"
+        else:
+            txt = f"ρ = α·2π·s·(V/I) = α·{2*3.1416*s:.4g}·(V/I) Ω·cm"
+        w.fpp_model_info.setText(txt)
+
     def on_measurement_complete(self, mode: str):
         self.log_status(f"Worker reported measurement complete for mode: {mode}", color="darkGreen")
         self.statusBar().showMessage(f"Measurement ({mode}) completed | Ready", 5000)
@@ -793,7 +923,11 @@ class ResistanceMeterApp(QMainWindow):
         self.log_status(f"ERROR: {error_message}", color="red")
         self.statusBar().showMessage(f"Measurement Error ({self.active_mode})", 5000)
         self.plot_timer.stop()
-        QMessageBox.critical(self, "Measurement Error", error_message)
+        # If instrument not detected, prompt for quick selection
+        if ("not found" in error_message.lower()) or ("no visa instruments" in error_message.lower()):
+            self.prompt_gpib_selection(self.user_settings['measurement']['gpib_address'] if self.user_settings else "")
+        else:
+            QMessageBox.critical(self, "Measurement Error", error_message)
 
     def on_compliance_hit(self, compliance_type: str):
         mode = self.active_mode; widget = self.get_widget_for_mode(mode)
@@ -961,6 +1095,38 @@ class ResistanceMeterApp(QMainWindow):
                 self.log_status(f"Plot saved to: {filename}", color="blue")
             except Exception as e:
                 QMessageBox.critical(self, "Save Error", f"Failed to save plot: {str(e)}"); self.log_status(f"Error saving plot: {str(e)}", color="red")
+
+    def prompt_gpib_selection(self, current_addr: str):
+        try:
+            import pyvisa
+            rm = pyvisa.ResourceManager()
+            resources = rm.list_resources()
+        except Exception as e:
+            QMessageBox.information(self, "GPIB Detection", f"Failed to list VISA resources: {e}")
+            return
+        if not resources:
+            QMessageBox.information(self, "GPIB Detection", "No VISA instruments detected.")
+            return
+        # Simple selection dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select GPIB Instrument")
+        v = QVBoxLayout(dialog)
+        v.addWidget(QLabel("Select instrument address:"))
+        combo = QComboBox(dialog); combo.addItems(resources)
+        if current_addr in resources:
+            combo.setCurrentText(current_addr)
+        v.addWidget(combo)
+        use_btn = QPushButton("Use Address")
+        use_btn.clicked.connect(dialog.accept)
+        v.addWidget(use_btn)
+        if dialog.exec_():
+            addr = combo.currentText()
+            # Save to global settings
+            cfg = dict(self.config_manager.config)
+            cfg['measurement']['gpib_address'] = addr
+            self.config_manager.update_global_settings({'measurement': {'gpib_address': addr}})
+            self.log_status(f"GPIB address set to: {addr}")
+            QMessageBox.information(self, "GPIB Updated", f"GPIB address updated to {addr}. Start the measurement again.")
 
     def clear_all_plots(self):
         self.tab_resistance.canvas.clear_plot(); self.tab_voltage_source.canvas.clear_plot(); self.tab_current_source.canvas.clear_plot(); self.log_status("All plots cleared.")
