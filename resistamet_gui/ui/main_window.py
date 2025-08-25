@@ -62,9 +62,11 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_resistance = self.create_resistance_tab()
         self.tab_voltage_source = self.create_voltage_source_tab()
         self.tab_current_source = self.create_current_source_tab()
+        self.tab_four_point = self.create_four_point_tab()
         self.main_tabs.addTab(self.tab_resistance, "Resistance Measurement")
         self.main_tabs.addTab(self.tab_voltage_source, "Voltage Source")
         self.main_tabs.addTab(self.tab_current_source, "Current Source")
+        self.main_tabs.addTab(self.tab_four_point, "4-Point Probe")
         main_layout.addWidget(self.main_tabs, 1)
 
         status_group = QGroupBox("Status Log"); status_layout = QVBoxLayout()
@@ -136,6 +138,48 @@ class ResistanceMeterApp(QMainWindow):
         widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
         widget.mark_event_button.clicked.connect(self.mark_event_shortcut)
         widget.i_plot_var.currentTextChanged.connect(lambda _: self.update_canvas_labels_for_mode('source_i'))
+        return widget
+
+    def create_four_point_tab(self):
+        widget = self.create_tab_widget('four_point')
+        layout = widget.param_layout
+        # Instrument parameters
+        widget.fpp_current = QDoubleSpinBox(decimals=6, minimum=-1.0, maximum=1.0, singleStep=1e-3, suffix=" A")
+        layout.addRow("Source Current:", widget.fpp_current)
+        widget.fpp_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
+        layout.addRow("Voltage Compliance:", widget.fpp_voltage_compliance)
+        widget.fpp_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
+        layout.addRow(widget.fpp_voltage_range_auto)
+        # Probe geometry & calc params
+        widget.fpp_spacing_cm = QDoubleSpinBox(decimals=5, minimum=0.001, maximum=5.0, singleStep=0.001, suffix=" cm")
+        layout.addRow("Probe Spacing s:", widget.fpp_spacing_cm)
+        widget.fpp_thickness_cm = QDoubleSpinBox(decimals=6, minimum=0.0, maximum=5.0, singleStep=0.0001, suffix=" cm")
+        layout.addRow("Thickness t (optional):", widget.fpp_thickness_cm)
+        widget.fpp_alpha = QDoubleSpinBox(decimals=4, minimum=0.0, maximum=10.0, singleStep=0.01)
+        layout.addRow("Correction Factor α (optional):", widget.fpp_alpha)
+        widget.fpp_model = QComboBox()
+        widget.fpp_model.addItems(["thin_film", "semi_infinite", "finite_thin", "finite_alpha"])
+        layout.addRow("Model:", widget.fpp_model)
+        # Plot variable
+        widget.fpp_plot_var = QComboBox()
+        widget.fpp_plot_var.addItems(["voltage", "current", "V/I", "sheet_Rs", "rho"])
+        layout.addRow("Plot Variable:", widget.fpp_plot_var)
+        # Mark event
+        widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
+        widget.mark_event_button.setEnabled(False)
+        layout.addRow(widget.mark_event_button)
+        # Quick report button
+        widget.report_button = QPushButton(QIcon.fromTheme("document-save"), "Export Summary...")
+        widget.report_button.clicked.connect(self.export_fpp_summary)
+        layout.addRow(widget.report_button)
+
+        # Connect events
+        widget.start_button.clicked.connect(lambda: self.start_measurement('four_point'))
+        widget.stop_button.clicked.connect(self.stop_current_measurement)
+        widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
+        widget.mark_event_button.clicked.connect(self.mark_event_shortcut)
+        widget.fpp_plot_var.currentTextChanged.connect(lambda _: self.update_canvas_labels_for_mode('four_point'))
+
         return widget
 
     def create_menus(self):
@@ -285,7 +329,7 @@ class ResistanceMeterApp(QMainWindow):
     def save_profile_for_mode(self):
         mode_widget = self.main_tabs.currentWidget()
         mode = getattr(mode_widget, 'mode', None)
-        if mode not in ('resistance', 'source_v', 'source_i'):
+        if mode not in ('resistance', 'source_v', 'source_i', 'four_point'):
             QMessageBox.warning(self, "Save Profile", "Please switch to a measurement tab to save a profile.")
             return
         settings = self.gather_settings_for_mode(mode)
@@ -303,7 +347,7 @@ class ResistanceMeterApp(QMainWindow):
     def load_profile_to_mode(self):
         mode_widget = self.main_tabs.currentWidget()
         mode = getattr(mode_widget, 'mode', None)
-        if mode not in ('resistance', 'source_v', 'source_i'):
+        if mode not in ('resistance', 'source_v', 'source_i', 'four_point'):
             QMessageBox.warning(self, "Load Profile", "Please switch to a measurement tab to load a profile.")
             return
         filename, _ = QFileDialog.getOpenFileName(self, "Load Profile", "", "JSON Files (*.json)")
@@ -330,6 +374,14 @@ class ResistanceMeterApp(QMainWindow):
                 if 'isource_voltage_compliance' in prof: w.isource_voltage_compliance.setValue(float(prof['isource_voltage_compliance']))
                 if 'isource_voltage_range_auto' in prof: w.isource_voltage_range_auto.setChecked(bool(prof['isource_voltage_range_auto']))
                 if 'isource_duration_hours' in prof: w.isource_duration.setValue(float(prof['isource_duration_hours']))
+            elif mode == 'four_point':
+                if 'fpp_current' in prof: w.fpp_current.setValue(float(prof['fpp_current']))
+                if 'fpp_voltage_compliance' in prof: w.fpp_voltage_compliance.setValue(float(prof['fpp_voltage_compliance']))
+                if 'fpp_voltage_range_auto' in prof: w.fpp_voltage_range_auto.setChecked(bool(prof['fpp_voltage_range_auto']))
+                if 'fpp_spacing_cm' in prof: w.fpp_spacing_cm.setValue(float(prof['fpp_spacing_cm']))
+                if 'fpp_thickness_cm' in prof: w.fpp_thickness_cm.setValue(float(prof['fpp_thickness_cm']))
+                if 'fpp_alpha' in prof: w.fpp_alpha.setValue(float(prof['fpp_alpha']))
+                if 'fpp_model' in prof: w.fpp_model.setCurrentText(str(prof['fpp_model']))
             self.log_status(f"Profile loaded: {filename}")
         except Exception as e:
             QMessageBox.critical(self, "Load Profile", f"Failed to load profile: {e}")
@@ -377,6 +429,16 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_current_source.isource_duration.setValue(m_cfg.get('isource_duration_hours', 0.0))
         self.tab_current_source.i_plot_var.setCurrentText('voltage')
         self.tab_current_source.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Voltage (V)', 'Current Source Output', d_cfg['plot_color_i'])
+        # Four-Point Probe
+        self.tab_four_point.fpp_current.setValue(m_cfg['fpp_current'])
+        self.tab_four_point.fpp_voltage_compliance.setValue(m_cfg['fpp_voltage_compliance'])
+        self.tab_four_point.fpp_voltage_range_auto.setChecked(m_cfg['fpp_voltage_range_auto'])
+        self.tab_four_point.fpp_spacing_cm.setValue(m_cfg['fpp_spacing_cm'])
+        self.tab_four_point.fpp_thickness_cm.setValue(m_cfg.get('fpp_thickness_cm', 0.0))
+        self.tab_four_point.fpp_alpha.setValue(m_cfg.get('fpp_alpha', 1.0))
+        self.tab_four_point.fpp_model.setCurrentText(m_cfg.get('fpp_model', 'thin_film'))
+        self.tab_four_point.fpp_plot_var.setCurrentText('sheet_Rs')
+        self.tab_four_point.canvas.set_plot_properties('Elapsed Time (s)', 'Sheet Resistance (Ω/□)', '4-Point Probe', d_cfg['plot_color_r'])
         buffer_size = d_cfg.get('buffer_size')
         new_size = None if buffer_size is None or buffer_size <= 0 else buffer_size
         for mode, buffer in list(self.data_buffers.items()):
@@ -412,6 +474,7 @@ class ResistanceMeterApp(QMainWindow):
         if mode == 'resistance': return self.tab_resistance
         if mode == 'source_v': return self.tab_voltage_source
         if mode == 'source_i': return self.tab_current_source
+        if mode == 'four_point': return self.tab_four_point
         return None
 
     def gather_settings_for_mode(self, mode:str) -> Dict:
@@ -442,6 +505,14 @@ class ResistanceMeterApp(QMainWindow):
                 m_cfg['isource_voltage_compliance'] = widget.isource_voltage_compliance.value()
                 m_cfg['isource_voltage_range_auto'] = widget.isource_voltage_range_auto.isChecked()
                 m_cfg['isource_duration_hours'] = widget.isource_duration.value()
+            elif mode == 'four_point':
+                m_cfg['fpp_current'] = widget.fpp_current.value()
+                m_cfg['fpp_voltage_compliance'] = widget.fpp_voltage_compliance.value()
+                m_cfg['fpp_voltage_range_auto'] = widget.fpp_voltage_range_auto.isChecked()
+                m_cfg['fpp_spacing_cm'] = widget.fpp_spacing_cm.value()
+                m_cfg['fpp_thickness_cm'] = widget.fpp_thickness_cm.value()
+                m_cfg['fpp_alpha'] = widget.fpp_alpha.value()
+                m_cfg['fpp_model'] = widget.fpp_model.currentText()
         except AttributeError as e:
             raise ValueError(f"UI Widgets not found for mode {mode}: {e}")
         m_cfg['sampling_rate'] = self.user_settings['measurement']['sampling_rate']
@@ -554,12 +625,52 @@ class ResistanceMeterApp(QMainWindow):
         if self.user_settings['display']['enable_plot']:
             if mode == 'resistance':
                 var = 'resistance'
+                timestamps, values, compliance_list = buffer.get_data_for_plot(var)
+                stats = buffer.get_statistics(var)
             elif mode == 'source_v':
                 var = widget.v_plot_var.currentText() if hasattr(widget, 'v_plot_var') else 'current'
-            else:
+                timestamps, values, compliance_list = buffer.get_data_for_plot(var)
+                stats = buffer.get_statistics(var)
+            elif mode == 'source_i':
                 var = widget.i_plot_var.currentText() if hasattr(widget, 'i_plot_var') else 'voltage'
-            timestamps, values, compliance_list = buffer.get_data_for_plot(var)
-            stats = buffer.get_statistics(var)
+                timestamps, values, compliance_list = buffer.get_data_for_plot(var)
+                stats = buffer.get_statistics(var)
+            else:  # four_point
+                # derive variables from V and I
+                t, vvals, cl = buffer.get_data_for_plot('voltage')
+                _, ivals, _ = buffer.get_data_for_plot('current')
+                var = widget.fpp_plot_var.currentText() if hasattr(widget, 'fpp_plot_var') else 'sheet_Rs'
+                ratio = []
+                for v, i in zip(vvals, ivals):
+                    if isinstance(i, (int, float)) and i != 0 and not np.isnan(i):
+                        ratio.append(v / i)
+                    else:
+                        ratio.append(float('nan'))
+                s = self.tab_four_point.fpp_spacing_cm.value()
+                t_thick = self.tab_four_point.fpp_thickness_cm.value()
+                alpha = self.tab_four_point.fpp_alpha.value()
+                model = self.tab_four_point.fpp_model.currentText()
+                if var == 'V/I':
+                    values = ratio
+                elif var == 'sheet_Rs':
+                    values = [4.532 * r if np.isfinite(r) else float('nan') for r in ratio]
+                elif var == 'rho':
+                    if model == 'semi_infinite':
+                        values = [2*np.pi*s*r if np.isfinite(r) else float('nan') for r in ratio]
+                    elif model in ('thin_film','finite_thin'):
+                        values = [4.532 * t_thick * r if np.isfinite(r) else float('nan') for r in ratio]
+                    else:
+                        values = [alpha * 2*np.pi*s*r if np.isfinite(r) else float('nan') for r in ratio]
+                elif var == 'voltage':
+                    values = vvals
+                else:
+                    values = ivals
+                timestamps = t; compliance_list = cl
+                stats = {
+                    'min': np.nanmin(values) if values else float('inf'),
+                    'max': np.nanmax(values) if values else float('-inf'),
+                    'avg': np.nanmean(values) if values else 0.0,
+                }
             widget.canvas.update_plot(timestamps, values, compliance_list, stats, self.current_user, self.sample_input.text())
 
     def on_measurement_complete(self, mode: str):
@@ -644,6 +755,63 @@ class ResistanceMeterApp(QMainWindow):
                     widget = self.main_tabs.widget(i)
                     if hasattr(widget, 'mode') and widget.mode == self.active_mode:
                         self.main_tabs.blockSignals(True); self.main_tabs.setCurrentIndex(i); self.main_tabs.blockSignals(False); break
+
+    def export_fpp_summary(self):
+        # Export summary for 4-point probe using current buffer and settings
+        buffer = self.data_buffers.get('four_point')
+        if not buffer:
+            QMessageBox.information(self, "Export Summary", "4-point probe buffer not available.")
+            return
+        t, vvals, _ = buffer.get_data_for_plot('voltage')
+        _, ivals, _ = buffer.get_data_for_plot('current')
+        if not t:
+            QMessageBox.information(self, "Export Summary", "No data available for 4-point probe.")
+            return
+        ratio = []
+        for v, i in zip(vvals, ivals):
+            if isinstance(i, (int, float)) and i != 0 and not np.isnan(i):
+                ratio.append(v / i)
+            else:
+                ratio.append(float('nan'))
+        s = self.tab_four_point.fpp_spacing_cm.value()
+        t_thick = self.tab_four_point.fpp_thickness_cm.value()
+        alpha = self.tab_four_point.fpp_alpha.value()
+        model = self.tab_four_point.fpp_model.currentText()
+        Rs = np.array([4.532 * r if np.isfinite(r) else np.nan for r in ratio])
+        if model == 'semi_infinite':
+            rho = np.array([2*np.pi*s*r if np.isfinite(r) else np.nan for r in ratio])
+        elif model in ('thin_film','finite_thin'):
+            rho = np.array([4.532 * t_thick * r if np.isfinite(r) else np.nan for r in ratio])
+        else:
+            rho = np.array([alpha * 2*np.pi*s*r if np.isfinite(r) else np.nan for r in ratio])
+        sigma = np.where(np.isfinite(rho) & (rho != 0), 1.0 / rho, np.nan)
+        def stat(a):
+            return float(np.nanmean(a)), float(np.nanstd(a))
+        Rs_mean, Rs_std = stat(Rs)
+        rho_mean, rho_std = stat(rho)
+        sigma_mean, sigma_std = stat(sigma)
+        filename, _ = QFileDialog.getSaveFileName(self, "Save Summary", "fpp_summary.csv", "CSV Files (*.csv)")
+        if not filename:
+            return
+        import csv
+        try:
+            with open(filename, 'w', newline='') as f:
+                w = csv.writer(f)
+                w.writerow(["4-Point Probe Summary"])
+                w.writerow(["Sample", self.sample_input.text()])
+                w.writerow(["User", self.current_user or "-"])
+                w.writerow(["Model", model])
+                w.writerow(["Spacing s (cm)", s])
+                w.writerow(["Thickness t (cm)", t_thick])
+                w.writerow(["Alpha", alpha])
+                w.writerow([])
+                w.writerow(["Metric", "Mean", "StdDev"])
+                w.writerow(["Sheet Resistance (Ω/□)", f"{Rs_mean:.6g}", f"{Rs_std:.6g}"])
+                w.writerow(["Resistivity (Ω·cm)", f"{rho_mean:.6g}", f"{rho_std:.6g}"])
+                w.writerow(["Conductivity (S/cm)", f"{sigma_mean:.6g}", f"{sigma_std:.6g}"])
+            self.log_status(f"Summary saved: {filename}")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Summary", f"Failed to save summary: {e}")
 
     def log_status(self, message: str, color: str = "black"):
         timestamp = datetime.now().strftime("%H:%M:%S")

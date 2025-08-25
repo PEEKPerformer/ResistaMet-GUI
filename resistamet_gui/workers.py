@@ -28,7 +28,7 @@ class MeasurementWorker(QThread):
 
     def __init__(self, mode, sample_name, username, settings, parent=None):
         super().__init__(parent)
-        if mode not in ['resistance', 'source_v', 'source_i']:
+        if mode not in ['resistance', 'source_v', 'source_i', 'four_point']:
             raise ValueError(f"Invalid measurement mode: {mode}")
         self.mode = mode
         self.sample_name = sample_name
@@ -184,6 +184,39 @@ class MeasurementWorker(QThread):
                     csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Voltage (V)', 'Current (A)', 'Resistance (Ohms)', 'Compliance Status', 'Event']
                     source_value_str = f"{source_current*1000:.2f}mA"
 
+                elif self.mode == 'four_point':
+                    # Use I-source and measure V (like source_i), but compute derived quantities for 4-pt probe
+                    source_current = measurement_settings.get('fpp_current')
+                    voltage_compliance = measurement_settings.get('fpp_voltage_compliance')
+                    auto_range_volt = measurement_settings.get('fpp_voltage_range_auto')
+
+                    self.keithley.write(":SYST:RSEN OFF")
+                    self.keithley.write(":SENS:FUNC 'VOLT:DC'")
+                    self.keithley.write(":SOUR:FUNC CURR")
+                    self.keithley.write(f":SOUR:CURR:MODE FIX")
+                    self.keithley.write(f":SOUR:CURR:RANG {abs(source_current)}")
+                    self.keithley.write(f":SOUR:CURR {source_current}")
+                    self.keithley.write(f":SENS:VOLT:PROT {voltage_compliance}")
+                    self.keithley.write(":SENS:VOLT:RANG:AUTO ON" if auto_range_volt else ":SENS:VOLT:RANG:AUTO OFF")
+                    if not auto_range_volt:
+                        self.keithley.write(f":SENS:VOLT:RANG {voltage_compliance}")
+                    self.keithley.write(f":SENS:VOLT:NPLC {nplc}")
+                    self.keithley.write(":FORM:ELEM VOLT,CURR")
+                    self.keithley.write(":TRIG:COUN 1")
+                    self.keithley.write(":INIT:CONT ON")
+
+                    metadata = {
+                        'Mode': 'Four-Point Probe',
+                        'Source Current (A)': source_current,
+                        'Voltage Compliance (V)': voltage_compliance,
+                        'Spacing s (cm)': measurement_settings.get('fpp_spacing_cm'),
+                        'Thickness t (cm)': measurement_settings.get('fpp_thickness_cm'),
+                        'Alpha': measurement_settings.get('fpp_alpha'),
+                        'Model': measurement_settings.get('fpp_model'),
+                    }
+                    csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Voltage (V)', 'Current (A)', 'V/I (Ohms)', 'Sheet Rs (Ohms/sq)', 'Resistivity (Ohm*cm)', 'Conductivity (S/cm)', 'Compliance Status', 'Event']
+                    source_value_str = f"{source_current*1000:.2f}mA"
+
                 self.keithley.write(":TRIG:DEL 0")
                 self.keithley.write(":SOUR:DEL 0")
             except Exception as e:
@@ -306,12 +339,16 @@ class MeasurementWorker(QThread):
                         data_dict = {'voltage': voltage, 'current': current}
 
                     stop_on_comp = bool(measurement_settings.get('stop_on_compliance', False))
+                    stop_on_comp = bool(measurement_settings.get('stop_on_compliance', False))
                     if compliance_status != 'OK' and compliance_type:
                         try:
                             self.compliance_hit.emit(compliance_type)
                             self.status_update.emit(f"⚠️ {compliance_type} Compliance Hit!")
                         except Exception:
                             pass
+                        if stop_on_comp:
+                            self.status_update.emit("Stopping due to compliance (per settings).")
+                            self.running = False
                         if stop_on_comp:
                             self.status_update.emit("Stopping due to compliance (per settings).")
                             self.running = False
@@ -330,15 +367,43 @@ class MeasurementWorker(QThread):
                         v = data_dict.get('voltage', float('nan'))
                         i = data_dict.get('current', float('nan'))
                         r = (v / i) if (np.isfinite(v) and np.isfinite(i) and i != 0) else float('nan')
-                        row_data = [
-                            now_unix,
-                            f"{elapsed_time:.3f}",
-                            f"{v:.6e}" if np.isfinite(v) else "NaN",
-                            f"{i:.6e}" if np.isfinite(i) else "NaN",
-                            f"{r:.6e}" if np.isfinite(r) else "NaN",
-                            compliance_status,
-                            event_marker,
-                        ]
+                        if self.mode == 'four_point':
+                            # compute derived per 4-pt probe
+                            s = float(measurement_settings.get('fpp_spacing_cm') or 0.0)
+                            tcm = float(measurement_settings.get('fpp_thickness_cm') or 0.0)
+                            alpha = float(measurement_settings.get('fpp_alpha') or 1.0)
+                            model = str(measurement_settings.get('fpp_model') or 'thin_film')
+                            ratio = r
+                            Rs = 4.532 * ratio if np.isfinite(ratio) else float('nan')
+                            if model == 'semi_infinite':
+                                rho = 2*np.pi*s*ratio if np.isfinite(ratio) else float('nan')
+                            elif model in ('thin_film','finite_thin'):
+                                rho = 4.532 * tcm * ratio if np.isfinite(ratio) else float('nan')
+                            else:
+                                rho = alpha * 2*np.pi*s*ratio if np.isfinite(ratio) else float('nan')
+                            sigma = (1.0/rho) if (np.isfinite(rho) and rho != 0) else float('nan')
+                            row_data = [
+                                now_unix,
+                                f"{elapsed_time:.3f}",
+                                f"{v:.6e}" if np.isfinite(v) else "NaN",
+                                f"{i:.6e}" if np.isfinite(i) else "NaN",
+                                f"{ratio:.6e}" if np.isfinite(ratio) else "NaN",
+                                f"{Rs:.6e}" if np.isfinite(Rs) else "NaN",
+                                f"{rho:.6e}" if np.isfinite(rho) else "NaN",
+                                f"{sigma:.6e}" if np.isfinite(sigma) else "NaN",
+                                compliance_status,
+                                event_marker,
+                            ]
+                        else:
+                            row_data = [
+                                now_unix,
+                                f"{elapsed_time:.3f}",
+                                f"{v:.6e}" if np.isfinite(v) else "NaN",
+                                f"{i:.6e}" if np.isfinite(i) else "NaN",
+                                f"{r:.6e}" if np.isfinite(r) else "NaN",
+                                compliance_status,
+                                event_marker,
+                            ]
                     try:
                         self.writer.writerow(row_data)
                     except Exception as e:
