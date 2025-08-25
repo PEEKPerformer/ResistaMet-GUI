@@ -7,7 +7,7 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QAction, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QShortcut, QTextEdit,
-    QTabWidget, QVBoxLayout, QWidget, QFileDialog
+    QTabWidget, QVBoxLayout, QWidget, QFileDialog, QSplitter
 )
 from PyQt5.QtGui import QIcon
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -67,12 +67,21 @@ class ResistanceMeterApp(QMainWindow):
         self.main_tabs.addTab(self.tab_voltage_source, "Voltage Source")
         self.main_tabs.addTab(self.tab_current_source, "Current Source")
         self.main_tabs.addTab(self.tab_four_point, "4-Point Probe")
-        main_layout.addWidget(self.main_tabs, 1)
 
-        status_group = QGroupBox("Status Log"); status_layout = QVBoxLayout()
+        # Status log
+        self.status_group = QGroupBox("Status Log"); status_layout = QVBoxLayout()
         self.status_display = QTextEdit(); self.status_display.setReadOnly(True); self.status_display.setAcceptRichText(True)
         self.status_display.setMaximumHeight(150); status_layout.addWidget(self.status_display)
-        status_group.setLayout(status_layout); main_layout.addWidget(status_group)
+        self.status_group.setLayout(status_layout)
+
+        # Splitter to allow resizing between tabs and status log
+        self.main_splitter = QSplitter()
+        self.main_splitter.setOrientation(Qt.Vertical)
+        self.main_splitter.addWidget(self.main_tabs)
+        self.main_splitter.addWidget(self.status_group)
+        self.main_splitter.setStretchFactor(0, 5)
+        self.main_splitter.setStretchFactor(1, 1)
+        main_layout.addWidget(self.main_splitter, 1)
         self.statusBar().showMessage("Ready")
         self.create_menus()
         self.shortcut_mark = QShortcut(Qt.Key_M, self); self.shortcut_mark.activated.connect(self.mark_event_shortcut)
@@ -91,10 +100,23 @@ class ResistanceMeterApp(QMainWindow):
         status_label = QLabel("Status: Idle"); status_label.setStyleSheet("font-weight: bold;")
         control_layout.addWidget(start_button); control_layout.addWidget(stop_button); control_layout.addWidget(pause_button)
         control_layout.addStretch(); control_layout.addWidget(status_label); control_group.setLayout(control_layout)
-        tab_layout.addWidget(param_group); tab_layout.addWidget(plot_group, 1); tab_layout.addWidget(control_group)
+
+        # Vertical splitter to resize/collapse sections per tab
+        tab_splitter = QSplitter(); tab_splitter.setOrientation(Qt.Vertical)
+        tab_splitter.addWidget(param_group)
+        tab_splitter.addWidget(plot_group)
+        tab_splitter.addWidget(control_group)
+        tab_splitter.setStretchFactor(0, 1)
+        tab_splitter.setStretchFactor(1, 5)
+        tab_splitter.setStretchFactor(2, 1)
+        tab_layout.addWidget(tab_splitter)
         tab_widget.mode = mode; tab_widget.param_layout = param_layout; tab_widget.canvas = canvas
         tab_widget.start_button = start_button; tab_widget.stop_button = stop_button; tab_widget.pause_button = pause_button
         tab_widget.status_label = status_label
+        tab_widget.param_group = param_group
+        tab_widget.plot_group = plot_group
+        tab_widget.control_group = control_group
+        tab_widget.splitter = tab_splitter
         return tab_widget
 
     def create_resistance_tab(self):
@@ -219,6 +241,37 @@ class ResistanceMeterApp(QMainWindow):
         about_action = QAction(QIcon.fromTheme("help-about"), "About", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
+
+        # View
+        view_menu = menu_bar.addMenu("&View")
+        self.action_show_params = QAction("Show Parameters", self, checkable=True)
+        self.action_show_params.setChecked(True)
+        self.action_show_params.toggled.connect(lambda v: self.toggle_section_visibility('params', v))
+        self.action_show_controls = QAction("Show Controls", self, checkable=True)
+        self.action_show_controls.setChecked(True)
+        self.action_show_controls.toggled.connect(lambda v: self.toggle_section_visibility('controls', v))
+        self.action_show_status = QAction("Show Status Log", self, checkable=True)
+        self.action_show_status.setChecked(True)
+        self.action_show_status.toggled.connect(lambda v: self.toggle_status_visibility(v))
+        view_menu.addAction(self.action_show_params)
+        view_menu.addAction(self.action_show_controls)
+        view_menu.addSeparator()
+        view_menu.addAction(self.action_show_status)
+
+    def toggle_status_visibility(self, visible: bool):
+        if hasattr(self, 'status_group') and self.status_group:
+            self.status_group.setVisible(visible)
+
+    def toggle_section_visibility(self, section: str, visible: bool):
+        # section in {'params','controls'}
+        for mode in ['resistance', 'source_v', 'source_i', 'four_point']:
+            w = self.get_widget_for_mode(mode)
+            if not w:
+                continue
+            if section == 'params' and hasattr(w, 'param_group'):
+                w.param_group.setVisible(visible)
+            if section == 'controls' and hasattr(w, 'control_group'):
+                w.control_group.setVisible(visible)
 
         # Results viewer tab
         self.tab_results = self.create_results_tab()
