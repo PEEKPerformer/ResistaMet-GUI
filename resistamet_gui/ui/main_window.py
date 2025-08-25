@@ -7,7 +7,7 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QAction, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QShortcut, QTextEdit,
-    QTabWidget, QVBoxLayout, QWidget, QFileDialog, QSplitter
+    QTabWidget, QVBoxLayout, QWidget, QFileDialog, QSplitter, QTableWidget, QTableWidgetItem, QDialog
 )
 from PyQt5.QtGui import QIcon
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -207,6 +207,18 @@ class ResistanceMeterApp(QMainWindow):
         widget.fpp_model_info = QLabel("")
         widget.fpp_model_info.setWordWrap(True)
         layout.addRow("Model Info:", widget.fpp_model_info)
+        # Advanced collapsible
+        adv_toggle = QCheckBox("Show Advanced")
+        layout.addRow(adv_toggle)
+        adv_group = QGroupBox("Advanced")
+        adv_form = QFormLayout()
+        adv_form.addRow("Auto Range Voltage:", widget.fpp_voltage_range_auto)
+        adv_form.addRow("Correction Factor α:", widget.fpp_alpha)
+        adv_form.addRow("K Factor:", widget.fpp_k_factor)
+        adv_group.setLayout(adv_form)
+        adv_group.setVisible(False)
+        adv_toggle.toggled.connect(adv_group.setVisible)
+        layout.addRow(adv_group)
         # Mark event
         widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
         widget.mark_event_button.setEnabled(False)
@@ -249,8 +261,19 @@ class ResistanceMeterApp(QMainWindow):
         widget.fpp_summary.setLayout(sum_layout)
         layout.addRow(widget.fpp_summary)
 
+        # Make parameter inputs compact
+        for sb in [widget.fpp_current, widget.fpp_voltage_compliance, widget.fpp_spacing_cm, widget.fpp_thickness_um, widget.fpp_alpha, widget.fpp_k_factor]:
+            sb.setMaximumWidth(140)
+        widget.fpp_plot_var.setMaximumWidth(140)
+        widget.fpp_model.setMaximumWidth(160)
+        widget.fpp_show_plot.setMaximumWidth(120)
+
+        # Hide plot pane by default
+        widget.plot_group.setVisible(False)
         # Internal storage for quick stats
         widget._fpp_rows = []  # list of tuples (time, v, i, ratio, rs, rho, sigma, comp, event)
+        # Initialize model info text
+        self.update_four_point_model_info()
 
         return widget
 
