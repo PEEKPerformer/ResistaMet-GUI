@@ -885,6 +885,10 @@ class ResistanceMeterApp(QMainWindow):
         self.sample_input.setEnabled(False); self.change_user_button.setEnabled(False)
         self.shortcut_mark.setEnabled(True)
         self.data_buffers[mode].clear(); widget.canvas.clear_plot()
+        
+        # Clear 4PP-specific data structures on new measurement start
+        if mode == 'four_point':
+            self._clear_four_point_data()
         widget.status_label.setText("Status: Running"); widget.status_label.setStyleSheet("font-weight: bold; color: green;")
         if hasattr(widget, 'mark_event_button'): widget.mark_event_button.setEnabled(True)
         self.log_status(f"Starting {mode} measurement for sample: {sample_name}..."); self.statusBar().showMessage(f"Measurement running ({mode})...")
@@ -1340,7 +1344,31 @@ class ResistanceMeterApp(QMainWindow):
             QMessageBox.information(self, "GPIB Updated", f"GPIB address updated to {addr}. Start the measurement again.")
 
     def clear_all_plots(self):
-        self.tab_resistance.canvas.clear_plot(); self.tab_voltage_source.canvas.clear_plot(); self.tab_current_source.canvas.clear_plot(); self.log_status("All plots cleared.")
+        self.tab_resistance.canvas.clear_plot()
+        self.tab_voltage_source.canvas.clear_plot()
+        self.tab_current_source.canvas.clear_plot()
+        self.tab_four_point.canvas.clear_plot()
+        
+        # Also clear 4PP-specific data structures
+        self._clear_four_point_data()
+        
+        self.log_status("All plots and data cleared.")
+
+    def _clear_four_point_data(self):
+        """Clear 4-Point Probe specific data structures (table, stats, internal rows)"""
+        widget = self.tab_four_point
+        if hasattr(widget, '_fpp_rows') and hasattr(widget, 'fpp_table'):
+            widget._fpp_rows.clear()  # Clear internal stats data
+            widget.fpp_table.setRowCount(0)  # Clear measurements table
+            # Reset summary stats display to initial state
+            if hasattr(widget, 'fpp_n_label'):
+                widget.fpp_n_label.setText("0")
+            if hasattr(widget, 'fpp_rs_label'):
+                widget.fpp_rs_label.setText("--")
+            if hasattr(widget, 'fpp_rho_label'):
+                widget.fpp_rho_label.setText("--")
+            if hasattr(widget, 'fpp_sigma_label'):
+                widget.fpp_sigma_label.setText("--")
 
     def show_about(self):
         about_text = f"""
