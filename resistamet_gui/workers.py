@@ -339,8 +339,22 @@ class MeasurementWorker(QThread):
                         if np.isfinite(voltage) and abs(voltage) > KEITHLEY_COMPLIANCE_MAGIC_NUMBER * 0.9:
                             compliance_status = 'V_COMP'
                         data_dict = {'voltage': voltage, 'current': current}
+                    elif self.mode == 'four_point':
+                        # Configured like source_i (VOLT,CURR)
+                        parts = [p for p in reading_str.split(',') if p.strip()]
+                        try:
+                            voltage = float(parts[0])
+                            current = float(parts[1]) if len(parts) > 1 else float('nan')
+                        except Exception:
+                            voltage = float('nan'); current = float('nan')
+                        comp_limit_v = measurement_settings.get('fpp_voltage_compliance')
+                        compliance_type = 'Voltage'
+                        if np.isfinite(voltage) and abs(voltage) >= comp_limit_v * COMPLIANCE_THRESHOLD_FACTOR:
+                            compliance_status = 'V_COMP'
+                        if np.isfinite(voltage) and abs(voltage) > KEITHLEY_COMPLIANCE_MAGIC_NUMBER * 0.9:
+                            compliance_status = 'V_COMP'
+                        data_dict = {'voltage': voltage, 'current': current}
 
-                    stop_on_comp = bool(measurement_settings.get('stop_on_compliance', False))
                     stop_on_comp = bool(measurement_settings.get('stop_on_compliance', False))
                     if compliance_status != 'OK' and compliance_type:
                         try:
@@ -348,9 +362,6 @@ class MeasurementWorker(QThread):
                             self.status_update.emit(f"⚠️ {compliance_type} Compliance Hit!")
                         except Exception:
                             pass
-                        if stop_on_comp:
-                            self.status_update.emit("Stopping due to compliance (per settings).")
-                            self.running = False
                         if stop_on_comp:
                             self.status_update.emit("Stopping due to compliance (per settings).")
                             self.running = False
