@@ -244,16 +244,15 @@ class ResistanceMeterApp(QMainWindow):
         widget.fpp_spacing_cm.valueChanged.connect(lambda *_: self.update_four_point_model_info())
         widget.fpp_thickness_um.valueChanged.connect(lambda *_: self.update_four_point_model_info())
 
-        # Data table and summary for 4PP
+        # Data table and summary for 4PP (will be placed in a right-side panel)
         widget.fpp_table = QTableWidget(0, 9)
         widget.fpp_table.setHorizontalHeaderLabels([
             'Time (s)', 'V (V)', 'I (A)', 'V/I (Ω)', 'Rs (Ω/□)', 'ρ (Ω·cm)', 'σ (S/cm)', 'Comp', 'Event'
         ])
-        layout.addRow(QLabel("Measurements:"))
-        layout.addRow("", widget.fpp_table)
+        widget.fpp_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         widget.fpp_summary = QGroupBox("Summary Stats")
-        sum_layout = QFormLayout()
+        sum_layout = QFormLayout(widget.fpp_summary)
         widget.fpp_n_label = QLabel("0")
         widget.fpp_rs_label = QLabel("--")
         widget.fpp_rho_label = QLabel("--")
@@ -262,8 +261,6 @@ class ResistanceMeterApp(QMainWindow):
         sum_layout.addRow("Rs mean±std (Ω/□; RSD%):", widget.fpp_rs_label)
         sum_layout.addRow("ρ mean±std (Ω·cm; RSD%):", widget.fpp_rho_label)
         sum_layout.addRow("σ mean±std (S/cm; RSD%):", widget.fpp_sigma_label)
-        widget.fpp_summary.setLayout(sum_layout)
-        layout.addRow("", widget.fpp_summary)
 
         # Make parameter inputs compact
         for sb in [widget.fpp_current, widget.fpp_voltage_compliance, widget.fpp_spacing_cm, widget.fpp_thickness_um, widget.fpp_alpha, widget.fpp_k_factor, widget.fpp_samples]:
@@ -271,6 +268,37 @@ class ResistanceMeterApp(QMainWindow):
         widget.fpp_plot_var.setMaximumWidth(140)
         widget.fpp_model.setMaximumWidth(160)
         widget.fpp_show_plot.setMaximumWidth(120)
+
+        # Build a horizontal splitter: left (params) / right (summary + table)
+        left_panel = QWidget(); left_form = QFormLayout(left_panel)
+        left_form.addRow("Source Current:", widget.fpp_current)
+        left_form.addRow("Voltage Compliance:", widget.fpp_voltage_compliance)
+        left_form.addRow("Probe Spacing s:", widget.fpp_spacing_cm)
+        left_form.addRow("Thickness t (optional):", widget.fpp_thickness_um)
+        left_form.addRow("Model:", widget.fpp_model)
+        left_form.addRow("Samples (0=cont.):", widget.fpp_samples)
+        left_form.addRow("Plot Variable:", widget.fpp_plot_var)
+        left_form.addRow("", widget.fpp_show_plot)
+        left_form.addRow("Model Info:", widget.fpp_model_info)
+        left_form.addRow("", adv_group)
+        left_form.addRow("", widget.mark_event_button)
+        left_form.addRow("", widget.report_button)
+
+        right_panel = QWidget(); right_box = QVBoxLayout(right_panel)
+        right_box.addWidget(widget.fpp_summary)
+        right_box.addWidget(widget.fpp_table)
+        right_box.setStretchFactor(widget.fpp_table, 1)
+
+        horiz_split = QSplitter(Qt.Horizontal)
+        horiz_split.addWidget(left_panel)
+        horiz_split.addWidget(right_panel)
+        horiz_split.setStretchFactor(0, 1)
+        horiz_split.setStretchFactor(1, 2)
+
+        # Replace parameter group layout with the new horizontal splitter
+        new_param_layout = QVBoxLayout()
+        new_param_layout.addWidget(horiz_split)
+        widget.param_group.setLayout(new_param_layout)
 
         # Hide plot pane by default
         widget.plot_group.setVisible(False)
