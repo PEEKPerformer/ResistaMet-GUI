@@ -284,9 +284,19 @@ class ResistanceMeterApp(QMainWindow):
         hsplit.addWidget(right_panel)
         hsplit.setStretchFactor(0, 1)
         hsplit.setStretchFactor(1, 2)
+        try:
+            # Give sane initial sizes so neither pane is collapsed
+            hsplit.setSizes([400, 700])
+        except Exception:
+            pass
 
-        # Hide plot pane by default
+        # Hide plot pane by default and ensure vertical splitter gives space to top area
         widget.plot_group.setVisible(False)
+        try:
+            # allocate most height to top (hsplit) and some to controls
+            widget.splitter.setSizes([800, 0, 120])
+        except Exception:
+            pass
         # Internal storage for quick stats
         widget._fpp_rows = []  # list of tuples (time, v, i, ratio, rs, rho, sigma, comp, event)
         # Initialize model info text using this widget (before self.tab_four_point is assigned)
