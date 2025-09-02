@@ -268,6 +268,14 @@ class MeasurementWorker(QThread):
 
             last_save = self.start_time
             last_measurement_time = 0
+            # For 4PP: respect a finite number of samples if provided
+            target_samples = 0
+            sample_count = 0
+            if self.mode == 'four_point':
+                try:
+                    target_samples = int(measurement_settings.get('fpp_samples', 0))
+                except Exception:
+                    target_samples = 0
             end_time = None
             if self.mode in ('source_v', 'source_i'):
                 dur = measurement_settings.get('vsource_duration_hours') if self.mode == 'source_v' else measurement_settings.get('isource_duration_hours')
@@ -428,6 +436,13 @@ class MeasurementWorker(QThread):
                         self.status_update.emit("Warning: Failed to write data point to CSV.")
 
                     self.data_point.emit(now, data_dict, compliance_status, event_marker)
+
+                    # Increment sample count for 4PP and stop if target reached
+                    if self.mode == 'four_point':
+                        sample_count += 1
+                        if target_samples > 0 and sample_count >= target_samples:
+                            self.status_update.emit(f"Reached target samples: {target_samples}. Stopping.")
+                            self.running = False
 
                     if now - last_save >= auto_save_interval:
                         try:

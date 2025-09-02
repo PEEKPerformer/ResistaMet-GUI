@@ -40,6 +40,7 @@ DEFAULT_SETTINGS = {
         "fpp_thickness_um": 0.0,            # thin-film thickness in micrometers (µm); 0 = unknown
         "fpp_alpha": 1.0,                    # thickness correction factor
         "fpp_k_factor": 4.532,              # geometric coefficient replacing 4.532 when needed
+        "fpp_samples": 0,                  # number of samples to take (0 = continuous)
         "fpp_model": "thin_film"             # one of: thin_film, semi_infinite, finite_thin, finite_alpha
     },
     "display": {

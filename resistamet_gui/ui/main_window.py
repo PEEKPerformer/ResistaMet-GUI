@@ -7,7 +7,8 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QAction, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QShortcut, QTextEdit,
-    QTabWidget, QVBoxLayout, QWidget, QFileDialog, QSplitter, QTableWidget, QTableWidgetItem, QDialog
+    QTabWidget, QVBoxLayout, QWidget, QFileDialog, QSplitter, QTableWidget, QTableWidgetItem, QDialog,
+    QSpinBox, QSizePolicy
 )
 from PyQt5.QtGui import QIcon
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -195,6 +196,9 @@ class ResistanceMeterApp(QMainWindow):
         widget.fpp_model = QComboBox()
         widget.fpp_model.addItems(["thin_film", "semi_infinite", "finite_thin", "finite_alpha"])
         layout.addRow("Model:", widget.fpp_model)
+        # Samples to acquire
+        widget.fpp_samples = QSpinBox(); widget.fpp_samples.setRange(0, 1000000); widget.fpp_samples.setSingleStep(10)
+        layout.addRow("Samples (0=cont.):", widget.fpp_samples)
         # Plot variable and plot visibility
         widget.fpp_plot_var = QComboBox()
         widget.fpp_plot_var.addItems(["voltage", "current", "V/I", "sheet_Rs", "rho"])
@@ -209,18 +213,16 @@ class ResistanceMeterApp(QMainWindow):
         widget.fpp_model_info = QLabel("")
         widget.fpp_model_info.setWordWrap(True)
         layout.addRow("Model Info:", widget.fpp_model_info)
-        # Advanced collapsible
-        adv_toggle = QCheckBox("Show Advanced")
-        layout.addRow(adv_toggle)
+        # Advanced collapsible using a checkable groupbox to avoid layout quirks
         adv_group = QGroupBox("Advanced")
-        adv_form = QFormLayout()
+        adv_group.setCheckable(True)
+        adv_group.setChecked(False)
+        adv_form = QFormLayout(adv_group)
         adv_form.addRow("Auto Range Voltage:", widget.fpp_voltage_range_auto)
         adv_form.addRow("Correction Factor α:", widget.fpp_alpha)
         adv_form.addRow("K Factor:", widget.fpp_k_factor)
-        adv_group.setLayout(adv_form)
-        adv_group.setVisible(False)
-        adv_toggle.toggled.connect(adv_group.setVisible)
-        layout.addRow(adv_group)
+        # Add as a full-width row in the form
+        layout.addRow("", adv_group)
         # Mark event
         widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
         widget.mark_event_button.setEnabled(False)
@@ -248,7 +250,7 @@ class ResistanceMeterApp(QMainWindow):
             'Time (s)', 'V (V)', 'I (A)', 'V/I (Ω)', 'Rs (Ω/□)', 'ρ (Ω·cm)', 'σ (S/cm)', 'Comp', 'Event'
         ])
         layout.addRow(QLabel("Measurements:"))
-        layout.addRow(widget.fpp_table)
+        layout.addRow("", widget.fpp_table)
 
         widget.fpp_summary = QGroupBox("Summary Stats")
         sum_layout = QFormLayout()
@@ -261,10 +263,10 @@ class ResistanceMeterApp(QMainWindow):
         sum_layout.addRow("ρ mean±std (Ω·cm; RSD%):", widget.fpp_rho_label)
         sum_layout.addRow("σ mean±std (S/cm; RSD%):", widget.fpp_sigma_label)
         widget.fpp_summary.setLayout(sum_layout)
-        layout.addRow(widget.fpp_summary)
+        layout.addRow("", widget.fpp_summary)
 
         # Make parameter inputs compact
-        for sb in [widget.fpp_current, widget.fpp_voltage_compliance, widget.fpp_spacing_cm, widget.fpp_thickness_um, widget.fpp_alpha, widget.fpp_k_factor]:
+        for sb in [widget.fpp_current, widget.fpp_voltage_compliance, widget.fpp_spacing_cm, widget.fpp_thickness_um, widget.fpp_alpha, widget.fpp_k_factor, widget.fpp_samples]:
             sb.setMaximumWidth(140)
         widget.fpp_plot_var.setMaximumWidth(140)
         widget.fpp_model.setMaximumWidth(160)
@@ -654,6 +656,7 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_four_point.fpp_alpha.setValue(m_cfg.get('fpp_alpha', 1.0))
         self.tab_four_point.fpp_model.setCurrentText(m_cfg.get('fpp_model', 'thin_film'))
         self.tab_four_point.fpp_k_factor.setValue(m_cfg.get('fpp_k_factor', 4.532))
+        self.tab_four_point.fpp_samples.setValue(int(m_cfg.get('fpp_samples', 0)))
         self.tab_four_point.fpp_plot_var.setCurrentText('sheet_Rs')
         self.tab_four_point.canvas.set_plot_properties('Elapsed Time (s)', 'Sheet Resistance (Ω/□)', '4-Point Probe', d_cfg['plot_color_r'])
         buffer_size = d_cfg.get('buffer_size')
@@ -731,6 +734,7 @@ class ResistanceMeterApp(QMainWindow):
                 m_cfg['fpp_alpha'] = widget.fpp_alpha.value()
                 m_cfg['fpp_model'] = widget.fpp_model.currentText()
                 m_cfg['fpp_k_factor'] = widget.fpp_k_factor.value()
+                m_cfg['fpp_samples'] = int(widget.fpp_samples.value())
         except AttributeError as e:
             raise ValueError(f"UI Widgets not found for mode {mode}: {e}")
         m_cfg['sampling_rate'] = self.user_settings['measurement']['sampling_rate']
@@ -1115,7 +1119,7 @@ class ResistanceMeterApp(QMainWindow):
             return
         import csv
         try:
-            with open(filename, 'w', newline='') as f:
+            with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
                 w = csv.writer(f)
                 w.writerow(["4-Point Probe Summary"])
                 w.writerow(["Sample", self.sample_input.text()])
