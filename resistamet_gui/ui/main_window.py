@@ -269,34 +269,10 @@ class ResistanceMeterApp(QMainWindow):
         widget.fpp_model.setMaximumWidth(160)
         widget.fpp_show_plot.setMaximumWidth(120)
 
-        # Build a safe horizontal split at the tab level: left = existing Parameters group, right = summary/table
-        right_panel = QWidget(); right_box = QVBoxLayout(right_panel)
-        right_box.addWidget(widget.fpp_summary)
-        right_box.addWidget(widget.fpp_table)
-        right_box.setStretch(1, 1)
-
-        hsplit = QSplitter(Qt.Horizontal)
-        # Replace param_group in the tab-level splitter with the horizontal split that contains it
-        old = widget.param_group
-        # Insert the splitter at index 0, then move old param_group into it
-        widget.splitter.replaceWidget(0, hsplit)
-        hsplit.addWidget(old)
-        hsplit.addWidget(right_panel)
-        hsplit.setStretchFactor(0, 1)
-        hsplit.setStretchFactor(1, 2)
-        try:
-            # Give sane initial sizes so neither pane is collapsed
-            hsplit.setSizes([400, 700])
-        except Exception:
-            pass
-
-        # Hide plot pane by default and ensure vertical splitter gives space to top area
+        # Vertical, stable layout: add summary and table below parameters
+        layout.addRow("", widget.fpp_summary)
+        layout.addRow("", widget.fpp_table)
         widget.plot_group.setVisible(False)
-        try:
-            # allocate most height to top (hsplit) and some to controls
-            widget.splitter.setSizes([800, 0, 120])
-        except Exception:
-            pass
         # Internal storage for quick stats
         widget._fpp_rows = []  # list of tuples (time, v, i, ratio, rs, rho, sigma, comp, event)
         # Initialize model info text using this widget (before self.tab_four_point is assigned)
