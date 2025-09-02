@@ -976,7 +976,9 @@ class ResistanceMeterApp(QMainWindow):
                 rho = (k_eff * t_cm * ratio) if np.isfinite(ratio) else float('nan')
             else:
                 rho = (alpha * 2*np.pi*s*ratio) if np.isfinite(ratio) else float('nan')
-            sigma = (1.0 / rho) if (np.isfinite(rho) and rho != 0) else float('nan')
+            # Calculate conductivity safely to avoid divide by zero warnings
+            with np.errstate(divide='ignore', invalid='ignore'):
+                sigma = (1.0 / rho) if (np.isfinite(rho) and rho != 0) else float('nan')
             # Elapsed time relative to first timestamp in buffer
             ts, _, _ = buffer.get_data_for_plot('voltage')
             elapsed = (timestamp - ts[0]) if ts else 0.0
@@ -1225,12 +1227,26 @@ class ResistanceMeterApp(QMainWindow):
             rho = np.array([k * t_thick * r if np.isfinite(r) else np.nan for r in ratio])
         else:
             rho = np.array([alpha * 2*np.pi*s*r if np.isfinite(r) else np.nan for r in ratio])
-        sigma = np.where(np.isfinite(rho) & (rho != 0), 1.0 / rho, np.nan)
-        def stat(a):
-            return float(np.nanmean(a)), float(np.nanstd(a))
-        Rs_mean, Rs_std = stat(Rs)
-        rho_mean, rho_std = stat(rho)
-        sigma_mean, sigma_std = stat(sigma)
+        # Calculate conductivity safely, avoiding divide by zero warnings
+        with np.errstate(divide='ignore', invalid='ignore'):
+            sigma = np.where(np.isfinite(rho) & (rho != 0), 1.0 / rho, np.nan)
+        
+        def safe_stat(a):
+            """Calculate mean and std with proper handling of empty arrays and warnings"""
+            valid_values = a[np.isfinite(a)]
+            if len(valid_values) == 0:
+                return float('nan'), float('nan')
+            elif len(valid_values) == 1:
+                return float(valid_values[0]), 0.0
+            else:
+                with np.errstate(invalid='ignore'):
+                    mean_val = float(np.nanmean(a))
+                    std_val = float(np.nanstd(a, ddof=1))
+                    return mean_val, std_val
+        
+        Rs_mean, Rs_std = safe_stat(Rs)
+        rho_mean, rho_std = safe_stat(rho)
+        sigma_mean, sigma_std = safe_stat(sigma)
         filename, _ = QFileDialog.getSaveFileName(self, "Save Summary", "fpp_summary.csv", "CSV Files (*.csv)")
         if not filename:
             return
@@ -1246,10 +1262,16 @@ class ResistanceMeterApp(QMainWindow):
                 w.writerow(["Thickness t (cm)", t_thick])
                 w.writerow(["Alpha", alpha])
                 w.writerow([])
+                def safe_format(val):
+                    """Format value safely, handling NaN and infinite values"""
+                    if np.isnan(val) or np.isinf(val):
+                        return "N/A"
+                    return f"{val:.6g}"
+                
                 w.writerow(["Metric", "Mean", "StdDev"])
-                w.writerow(["Sheet Resistance (Ω/□)", f"{Rs_mean:.6g}", f"{Rs_std:.6g}"])
-                w.writerow(["Resistivity (Ω·cm)", f"{rho_mean:.6g}", f"{rho_std:.6g}"])
-                w.writerow(["Conductivity (S/cm)", f"{sigma_mean:.6g}", f"{sigma_std:.6g}"])
+                w.writerow(["Sheet Resistance (Ω/□)", safe_format(Rs_mean), safe_format(Rs_std)])
+                w.writerow(["Resistivity (Ω·cm)", safe_format(rho_mean), safe_format(rho_std)])
+                w.writerow(["Conductivity (S/cm)", safe_format(sigma_mean), safe_format(sigma_std)])
             self.log_status(f"Summary saved: {filename}")
         except Exception as e:
             QMessageBox.critical(self, "Save Summary", f"Failed to save summary: {e}")

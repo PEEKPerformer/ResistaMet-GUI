@@ -406,7 +406,9 @@ class MeasurementWorker(QThread):
                                 rho = (kfac * (alpha if (model == 'thin_film' and alpha and alpha != 1.0) else 1.0)) * tcm * ratio if np.isfinite(ratio) else float('nan')
                             else:
                                 rho = alpha * 2*np.pi*s*ratio if np.isfinite(ratio) else float('nan')
-                            sigma = (1.0/rho) if (np.isfinite(rho) and rho != 0) else float('nan')
+                            # Calculate conductivity safely to avoid divide by zero warnings
+                            with np.errstate(divide='ignore', invalid='ignore'):
+                                sigma = (1.0/rho) if (np.isfinite(rho) and rho != 0) else float('nan')
                             row_data = [
                                 now_unix,
                                 f"{elapsed_time:.3f}",
