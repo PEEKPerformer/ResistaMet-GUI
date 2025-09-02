@@ -269,36 +269,9 @@ class ResistanceMeterApp(QMainWindow):
         widget.fpp_model.setMaximumWidth(160)
         widget.fpp_show_plot.setMaximumWidth(120)
 
-        # Build a horizontal splitter: left (params) / right (summary + table)
-        left_panel = QWidget(); left_form = QFormLayout(left_panel)
-        left_form.addRow("Source Current:", widget.fpp_current)
-        left_form.addRow("Voltage Compliance:", widget.fpp_voltage_compliance)
-        left_form.addRow("Probe Spacing s:", widget.fpp_spacing_cm)
-        left_form.addRow("Thickness t (optional):", widget.fpp_thickness_um)
-        left_form.addRow("Model:", widget.fpp_model)
-        left_form.addRow("Samples (0=cont.):", widget.fpp_samples)
-        left_form.addRow("Plot Variable:", widget.fpp_plot_var)
-        left_form.addRow("", widget.fpp_show_plot)
-        left_form.addRow("Model Info:", widget.fpp_model_info)
-        left_form.addRow("", adv_group)
-        left_form.addRow("", widget.mark_event_button)
-        left_form.addRow("", widget.report_button)
-
-        right_panel = QWidget(); right_box = QVBoxLayout(right_panel)
-        right_box.addWidget(widget.fpp_summary)
-        right_box.addWidget(widget.fpp_table)
-        right_box.setStretchFactor(widget.fpp_table, 1)
-
-        horiz_split = QSplitter(Qt.Horizontal)
-        horiz_split.addWidget(left_panel)
-        horiz_split.addWidget(right_panel)
-        horiz_split.setStretchFactor(0, 1)
-        horiz_split.setStretchFactor(1, 2)
-
-        # Replace parameter group layout with the new horizontal splitter
-        new_param_layout = QVBoxLayout()
-        new_param_layout.addWidget(horiz_split)
-        widget.param_group.setLayout(new_param_layout)
+        # Add Summary and Table below parameters as full-width rows (reliable on all platforms)
+        layout.addRow("", widget.fpp_summary)
+        layout.addRow("", widget.fpp_table)
 
         # Hide plot pane by default
         widget.plot_group.setVisible(False)
