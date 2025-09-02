@@ -344,9 +344,15 @@ class ResistanceMeterApp(QMainWindow):
             if section == 'controls' and hasattr(w, 'control_group'):
                 w.control_group.setVisible(visible)
 
-        # Results viewer tab
-        self.tab_results = self.create_results_tab()
-        self.main_tabs.addTab(self.tab_results, "Results Viewer")
+        # Results viewer tab (ensure only one is added)
+        has_results = False
+        for i in range(self.main_tabs.count()):
+            if self.main_tabs.tabText(i) == "Results Viewer":
+                has_results = True
+                break
+        if not has_results:
+            self.tab_results = self.create_results_tab()
+            self.main_tabs.addTab(self.tab_results, "Results Viewer")
 
     def create_results_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab)
