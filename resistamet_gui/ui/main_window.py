@@ -27,7 +27,8 @@ class ResistanceMeterApp(QMainWindow):
         self.data_buffers = {
             'resistance': EnhancedDataBuffer(),
             'source_v': EnhancedDataBuffer(),
-            'source_i': EnhancedDataBuffer()
+            'source_i': EnhancedDataBuffer(),
+            'four_point': EnhancedDataBuffer(),
         }
         self.measurement_worker = None
         self.plot_timer = QTimer(self)
@@ -84,6 +85,8 @@ class ResistanceMeterApp(QMainWindow):
         main_layout.addWidget(self.main_splitter, 1)
         self.statusBar().showMessage("Ready")
         self.create_menus()
+        # Sync initial hide/show button text
+        self.update_hide_show_buttons()
         self.shortcut_mark = QShortcut(Qt.Key_M, self); self.shortcut_mark.activated.connect(self.mark_event_shortcut)
         self.shortcut_mark.setEnabled(False)
 
@@ -101,11 +104,11 @@ class ResistanceMeterApp(QMainWindow):
         control_layout.addWidget(start_button); control_layout.addWidget(stop_button); control_layout.addWidget(pause_button)
         # Hide buttons for quicker collapsing
         hide_params_btn = QPushButton("Hide Params")
-        hide_params_btn.setToolTip("Hide parameters section")
-        hide_params_btn.clicked.connect(lambda: self.toggle_section_visibility('params', False))
+        hide_params_btn.setToolTip("Hide/show parameters section")
+        hide_params_btn.clicked.connect(self._toggle_params_action)
         hide_controls_btn = QPushButton("Hide Controls")
-        hide_controls_btn.setToolTip("Hide controls section")
-        hide_controls_btn.clicked.connect(lambda: self.toggle_section_visibility('controls', False))
+        hide_controls_btn.setToolTip("Hide/show controls section")
+        hide_controls_btn.clicked.connect(self._toggle_controls_action)
         control_layout.addWidget(hide_params_btn)
         control_layout.addWidget(hide_controls_btn)
         control_layout.addStretch(); control_layout.addWidget(status_label); control_group.setLayout(control_layout)
@@ -126,6 +129,8 @@ class ResistanceMeterApp(QMainWindow):
         tab_widget.plot_group = plot_group
         tab_widget.control_group = control_group
         tab_widget.splitter = tab_splitter
+        tab_widget.hide_params_btn = hide_params_btn
+        tab_widget.hide_controls_btn = hide_controls_btn
         return tab_widget
 
     def create_resistance_tab(self):
@@ -180,16 +185,13 @@ class ResistanceMeterApp(QMainWindow):
         widget.fpp_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
         layout.addRow("Voltage Compliance:", widget.fpp_voltage_compliance)
         widget.fpp_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
-        layout.addRow(widget.fpp_voltage_range_auto)
         # Probe geometry & calc params
         widget.fpp_spacing_cm = QDoubleSpinBox(decimals=5, minimum=0.001, maximum=5.0, singleStep=0.001, suffix=" cm")
         layout.addRow("Probe Spacing s:", widget.fpp_spacing_cm)
         widget.fpp_thickness_um = QDoubleSpinBox(decimals=3, minimum=0.0, maximum=5000.0, singleStep=0.1, suffix=" µm")
         layout.addRow("Thickness t (optional):", widget.fpp_thickness_um)
         widget.fpp_alpha = QDoubleSpinBox(decimals=4, minimum=0.0, maximum=10.0, singleStep=0.01)
-        layout.addRow("Correction Factor α (optional):", widget.fpp_alpha)
         widget.fpp_k_factor = QDoubleSpinBox(decimals=4, minimum=0.1, maximum=50.0, singleStep=0.001)
-        layout.addRow("K Factor (default 4.532):", widget.fpp_k_factor)
         widget.fpp_model = QComboBox()
         widget.fpp_model.addItems(["thin_film", "semi_infinite", "finite_thin", "finite_alpha"])
         layout.addRow("Model:", widget.fpp_model)
@@ -342,6 +344,7 @@ class ResistanceMeterApp(QMainWindow):
     def toggle_status_visibility(self, visible: bool):
         if hasattr(self, 'status_group') and self.status_group:
             self.status_group.setVisible(visible)
+        self.update_hide_show_buttons()
 
     def toggle_section_visibility(self, section: str, visible: bool):
         # section in {'params','controls'}
@@ -353,6 +356,27 @@ class ResistanceMeterApp(QMainWindow):
                 w.param_group.setVisible(visible)
             if section == 'controls' and hasattr(w, 'control_group'):
                 w.control_group.setVisible(visible)
+        self.update_hide_show_buttons()
+
+    def _toggle_params_action(self):
+        # invert global action and let handlers do the rest
+        if hasattr(self, 'action_show_params'):
+            self.action_show_params.setChecked(not self.action_show_params.isChecked())
+
+    def _toggle_controls_action(self):
+        if hasattr(self, 'action_show_controls'):
+            self.action_show_controls.setChecked(not self.action_show_controls.isChecked())
+
+    def update_hide_show_buttons(self):
+        # Sync button text with current visibility state
+        for mode in ['resistance', 'source_v', 'source_i', 'four_point']:
+            w = self.get_widget_for_mode(mode)
+            if not w:
+                continue
+            if hasattr(w, 'param_group') and hasattr(w, 'hide_params_btn'):
+                w.hide_params_btn.setText('Hide Params' if w.param_group.isVisible() else 'Show Params')
+            if hasattr(w, 'control_group') and hasattr(w, 'hide_controls_btn'):
+                w.hide_controls_btn.setText('Hide Controls' if w.control_group.isVisible() else 'Show Controls')
 
     def create_results_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab)
