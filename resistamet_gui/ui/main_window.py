@@ -329,6 +329,16 @@ class ResistanceMeterApp(QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction(self.action_show_status)
 
+        # Results viewer tab (ensure only one is added)
+        has_results = False
+        for i in range(self.main_tabs.count()):
+            if self.main_tabs.tabText(i) == "Results Viewer":
+                has_results = True
+                break
+        if not has_results:
+            self.tab_results = self.create_results_tab()
+            self.main_tabs.addTab(self.tab_results, "Results Viewer")
+
     def toggle_status_visibility(self, visible: bool):
         if hasattr(self, 'status_group') and self.status_group:
             self.status_group.setVisible(visible)
@@ -343,16 +353,6 @@ class ResistanceMeterApp(QMainWindow):
                 w.param_group.setVisible(visible)
             if section == 'controls' and hasattr(w, 'control_group'):
                 w.control_group.setVisible(visible)
-
-        # Results viewer tab (ensure only one is added)
-        has_results = False
-        for i in range(self.main_tabs.count()):
-            if self.main_tabs.tabText(i) == "Results Viewer":
-                has_results = True
-                break
-        if not has_results:
-            self.tab_results = self.create_results_tab()
-            self.main_tabs.addTab(self.tab_results, "Results Viewer")
 
     def create_results_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab)
@@ -377,6 +377,17 @@ class ResistanceMeterApp(QMainWindow):
         return tab
 
     def open_result_csv(self):
+        # Ensure Results Viewer tab is available and its widgets exist
+        if not hasattr(self, 'results_var') or not hasattr(self, 'results_canvas'):
+            # Try to add/create the tab
+            has_results = False
+            for i in range(self.main_tabs.count()):
+                if self.main_tabs.tabText(i) == "Results Viewer":
+                    has_results = True
+                    break
+            if not has_results:
+                self.tab_results = self.create_results_tab()
+                self.main_tabs.addTab(self.tab_results, "Results Viewer")
         filename, _ = QFileDialog.getOpenFileName(self, "Open Result CSV", self.user_settings['file']['data_directory'] if self.user_settings else ".", "CSV Files (*.csv);;All Files (*)")
         if not filename:
             return
