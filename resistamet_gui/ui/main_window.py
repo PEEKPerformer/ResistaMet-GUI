@@ -178,107 +178,225 @@ class ResistanceMeterApp(QMainWindow):
         return widget
 
     def create_four_point_tab(self):
-        widget = self.create_tab_widget('four_point')
-        layout = widget.param_layout
+        """Create 4-Point Probe tab with robust horizontal layout: Left=Parameters, Right=Summary+Table"""
+        
+        # Main container - creates custom layout structure for 4PP only
+        main_container = QWidget()
+        main_container.mode = 'four_point'
+        main_layout = QVBoxLayout(main_container)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        main_layout.setSpacing(6)
+        
+        # TOP: Horizontal splitter - the key to using screen width effectively
+        top_splitter = QSplitter(Qt.Horizontal)
+        top_splitter.setObjectName("fpp_top_splitter")
+        top_splitter.setChildrenCollapsible(False)  # Prevent zero-size collapse on Windows
+        
+        # LEFT: Parameters panel (preserve existing QGroupBox structure - never touch its layout!)
+        param_group = QGroupBox("Parameters")
+        param_layout = QFormLayout(param_group)
+        
+        # RIGHT: Summary + Table panel  
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(6, 6, 6, 6)
+        right_layout.setSpacing(6)
+        
+        # CRITICAL: Set size policies to prevent Windows zero-size issues
+        param_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        param_group.setMinimumWidth(350)  # Ensure parameters always visible
+        param_group.setMaximumWidth(480)  # Don't let it dominate the screen
+        
+        right_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        right_panel.setMinimumWidth(420)   # Guarantee table visibility
+        right_panel.setMinimumHeight(300)  # Ensure reasonable table height
+        
+        top_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        top_splitter.setMinimumHeight(450)  # Prevent total collapse
+        
+        # Add panels to splitter with stretch factors to control initial proportions
+        top_splitter.addWidget(param_group)
+        top_splitter.addWidget(right_panel)  
+        top_splitter.setStretchFactor(0, 2)  # Parameters: moderate stretch (40%)
+        top_splitter.setStretchFactor(1, 3)  # Right panel: higher stretch (60%)
+        
+        # MIDDLE: Plot group (standard approach, initially hidden)
+        plot_group = QGroupBox("Real-time Data")
+        plot_layout = QVBoxLayout(plot_group)
+        canvas = MplCanvas(self, width=8, height=5, dpi=90)
+        toolbar = NavigationToolbar(canvas, self)
+        plot_layout.addWidget(toolbar)
+        plot_layout.addWidget(canvas)
+        plot_group.setVisible(False)  # Hidden by default
+        
+        # BOTTOM: Controls group (standard approach)
+        control_group = QGroupBox("Control")
+        control_layout = QHBoxLayout(control_group)
+        
+        start_button = QPushButton(QIcon.fromTheme("media-playback-start"), "Start")
+        stop_button = QPushButton(QIcon.fromTheme("media-playback-stop"), "Stop")
+        pause_button = QPushButton(QIcon.fromTheme("media-playback-pause"), "Pause")
+        status_label = QLabel("Status: Idle")
+        
+        stop_button.setEnabled(False)
+        pause_button.setEnabled(False) 
+        pause_button.setCheckable(True)
+        status_label.setStyleSheet("font-weight: bold;")
+        
+        # Add hide/show buttons (maintain existing functionality)
+        hide_params_btn = QPushButton("Hide Params")
+        hide_controls_btn = QPushButton("Hide Controls")
+        hide_params_btn.setToolTip("Hide/show parameters section")
+        hide_controls_btn.setToolTip("Hide/show controls section")
+        hide_params_btn.clicked.connect(self._toggle_params_action)
+        hide_controls_btn.clicked.connect(self._toggle_controls_action)
+        
+        control_layout.addWidget(start_button)
+        control_layout.addWidget(stop_button)  
+        control_layout.addWidget(pause_button)
+        control_layout.addWidget(hide_params_btn)
+        control_layout.addWidget(hide_controls_btn)
+        control_layout.addStretch()
+        control_layout.addWidget(status_label)
+        
+        # Assemble main layout with proper stretch factors
+        main_layout.addWidget(top_splitter, 10)  # Top gets most space
+        main_layout.addWidget(plot_group, 5)     # Plot when visible  
+        main_layout.addWidget(control_group, 1)  # Controls minimal height
+        
+        # Store all references needed by other methods (maintain exact compatibility)
+        main_container.param_layout = param_layout
+        main_container.canvas = canvas
+        main_container.start_button = start_button
+        main_container.stop_button = stop_button
+        main_container.pause_button = pause_button 
+        main_container.status_label = status_label
+        main_container.param_group = param_group
+        main_container.plot_group = plot_group
+        main_container.control_group = control_group
+        main_container.hide_params_btn = hide_params_btn
+        main_container.hide_controls_btn = hide_controls_btn
+        main_container.splitter = top_splitter  # Note: this is now the horizontal splitter, not vertical
+        main_container.top_splitter = top_splitter  # Additional reference for initialization
+        main_container.right_panel = right_panel
+        
+        # CREATE ALL 4PP-SPECIFIC WIDGETS (exactly as before)
+        layout = param_layout  # Use the parameter layout for form fields
+        
         # Instrument parameters
-        widget.fpp_current = QDoubleSpinBox(decimals=6, minimum=-1.0, maximum=1.0, singleStep=1e-3, suffix=" A")
-        layout.addRow("Source Current:", widget.fpp_current)
-        widget.fpp_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
-        layout.addRow("Voltage Compliance:", widget.fpp_voltage_compliance)
-        widget.fpp_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
+        main_container.fpp_current = QDoubleSpinBox(decimals=6, minimum=-1.0, maximum=1.0, singleStep=1e-3, suffix=" A")
+        layout.addRow("Source Current:", main_container.fpp_current)
+        main_container.fpp_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
+        layout.addRow("Voltage Compliance:", main_container.fpp_voltage_compliance)
+        main_container.fpp_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
         # Probe geometry & calc params
-        widget.fpp_spacing_cm = QDoubleSpinBox(decimals=5, minimum=0.001, maximum=5.0, singleStep=0.001, suffix=" cm")
-        layout.addRow("Probe Spacing s:", widget.fpp_spacing_cm)
-        widget.fpp_thickness_um = QDoubleSpinBox(decimals=3, minimum=0.0, maximum=5000.0, singleStep=0.1, suffix=" µm")
-        layout.addRow("Thickness t (optional):", widget.fpp_thickness_um)
-        widget.fpp_alpha = QDoubleSpinBox(decimals=4, minimum=0.0, maximum=10.0, singleStep=0.01)
-        widget.fpp_k_factor = QDoubleSpinBox(decimals=4, minimum=0.1, maximum=50.0, singleStep=0.001)
-        widget.fpp_model = QComboBox()
-        widget.fpp_model.addItems(["thin_film", "semi_infinite", "finite_thin", "finite_alpha"])
-        layout.addRow("Model:", widget.fpp_model)
+        main_container.fpp_spacing_cm = QDoubleSpinBox(decimals=5, minimum=0.001, maximum=5.0, singleStep=0.001, suffix=" cm")
+        layout.addRow("Probe Spacing s:", main_container.fpp_spacing_cm)
+        main_container.fpp_thickness_um = QDoubleSpinBox(decimals=3, minimum=0.0, maximum=5000.0, singleStep=0.1, suffix=" µm")
+        layout.addRow("Thickness t (optional):", main_container.fpp_thickness_um)
+        main_container.fpp_alpha = QDoubleSpinBox(decimals=4, minimum=0.0, maximum=10.0, singleStep=0.01)
+        main_container.fpp_k_factor = QDoubleSpinBox(decimals=4, minimum=0.1, maximum=50.0, singleStep=0.001)
+        main_container.fpp_model = QComboBox()
+        main_container.fpp_model.addItems(["thin_film", "semi_infinite", "finite_thin", "finite_alpha"])
+        layout.addRow("Model:", main_container.fpp_model)
         # Samples to acquire
-        widget.fpp_samples = QSpinBox(); widget.fpp_samples.setRange(0, 1000000); widget.fpp_samples.setSingleStep(10)
-        layout.addRow("Samples (0=cont.):", widget.fpp_samples)
+        main_container.fpp_samples = QSpinBox(); main_container.fpp_samples.setRange(0, 1000000); main_container.fpp_samples.setSingleStep(10)
+        layout.addRow("Samples (0=cont.):", main_container.fpp_samples)
         # Plot variable and plot visibility
-        widget.fpp_plot_var = QComboBox()
-        widget.fpp_plot_var.addItems(["voltage", "current", "V/I", "sheet_Rs", "rho"])
-        layout.addRow("Plot Variable:", widget.fpp_plot_var)
-        widget.fpp_show_plot = QCheckBox("Show Plot")
-        widget.fpp_show_plot.setChecked(False)
+        main_container.fpp_plot_var = QComboBox()
+        main_container.fpp_plot_var.addItems(["voltage", "current", "V/I", "sheet_Rs", "rho"])
+        layout.addRow("Plot Variable:", main_container.fpp_plot_var)
+        main_container.fpp_show_plot = QCheckBox("Show Plot")
+        main_container.fpp_show_plot.setChecked(False)
         # The plot section will be hidden by default; checkbox toggles it
-        widget.fpp_show_plot.toggled.connect(lambda v: widget.plot_group.setVisible(v))
-        layout.addRow(widget.fpp_show_plot)
+        main_container.fpp_show_plot.toggled.connect(lambda v: plot_group.setVisible(v))
+        layout.addRow(main_container.fpp_show_plot)
 
         # Model info
-        widget.fpp_model_info = QLabel("")
-        widget.fpp_model_info.setWordWrap(True)
-        layout.addRow("Model Info:", widget.fpp_model_info)
-        # Advanced collapsible using a checkable groupbox to avoid layout quirks
+        main_container.fpp_model_info = QLabel("")
+        main_container.fpp_model_info.setWordWrap(True)
+        layout.addRow("Model Info:", main_container.fpp_model_info)
+        
+        # Advanced collapsible using a checkable groupbox (proven robust approach)
         adv_group = QGroupBox("Advanced")
         adv_group.setCheckable(True)
         adv_group.setChecked(False)
         adv_form = QFormLayout(adv_group)
-        adv_form.addRow("Auto Range Voltage:", widget.fpp_voltage_range_auto)
-        adv_form.addRow("Correction Factor α:", widget.fpp_alpha)
-        adv_form.addRow("K Factor:", widget.fpp_k_factor)
+        adv_form.addRow("Auto Range Voltage:", main_container.fpp_voltage_range_auto)
+        adv_form.addRow("Correction Factor α:", main_container.fpp_alpha)
+        adv_form.addRow("K Factor:", main_container.fpp_k_factor)
         # Add as a full-width row in the form
         layout.addRow("", adv_group)
+        
         # Mark event
-        widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
-        widget.mark_event_button.setEnabled(False)
-        layout.addRow(widget.mark_event_button)
+        main_container.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
+        main_container.mark_event_button.setEnabled(False)
+        layout.addRow(main_container.mark_event_button)
         # Quick report button
-        widget.report_button = QPushButton(QIcon.fromTheme("document-save"), "Export Summary...")
-        widget.report_button.clicked.connect(self.export_fpp_summary)
-        layout.addRow(widget.report_button)
-
-        # Connect events
-        widget.start_button.clicked.connect(lambda: self.start_measurement('four_point'))
-        widget.stop_button.clicked.connect(self.stop_current_measurement)
-        widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
-        widget.mark_event_button.clicked.connect(self.mark_event_shortcut)
-        widget.fpp_plot_var.currentTextChanged.connect(lambda _: self.update_canvas_labels_for_mode('four_point'))
-        widget.fpp_model.currentTextChanged.connect(lambda *_: self.update_four_point_model_info())
-        widget.fpp_alpha.valueChanged.connect(lambda *_: self.update_four_point_model_info())
-        widget.fpp_k_factor.valueChanged.connect(lambda *_: self.update_four_point_model_info())
-        widget.fpp_spacing_cm.valueChanged.connect(lambda *_: self.update_four_point_model_info())
-        widget.fpp_thickness_um.valueChanged.connect(lambda *_: self.update_four_point_model_info())
-
-        # Data table and summary for 4PP (will be placed in a right-side panel)
-        widget.fpp_table = QTableWidget(0, 9)
-        widget.fpp_table.setHorizontalHeaderLabels([
+        main_container.report_button = QPushButton(QIcon.fromTheme("document-save"), "Export Summary...")
+        main_container.report_button.clicked.connect(self.export_fpp_summary)
+        layout.addRow(main_container.report_button)
+        
+        # CREATE SUMMARY AND TABLE IN RIGHT PANEL
+        main_container.fpp_summary = QGroupBox("Summary Stats")
+        sum_layout = QFormLayout(main_container.fpp_summary)
+        main_container.fpp_n_label = QLabel("0")
+        main_container.fpp_rs_label = QLabel("--")
+        main_container.fpp_rho_label = QLabel("--")
+        main_container.fpp_sigma_label = QLabel("--")
+        sum_layout.addRow("N:", main_container.fpp_n_label)
+        sum_layout.addRow("Rs mean±std (Ω/□; RSD%):", main_container.fpp_rs_label)
+        sum_layout.addRow("ρ mean±std (Ω·cm; RSD%):", main_container.fpp_rho_label)
+        sum_layout.addRow("σ mean±std (S/cm; RSD%):", main_container.fpp_sigma_label)
+        
+        # Measurements table
+        main_container.fpp_table = QTableWidget(0, 9)
+        main_container.fpp_table.setHorizontalHeaderLabels([
             'Time (s)', 'V (V)', 'I (A)', 'V/I (Ω)', 'Rs (Ω/□)', 'ρ (Ω·cm)', 'σ (S/cm)', 'Comp', 'Event'
         ])
-        widget.fpp_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-        widget.fpp_summary = QGroupBox("Summary Stats")
-        sum_layout = QFormLayout(widget.fpp_summary)
-        widget.fpp_n_label = QLabel("0")
-        widget.fpp_rs_label = QLabel("--")
-        widget.fpp_rho_label = QLabel("--")
-        widget.fpp_sigma_label = QLabel("--")
-        sum_layout.addRow("N:", widget.fpp_n_label)
-        sum_layout.addRow("Rs mean±std (Ω/□; RSD%):", widget.fpp_rs_label)
-        sum_layout.addRow("ρ mean±std (Ω·cm; RSD%):", widget.fpp_rho_label)
-        sum_layout.addRow("σ mean±std (S/cm; RSD%):", widget.fpp_sigma_label)
-
-        # Make parameter inputs compact
-        for sb in [widget.fpp_current, widget.fpp_voltage_compliance, widget.fpp_spacing_cm, widget.fpp_thickness_um, widget.fpp_alpha, widget.fpp_k_factor, widget.fpp_samples]:
+        main_container.fpp_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # Add summary and table to right panel
+        right_layout.addWidget(main_container.fpp_summary)
+        right_layout.addWidget(main_container.fpp_table, 1)  # Table gets most space in right panel
+        
+        # Make parameter inputs compact (preserve existing styling)
+        for sb in [main_container.fpp_current, main_container.fpp_voltage_compliance, main_container.fpp_spacing_cm, main_container.fpp_thickness_um, main_container.fpp_alpha, main_container.fpp_k_factor, main_container.fpp_samples]:
             sb.setMaximumWidth(140)
-        widget.fpp_plot_var.setMaximumWidth(140)
-        widget.fpp_model.setMaximumWidth(160)
-        widget.fpp_show_plot.setMaximumWidth(120)
-
-        # Vertical, stable layout: add summary and table below parameters
-        layout.addRow("", widget.fpp_summary)
-        layout.addRow("", widget.fpp_table)
-        widget.plot_group.setVisible(False)
-        # Internal storage for quick stats
-        widget._fpp_rows = []  # list of tuples (time, v, i, ratio, rs, rho, sigma, comp, event)
+        main_container.fpp_plot_var.setMaximumWidth(140)
+        main_container.fpp_model.setMaximumWidth(160)
+        main_container.fpp_show_plot.setMaximumWidth(120)
+        
+        # Connect all events (exactly as before)
+        main_container.start_button.clicked.connect(lambda: self.start_measurement('four_point'))
+        main_container.stop_button.clicked.connect(self.stop_current_measurement)
+        main_container.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
+        main_container.mark_event_button.clicked.connect(self.mark_event_shortcut)
+        main_container.fpp_plot_var.currentTextChanged.connect(lambda _: self.update_canvas_labels_for_mode('four_point'))
+        main_container.fpp_model.currentTextChanged.connect(lambda *_: self.update_four_point_model_info())
+        main_container.fpp_alpha.valueChanged.connect(lambda *_: self.update_four_point_model_info())
+        main_container.fpp_k_factor.valueChanged.connect(lambda *_: self.update_four_point_model_info())
+        main_container.fpp_spacing_cm.valueChanged.connect(lambda *_: self.update_four_point_model_info())
+        main_container.fpp_thickness_um.valueChanged.connect(lambda *_: self.update_four_point_model_info())
+        
+        # Internal storage for quick stats (preserve existing functionality)
+        main_container._fpp_rows = []  # list of tuples (time, v, i, ratio, rs, rho, sigma, comp, event)
+        
+        # CRITICAL: Deferred initialization for Windows zero-size fix
+        def initialize_splitter_sizes():
+            """Initialize splitter sizes after widget is properly sized"""
+            total_width = main_container.width()
+            if total_width > 200:  # Only if properly sized
+                left_width = max(380, int(total_width * 0.35))  # 35% for params, minimum 380px
+                right_width = total_width - left_width          # 65% for summary+table
+                top_splitter.setSizes([left_width, right_width])
+        
+        main_container._initialize_splitter = initialize_splitter_sizes
+        
         # Initialize model info text using this widget (before self.tab_four_point is assigned)
-        self.update_four_point_model_info(widget)
+        self.update_four_point_model_info(main_container)
 
-        return widget
+        return main_container
 
     def create_menus(self):
         menu_bar = self.menuBar()
@@ -1217,6 +1335,23 @@ class ResistanceMeterApp(QMainWindow):
         <p>Supports real-time plotting, data logging, user profiles, and compliance monitoring.</p>
         """
         QMessageBox.about(self, f"About ResistaMet GUI v{__version__}", about_text)
+
+    def showEvent(self, event):
+        """Override to handle post-show initialization - critical for Windows splitter sizing"""
+        super().showEvent(event)
+        if not getattr(self, '_splitters_initialized', False):
+            # Initialize 4PP splitter after window is fully shown - fixes Windows zero-size issues
+            QTimer.singleShot(150, self._initialize_4pp_splitter)
+            self._splitters_initialized = True
+
+    def _initialize_4pp_splitter(self):
+        """Initialize 4PP splitter sizes - Windows timing fix for zero-size panes"""
+        if hasattr(self.tab_four_point, '_initialize_splitter'):
+            try:
+                self.tab_four_point._initialize_splitter()
+                self.log_status("4PP layout initialized successfully")
+            except Exception as e:
+                self.log_status(f"Warning: 4PP layout initialization failed: {e}", color="orange")
 
     def closeEvent(self, event):
         if self.measurement_running:
