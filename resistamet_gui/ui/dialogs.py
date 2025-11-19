@@ -83,9 +83,9 @@ class SettingsDialog(QDialog):
 
         res_group = QWidget()
         form_layout = QFormLayout()
-        self.res_test_current = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=1.0, singleStep=1e-3, suffix=" A")
+        self.res_test_current = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=3.0, singleStep=1e-3, suffix=" A")
         form_layout.addRow("Test Current:", self.res_test_current)
-        self.res_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=100.0, singleStep=0.1, suffix=" V")
+        self.res_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
         form_layout.addRow("Voltage Compliance:", self.res_voltage_compliance)
         self.res_measurement_type = QComboBox()
         self.res_measurement_type.addItems(["2-wire", "4-wire"])
@@ -95,9 +95,9 @@ class SettingsDialog(QDialog):
 
         vsrc_group = QWidget()
         form_layout = QFormLayout()
-        self.vsource_voltage = QDoubleSpinBox(decimals=3, minimum=-100.0, maximum=100.0, singleStep=0.1, suffix=" V")
+        self.vsource_voltage = QDoubleSpinBox(decimals=3, minimum=-200.0, maximum=200.0, singleStep=0.1, suffix=" V")
         form_layout.addRow("Source Voltage:", self.vsource_voltage)
-        self.vsource_current_compliance = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=1.0, singleStep=1e-3, suffix=" A")
+        self.vsource_current_compliance = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=3.0, singleStep=1e-3, suffix=" A")
         form_layout.addRow("Current Compliance:", self.vsource_current_compliance)
         # autorange controlled in main UI
         self.vsource_duration_hours = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
@@ -106,9 +106,9 @@ class SettingsDialog(QDialog):
 
         isrc_group = QWidget()
         form_layout = QFormLayout()
-        self.isource_current = QDoubleSpinBox(decimals=6, minimum=-1.0, maximum=1.0, singleStep=1e-3, suffix=" A")
+        self.isource_current = QDoubleSpinBox(decimals=6, minimum=-3.0, maximum=3.0, singleStep=1e-3, suffix=" A")
         form_layout.addRow("Source Current:", self.isource_current)
-        self.isource_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=100.0, singleStep=0.1, suffix=" V")
+        self.isource_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
         form_layout.addRow("Voltage Compliance:", self.isource_voltage_compliance)
         self.isource_duration_hours = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
         form_layout.addRow("Duration (hours):", self.isource_duration_hours)

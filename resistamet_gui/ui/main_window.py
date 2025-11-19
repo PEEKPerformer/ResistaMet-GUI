@@ -136,8 +136,8 @@ class ResistanceMeterApp(QMainWindow):
 
     def create_resistance_tab(self):
         widget = self.create_tab_widget('resistance'); layout = widget.param_layout
-        widget.res_test_current = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=1.0, singleStep=1e-3, suffix=" A"); layout.addRow("Test Current:", widget.res_test_current)
-        widget.res_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=100.0, singleStep=0.1, suffix=" V"); layout.addRow("Voltage Compliance:", widget.res_voltage_compliance)
+        widget.res_test_current = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=3.0, singleStep=1e-3, suffix=" A"); layout.addRow("Test Current:", widget.res_test_current)
+        widget.res_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V"); layout.addRow("Voltage Compliance:", widget.res_voltage_compliance)
         widget.res_measurement_type = QComboBox(); widget.res_measurement_type.addItems(["2-wire", "4-wire"]); layout.addRow("Measurement Type:", widget.res_measurement_type)
         widget.res_auto_range = QCheckBox("Auto Range Resistance"); layout.addRow(widget.res_auto_range)
         widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)"); widget.mark_event_button.setEnabled(False); layout.addRow(widget.mark_event_button)
@@ -149,8 +149,8 @@ class ResistanceMeterApp(QMainWindow):
 
     def create_voltage_source_tab(self):
         widget = self.create_tab_widget('source_v'); layout = widget.param_layout
-        widget.vsource_voltage = QDoubleSpinBox(decimals=3, minimum=-100.0, maximum=100.0, singleStep=0.1, suffix=" V"); layout.addRow("Source Voltage:", widget.vsource_voltage)
-        widget.vsource_current_compliance = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=1.0, singleStep=1e-3, suffix=" A"); layout.addRow("Current Compliance:", widget.vsource_current_compliance)
+        widget.vsource_voltage = QDoubleSpinBox(decimals=3, minimum=-200.0, maximum=200.0, singleStep=0.1, suffix=" V"); layout.addRow("Source Voltage:", widget.vsource_voltage)
+        widget.vsource_current_compliance = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=3.0, singleStep=1e-3, suffix=" A"); layout.addRow("Current Compliance:", widget.vsource_current_compliance)
         widget.vsource_current_range_auto = QCheckBox("Auto Range Current Measurement"); layout.addRow(widget.vsource_current_range_auto)
         widget.vsource_duration = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h"); layout.addRow("Duration (hours):", widget.vsource_duration)
         widget.v_plot_var = QComboBox(); widget.v_plot_var.addItems(["current", "voltage", "resistance"]); layout.addRow("Plot Variable:", widget.v_plot_var)
@@ -164,8 +164,8 @@ class ResistanceMeterApp(QMainWindow):
 
     def create_current_source_tab(self):
         widget = self.create_tab_widget('source_i'); layout = widget.param_layout
-        widget.isource_current = QDoubleSpinBox(decimals=6, minimum=-1.0, maximum=1.0, singleStep=1e-3, suffix=" A"); layout.addRow("Source Current:", widget.isource_current)
-        widget.isource_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=100.0, singleStep=0.1, suffix=" V"); layout.addRow("Voltage Compliance:", widget.isource_voltage_compliance)
+        widget.isource_current = QDoubleSpinBox(decimals=6, minimum=-3.0, maximum=3.0, singleStep=1e-3, suffix=" A"); layout.addRow("Source Current:", widget.isource_current)
+        widget.isource_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V"); layout.addRow("Voltage Compliance:", widget.isource_voltage_compliance)
         widget.isource_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement"); layout.addRow(widget.isource_voltage_range_auto)
         widget.isource_duration = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h"); layout.addRow("Duration (hours):", widget.isource_duration)
         widget.i_plot_var = QComboBox(); widget.i_plot_var.addItems(["voltage", "current", "resistance"]); layout.addRow("Plot Variable:", widget.i_plot_var)
@@ -284,7 +284,7 @@ class ResistanceMeterApp(QMainWindow):
         layout = param_layout  # Use the parameter layout for form fields
         
         # Instrument parameters
-        main_container.fpp_current = QDoubleSpinBox(decimals=6, minimum=-1.0, maximum=1.0, singleStep=1e-3, suffix=" A")
+        main_container.fpp_current = QDoubleSpinBox(decimals=6, minimum=-3.0, maximum=3.0, singleStep=1e-3, suffix=" A")
         layout.addRow("Source Current:", main_container.fpp_current)
         main_container.fpp_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
         layout.addRow("Voltage Compliance:", main_container.fpp_voltage_compliance)
