@@ -175,3 +175,6 @@ cython_debug/
 *.md
 resistamet-gui-1.1.0.py
 resistamet-gui_old.py
+
+# macOS system files
+.DS_Store
