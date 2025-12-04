@@ -78,7 +78,7 @@ class SettingsDialog(QDialog):
         form_layout.addRow("NPLC:", self.nplc)
         self.settling_time = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=10.0, singleStep=0.1, suffix=" s")
         form_layout.addRow("Settling Time:", self.settling_time)
-        general_group.setLayout = form_layout
+        general_group.setLayout(form_layout)
         main_layout.addLayout(form_layout)
 
         res_group = QWidget()

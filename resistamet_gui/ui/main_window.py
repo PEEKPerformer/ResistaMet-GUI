@@ -1100,14 +1100,14 @@ class ResistanceMeterApp(QMainWindow):
         k = w.fpp_k_factor.value() or 4.532; alpha = w.fpp_alpha.value(); model = w.fpp_model.currentText()
         txt = ""
         if model == 'semi_infinite':
-            txt = f"ρ = 2π·s·(V/I) = {2*3.1416*s:.4g}·(V/I) Ω·cm"
+            txt = f"ρ = 2π·s·(V/I) = {2*np.pi*s:.4g}·(V/I) Ω·cm"
         elif model in ('thin_film','finite_thin'):
             # Show both Rs and rho forms
             txt = f"Rs = {k:.4g}·(V/I) Ω/□\nρ = {k:.4g}·t·(V/I) = {k*t_cm:.4g}·(V/I) Ω·cm"
             if model == 'thin_film' and alpha and alpha != 1.0:
                 txt += f"\n(α applied: Rs = {k*alpha:.4g}·(V/I), ρ = {k*alpha:.4g}·t·(V/I))"
         else:
-            txt = f"ρ = α·2π·s·(V/I) = α·{2*3.1416*s:.4g}·(V/I) Ω·cm"
+            txt = f"ρ = α·2π·s·(V/I) = α·{2*np.pi*s:.4g}·(V/I) Ω·cm"
         w.fpp_model_info.setText(txt)
 
     def on_measurement_complete(self, mode: str):

@@ -1,6 +1,8 @@
 import csv
 import os
+import re
 import time
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Dict
@@ -34,14 +36,63 @@ class MeasurementWorker(QThread):
         self.sample_name = sample_name
         self.username = username
         self.settings = settings
-        self.running = False
-        self.paused = False
-        self.event_marker = ""
+
+        # Thread-safe state management
+        self._state_lock = threading.Lock()
+        self._running = False
+        self._paused = False
+        self._event_marker = ""
+        self._csv_error_count = 0  # Track consecutive CSV write failures
+        self._max_csv_errors = 3   # Max consecutive errors before escalation
+
         self.keithley = None
         self.csvfile = None
         self.writer = None
         self.start_time = 0
         self.filename = ""
+
+    @property
+    def running(self) -> bool:
+        """Thread-safe access to running state."""
+        with self._state_lock:
+            return self._running
+
+    @running.setter
+    def running(self, value: bool) -> None:
+        """Thread-safe setter for running state."""
+        with self._state_lock:
+            self._running = value
+
+    @property
+    def paused(self) -> bool:
+        """Thread-safe access to paused state."""
+        with self._state_lock:
+            return self._paused
+
+    @paused.setter
+    def paused(self, value: bool) -> None:
+        """Thread-safe setter for paused state."""
+        with self._state_lock:
+            self._paused = value
+
+    @property
+    def event_marker(self) -> str:
+        """Thread-safe access to event marker."""
+        with self._state_lock:
+            return self._event_marker
+
+    @event_marker.setter
+    def event_marker(self, value: str) -> None:
+        """Thread-safe setter for event marker."""
+        with self._state_lock:
+            self._event_marker = value
+
+    def get_and_clear_event_marker(self) -> str:
+        """Atomically get and clear the event marker."""
+        with self._state_lock:
+            marker = self._event_marker
+            self._event_marker = ""
+            return marker
 
     def run(self):
         self.running = True
@@ -374,11 +425,10 @@ class MeasurementWorker(QThread):
                             self.status_update.emit("Stopping due to compliance (per settings).")
                             self.running = False
 
-                    event_marker = ""
-                    if self.event_marker:
-                        event_marker = self.event_marker
-                        self.event_marker = ""
-                        self.status_update.emit(f"⭐ Event marked at {elapsed_time:.3f}s ⭐")
+                    # Atomically get and clear event marker (thread-safe)
+                    event_marker = self.get_and_clear_event_marker()
+                    if event_marker:
+                        self.status_update.emit(f"Event marked at {elapsed_time:.3f}s: {event_marker}")
 
                     now_unix = int(now)
                     if self.mode == 'resistance':
@@ -433,9 +483,20 @@ class MeasurementWorker(QThread):
                             ]
                     try:
                         self.writer.writerow(row_data)
+                        self._csv_error_count = 0  # Reset error count on success
                     except Exception as e:
-                        self.error_occurred.emit(f"Error writing to CSV: {str(e)}")
-                        self.status_update.emit("Warning: Failed to write data point to CSV.")
+                        self._csv_error_count += 1
+                        error_msg = f"Error writing to CSV ({self._csv_error_count}/{self._max_csv_errors}): {str(e)}"
+                        self.status_update.emit(f"Warning: {error_msg}")
+
+                        if self._csv_error_count >= self._max_csv_errors:
+                            # Escalate: too many consecutive write failures (likely disk full)
+                            self.error_occurred.emit(
+                                f"CRITICAL: {self._csv_error_count} consecutive CSV write failures. "
+                                f"Possible disk full or write permission issue. Stopping measurement to prevent data loss."
+                            )
+                            self.running = False
+                            break
 
                     self.data_point.emit(now, data_dict, compliance_status, event_marker)
 
@@ -506,14 +567,46 @@ class MeasurementWorker(QThread):
             self._cleanup()
             self.running = False
 
+    def _sanitize_path_component(self, name: str) -> str:
+        """Sanitize a string for safe use in file paths.
+
+        Removes path traversal characters and special characters that could
+        cause security issues or file system problems.
+        """
+        # Remove path traversal sequences
+        sanitized = re.sub(r'\.\.+', '', name)
+        sanitized = re.sub(r'[/\\]', '', sanitized)
+        # Replace non-alphanumeric characters with underscores
+        sanitized = ''.join(c if c.isalnum() or c in '-_' else '_' for c in sanitized)
+        # Remove leading/trailing underscores and collapse multiple underscores
+        sanitized = re.sub(r'_+', '_', sanitized).strip('_')
+        # Ensure non-empty result
+        return sanitized if sanitized else 'unnamed'
+
     def _create_filename(self, source_value_str: str) -> str:
+        """Create a safe filename for measurement data.
+
+        Sanitizes username and sample name to prevent path traversal attacks
+        and ensure cross-platform compatibility.
+        """
         base_dir = Path(self.settings['file']['data_directory'])
         base_dir.mkdir(parents=True, exist_ok=True)
-        user_dir = base_dir / self.username
+
+        # Sanitize username to prevent path traversal (e.g., "../" attacks)
+        sanitized_username = self._sanitize_path_component(self.username)
+        user_dir = base_dir / sanitized_username
         user_dir.mkdir(exist_ok=True)
+
         timestamp = int(time.time())
-        sanitized_name = ''.join(c if c.isalnum() else '_' for c in self.sample_name)
-        mode_tag = "R" if self.mode == 'resistance' else ("VSRC" if self.mode == 'source_v' else "ISRC")
+        sanitized_name = self._sanitize_path_component(self.sample_name)
+
+        mode_tags = {
+            'resistance': 'R',
+            'source_v': 'VSRC',
+            'source_i': 'ISRC',
+            'four_point': '4PP'
+        }
+        mode_tag = mode_tags.get(self.mode, 'DATA')
         filename = f"{timestamp}_{sanitized_name}_{mode_tag}_{source_value_str}.csv"
         return user_dir / filename
 

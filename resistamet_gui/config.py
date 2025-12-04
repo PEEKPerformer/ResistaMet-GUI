@@ -1,8 +1,12 @@
 import json
+import logging
 import os
 from typing import Dict, List, Optional
 
 from .constants import CONFIG_FILE, DEFAULT_SETTINGS
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 
 class ConfigManager:
@@ -34,10 +38,10 @@ class ConfigManager:
 
                 return config
             except Exception as e:
-                print(f"Error loading configuration file '{self.config_file}': {str(e)}. Using defaults.")
+                logger.warning(f"Error loading configuration file '{self.config_file}': {str(e)}. Using defaults.")
                 return dict(DEFAULT_SETTINGS)
         else:
-            print(f"Configuration file '{self.config_file}' not found. Creating with defaults.")
+            logger.info(f"Configuration file '{self.config_file}' not found. Creating with defaults.")
             new_config = dict(DEFAULT_SETTINGS)
             self.config = new_config
             self.save_config()
@@ -48,7 +52,7 @@ class ConfigManager:
             with open(self.config_file, 'w') as f:
                 json.dump(self.config, f, indent=4, sort_keys=True)
         except Exception as e:
-            print(f"Error saving configuration: {str(e)}")
+            logger.error(f"Error saving configuration: {str(e)}")
 
     def get_user_settings(self, username: str) -> Dict:
         user_settings = {k: dict(v) if isinstance(v, dict) else v for k, v in DEFAULT_SETTINGS.items()}
