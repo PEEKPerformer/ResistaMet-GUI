@@ -342,20 +342,52 @@ class MeasurementWorker(QThread):
                 except Exception:
                     end_time = None
 
+            # Retry configuration for transient errors (cable wiggle, etc.)
+            max_retries = 5
+            consecutive_errors = 0
+
             while self.running:
                 if self.paused:
                     time.sleep(0.1)
                     continue
                 now = time.time()
                 if now - last_measurement_time >= sample_interval:
-                    try:
-                        reading_str = self.keithley.query(":READ?").strip()
-                        last_measurement_time = now
-                    except pyvisa.errors.VisaIOError as e:
-                        self.error_occurred.emit(f"VISA Read Error: {str(e)}. Stopping.")
-                        break
-                    except Exception as e:
-                        self.error_occurred.emit(f"Unexpected Read Error: {str(e)}. Stopping.")
+                    reading_str = None
+                    read_success = False
+
+                    for retry in range(max_retries):
+                        try:
+                            reading_str = self.keithley.query(":READ?").strip()
+                            last_measurement_time = time.time()
+                            read_success = True
+                            if retry > 0:
+                                self.status_update.emit(f"Communication recovered after {retry} retries")
+                            consecutive_errors = 0
+                            break
+                        except pyvisa.errors.VisaIOError as e:
+                            consecutive_errors += 1
+                            if retry < max_retries - 1:
+                                # Exponential backoff: 0.1, 0.2, 0.4, 0.8, 1.6s
+                                delay = 0.1 * (2 ** retry)
+                                self.status_update.emit(
+                                    f"VISA error (retry {retry + 1}/{max_retries}): {str(e)[:50]}... "
+                                    f"Retrying in {delay:.1f}s"
+                                )
+                                time.sleep(delay)
+                                # Try to clear interface before retry
+                                try:
+                                    self.keithley.write("*CLS")
+                                except Exception:
+                                    pass
+                            else:
+                                self.error_occurred.emit(
+                                    f"VISA Read Error after {max_retries} retries: {str(e)}. Stopping."
+                                )
+                        except Exception as e:
+                            self.error_occurred.emit(f"Unexpected Read Error: {str(e)}. Stopping.")
+                            break
+
+                    if not read_success:
                         break
 
                     elapsed_time = now - self.start_time
