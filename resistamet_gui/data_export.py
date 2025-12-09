@@ -88,6 +88,7 @@ class DualExporter:
         self._csv_file = None
         self._csv_writer = None
         self._finalized = False
+        self._last_checkpoint_count = 0
 
         self._init_csv()
 
@@ -128,14 +129,56 @@ class DualExporter:
             ]
             self._csv_writer.writerow(formatted_row)
 
-    def flush(self) -> None:
-        """Flush CSV to disk (for auto-save during measurement)."""
+    def flush(self, checkpoint: bool = True) -> None:
+        """Flush CSV to disk and optionally write JSON checkpoint.
+
+        Args:
+            checkpoint: If True, also write a checkpoint JSON file for recovery.
+                       The checkpoint is written as .json.tmp and renamed on finalize.
+        """
+        # Flush CSV
         if self._csv_file:
             try:
                 self._csv_file.flush()
                 os.fsync(self._csv_file.fileno())
             except Exception as e:
                 logger.warning(f"Failed to flush CSV: {e}")
+
+        # Write JSON checkpoint if we have new data
+        if checkpoint and len(self._data_rows) > self._last_checkpoint_count:
+            self._write_checkpoint()
+
+    def _write_checkpoint(self) -> None:
+        """Write a checkpoint JSON file for crash recovery.
+
+        The checkpoint file is written as .json.tmp and contains all data
+        collected so far. On successful finalize(), this is replaced with
+        the final .json file.
+        """
+        checkpoint_path = self.base_path.with_suffix('.json.tmp')
+        try:
+            checkpoint_data = {
+                "format_version": self.FORMAT_VERSION,
+                "meta": {
+                    **self.metadata,
+                    "_checkpoint": True,
+                    "_checkpoint_time": datetime.now().isoformat(),
+                },
+                "columns": self.columns,
+                "units": self.units,
+                "row_count": len(self._data_rows),
+                "data": self._data_rows
+            }
+            # Write to temp file first, then rename for atomicity
+            temp_path = self.base_path.with_suffix('.json.tmp.writing')
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
+            # Atomic rename
+            temp_path.replace(checkpoint_path)
+            self._last_checkpoint_count = len(self._data_rows)
+            logger.debug(f"Checkpoint saved: {len(self._data_rows)} rows")
+        except Exception as e:
+            logger.warning(f"Failed to write checkpoint: {e}")
 
     def finalize(self, end_metadata: Optional[Dict[str, Any]] = None) -> None:
         """Finalize export and write JSON file.
@@ -177,6 +220,16 @@ class DualExporter:
             with open(self.json_path, 'w', encoding='utf-8') as f:
                 json.dump(json_data, f, indent=2, ensure_ascii=False)
             logger.info(f"Saved JSON export: {self.json_path}")
+
+            # Clean up checkpoint file after successful finalization
+            checkpoint_path = self.base_path.with_suffix('.json.tmp')
+            if checkpoint_path.exists():
+                try:
+                    checkpoint_path.unlink()
+                    logger.debug("Removed checkpoint file after successful finalization")
+                except Exception as e:
+                    logger.warning(f"Failed to remove checkpoint file: {e}")
+
         except Exception as e:
             logger.error(f"Failed to write JSON: {e}")
             raise
@@ -196,6 +249,63 @@ class DualExporter:
     def row_count(self) -> int:
         """Number of data rows written."""
         return len(self._data_rows)
+
+    @staticmethod
+    def recover_from_checkpoint(checkpoint_path: Union[str, Path]) -> Optional[Dict[str, Any]]:
+        """Recover data from a checkpoint file after a crash.
+
+        Args:
+            checkpoint_path: Path to the .json.tmp checkpoint file
+
+        Returns:
+            Dictionary with recovered data, or None if recovery failed.
+            The returned dict has the same structure as a finalized JSON file,
+            with an additional '_recovered' flag in metadata.
+
+        Example:
+            data = DualExporter.recover_from_checkpoint('/path/to/measurement.json.tmp')
+            if data:
+                # Save as final JSON
+                with open('/path/to/measurement_recovered.json', 'w') as f:
+                    json.dump(data, f, indent=2)
+        """
+        checkpoint_path = Path(checkpoint_path)
+        if not checkpoint_path.exists():
+            logger.warning(f"Checkpoint file not found: {checkpoint_path}")
+            return None
+
+        try:
+            with open(checkpoint_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Mark as recovered and remove checkpoint markers
+            if 'meta' in data:
+                data['meta']['_recovered'] = True
+                data['meta']['_recovered_from'] = str(checkpoint_path)
+                data['meta'].pop('_checkpoint', None)
+                data['meta'].pop('_checkpoint_time', None)
+
+            logger.info(f"Recovered {data.get('row_count', 0)} rows from checkpoint")
+            return data
+
+        except Exception as e:
+            logger.error(f"Failed to recover from checkpoint: {e}")
+            return None
+
+    @staticmethod
+    def find_checkpoints(directory: Union[str, Path]) -> List[Path]:
+        """Find all checkpoint files in a directory.
+
+        Args:
+            directory: Directory to search for .json.tmp files
+
+        Returns:
+            List of checkpoint file paths
+        """
+        directory = Path(directory)
+        if not directory.is_dir():
+            return []
+        return list(directory.glob('**/*.json.tmp'))
 
 
 def get_column_config(mode: str) -> tuple:

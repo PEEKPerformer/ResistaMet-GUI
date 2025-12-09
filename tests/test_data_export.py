@@ -220,6 +220,109 @@ class TestColumnConfig:
         assert len(columns) >= 2  # At least elapsed and value
 
 
+class TestCheckpointing:
+    """Tests for checkpoint/recovery functionality."""
+
+    def test_flush_creates_checkpoint(self, temp_export_dir, basic_metadata):
+        """Test that flush() creates a checkpoint file."""
+        base_path = temp_export_dir / "test_measurement"
+        exporter = DualExporter(
+            base_path=base_path,
+            metadata=basic_metadata,
+            columns=['elapsed_s', 'R_ohm'],
+        )
+
+        exporter.write_row([1.0, 100.5])
+        exporter.flush(checkpoint=True)
+
+        checkpoint_path = base_path.with_suffix('.json.tmp')
+        assert checkpoint_path.exists()
+
+        # Clean up
+        exporter.finalize()
+
+    def test_checkpoint_contains_data(self, temp_export_dir, basic_metadata):
+        """Test that checkpoint file contains all data."""
+        base_path = temp_export_dir / "test_measurement"
+        exporter = DualExporter(
+            base_path=base_path,
+            metadata=basic_metadata,
+            columns=['elapsed_s', 'R_ohm'],
+        )
+
+        exporter.write_row([1.0, 100.5])
+        exporter.write_row([2.0, 101.3])
+        exporter.flush(checkpoint=True)
+
+        checkpoint_path = base_path.with_suffix('.json.tmp')
+        with open(checkpoint_path) as f:
+            data = json.load(f)
+
+        assert data['row_count'] == 2
+        assert len(data['data']) == 2
+        assert data['meta']['_checkpoint'] is True
+
+        exporter.finalize()
+
+    def test_finalize_removes_checkpoint(self, temp_export_dir, basic_metadata):
+        """Test that finalize() removes the checkpoint file."""
+        base_path = temp_export_dir / "test_measurement"
+        exporter = DualExporter(
+            base_path=base_path,
+            metadata=basic_metadata,
+            columns=['elapsed_s', 'R_ohm'],
+        )
+
+        exporter.write_row([1.0, 100.5])
+        exporter.flush(checkpoint=True)
+
+        checkpoint_path = base_path.with_suffix('.json.tmp')
+        assert checkpoint_path.exists()
+
+        exporter.finalize()
+        assert not checkpoint_path.exists()
+
+    def test_recover_from_checkpoint(self, temp_export_dir, basic_metadata):
+        """Test recovery from checkpoint file."""
+        base_path = temp_export_dir / "test_measurement"
+        exporter = DualExporter(
+            base_path=base_path,
+            metadata=basic_metadata,
+            columns=['elapsed_s', 'R_ohm'],
+        )
+
+        exporter.write_row([1.0, 100.5])
+        exporter.write_row([2.0, 101.3])
+        exporter.flush(checkpoint=True)
+
+        # Simulate crash - don't finalize, just close
+        checkpoint_path = base_path.with_suffix('.json.tmp')
+
+        # Recover
+        recovered = DualExporter.recover_from_checkpoint(checkpoint_path)
+
+        assert recovered is not None
+        assert recovered['row_count'] == 2
+        assert recovered['meta']['_recovered'] is True
+        assert '_checkpoint' not in recovered['meta']
+
+    def test_find_checkpoints(self, temp_export_dir, basic_metadata):
+        """Test finding checkpoint files in directory."""
+        # Create two measurements with checkpoints
+        for name in ['measurement1', 'measurement2']:
+            base_path = temp_export_dir / name
+            exporter = DualExporter(
+                base_path=base_path,
+                metadata=basic_metadata,
+                columns=['elapsed_s', 'R_ohm'],
+            )
+            exporter.write_row([1.0, 100.0])
+            exporter.flush(checkpoint=True)
+
+        checkpoints = DualExporter.find_checkpoints(temp_export_dir)
+        assert len(checkpoints) == 2
+
+
 class TestBuildMetadata:
     """Tests for metadata building helper."""
 
