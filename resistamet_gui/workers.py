@@ -1,14 +1,17 @@
-import csv
+import logging
 import os
 import re
 import time
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
+import pyvisa
 from PyQt5.QtCore import QThread, pyqtSignal
+
+logger = logging.getLogger(__name__)
 
 from .constants import (
     __version__,
@@ -17,6 +20,7 @@ from .constants import (
     KEITHLEY_COMPLIANCE_MAGIC_NUMBER,
     COMPLIANCE_THRESHOLD_FACTOR,
 )
+from .data_export import DualExporter, get_column_config, build_metadata
 from .instrument import Keithley2400
 
 
@@ -46,10 +50,10 @@ class MeasurementWorker(QThread):
         self._max_csv_errors = 3   # Max consecutive errors before escalation
 
         self.keithley = None
-        self.csvfile = None
-        self.writer = None
+        self.exporter: Optional[DualExporter] = None
         self.start_time = 0
         self.filename = ""
+        self._instrument_idn = ""
 
     @property
     def running(self) -> bool:
@@ -116,8 +120,8 @@ class MeasurementWorker(QThread):
             try:
                 self.status_update.emit(f"Connecting to instrument at {gpib_address}...")
                 self.keithley = Keithley2400(gpib_address).connect()
-                idn = self.keithley.query("*IDN?").strip()
-                self.status_update.emit(f"Connected to: {idn}")
+                self._instrument_idn = self.keithley.query("*IDN?").strip()
+                self.status_update.emit(f"Connected to: {self._instrument_idn}")
                 try:
                     line_freq = float(self.keithley.query(":SYST:LFR?"))
                 except Exception:
@@ -276,36 +280,37 @@ class MeasurementWorker(QThread):
                 self.error_occurred.emit(f"Error configuring instrument: {str(e)}")
                 return
 
-            # File setup
-            try:
-                self.filename = self._create_filename(source_value_str)
-                self.csvfile = open(self.filename, 'w', newline='')
-                self.writer = csv.writer(self.csvfile)
-                file_ready = True
-            except Exception as e:
-                self.error_occurred.emit(f"Error creating output file: {str(e)}")
-                return
-
-            # Metadata
+            # File setup with dual export (JSON + CSV)
             self.start_time = time.time()
-            start_unix_time = int(self.start_time)
-            full_metadata = {
-                'User': self.username,
-                'Sample Name': self.sample_name,
-                'Start Time (Unix)': start_unix_time,
-                'Start Time (Human Readable)': datetime.fromtimestamp(start_unix_time).isoformat(),
-                'Software Version': __version__,
-                'Original Script Version': __original_version__,
-                'Author': __author__,
-                'GPIB Address': gpib_address,
-                'Sampling Rate (Hz)': sampling_rate,
-                'NPLC': nplc,
-                'Settling Time (s)': settling_time,
-                **metadata
-            }
-            self._write_metadata(full_metadata)
-            self.writer.writerow(csv_headers)
-            self.csvfile.flush()
+            try:
+                base_path = self._create_base_path(source_value_str)
+                self.filename = str(base_path.with_suffix('.json'))  # Primary is JSON
+
+                # Get column configuration for this mode
+                columns, units = get_column_config(self.mode)
+
+                # Build metadata
+                export_metadata = build_metadata(
+                    user=self.username,
+                    sample_name=self.sample_name,
+                    mode=self.mode,
+                    settings=self.settings,
+                    instrument_idn=self._instrument_idn,
+                    start_time=datetime.fromtimestamp(self.start_time)
+                )
+
+                # Initialize dual exporter
+                self.exporter = DualExporter(
+                    base_path=base_path,
+                    metadata=export_metadata,
+                    columns=columns,
+                    units=units
+                )
+                file_ready = True
+                self.status_update.emit(f"Data files: {base_path.name}.json/.csv")
+            except Exception as e:
+                self.error_occurred.emit(f"Error creating output files: {str(e)}")
+                return
 
             # Loop
             self.status_update.emit("Starting measurement...")
@@ -430,69 +435,53 @@ class MeasurementWorker(QThread):
                     if event_marker:
                         self.status_update.emit(f"Event marked at {elapsed_time:.3f}s: {event_marker}")
 
-                    now_unix = int(now)
+                    # Build row data with raw values (exporter handles formatting)
                     if self.mode == 'resistance':
                         r = data_dict.get('resistance', float('nan'))
-                        row_data = [now_unix, f"{elapsed_time:.3f}", f"{r:.6e}" if np.isfinite(r) else "NaN", compliance_status, event_marker]
+                        row_data = [elapsed_time, r, compliance_status, event_marker]
+                    elif self.mode == 'four_point':
+                        v = data_dict.get('voltage', float('nan'))
+                        i = data_dict.get('current', float('nan'))
+                        # Use calculations module for 4PP
+                        from .calculations import calculate_four_point_probe
+                        result = calculate_four_point_probe(
+                            voltage=v,
+                            current=i,
+                            spacing_cm=float(measurement_settings.get('fpp_spacing_cm') or 0.1016),
+                            thickness_um=float(measurement_settings.get('fpp_thickness_um') or 0.0),
+                            k_factor=float(measurement_settings.get('fpp_k_factor') or 4.532),
+                            alpha=float(measurement_settings.get('fpp_alpha') or 1.0),
+                            model=str(measurement_settings.get('fpp_model') or 'thin_film')
+                        )
+                        row_data = [
+                            elapsed_time, v, i,
+                            result.ratio, result.sheet_resistance,
+                            result.resistivity, result.conductivity,
+                            compliance_status, event_marker
+                        ]
                     else:
+                        # source_v or source_i
                         v = data_dict.get('voltage', float('nan'))
                         i = data_dict.get('current', float('nan'))
                         r = (v / i) if (np.isfinite(v) and np.isfinite(i) and i != 0) else float('nan')
-                        if self.mode == 'four_point':
-                            # compute derived per 4-pt probe
-                            s = float(measurement_settings.get('fpp_spacing_cm') or 0.0)
-                            tum = float(measurement_settings.get('fpp_thickness_um') or 0.0)
-                            tcm = tum * 1e-4
-                            alpha = float(measurement_settings.get('fpp_alpha') or 1.0)
-                            kfac = float(measurement_settings.get('fpp_k_factor') or 4.532)
-                            model = str(measurement_settings.get('fpp_model') or 'thin_film')
-                            ratio = r
-                            # Apply alpha only in thin_film for Rs if provided
-                            k_eff = kfac * (alpha if (model == 'thin_film' and alpha and alpha != 1.0) else 1.0)
-                            Rs = k_eff * ratio if np.isfinite(ratio) else float('nan')
-                            if model == 'semi_infinite':
-                                rho = 2*np.pi*s*ratio if np.isfinite(ratio) else float('nan')
-                            elif model in ('thin_film','finite_thin'):
-                                rho = (kfac * (alpha if (model == 'thin_film' and alpha and alpha != 1.0) else 1.0)) * tcm * ratio if np.isfinite(ratio) else float('nan')
-                            else:
-                                rho = alpha * 2*np.pi*s*ratio if np.isfinite(ratio) else float('nan')
-                            # Calculate conductivity safely to avoid divide by zero warnings
-                            with np.errstate(divide='ignore', invalid='ignore'):
-                                sigma = (1.0/rho) if (np.isfinite(rho) and rho != 0) else float('nan')
-                            row_data = [
-                                now_unix,
-                                f"{elapsed_time:.3f}",
-                                f"{v:.6e}" if np.isfinite(v) else "NaN",
-                                f"{i:.6e}" if np.isfinite(i) else "NaN",
-                                f"{ratio:.6e}" if np.isfinite(ratio) else "NaN",
-                                f"{Rs:.6e}" if np.isfinite(Rs) else "NaN",
-                                f"{rho:.6e}" if np.isfinite(rho) else "NaN",
-                                f"{sigma:.6e}" if np.isfinite(sigma) else "NaN",
-                                compliance_status,
-                                event_marker,
-                            ]
+                        if self.mode == 'source_v':
+                            row_data = [elapsed_time, v, i, r, compliance_status, event_marker]
                         else:
-                            row_data = [
-                                now_unix,
-                                f"{elapsed_time:.3f}",
-                                f"{v:.6e}" if np.isfinite(v) else "NaN",
-                                f"{i:.6e}" if np.isfinite(i) else "NaN",
-                                f"{r:.6e}" if np.isfinite(r) else "NaN",
-                                compliance_status,
-                                event_marker,
-                            ]
+                            row_data = [elapsed_time, v, i, r, compliance_status, event_marker]
+
+                    # Write to exporter (handles both JSON and CSV)
                     try:
-                        self.writer.writerow(row_data)
+                        self.exporter.write_row(row_data)
                         self._csv_error_count = 0  # Reset error count on success
                     except Exception as e:
                         self._csv_error_count += 1
-                        error_msg = f"Error writing to CSV ({self._csv_error_count}/{self._max_csv_errors}): {str(e)}"
+                        error_msg = f"Error writing data ({self._csv_error_count}/{self._max_csv_errors}): {str(e)}"
                         self.status_update.emit(f"Warning: {error_msg}")
 
                         if self._csv_error_count >= self._max_csv_errors:
                             # Escalate: too many consecutive write failures (likely disk full)
                             self.error_occurred.emit(
-                                f"CRITICAL: {self._csv_error_count} consecutive CSV write failures. "
+                                f"CRITICAL: {self._csv_error_count} consecutive write failures. "
                                 f"Possible disk full or write permission issue. Stopping measurement to prevent data loss."
                             )
                             self.running = False
@@ -509,8 +498,8 @@ class MeasurementWorker(QThread):
 
                     if now - last_save >= auto_save_interval:
                         try:
-                            self.csvfile.flush()
-                            os.fsync(self.csvfile.fileno())
+                            if self.exporter:
+                                self.exporter.flush()
                             last_save = now
                         except Exception as e:
                             self.status_update.emit(f"Warning: Auto-save failed - {str(e)}")
@@ -548,15 +537,17 @@ class MeasurementWorker(QThread):
                     self.status_update.emit(f"Warning: Could not turn off output - {str(e)}")
 
             final_message = f"Measurement ({self.mode}) stopped."
-            if file_ready and self.filename:
+            if file_ready and self.exporter:
                 try:
-                    self.writer.writerow([])
-                    end_unix_time = int(time.time())
-                    full_metadata['End Time (Unix)'] = end_unix_time
-                    full_metadata['End Time (Human Readable)'] = datetime.fromtimestamp(end_unix_time).isoformat()
-                    self._write_metadata(full_metadata)
+                    end_time = datetime.now()
+                    end_metadata = {
+                        'ended_at': end_time.isoformat(),
+                        'total_samples': self.exporter.row_count,
+                        'duration_s': time.time() - self.start_time
+                    }
+                    self.exporter.finalize(end_metadata)
                 except Exception as e:
-                    self.status_update.emit(f"Warning: Error writing final metadata - {str(e)}")
+                    self.status_update.emit(f"Warning: Error finalizing export - {str(e)}")
                 final_message = f"Measurement ({self.mode}) completed! Data saved to: {self.filename}"
             self.status_update.emit(final_message)
             self.measurement_complete.emit(self.mode)
@@ -583,11 +574,14 @@ class MeasurementWorker(QThread):
         # Ensure non-empty result
         return sanitized if sanitized else 'unnamed'
 
-    def _create_filename(self, source_value_str: str) -> str:
-        """Create a safe filename for measurement data.
+    def _create_base_path(self, source_value_str: str) -> Path:
+        """Create a safe base path for measurement data (without extension).
 
         Sanitizes username and sample name to prevent path traversal attacks
         and ensure cross-platform compatibility.
+
+        Returns:
+            Path object without extension (DualExporter adds .json and .csv)
         """
         base_dir = Path(self.settings['file']['data_directory'])
         base_dir.mkdir(parents=True, exist_ok=True)
@@ -607,20 +601,8 @@ class MeasurementWorker(QThread):
             'four_point': '4PP'
         }
         mode_tag = mode_tags.get(self.mode, 'DATA')
-        filename = f"{timestamp}_{sanitized_name}_{mode_tag}_{source_value_str}.csv"
-        return user_dir / filename
-
-    def _write_metadata(self, params: Dict) -> None:
-        if not self.writer:
-            return
-        try:
-            self.writer.writerow(['### METADATA START ###'])
-            for key, value in params.items():
-                self.writer.writerow([f'# {key}', value])
-            self.writer.writerow(['### METADATA END ###'])
-            self.writer.writerow([])
-        except Exception as e:
-            self.status_update.emit(f"Warning: Failed to write metadata - {str(e)}")
+        base_name = f"{timestamp}_{sanitized_name}_{mode_tag}_{source_value_str}"
+        return user_dir / base_name
 
     def mark_event(self, name: str = "MARK") -> None:
         self.event_marker = name
@@ -649,12 +631,11 @@ class MeasurementWorker(QThread):
                 self.status_update.emit(f"Warning: Error during instrument cleanup: {str(e)}")
             finally:
                 self.keithley = None
-        if self.csvfile:
+        if self.exporter:
             try:
-                self.csvfile.flush()
-                self.csvfile.close()
+                # Ensure exporter is finalized if not already
+                self.exporter.finalize()
             except Exception as e:
-                self.status_update.emit(f"Warning: Error closing CSV file: {str(e)}")
+                logger.warning(f"Error finalizing exporter during cleanup: {e}")
             finally:
-                self.csvfile = None
-        self.writer = None
+                self.exporter = None
