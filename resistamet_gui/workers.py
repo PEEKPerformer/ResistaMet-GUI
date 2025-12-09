@@ -22,6 +22,7 @@ from .constants import (
 )
 from .data_export import DualExporter, get_column_config, build_metadata
 from .instrument import Keithley2400
+from .system_utils import SleepInhibitor
 
 
 class MeasurementWorker(QThread):
@@ -54,6 +55,13 @@ class MeasurementWorker(QThread):
         self.start_time = 0
         self.filename = ""
         self._instrument_idn = ""
+
+        # System sleep prevention
+        self._sleep_inhibitor = SleepInhibitor()
+
+        # Instrument health monitoring
+        self._last_error_check = 0
+        self._error_check_interval = 30.0  # Check instrument errors every 30 seconds
 
     @property
     def running(self) -> bool:
@@ -312,6 +320,9 @@ class MeasurementWorker(QThread):
                 self.error_occurred.emit(f"Error creating output files: {str(e)}")
                 return
 
+            # Prevent system sleep during measurement
+            self._sleep_inhibitor.inhibit(f"ResistaMet: {self.mode} measurement on {self.sample_name}")
+
             # Loop
             self.status_update.emit("Starting measurement...")
             try:
@@ -536,6 +547,9 @@ class MeasurementWorker(QThread):
                         except Exception as e:
                             self.status_update.emit(f"Warning: Auto-save failed - {str(e)}")
 
+                    # Periodic instrument health check
+                    self._periodic_health_check(now)
+
                     elapsed_time_formatted = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
                     status_msg = f"Running {self.mode}: {elapsed_time_formatted}"
                     if self.mode == 'resistance':
@@ -654,6 +668,9 @@ class MeasurementWorker(QThread):
         self.running = False
 
     def _cleanup(self) -> None:
+        # Re-enable system sleep
+        self._sleep_inhibitor.uninhibit()
+
         if self.keithley:
             try:
                 self.keithley.write(":OUTP OFF")
@@ -671,3 +688,39 @@ class MeasurementWorker(QThread):
                 logger.warning(f"Error finalizing exporter during cleanup: {e}")
             finally:
                 self.exporter = None
+
+    def _check_instrument_errors(self) -> Optional[str]:
+        """Check instrument error queue and return any errors.
+
+        Returns:
+            Error message if instrument has errors, None otherwise.
+        """
+        if not self.keithley:
+            return None
+
+        try:
+            # Query error queue - format: error_code,"error_message"
+            response = self.keithley.query(":SYST:ERR?").strip()
+            if response:
+                parts = response.split(',', 1)
+                error_code = int(parts[0])
+                if error_code != 0:
+                    error_msg = parts[1].strip('"') if len(parts) > 1 else "Unknown error"
+                    return f"Instrument error {error_code}: {error_msg}"
+        except Exception as e:
+            logger.debug(f"Error checking instrument status: {e}")
+
+        return None
+
+    def _periodic_health_check(self, now: float) -> None:
+        """Perform periodic instrument health check.
+
+        Args:
+            now: Current timestamp
+        """
+        if now - self._last_error_check >= self._error_check_interval:
+            self._last_error_check = now
+            error = self._check_instrument_errors()
+            if error:
+                self.status_update.emit(f"Warning: {error}")
+                logger.warning(f"Instrument error during measurement: {error}")
