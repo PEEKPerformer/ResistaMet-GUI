@@ -58,6 +58,7 @@ class TestTabCreation:
         assert hasattr(w, 'res_voltage_compliance')
         assert hasattr(w, 'res_measurement_type')
         assert hasattr(w, 'res_auto_range')
+        assert hasattr(w, 'res_offset_comp')
         assert hasattr(w, 'sampling_rate')
         assert hasattr(w, 'live_readout')
         assert hasattr(w, 'canvas')
@@ -92,6 +93,21 @@ class TestTabCreation:
         assert hasattr(w, 'live_readout')
         assert hasattr(w, 'i_plot_var')
         assert not hasattr(w, 'nplc')
+
+    def test_sweep_tab_has_widgets(self, main_window):
+        w = main_window.tab_sweep
+        assert hasattr(w, 'sweep_source')
+        assert hasattr(w, 'sweep_start')
+        assert hasattr(w, 'sweep_stop')
+        assert hasattr(w, 'sweep_step')
+        assert hasattr(w, 'sweep_compliance')
+        assert hasattr(w, 'sweep_delay')
+        assert hasattr(w, 'sweep_direction')
+        assert hasattr(w, 'sweep_nplc')
+        assert hasattr(w, 'iv_canvas')
+        assert hasattr(w, 'start_button')
+        assert hasattr(w, 'stop_button')
+        assert hasattr(w, 'live_readout')
 
     def test_four_point_tab_has_widgets(self, main_window):
         w = main_window.tab_four_point
@@ -138,6 +154,11 @@ class TestSettingsDialog:
         assert dialog.isource_current is not None
         assert dialog.isource_voltage_compliance.value() > 0
         assert dialog.stop_on_compliance is not None
+        assert dialog.auto_zero is not None
+        assert dialog.filter_enabled is not None
+        assert dialog.filter_type is not None
+        assert dialog.filter_count.value() > 0
+        assert dialog.res_offset_comp is not None
         dialog.close()
 
     def test_global_settings_dialog_opens(self, main_window):
@@ -196,6 +217,16 @@ class TestGatherSettings:
         assert 'isource_duration_hours' in m
         assert 'nplc' in m
 
+    def test_sweep_settings(self, main_window):
+        s = main_window.gather_settings_for_mode('sweep')
+        m = s['measurement']
+        assert 'sweep_source' in m
+        assert 'sweep_start' in m
+        assert 'sweep_stop' in m
+        assert 'sweep_step' in m
+        assert 'sweep_compliance' in m
+        assert 'nplc' in m
+
     def test_four_point_settings(self, main_window):
         s = main_window.gather_settings_for_mode('four_point')
         m = s['measurement']
@@ -224,7 +255,7 @@ class TestUIInteractions:
 
     def test_canvas_labels_update(self, main_window):
         """Should not crash for any mode."""
-        for mode in ['resistance', 'source_v', 'source_i', 'four_point']:
+        for mode in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             main_window.update_canvas_labels_for_mode(mode)
 
     def test_four_point_model_info(self, main_window):

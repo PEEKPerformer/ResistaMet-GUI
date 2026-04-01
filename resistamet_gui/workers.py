@@ -34,10 +34,11 @@ class MeasurementWorker(QThread):
     measurement_complete = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     compliance_hit = pyqtSignal(str)  # 'Voltage' or 'Current'
+    sweep_complete = pyqtSignal(list, list, list)  # voltages, currents, compliance_list
 
     def __init__(self, mode, sample_name, username, settings, parent=None):
         super().__init__(parent)
-        if mode not in ['resistance', 'source_v', 'source_i', 'four_point']:
+        if mode not in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             raise ValueError(f"Invalid measurement mode: {mode}")
         self.mode = mode
         self.sample_name = sample_name
@@ -139,7 +140,15 @@ class MeasurementWorker(QThread):
                     self.status_update.emit("Warning: Could not query line frequency. Assuming 50Hz.")
                 self.keithley.write("*RST"); time.sleep(0.5)
                 self.keithley.write("*CLS")
-                self.keithley.write(":SYST:AZER:STAT ON")
+                # Auto zero: ON (accurate), ONCE (fast), OFF (fastest)
+                azer = str(measurement_settings.get('auto_zero', 'on')).upper()
+                if azer == 'ONCE':
+                    self.keithley.write(":SYST:AZER:STAT ON")
+                    self.keithley.write(":SYST:AZER:STAT ONCE")
+                else:
+                    self.keithley.write(f":SYST:AZER:STAT {azer}")
+                self.keithley.write(":SENS:FUNC:CONC OFF")
+                self.keithley.write(":OUTP:SMOD HIMP")
                 instrument_ready = True
             except Exception as e:
                 self.error_occurred.emit(f"Error connecting to instrument: {str(e)}")
@@ -174,6 +183,14 @@ class MeasurementWorker(QThread):
                     else:
                         max_r = voltage_compliance / abs(test_current) if abs(test_current) > 0 else 210e6
                         self.keithley.write(f":SENS:RES:RANG {max_r}")
+                    # Offset-compensated ohms: cancels thermoelectric EMF
+                    if measurement_settings.get('res_offset_comp', False):
+                        self.keithley.write(":SENS:RES:OCOM ON")
+                    # Re-apply cable null if previously set
+                    cable_null = float(measurement_settings.get('res_cable_null', 0.0))
+                    if cable_null != 0.0:
+                        self.keithley.write(f":SENS:RES:REL {cable_null}")
+                        self.keithley.write(":SENS:RES:REL:STAT ON")
                     # Include STAT for hardware compliance detection (bit 3)
                     # Fixed element order: RES, STAT
                     self.keithley.write(":FORM:ELEM RES,STAT")
@@ -282,8 +299,60 @@ class MeasurementWorker(QThread):
                     if self._fpp_delta_mode:
                         source_value_str += "_delta"
 
+                elif self.mode == 'sweep':
+                    sweep_source = measurement_settings.get('sweep_source', 'voltage')
+                    sweep_start = float(measurement_settings.get('sweep_start', 0.0))
+                    sweep_stop = float(measurement_settings.get('sweep_stop', 1.0))
+                    sweep_step = float(measurement_settings.get('sweep_step', 0.05))
+                    sweep_compliance = float(measurement_settings.get('sweep_compliance', 0.1))
+                    sweep_delay = float(measurement_settings.get('sweep_delay', 0.01))
+                    sweep_direction = measurement_settings.get('sweep_direction', 'up')
+
+                    src_func = 'VOLT' if sweep_source == 'voltage' else 'CURR'
+                    # For down direction, swap start/stop
+                    if sweep_direction == 'down':
+                        sweep_start, sweep_stop = sweep_stop, sweep_start
+
+                    self._sweep_points = self.keithley.setup_sweep(
+                        src_func, sweep_start, sweep_stop, sweep_step,
+                        sweep_compliance, nplc, sweep_delay
+                    )
+                    self._sweep_source = src_func
+                    self._sweep_direction = sweep_direction
+                    # For up_down: double the points (forward + reverse)
+                    if sweep_direction == 'up_down':
+                        self.keithley.write(":SOUR:SWE:DIR UP")
+                        # We'll do two separate sweeps
+                        self._sweep_up_down = True
+                    else:
+                        self._sweep_up_down = False
+
+                    metadata = {
+                        'Mode': 'I-V Sweep',
+                        'Source Function': sweep_source,
+                        'Start': sweep_start,
+                        'Stop': sweep_stop,
+                        'Step': sweep_step,
+                        'Compliance': sweep_compliance,
+                        'Delay (s)': sweep_delay,
+                        'Direction': sweep_direction,
+                        'Points': self._sweep_points,
+                    }
+                    csv_headers = ['Point', 'Voltage (V)', 'Current (A)', 'Compliance Status']
+                    source_value_str = f"sweep_{sweep_start}to{sweep_stop}"
+
+                # Hardware averaging filter
+                if measurement_settings.get('filter_enabled', False):
+                    ftype = str(measurement_settings.get('filter_type', 'repeat')).upper()[:3]
+                    fcount = int(measurement_settings.get('filter_count', 10))
+                    sense_func = {'resistance': 'RES', 'source_v': 'CURR', 'source_i': 'VOLT', 'four_point': 'VOLT'}.get(self.mode, 'VOLT')
+                    self.keithley.write(f":SENS:{sense_func}:AVER:TCON {ftype}")
+                    self.keithley.write(f":SENS:{sense_func}:AVER:COUN {fcount}")
+                    self.keithley.write(f":SENS:{sense_func}:AVER ON")
+                    self.status_update.emit(f"Hardware filter: {ftype} x{fcount}")
+
                 self.keithley.write(":TRIG:DEL 0")
-                self.keithley.write(":SOUR:DEL 0")
+                self.keithley.write(":SOUR:DEL:AUTO ON")
             except Exception as e:
                 self.error_occurred.emit(f"Error configuring instrument: {str(e)}")
                 return
@@ -323,15 +392,99 @@ class MeasurementWorker(QThread):
             # Prevent system sleep during measurement
             self._sleep_inhibitor.inhibit(f"ResistaMet: {self.mode} measurement on {self.sample_name}")
 
-            # Loop
-            self.status_update.emit("Starting measurement...")
-            try:
-                self.keithley.write(":OUTP ON")
-                self.status_update.emit(f"Waiting for settling time ({settling_time}s)...")
-                time.sleep(settling_time)
-            except Exception as e:
-                self.error_occurred.emit(f"Error turning on output: {str(e)}")
-                return
+            # Sweep mode: single atomic operation, then done
+            if self.mode == 'sweep':
+                self.status_update.emit(f"Running I-V sweep ({self._sweep_points} points)...")
+                try:
+                    self.keithley.write(":OUTP ON")
+                    # Increase timeout for long sweeps
+                    if self.keithley.dev:
+                        self.keithley.dev.timeout = max(10000, self._sweep_points * 1000)
+                    response = self.keithley.query(":READ?").strip()
+                    self.keithley.write(":OUTP OFF")
+
+                    # Parse bulk response: every 3 values = (V, I, STAT)
+                    parts = [p.strip() for p in response.split(',') if p.strip()]
+                    voltages, currents, comp_list = [], [], []
+                    for i in range(0, len(parts), 3):
+                        try:
+                            v = float(parts[i])
+                            c = float(parts[i + 1]) if i + 1 < len(parts) else float('nan')
+                            stat = int(float(parts[i + 2])) if i + 2 < len(parts) else 0
+                        except (ValueError, IndexError):
+                            v, c, stat = float('nan'), float('nan'), 0
+                        voltages.append(v)
+                        currents.append(c)
+                        comp_status = 'COMP' if (stat & _STAT_BIT_COMPLIANCE) else 'OK'
+                        comp_list.append(comp_status)
+
+                        # Write each point to export
+                        row_data = [i // 3, v, c, comp_status]
+                        try:
+                            self.exporter.write_row(row_data)
+                        except Exception:
+                            pass
+
+                    # For up_down: run reverse sweep
+                    if getattr(self, '_sweep_up_down', False):
+                        self.status_update.emit("Running reverse sweep...")
+                        # Swap start/stop for reverse
+                        if self._sweep_source == 'VOLT':
+                            start_q = self.keithley.query(":SOUR:VOLT:START?").strip()
+                            stop_q = self.keithley.query(":SOUR:VOLT:STOP?").strip()
+                            self.keithley.write(f":SOUR:VOLT:START {stop_q}")
+                            self.keithley.write(f":SOUR:VOLT:STOP {start_q}")
+                        else:
+                            start_q = self.keithley.query(":SOUR:CURR:START?").strip()
+                            stop_q = self.keithley.query(":SOUR:CURR:STOP?").strip()
+                            self.keithley.write(f":SOUR:CURR:START {stop_q}")
+                            self.keithley.write(f":SOUR:CURR:STOP {start_q}")
+                        self.keithley.write(":OUTP ON")
+                        response2 = self.keithley.query(":READ?").strip()
+                        self.keithley.write(":OUTP OFF")
+
+                        parts2 = [p.strip() for p in response2.split(',') if p.strip()]
+                        rev_v, rev_i, rev_comp = [], [], []
+                        for i in range(0, len(parts2), 3):
+                            try:
+                                v = float(parts2[i])
+                                c = float(parts2[i + 1]) if i + 1 < len(parts2) else float('nan')
+                                stat = int(float(parts2[i + 2])) if i + 2 < len(parts2) else 0
+                            except (ValueError, IndexError):
+                                v, c, stat = float('nan'), float('nan'), 0
+                            rev_v.append(v)
+                            rev_i.append(c)
+                            comp_status = 'COMP' if (stat & _STAT_BIT_COMPLIANCE) else 'OK'
+                            rev_comp.append(comp_status)
+                            row_data = [len(voltages) + i // 3, v, c, comp_status]
+                            try:
+                                self.exporter.write_row(row_data)
+                            except Exception:
+                                pass
+                        # Emit both sweeps
+                        self.sweep_complete.emit(voltages, currents, comp_list)
+                        self.sweep_complete.emit(rev_v, rev_i, rev_comp)
+                    else:
+                        self.sweep_complete.emit(voltages, currents, comp_list)
+
+                    self.status_update.emit(f"Sweep complete: {len(voltages)} points acquired")
+                except Exception as e:
+                    self.error_occurred.emit(f"Sweep error: {str(e)}")
+                # Sweep is done — skip to finalization
+                self.running = False
+                # Fall through to cleanup below
+
+            # For sweep mode, self.running is already False — skip the polling loop
+            if self.mode != 'sweep':
+                # Continuous measurement modes: turn on output and enter polling loop
+                self.status_update.emit("Starting measurement...")
+                try:
+                    self.keithley.write(":OUTP ON")
+                    self.status_update.emit(f"Waiting for settling time ({settling_time}s)...")
+                    time.sleep(settling_time)
+                except Exception as e:
+                    self.error_occurred.emit(f"Error turning on output: {str(e)}")
+                    return
 
             last_save = self.start_time
             last_measurement_time = 0

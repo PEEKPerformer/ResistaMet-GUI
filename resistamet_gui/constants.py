@@ -1,7 +1,7 @@
 import os
 
 # Script version and metadata
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 __original_version__ = "0.9.2"
 __author__ = "Brenden Ferland"
 
@@ -31,7 +31,13 @@ DEFAULT_SETTINGS = {
         "nplc": 1,                           # Number of power line cycles (shared)
         "settling_time": 0.2,                # Settling time in seconds (shared)
         "gpib_address": "GPIB0::24::INSTR",  # GPIB address of the instrument
-        "stop_on_compliance": False,         # Stop run when compliance is hit
+        "stop_on_compliance": False,
+        "auto_zero": "on",                   # "on" (accurate), "once" (fast), "off" (fastest, drifts)
+        "filter_enabled": False,             # enable built-in Keithley averaging filter
+        "filter_type": "repeat",             # "repeat" or "moving"
+        "filter_count": 10,                  # number of readings to average (1-100)
+        "res_offset_comp": False,            # offset-compensated ohms (cancels thermoelectric EMF)
+        "res_cable_null": 0.0,               # cable null reference value (0 = disabled)         # Stop run when compliance is hit
         # Four-Point Probe (FPP) defaults (SP4-40085TBQ)
         "fpp_current": 1.0e-3,               # Source current in Amperes
         "fpp_voltage_compliance": 5.0,       # Voltage compliance (V)
@@ -43,7 +49,15 @@ DEFAULT_SETTINGS = {
         "fpp_samples": 0,                  # number of samples to take (0 = continuous)
         "fpp_model": "thin_film",             # one of: thin_film, semi_infinite, finite_thin, finite_alpha
         "fpp_delta_mode": False,              # current reversal (delta) mode — alternates +I/-I to cancel thermoelectric EMF
-        "fpp_delta_settling": 0.1             # settling time (s) between polarity flips in delta mode
+        "fpp_delta_settling": 0.1,            # settling time (s) between polarity flips in delta mode
+        # I-V Sweep defaults
+        "sweep_source": "voltage",           # "voltage" or "current"
+        "sweep_start": 0.0,                  # sweep start value (V or A)
+        "sweep_stop": 1.0,                   # sweep stop value (V or A)
+        "sweep_step": 0.05,                  # sweep step size (V or A)
+        "sweep_compliance": 0.1,             # compliance limit (A or V)
+        "sweep_delay": 0.01,                 # source delay per step (s)
+        "sweep_direction": "up"              # "up", "down", or "up_down"
     },
     "display": {
         "enable_plot": True,

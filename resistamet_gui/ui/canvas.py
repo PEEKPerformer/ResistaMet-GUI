@@ -191,3 +191,52 @@ class MplCanvas(FigureCanvas):
         self.axes.relim()
         self.axes.autoscale_view(True, True, True)
         self.draw_idle()
+
+
+class IVCanvas(FigureCanvas):
+    """X-Y plot for I-V sweep data (not time-series)."""
+
+    def __init__(self, parent=None, width=8, height=5, dpi=100):
+        self.fig = Figure(figsize=(width, height), dpi=dpi)
+        self.axes = self.fig.add_subplot(111)
+        super().__init__(self.fig)
+        if parent is not None:
+            try:
+                self.setParent(parent)
+            except Exception:
+                pass
+        self.axes.set_xlabel('Voltage (V)')
+        self.axes.set_ylabel('Current (A)')
+        self.axes.set_title('I-V Characteristic')
+        self.axes.grid(True)
+        self.fig.tight_layout(rect=[0, 0, 1, 0.95])
+        self._lines = []
+
+    def plot_sweep(self, voltages, currents, label='Forward', color='blue'):
+        """Plot one sweep trace."""
+        line, = self.axes.plot(voltages, currents, '-o', markersize=3,
+                               color=color, label=label, linewidth=1.5)
+        self._lines.append(line)
+        self.axes.legend(loc='best', fontsize=8)
+        self.axes.relim()
+        self.axes.autoscale_view(True, True, True)
+        self.fig.tight_layout(rect=[0, 0, 1, 0.95])
+        self.draw_idle()
+
+    def set_labels(self, xlabel, ylabel, title):
+        self.axes.set_xlabel(xlabel)
+        self.axes.set_ylabel(ylabel)
+        self.axes.set_title(title)
+        self.draw_idle()
+
+    def clear_plot(self):
+        for line in self._lines:
+            line.remove()
+        self._lines.clear()
+        self.axes.clear()
+        self.axes.set_xlabel('Voltage (V)')
+        self.axes.set_ylabel('Current (A)')
+        self.axes.set_title('I-V Characteristic')
+        self.axes.grid(True)
+        self.fig.tight_layout(rect=[0, 0, 1, 0.95])
+        self.draw_idle()

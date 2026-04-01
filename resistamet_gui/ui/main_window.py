@@ -17,7 +17,7 @@ from ..buffers import EnhancedDataBuffer
 from ..config import ConfigManager
 from ..constants import __version__
 from ..workers import MeasurementWorker
-from .canvas import MplCanvas, HistogramCanvas
+from .canvas import MplCanvas, HistogramCanvas, IVCanvas
 from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, format_engineering
 from .dialogs import SettingsDialog, UserSelectionDialog
 
@@ -31,6 +31,7 @@ class ResistanceMeterApp(QMainWindow):
             'source_v': EnhancedDataBuffer(),
             'source_i': EnhancedDataBuffer(),
             'four_point': EnhancedDataBuffer(),
+            'sweep': EnhancedDataBuffer(),
         }
         self.measurement_worker = None
         self.plot_timer = QTimer(self)
@@ -66,10 +67,12 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_voltage_source = self.create_voltage_source_tab()
         self.tab_current_source = self.create_current_source_tab()
         self.tab_four_point = self.create_four_point_tab()
+        self.tab_sweep = self.create_sweep_tab()
         self.main_tabs.addTab(self.tab_resistance, "Resistance Measurement")
         self.main_tabs.addTab(self.tab_voltage_source, "Voltage Source")
         self.main_tabs.addTab(self.tab_current_source, "Current Source")
         self.main_tabs.addTab(self.tab_four_point, "4-Point Probe")
+        self.main_tabs.addTab(self.tab_sweep, "I-V Sweep")
 
         # Status log
         self.status_group = QGroupBox("Status Log"); status_layout = QVBoxLayout()
@@ -161,6 +164,24 @@ class ResistanceMeterApp(QMainWindow):
         widget.res_auto_range = QCheckBox("Auto Range Resistance")
         widget.res_auto_range.setToolTip("When checked, the instrument automatically selects the best\nmeasurement range for the DUT resistance. Disable for faster\nmeasurements at a fixed range.")
         layout.addRow(widget.res_auto_range)
+        widget.res_offset_comp = QCheckBox("Offset Compensated Ohms")
+        widget.res_offset_comp.setToolTip("Cancels thermoelectric EMF by automatically measuring with\ncurrent ON and OFF, then subtracting. Halves measurement\nspeed but improves accuracy for low-resistance DUTs.")
+        layout.addRow(widget.res_offset_comp)
+        # Cable null
+        null_layout = QHBoxLayout()
+        widget.null_cables_btn = QPushButton("Null Cables")
+        widget.null_cables_btn.setToolTip("Short the probes together, then click to measure and subtract\ncable resistance from all future readings (2-wire mode).")
+        widget.null_cables_btn.clicked.connect(self._null_cables)
+        widget.clear_null_btn = QPushButton("Clear Null")
+        widget.clear_null_btn.setToolTip("Remove cable null reference.")
+        widget.clear_null_btn.clicked.connect(self._clear_cable_null)
+        widget.null_label = QLabel("Cable null: OFF")
+        widget.null_label.setStyleSheet("color: grey;")
+        null_layout.addWidget(widget.null_cables_btn)
+        null_layout.addWidget(widget.clear_null_btn)
+        null_layout.addWidget(widget.null_label)
+        null_layout.addStretch()
+        layout.addRow("Cable Null:", null_layout)
         widget.sampling_rate = NoScrollSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
         widget.sampling_rate.setToolTip("How many readings per second to take.\nLimited by NPLC — high NPLC with high rate will bottleneck\nat the instrument's actual measurement speed.")
         layout.addRow("Sampling Rate:", widget.sampling_rate)
@@ -562,6 +583,153 @@ class ResistanceMeterApp(QMainWindow):
 
         return main_container
 
+    def create_sweep_tab(self):
+        """Create I-V Sweep tab with sweep parameters and I-V plot."""
+        widget = QWidget()
+        widget.mode = 'sweep'
+        tab_layout = QVBoxLayout(widget)
+
+        # Parameters
+        param_group = QGroupBox("Sweep Parameters")
+        param_layout = QFormLayout(param_group)
+        widget.param_layout = param_layout
+        widget.param_group = param_group
+
+        widget.sweep_source = QComboBox()
+        widget.sweep_source.addItems(["voltage", "current"])
+        widget.sweep_source.setToolTip("Source function for the sweep.\nVoltage: sweep V, measure I\nCurrent: sweep I, measure V")
+        widget.sweep_source.currentTextChanged.connect(self._update_sweep_labels)
+        param_layout.addRow("Source:", widget.sweep_source)
+
+        widget.sweep_start = EngineeringSpinBox(unit='V', minimum=-200.0, maximum=200.0, default=0.0, allow_negative=True)
+        widget.sweep_start.setToolTip("Sweep start value")
+        param_layout.addRow("Start:", widget.sweep_start)
+
+        widget.sweep_stop = EngineeringSpinBox(unit='V', minimum=-200.0, maximum=200.0, default=1.0, allow_negative=True)
+        widget.sweep_stop.setToolTip("Sweep stop value")
+        param_layout.addRow("Stop:", widget.sweep_stop)
+
+        widget.sweep_step = EngineeringSpinBox(unit='V', minimum=1e-6, maximum=200.0, default=0.05)
+        widget.sweep_step.setToolTip("Step size (always positive — direction is determined by start/stop)")
+        param_layout.addRow("Step:", widget.sweep_step)
+
+        widget.sweep_compliance = EngineeringSpinBox(unit='A', minimum=1e-7, maximum=3.0, default=0.1)
+        widget.sweep_compliance.setToolTip("Compliance limit for the measured function.\nAccepts: 100mA, 1mA, 0.1A, etc.")
+        param_layout.addRow("Compliance:", widget.sweep_compliance)
+
+        widget.sweep_delay = NoScrollSpinBox(decimals=3, minimum=0.0, maximum=10.0, singleStep=0.01, suffix=" s")
+        widget.sweep_delay.setValue(0.01)
+        widget.sweep_delay.setToolTip("Source delay per step — time for DUT to settle after each step.\n0.01s is typical. Increase for capacitive DUTs.")
+        param_layout.addRow("Step Delay:", widget.sweep_delay)
+
+        widget.sweep_direction = QComboBox()
+        widget.sweep_direction.addItems(["up", "down", "up_down"])
+        widget.sweep_direction.setToolTip("Sweep direction:\n• Up: start → stop\n• Down: stop → start\n• Up-Down: forward + reverse (shows hysteresis)")
+        param_layout.addRow("Direction:", widget.sweep_direction)
+
+        widget.sweep_nplc = NoScrollSpinBox(decimals=2, minimum=0.01, maximum=10.0, singleStep=0.1)
+        widget.sweep_nplc.setValue(1.0)
+        widget.sweep_nplc.setToolTip("NPLC for each measurement point in the sweep.")
+        param_layout.addRow("NPLC:", widget.sweep_nplc)
+
+        # Points preview
+        widget.sweep_points_label = QLabel("Points: 21")
+        param_layout.addRow("", widget.sweep_points_label)
+        widget.sweep_start.valueChanged.connect(lambda: self._update_sweep_points())
+        widget.sweep_stop.valueChanged.connect(lambda: self._update_sweep_points())
+        widget.sweep_step.valueChanged.connect(lambda: self._update_sweep_points())
+
+        test_conn_button = QPushButton("Test Connection")
+        test_conn_button.setToolTip("Check instrument connection before sweeping.")
+        test_conn_button.clicked.connect(self.test_instrument_connection)
+        param_layout.addRow(test_conn_button)
+
+        # I-V Plot
+        plot_group = QGroupBox("I-V Characteristic")
+        plot_layout = QVBoxLayout(plot_group)
+        widget.iv_canvas = IVCanvas(self, width=8, height=5, dpi=90)
+        widget.canvas = widget.iv_canvas  # alias for compatibility
+        toolbar = NavigationToolbar(widget.iv_canvas, self)
+        plot_layout.addWidget(toolbar)
+        plot_layout.addWidget(widget.iv_canvas)
+
+        # Controls
+        control_group = QGroupBox("Control")
+        control_layout = QHBoxLayout(control_group)
+        widget.control_group = control_group
+        widget.start_button = QPushButton(QIcon.fromTheme("media-playback-start"), "Run Sweep")
+        widget.stop_button = QPushButton(QIcon.fromTheme("media-playback-stop"), "Abort")
+        widget.stop_button.setEnabled(False)
+        widget.status_label = QLabel("Status: Idle")
+        widget.status_label.setStyleSheet("font-weight: bold;")
+        control_layout.addWidget(widget.start_button)
+        control_layout.addWidget(widget.stop_button)
+        control_layout.addStretch()
+        control_layout.addWidget(widget.status_label)
+
+        # Live readout
+        widget.live_readout = QLabel("--")
+        widget.live_readout.setAlignment(Qt.AlignCenter)
+        live_font = QFont(); live_font.setPointSize(20); live_font.setBold(True)
+        widget.live_readout.setFont(live_font)
+        widget.live_readout.setStyleSheet("color: #222; background: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; padding: 4px;")
+
+        # Layout assembly
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(param_group)
+        splitter.addWidget(plot_group)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 3)
+        widget.splitter = splitter
+        widget.plot_group = plot_group
+
+        tab_layout.addWidget(splitter, 5)
+        tab_layout.addWidget(widget.live_readout, 0)
+        tab_layout.addWidget(control_group, 0)
+
+        # No pause button for sweep (atomic operation)
+        widget.pause_button = None
+        widget.mark_event_button = None
+
+        # Connect
+        widget.start_button.clicked.connect(lambda: self.start_measurement('sweep'))
+        widget.stop_button.clicked.connect(self.stop_current_measurement)
+
+        return widget
+
+    def _update_sweep_labels(self):
+        """Update sweep input labels when source function changes."""
+        w = self.tab_sweep
+        src = w.sweep_source.currentText()
+        if src == 'voltage':
+            for box in (w.sweep_start, w.sweep_stop, w.sweep_step):
+                box._unit = 'V'
+                box._display_value()
+            w.sweep_compliance._unit = 'A'
+            w.sweep_compliance._display_value()
+        else:
+            for box in (w.sweep_start, w.sweep_stop, w.sweep_step):
+                box._unit = 'A'
+                box._display_value()
+            w.sweep_compliance._unit = 'V'
+            w.sweep_compliance._display_value()
+
+    def _update_sweep_points(self):
+        """Update sweep points preview label."""
+        w = self.tab_sweep
+        start = w.sweep_start.value()
+        stop = w.sweep_stop.value()
+        step = w.sweep_step.value()
+        if step > 0:
+            points = int(round(abs(stop - start) / step)) + 1
+        else:
+            points = 1
+        direction = w.sweep_direction.currentText()
+        if direction == 'up_down':
+            w.sweep_points_label.setText(f"Points: {points} × 2 = {points * 2} (forward + reverse)")
+        else:
+            w.sweep_points_label.setText(f"Points: {points}")
+
     def create_menus(self):
         menu_bar = self.menuBar()
         # File
@@ -631,7 +799,7 @@ class ResistanceMeterApp(QMainWindow):
 
     def toggle_section_visibility(self, section: str, visible: bool):
         # section in {'params','controls'}
-        for mode in ['resistance', 'source_v', 'source_i', 'four_point']:
+        for mode in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             w = self.get_widget_for_mode(mode)
             if not w:
                 continue
@@ -652,7 +820,7 @@ class ResistanceMeterApp(QMainWindow):
 
     def update_hide_show_buttons(self):
         # Sync button text with current visibility state
-        for mode in ['resistance', 'source_v', 'source_i', 'four_point']:
+        for mode in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             w = self.get_widget_for_mode(mode)
             if not w:
                 continue
@@ -916,6 +1084,7 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_resistance.res_voltage_compliance.setValue(m_cfg['res_voltage_compliance'])
         self.tab_resistance.res_measurement_type.setCurrentText(m_cfg['res_measurement_type'])
         self.tab_resistance.res_auto_range.setChecked(m_cfg['res_auto_range'])
+        self.tab_resistance.res_offset_comp.setChecked(m_cfg.get('res_offset_comp', False))
         self.tab_resistance.sampling_rate.setValue(m_cfg['sampling_rate'])
         self.tab_resistance.canvas.set_plot_properties('Elapsed Time (s)', 'Resistance (Ohms)', 'Resistance Measurement', d_cfg['plot_color_r'])
         self.tab_voltage_source.vsource_voltage.setValue(m_cfg['vsource_voltage'])
@@ -990,6 +1159,7 @@ class ResistanceMeterApp(QMainWindow):
         if mode == 'source_v': return self.tab_voltage_source
         if mode == 'source_i': return self.tab_current_source
         if mode == 'four_point': return self.tab_four_point
+        if mode == 'sweep': return self.tab_sweep
         return None
 
     def gather_settings_for_mode(self, mode:str) -> Dict:
@@ -1010,6 +1180,7 @@ class ResistanceMeterApp(QMainWindow):
                 m_cfg['res_voltage_compliance'] = widget.res_voltage_compliance.value()
                 m_cfg['res_measurement_type'] = widget.res_measurement_type.currentText()
                 m_cfg['res_auto_range'] = widget.res_auto_range.isChecked()
+                m_cfg['res_offset_comp'] = widget.res_offset_comp.isChecked()
             elif mode == 'source_v':
                 m_cfg['vsource_voltage'] = widget.vsource_voltage.value()
                 m_cfg['vsource_current_compliance'] = widget.vsource_current_compliance.value()
@@ -1034,11 +1205,21 @@ class ResistanceMeterApp(QMainWindow):
                     m_cfg['fpp_delta_mode'] = widget.fpp_delta_mode.isChecked()
                 if hasattr(widget, 'fpp_delta_settling'):
                     m_cfg['fpp_delta_settling'] = widget.fpp_delta_settling.value()
+            elif mode == 'sweep':
+                m_cfg['sweep_source'] = widget.sweep_source.currentText()
+                m_cfg['sweep_start'] = widget.sweep_start.value()
+                m_cfg['sweep_stop'] = widget.sweep_stop.value()
+                m_cfg['sweep_step'] = widget.sweep_step.value()
+                m_cfg['sweep_compliance'] = widget.sweep_compliance.value()
+                m_cfg['sweep_delay'] = widget.sweep_delay.value()
+                m_cfg['sweep_direction'] = widget.sweep_direction.currentText()
         except AttributeError as e:
             raise ValueError(f"UI Widgets not found for mode {mode}: {e}")
         # Read NPLC and sampling rate from the tab (overrides settings dialog)
         if hasattr(widget, 'nplc'):
             m_cfg['nplc'] = widget.nplc.value()
+        elif hasattr(widget, 'sweep_nplc'):
+            m_cfg['nplc'] = widget.sweep_nplc.value()
         else:
             m_cfg['nplc'] = self.user_settings['measurement']['nplc']
         if hasattr(widget, 'sampling_rate'):
@@ -1078,12 +1259,18 @@ class ResistanceMeterApp(QMainWindow):
         self.set_all_controls_enabled(False, except_mode=mode)
         self.sample_input.setEnabled(False); self.change_user_button.setEnabled(False)
         self.shortcut_mark.setEnabled(True)
-        self.data_buffers[mode].clear(); widget.canvas.clear_plot()
-        
+        self.data_buffers[mode].clear()
+        if mode == 'sweep':
+            widget.iv_canvas.clear_plot()
+            widget._sweep_trace_count = 0
+        else:
+            widget.canvas.clear_plot()
+
         # Clear 4PP-specific data structures on new measurement start
         if mode == 'four_point':
             self._clear_four_point_data()
-        widget.status_label.setText("Status: Running"); widget.status_label.setStyleSheet("font-weight: bold; color: green;")
+        widget.status_label.setText("Status: Sweeping..." if mode == 'sweep' else "Status: Running")
+        widget.status_label.setStyleSheet("font-weight: bold; color: green;")
         if hasattr(widget, 'mark_event_button'): widget.mark_event_button.setEnabled(True)
         self.log_status(f"Starting {mode} measurement for sample: {sample_name}..."); self.statusBar().showMessage(f"Measurement running ({mode})...")
         self.measurement_worker = MeasurementWorker(mode=mode, sample_name=sample_name, username=self.current_user, settings=current_settings)
@@ -1092,6 +1279,7 @@ class ResistanceMeterApp(QMainWindow):
         self.measurement_worker.measurement_complete.connect(self.on_measurement_complete)
         self.measurement_worker.error_occurred.connect(self.on_error)
         self.measurement_worker.compliance_hit.connect(self.on_compliance_hit)
+        self.measurement_worker.sweep_complete.connect(self.on_sweep_complete)
         self.measurement_worker.finished.connect(self.on_worker_finished)
         self.measurement_worker.start()
         update_interval = current_settings['display']['plot_update_interval']
@@ -1339,6 +1527,31 @@ class ResistanceMeterApp(QMainWindow):
             txt = f"ρ = α·2π·s·(V/I) = α·{2*np.pi*s:.4g}·(V/I) Ω·cm"
         w.fpp_model_info.setText(txt)
 
+    def on_sweep_complete(self, voltages: list, currents: list, comp_list: list):
+        """Handle I-V sweep data from worker."""
+        w = self.tab_sweep
+        n = len(voltages)
+        # Determine sweep trace label
+        if not hasattr(w, '_sweep_trace_count'):
+            w._sweep_trace_count = 0
+        w._sweep_trace_count += 1
+        colors = ['blue', 'red', 'green', 'orange', 'purple']
+        color = colors[(w._sweep_trace_count - 1) % len(colors)]
+        label = 'Forward' if w._sweep_trace_count == 1 else f'Reverse' if w._sweep_trace_count == 2 else f'Trace {w._sweep_trace_count}'
+        w.iv_canvas.plot_sweep(voltages, currents, label=label, color=color)
+
+        # Update labels based on source function
+        src = w.sweep_source.currentText()
+        if src == 'voltage':
+            w.iv_canvas.set_labels('Voltage (V)', 'Current (A)', 'I-V Characteristic')
+        else:
+            w.iv_canvas.set_labels('Current (A)', 'Voltage (V)', 'V-I Characteristic')
+
+        # Update live readout with summary
+        comp_count = sum(1 for c in comp_list if c != 'OK')
+        w.live_readout.setText(f"{n} points | {comp_count} in compliance" if comp_count else f"{n} points acquired")
+        self.log_status(f"Sweep trace plotted: {n} points", color="darkGreen")
+
     def on_measurement_complete(self, mode: str):
         self.log_status(f"Worker reported measurement complete for mode: {mode}", color="darkGreen")
         self.statusBar().showMessage(f"Measurement ({mode}) completed | Ready", 5000)
@@ -1420,7 +1633,7 @@ class ResistanceMeterApp(QMainWindow):
                     getattr(widget, attr).setEnabled(True)
 
     def set_all_controls_enabled(self, enabled: bool, except_mode: Optional[str] = None):
-        for mode in ['resistance', 'source_v', 'source_i', 'four_point']:
+        for mode in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             if mode == except_mode: continue
             widget = self.get_widget_for_mode(mode)
             if widget:
@@ -1626,6 +1839,8 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_voltage_source.canvas.clear_plot()
         self.tab_current_source.canvas.clear_plot()
         self.tab_four_point.canvas.clear_plot()
+        self.tab_sweep.iv_canvas.clear_plot()
+        self.tab_sweep._sweep_trace_count = 0
         
         # Also clear 4PP-specific data structures
         self._clear_four_point_data()
@@ -1715,6 +1930,61 @@ class ResistanceMeterApp(QMainWindow):
             w.fpp_spots_table.setRowCount(0)
         self._clear_four_point_data()
         self.log_status("All spots and readings cleared.")
+
+    def _null_cables(self):
+        """Measure cable resistance and store as null reference."""
+        if self.measurement_running:
+            QMessageBox.warning(self, "Busy", "Cannot null cables during a measurement.")
+            return
+        if not self.user_settings:
+            QMessageBox.warning(self, "No Settings", "Please select a user first.")
+            return
+        reply = QMessageBox.question(
+            self, "Null Cables",
+            "Short the probe tips together, then click OK to measure cable resistance.",
+            QMessageBox.Ok | QMessageBox.Cancel)
+        if reply != QMessageBox.Ok:
+            return
+        addr = self.user_settings['measurement']['gpib_address']
+        try:
+            from ..instrument import Keithley2400
+            k = Keithley2400(addr).connect()
+            k.write("*RST"); import time; time.sleep(0.5)
+            k.write("*CLS")
+            k.write(":SENS:FUNC:CONC OFF")
+            k.write(":SENS:FUNC 'RES'")
+            k.write(":SENS:RES:MODE MAN")
+            k.write(":SOUR:FUNC CURR")
+            test_current = self.tab_resistance.res_test_current.value()
+            k.write(f":SOUR:CURR:RANG {abs(test_current)}")
+            k.write(f":SOUR:CURR {test_current}")
+            k.write(":SENS:VOLT:PROT 5")
+            k.write(":SENS:RES:NPLC 10")  # high accuracy for null
+            k.write(":FORM:ELEM RES")
+            k.write(":OUTP ON"); time.sleep(0.5)
+            ref = float(k.query(":READ?").strip().split(',')[0])
+            k.write(":OUTP OFF")
+            k.close()
+
+            if not np.isfinite(ref) or ref < 0:
+                QMessageBox.warning(self, "Null Failed", f"Invalid reading: {ref}. Ensure probes are shorted.")
+                return
+
+            # Store in settings
+            self.user_settings['measurement']['res_cable_null'] = ref
+            self.tab_resistance.null_label.setText(f"Cable null: {format_engineering(ref, 'Ω')}")
+            self.tab_resistance.null_label.setStyleSheet("color: green; font-weight: bold;")
+            self.log_status(f"Cable null set: {format_engineering(ref, 'Ω')}", color="darkGreen")
+        except Exception as e:
+            QMessageBox.critical(self, "Null Failed", f"Error during cable null: {e}")
+
+    def _clear_cable_null(self):
+        """Remove cable null reference."""
+        if self.user_settings:
+            self.user_settings['measurement']['res_cable_null'] = 0.0
+        self.tab_resistance.null_label.setText("Cable null: OFF")
+        self.tab_resistance.null_label.setStyleSheet("color: grey;")
+        self.log_status("Cable null cleared.")
 
     def show_about(self):
         about_text = f"""

@@ -61,6 +61,7 @@ class Keithley2400(VisaInstrument):
 
     def setup_resistance(self, test_current: float, v_comp: float, nplc: float, auto_range: bool, four_wire: bool):
         self.set_4wire(four_wire)
+        self.write(":SENS:FUNC:CONC OFF")
         self.write(":SENS:FUNC 'RES'")
         # Disable auto-ohms before configuring source/compliance
         # (auto-ohms is ON by default after selecting RES function
@@ -81,6 +82,7 @@ class Keithley2400(VisaInstrument):
 
     def setup_source_voltage(self, voltage: float, i_comp: float, nplc: float, auto_range_curr: bool):
         self.set_4wire(False)
+        self.write(":SENS:FUNC:CONC OFF")
         self.write(":SENS:FUNC 'CURR:DC'")
         self.write(":SOUR:FUNC VOLT")
         self.write(f":SOUR:VOLT:RANG {abs(voltage)}")
@@ -95,6 +97,7 @@ class Keithley2400(VisaInstrument):
 
     def setup_source_current(self, current: float, v_comp: float, nplc: float, auto_range_volt: bool):
         self.set_4wire(False)
+        self.write(":SENS:FUNC:CONC OFF")
         self.write(":SENS:FUNC 'VOLT:DC'")
         self.write(":SOUR:FUNC CURR")
         self.write(f":SOUR:CURR:RANG {abs(current)}")
@@ -106,6 +109,47 @@ class Keithley2400(VisaInstrument):
         self.write(f":SENS:VOLT:NPLC {nplc}")
         self.write(":FORM:ELEM VOLT,CURR,STAT")
 
+    def setup_sweep(self, source_func: str, start: float, stop: float, step: float,
+                     compliance: float, nplc: float, source_delay: float = 0.0):
+        """Configure a linear staircase sweep.
+
+        Args:
+            source_func: 'VOLT' or 'CURR'
+            start: Sweep start value
+            stop: Sweep stop value
+            step: Sweep step size (always positive)
+            compliance: Compliance limit for the measured function
+            nplc: Integration time
+            source_delay: Delay per step in seconds
+        """
+        self.write(":SENS:FUNC:CONC OFF")
+        if source_func == 'VOLT':
+            self.write(":SOUR:FUNC VOLT")
+            self.write(":SENS:FUNC 'CURR:DC'")
+            self.write(f":SENS:CURR:PROT {compliance}")
+            self.write(f":SENS:CURR:NPLC {nplc}")
+            self.write(f":SOUR:VOLT:START {start}")
+            self.write(f":SOUR:VOLT:STOP {stop}")
+            self.write(f":SOUR:VOLT:STEP {step}")
+            self.write(":SOUR:VOLT:MODE SWE")
+        else:
+            self.write(":SOUR:FUNC CURR")
+            self.write(":SENS:FUNC 'VOLT:DC'")
+            self.write(f":SENS:VOLT:PROT {compliance}")
+            self.write(f":SENS:VOLT:NPLC {nplc}")
+            self.write(f":SOUR:CURR:START {start}")
+            self.write(f":SOUR:CURR:STOP {stop}")
+            self.write(f":SOUR:CURR:STEP {step}")
+            self.write(":SOUR:CURR:MODE SWE")
+        self.write(":SOUR:SWE:SPAC LIN")
+        self.write(":SOUR:SWE:RANG AUTO")
+        points = int(round(abs(stop - start) / step)) + 1 if step != 0 else 1
+        self.write(f":TRIG:COUN {points}")
+        self.write(f":SOUR:DEL {source_delay}")
+        self.write(":FORM:ELEM VOLT,CURR,STAT")
+        return points
+
     def common_fast(self):
-        self.write(":TRIG:DEL 0"); self.write(":SOUR:DEL 0")
+        self.write(":TRIG:DEL 0")
+        self.write(":SOUR:DEL:AUTO ON")
 

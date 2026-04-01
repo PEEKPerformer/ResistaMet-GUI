@@ -334,6 +334,10 @@ def get_column_config(mode: str) -> tuple:
             ['elapsed_s', 'V', 'I', 'V_over_I', 'Rs_ohm_sq', 'rho_ohm_cm', 'sigma_S_cm', 'compliance', 'event'],
             ['s', 'V', 'A', 'Ω', 'Ω/□', 'Ω·cm', 'S/cm', '', '']
         ),
+        'sweep': (
+            ['point', 'V_source', 'I_meas', 'compliance'],
+            ['', 'V', 'A', '']
+        ),
     }
     return configs.get(mode, (['elapsed_s', 'value'], ['s', '']))
 
@@ -407,6 +411,16 @@ def build_metadata(
             'alpha': measurement_settings.get('fpp_alpha'),
             'model': measurement_settings.get('fpp_model'),
             'target_samples': measurement_settings.get('fpp_samples'),
+        }
+    elif mode == 'sweep':
+        meta['params'] = {
+            'source_function': measurement_settings.get('sweep_source'),
+            'start': measurement_settings.get('sweep_start'),
+            'stop': measurement_settings.get('sweep_stop'),
+            'step': measurement_settings.get('sweep_step'),
+            'compliance': measurement_settings.get('sweep_compliance'),
+            'delay_s': measurement_settings.get('sweep_delay'),
+            'direction': measurement_settings.get('sweep_direction'),
         }
 
     return meta

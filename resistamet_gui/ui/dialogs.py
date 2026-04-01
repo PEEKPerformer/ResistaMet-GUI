@@ -131,6 +131,44 @@ class SettingsDialog(QDialog):
         main_layout.addLayout(isrc_layout)
         main_layout.addWidget(self.stop_on_compliance)
 
+        # Advanced instrument settings
+        adv_layout = QFormLayout()
+        self.auto_zero = QComboBox()
+        self.auto_zero.addItems(["on", "once", "off"])
+        self.auto_zero.setToolTip(
+            "Controls auto-zero calibration:\n"
+            "• ON: Most accurate — takes 3 measurements per reading (signal + reference + zero)\n"
+            "• ONCE: Fast mode — calibrates once at start, then disables. ~3x faster, slight drift over time\n"
+            "• OFF: Fastest — no zero calibration. Will drift. Use only for short, high-speed measurements")
+        adv_layout.addRow("Auto Zero:", self.auto_zero)
+
+        self.filter_enabled = QCheckBox("Enable Hardware Filter")
+        self.filter_enabled.setToolTip(
+            "Enable the Keithley's built-in averaging filter.\n"
+            "Averages multiple readings internally at hardware speed\n"
+            "and returns one clean result. Reduces noise without\n"
+            "slowing down GPIB communication.")
+        adv_layout.addRow(self.filter_enabled)
+        self.filter_type = QComboBox()
+        self.filter_type.addItems(["repeat", "moving"])
+        self.filter_type.setToolTip(
+            "• Repeat: Takes N readings, averages, returns one result. Best for stable signals.\n"
+            "• Moving: Running average of last N readings. Better for trending/changing signals.")
+        adv_layout.addRow("Filter Type:", self.filter_type)
+        self.filter_count = QSpinBox(minimum=1, maximum=100, singleStep=5)
+        self.filter_count.setToolTip("Number of readings to average (1-100).\nHigher = cleaner but slower. 10 is a good starting point.")
+        adv_layout.addRow("Filter Count:", self.filter_count)
+
+        self.res_offset_comp = QCheckBox("Offset Compensated Ohms (Resistance mode)")
+        self.res_offset_comp.setToolTip(
+            "Cancels thermoelectric EMF by automatically measuring with\n"
+            "current ON and OFF, then subtracting. Halves measurement\n"
+            "speed but improves accuracy for low-resistance DUTs.\n"
+            "Only applies to Resistance mode.")
+        adv_layout.addRow(self.res_offset_comp)
+
+        main_layout.addLayout(adv_layout)
+
         main_layout.addStretch()
         tab.setLayout(main_layout)
         return tab
@@ -204,6 +242,11 @@ class SettingsDialog(QDialog):
         self.isource_voltage_compliance.setValue(m_cfg['isource_voltage_compliance'])
         self.isource_duration_hours.setValue(m_cfg.get('isource_duration_hours', 0.0))
         self.stop_on_compliance.setChecked(bool(m_cfg.get('stop_on_compliance', False)))
+        self.auto_zero.setCurrentText(str(m_cfg.get('auto_zero', 'on')))
+        self.filter_enabled.setChecked(bool(m_cfg.get('filter_enabled', False)))
+        self.filter_type.setCurrentText(str(m_cfg.get('filter_type', 'repeat')))
+        self.filter_count.setValue(int(m_cfg.get('filter_count', 10)))
+        self.res_offset_comp.setChecked(bool(m_cfg.get('res_offset_comp', False)))
         d_cfg = self.settings['display']
         self.enable_plot.setCurrentText("True" if d_cfg['enable_plot'] else "False")
         self.plot_update_interval.setValue(d_cfg['plot_update_interval'])
@@ -233,6 +276,11 @@ class SettingsDialog(QDialog):
         m_cfg['isource_voltage_compliance'] = self.isource_voltage_compliance.value()
         m_cfg['isource_duration_hours'] = self.isource_duration_hours.value()
         m_cfg['stop_on_compliance'] = self.stop_on_compliance.isChecked()
+        m_cfg['auto_zero'] = self.auto_zero.currentText()
+        m_cfg['filter_enabled'] = self.filter_enabled.isChecked()
+        m_cfg['filter_type'] = self.filter_type.currentText()
+        m_cfg['filter_count'] = self.filter_count.value()
+        m_cfg['res_offset_comp'] = self.res_offset_comp.isChecked()
         d_cfg = self.settings['display']
         d_cfg['enable_plot'] = (self.enable_plot.currentText() == "True")
         d_cfg['plot_update_interval'] = self.plot_update_interval.value()
