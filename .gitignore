@@ -178,3 +178,10 @@ resistamet-gui_old.py
 
 # macOS system files
 .DS_Store
+
+# Instrument manuals (large PDFs)
+*.pdf
+
+# Live test scripts (not part of the app)
+live_hardware_test.py
+debug_scpi*.py

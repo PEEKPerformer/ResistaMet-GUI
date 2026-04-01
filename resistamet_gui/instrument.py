@@ -62,23 +62,27 @@ class Keithley2400(VisaInstrument):
     def setup_resistance(self, test_current: float, v_comp: float, nplc: float, auto_range: bool, four_wire: bool):
         self.set_4wire(four_wire)
         self.write(":SENS:FUNC 'RES'")
+        # Disable auto-ohms before configuring source/compliance
+        # (auto-ohms is ON by default after selecting RES function
+        # and rejects :SOUR:CURR:RANG, :SOUR:CURR, :SENS:VOLT:PROT)
+        self.write(":SENS:RES:MODE MAN")
         self.write(":SOUR:FUNC CURR")
-        self.write(":SOUR:CURR:MODE FIX")
         self.write(f":SOUR:CURR:RANG {abs(test_current)}")
         self.write(f":SOUR:CURR {test_current}")
         self.write(f":SENS:VOLT:PROT {v_comp}")
-        self.write(":SENS:RES:MODE AUTO" if auto_range else ":SENS:RES:MODE MAN")
-        if not auto_range:
+        self.write(f":SENS:RES:NPLC {nplc}")
+        if auto_range:
+            self.write(":SENS:RES:MODE AUTO")
+        else:
             rmax = v_comp / abs(test_current) if abs(test_current) > 0 else 210e6
             self.write(f":SENS:RES:RANG {rmax}")
-        self.write(f":SENS:RES:NPLC {nplc}")
-        self.write(":FORM:ELEM RES")
+        # Include STAT for hardware compliance detection (bit 3)
+        self.write(":FORM:ELEM RES,STAT")
 
     def setup_source_voltage(self, voltage: float, i_comp: float, nplc: float, auto_range_curr: bool):
         self.set_4wire(False)
         self.write(":SENS:FUNC 'CURR:DC'")
         self.write(":SOUR:FUNC VOLT")
-        self.write(":SOUR:VOLT:MODE FIX")
         self.write(f":SOUR:VOLT:RANG {abs(voltage)}")
         self.write(f":SOUR:VOLT {voltage}")
         self.write(f":SENS:CURR:PROT {i_comp}")
@@ -86,14 +90,13 @@ class Keithley2400(VisaInstrument):
         if not auto_range_curr:
             self.write(f":SENS:CURR:RANG {i_comp}")
         self.write(f":SENS:CURR:NPLC {nplc}")
-        self.write(":FORM:ELEM CURR,VOLT")
-        self.write(":TRIG:COUN 1"); self.write(":INIT:CONT ON")
+        # Keithley 2400 series returns elements in fixed order: VOLT, CURR, STAT
+        self.write(":FORM:ELEM VOLT,CURR,STAT")
 
     def setup_source_current(self, current: float, v_comp: float, nplc: float, auto_range_volt: bool):
         self.set_4wire(False)
         self.write(":SENS:FUNC 'VOLT:DC'")
         self.write(":SOUR:FUNC CURR")
-        self.write(":SOUR:CURR:MODE FIX")
         self.write(f":SOUR:CURR:RANG {abs(current)}")
         self.write(f":SOUR:CURR {current}")
         self.write(f":SENS:VOLT:PROT {v_comp}")
@@ -101,8 +104,7 @@ class Keithley2400(VisaInstrument):
         if not auto_range_volt:
             self.write(f":SENS:VOLT:RANG {v_comp}")
         self.write(f":SENS:VOLT:NPLC {nplc}")
-        self.write(":FORM:ELEM VOLT,CURR")
-        self.write(":TRIG:COUN 1"); self.write(":INIT:CONT ON")
+        self.write(":FORM:ELEM VOLT,CURR,STAT")
 
     def common_fast(self):
         self.write(":TRIG:DEL 0"); self.write(":SOUR:DEL 0")

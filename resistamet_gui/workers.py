@@ -17,9 +17,11 @@ from .constants import (
     __version__,
     __original_version__,
     __author__,
-    KEITHLEY_COMPLIANCE_MAGIC_NUMBER,
-    COMPLIANCE_THRESHOLD_FACTOR,
 )
+
+# Keithley 2400 series STATUS word bit masks (24-bit)
+# Bit 3: Compliance — source is in real compliance
+_STAT_BIT_COMPLIANCE = 1 << 3
 from .data_export import DualExporter, get_column_config, build_metadata
 from .instrument import Keithley2400
 from .system_utils import SleepInhibitor
@@ -156,28 +158,25 @@ class MeasurementWorker(QThread):
                     measurement_type = measurement_settings['res_measurement_type']
                     auto_range = measurement_settings['res_auto_range']
 
-                    # Delegate setup to instrument helper
-                    try:
-                        from .instrument import Keithley2400 as _K
-                    except Exception:
-                        pass
-                    # Use direct writes if helper import fails
-                    try:
-                        self.keithley.write(":SYST:RSEN ON" if measurement_type == "4-wire" else ":SYST:RSEN OFF")
-                        self.keithley.write(":SENS:FUNC 'RES'")
-                        self.keithley.write(":SOUR:FUNC CURR")
-                        self.keithley.write(f":SOUR:CURR:MODE FIX")
-                        self.keithley.write(f":SOUR:CURR:RANG {abs(test_current)}")
-                        self.keithley.write(f":SOUR:CURR {test_current}")
-                        self.keithley.write(f":SENS:VOLT:PROT {voltage_compliance}")
-                        self.keithley.write(":SENS:RES:MODE AUTO" if auto_range else ":SENS:RES:MODE MAN")
-                        if not auto_range:
-                            max_r = voltage_compliance / abs(test_current) if abs(test_current) > 0 else 210e6
-                            self.keithley.write(f":SENS:RES:RANG {max_r}")
-                        self.keithley.write(f":SENS:RES:NPLC {nplc}")
-                        self.keithley.write(":FORM:ELEM RES")
-                    except Exception as _:
-                        raise
+                    self.keithley.write(":SYST:RSEN ON" if measurement_type == "4-wire" else ":SYST:RSEN OFF")
+                    self.keithley.write(":SENS:FUNC 'RES'")
+                    # Disable auto-ohms before configuring source/compliance
+                    # (auto-ohms is ON by default after selecting RES function
+                    # and rejects :SOUR:CURR:RANG, :SOUR:CURR, :SENS:VOLT:PROT)
+                    self.keithley.write(":SENS:RES:MODE MAN")
+                    self.keithley.write(":SOUR:FUNC CURR")
+                    self.keithley.write(f":SOUR:CURR:RANG {abs(test_current)}")
+                    self.keithley.write(f":SOUR:CURR {test_current}")
+                    self.keithley.write(f":SENS:VOLT:PROT {voltage_compliance}")
+                    self.keithley.write(f":SENS:RES:NPLC {nplc}")
+                    if auto_range:
+                        self.keithley.write(":SENS:RES:MODE AUTO")
+                    else:
+                        max_r = voltage_compliance / abs(test_current) if abs(test_current) > 0 else 210e6
+                        self.keithley.write(f":SENS:RES:RANG {max_r}")
+                    # Include STAT for hardware compliance detection (bit 3)
+                    # Fixed element order: RES, STAT
+                    self.keithley.write(":FORM:ELEM RES,STAT")
 
                     metadata = {
                         'Mode': 'Resistance Measurement',
@@ -197,7 +196,6 @@ class MeasurementWorker(QThread):
                     self.keithley.write(":SYST:RSEN OFF")
                     self.keithley.write(":SENS:FUNC 'CURR:DC'")
                     self.keithley.write(":SOUR:FUNC VOLT")
-                    self.keithley.write(f":SOUR:VOLT:MODE FIX")
                     self.keithley.write(f":SOUR:VOLT:RANG {abs(source_voltage)}")
                     self.keithley.write(f":SOUR:VOLT {source_voltage}")
                     self.keithley.write(f":SENS:CURR:PROT {current_compliance}")
@@ -205,9 +203,10 @@ class MeasurementWorker(QThread):
                     if not auto_range_curr:
                         self.keithley.write(f":SENS:CURR:RANG {current_compliance}")
                     self.keithley.write(f":SENS:CURR:NPLC {nplc}")
-                    self.keithley.write(":FORM:ELEM CURR,VOLT")
-                    self.keithley.write(":TRIG:COUN 1")
-                    self.keithley.write(":INIT:CONT ON")
+                    # Keithley 2400 series always returns elements in fixed order:
+                    # VOLT, CURR, RES, TIME, STAT — regardless of FORM:ELEM argument order
+                    # Include STAT for hardware compliance detection (bit 3)
+                    self.keithley.write(":FORM:ELEM VOLT,CURR,STAT")
 
                     metadata = {
                         'Mode': 'Voltage Source',
@@ -223,11 +222,9 @@ class MeasurementWorker(QThread):
                     voltage_compliance = measurement_settings['isource_voltage_compliance']
                     auto_range_volt = measurement_settings['isource_voltage_range_auto']
 
-                    # Use remote sense (Kelvin) so inner probes connect to sense
-                    self.keithley.write(":SYST:RSEN ON")
+                    self.keithley.write(":SYST:RSEN OFF")
                     self.keithley.write(":SENS:FUNC 'VOLT:DC'")
                     self.keithley.write(":SOUR:FUNC CURR")
-                    self.keithley.write(f":SOUR:CURR:MODE FIX")
                     self.keithley.write(f":SOUR:CURR:RANG {abs(source_current)}")
                     self.keithley.write(f":SOUR:CURR {source_current}")
                     self.keithley.write(f":SENS:VOLT:PROT {voltage_compliance}")
@@ -235,9 +232,7 @@ class MeasurementWorker(QThread):
                     if not auto_range_volt:
                         self.keithley.write(f":SENS:VOLT:RANG {voltage_compliance}")
                     self.keithley.write(f":SENS:VOLT:NPLC {nplc}")
-                    self.keithley.write(":FORM:ELEM VOLT,CURR")
-                    self.keithley.write(":TRIG:COUN 1")
-                    self.keithley.write(":INIT:CONT ON")
+                    self.keithley.write(":FORM:ELEM VOLT,CURR,STAT")
 
                     metadata = {
                         'Mode': 'Current Source',
@@ -257,7 +252,6 @@ class MeasurementWorker(QThread):
                     self.keithley.write(":SYST:RSEN OFF")
                     self.keithley.write(":SENS:FUNC 'VOLT:DC'")
                     self.keithley.write(":SOUR:FUNC CURR")
-                    self.keithley.write(f":SOUR:CURR:MODE FIX")
                     self.keithley.write(f":SOUR:CURR:RANG {abs(source_current)}")
                     self.keithley.write(f":SOUR:CURR {source_current}")
                     self.keithley.write(f":SENS:VOLT:PROT {voltage_compliance}")
@@ -265,9 +259,7 @@ class MeasurementWorker(QThread):
                     if not auto_range_volt:
                         self.keithley.write(f":SENS:VOLT:RANG {voltage_compliance}")
                     self.keithley.write(f":SENS:VOLT:NPLC {nplc}")
-                    self.keithley.write(":FORM:ELEM VOLT,CURR")
-                    self.keithley.write(":TRIG:COUN 1")
-                    self.keithley.write(":INIT:CONT ON")
+                    self.keithley.write(":FORM:ELEM VOLT,CURR,STAT")
 
                     metadata = {
                         'Mode': 'Four-Point Probe',
@@ -406,59 +398,63 @@ class MeasurementWorker(QThread):
                     compliance_type = None
                     data_dict: Dict[str, float] = {}
 
+                    # Parse reading — all modes include STAT as last element
+                    # Fixed element order: RES,STAT or VOLT,CURR,STAT
+                    parts = [p.strip() for p in reading_str.split(',') if p.strip()]
+
+                    # Extract status word (last element) for compliance detection
+                    stat_word = 0
+                    try:
+                        stat_word = int(float(parts[-1]))
+                    except (ValueError, IndexError):
+                        pass
+                    hw_compliance = bool(stat_word & _STAT_BIT_COMPLIANCE)
+
                     if self.mode == 'resistance':
                         try:
-                            value = float(reading_str)
+                            value = float(parts[0])
                         except Exception:
                             value = float('nan')
                         compliance_type = 'Voltage'
-                        if np.isfinite(value) and value > KEITHLEY_COMPLIANCE_MAGIC_NUMBER * 0.9:
+                        if hw_compliance:
                             compliance_status = 'V_COMP'
                         if not np.isfinite(value) or value < 0:
                             value = float('nan')
                             self.status_update.emit(f"Invalid value detected ({reading_str})")
                         data_dict = {'resistance': value}
                     elif self.mode == 'source_v':
-                        parts = [p for p in reading_str.split(',') if p.strip()]
+                        # Keithley 2400 series returns elements in fixed order:
+                        # VOLT, CURR, STAT
                         try:
-                            current = float(parts[0])
-                            voltage = float(parts[1]) if len(parts) > 1 else float('nan')
+                            voltage = float(parts[0])
+                            current = float(parts[1]) if len(parts) > 1 else float('nan')
                         except Exception:
-                            current = float('nan'); voltage = float('nan')
-                        comp_limit_i = measurement_settings.get('vsource_current_compliance')
+                            voltage = float('nan'); current = float('nan')
                         compliance_type = 'Current'
-                        if np.isfinite(current) and abs(current) >= comp_limit_i * COMPLIANCE_THRESHOLD_FACTOR:
-                            compliance_status = 'I_COMP'
-                        if np.isfinite(current) and abs(current) > KEITHLEY_COMPLIANCE_MAGIC_NUMBER * 0.9:
+                        comp_limit_i = measurement_settings.get('vsource_current_compliance')
+                        if hw_compliance or (np.isfinite(current) and abs(current) >= comp_limit_i * 0.99):
                             compliance_status = 'I_COMP'
                         data_dict = {'current': current, 'voltage': voltage}
                     elif self.mode == 'source_i':
-                        parts = [p for p in reading_str.split(',') if p.strip()]
                         try:
                             voltage = float(parts[0])
                             current = float(parts[1]) if len(parts) > 1 else float('nan')
                         except Exception:
                             voltage = float('nan'); current = float('nan')
-                        comp_limit_v = measurement_settings.get('isource_voltage_compliance')
                         compliance_type = 'Voltage'
-                        if np.isfinite(voltage) and abs(voltage) >= comp_limit_v * COMPLIANCE_THRESHOLD_FACTOR:
-                            compliance_status = 'V_COMP'
-                        if np.isfinite(voltage) and abs(voltage) > KEITHLEY_COMPLIANCE_MAGIC_NUMBER * 0.9:
+                        comp_limit_v = measurement_settings.get('isource_voltage_compliance')
+                        if hw_compliance or (np.isfinite(voltage) and abs(voltage) >= comp_limit_v * 0.99):
                             compliance_status = 'V_COMP'
                         data_dict = {'voltage': voltage, 'current': current}
                     elif self.mode == 'four_point':
-                        # Configured like source_i (VOLT,CURR)
-                        parts = [p for p in reading_str.split(',') if p.strip()]
                         try:
                             voltage = float(parts[0])
                             current = float(parts[1]) if len(parts) > 1 else float('nan')
                         except Exception:
                             voltage = float('nan'); current = float('nan')
-                        comp_limit_v = measurement_settings.get('fpp_voltage_compliance')
                         compliance_type = 'Voltage'
-                        if np.isfinite(voltage) and abs(voltage) >= comp_limit_v * COMPLIANCE_THRESHOLD_FACTOR:
-                            compliance_status = 'V_COMP'
-                        if np.isfinite(voltage) and abs(voltage) > KEITHLEY_COMPLIANCE_MAGIC_NUMBER * 0.9:
+                        comp_limit_v = measurement_settings.get('fpp_voltage_compliance')
+                        if hw_compliance or (np.isfinite(voltage) and abs(voltage) >= comp_limit_v * 0.99):
                             compliance_status = 'V_COMP'
                         data_dict = {'voltage': voltage, 'current': current}
 
