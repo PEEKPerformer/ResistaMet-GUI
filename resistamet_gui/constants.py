@@ -41,7 +41,9 @@ DEFAULT_SETTINGS = {
         "fpp_alpha": 1.0,                    # thickness correction factor
         "fpp_k_factor": 4.532,              # geometric coefficient replacing 4.532 when needed
         "fpp_samples": 0,                  # number of samples to take (0 = continuous)
-        "fpp_model": "thin_film"             # one of: thin_film, semi_infinite, finite_thin, finite_alpha
+        "fpp_model": "thin_film",             # one of: thin_film, semi_infinite, finite_thin, finite_alpha
+        "fpp_delta_mode": False,              # current reversal (delta) mode — alternates +I/-I to cancel thermoelectric EMF
+        "fpp_delta_settling": 0.1             # settling time (s) between polarity flips in delta mode
     },
     "display": {
         "enable_plot": True,

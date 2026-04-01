@@ -109,6 +109,14 @@ class TestTabCreation:
         assert hasattr(w, 'fpp_table')
         assert hasattr(w, 'fpp_summary')
         assert hasattr(w, 'canvas')
+        # New: histogram, spots, delta mode
+        assert hasattr(w, 'fpp_histogram')
+        assert hasattr(w, 'fpp_spots_table')
+        assert hasattr(w, 'fpp_spot_name')
+        assert hasattr(w, '_fpp_spots')
+        assert hasattr(w, '_fpp_spot_counter')
+        assert hasattr(w, 'fpp_delta_mode')
+        assert hasattr(w, 'fpp_delta_settling')
 
 
 class TestSettingsDialog:
@@ -221,3 +229,61 @@ class TestUIInteractions:
     def test_four_point_model_info(self, main_window):
         """Should not crash."""
         main_window.update_four_point_model_info()
+
+
+class TestHistogramCanvas:
+    """Test the new HistogramCanvas widget."""
+
+    def test_histogram_update(self, main_window):
+        w = main_window.tab_four_point
+        w.fpp_histogram.update_histogram([1.0, 2.0, 3.0, 2.5, 2.1], 'Rs (Ω/□)')
+
+    def test_histogram_empty(self, main_window):
+        w = main_window.tab_four_point
+        w.fpp_histogram.update_histogram([], 'Rs (Ω/□)')
+
+    def test_histogram_nan_values(self, main_window):
+        w = main_window.tab_four_point
+        w.fpp_histogram.update_histogram([1.0, float('nan'), 2.0, float('nan')], 'Rs')
+
+    def test_bar_chart(self, main_window):
+        w = main_window.tab_four_point
+        w.fpp_histogram.update_bar_chart(['Spot 1', 'Spot 2'], [10.0, 12.0], [0.5, 0.8])
+
+    def test_clear(self, main_window):
+        w = main_window.tab_four_point
+        w.fpp_histogram.clear_histogram()
+
+
+class TestSpotManagement:
+    """Test multi-spot tracking functionality."""
+
+    def test_save_spot_empty(self, main_window):
+        """Save spot with no data should warn, not crash."""
+        main_window._save_fpp_spot()  # no data, should log warning
+
+    def test_save_spot_with_data(self, main_window):
+        """Save spot with data should archive and clear."""
+        w = main_window.tab_four_point
+        w._fpp_rows = [(0, 0.001, 0.001, 1.0, 4.532, 0.001, 1000.0, 'OK', '')]
+        main_window._save_fpp_spot()
+        assert len(w._fpp_spots) == 1
+        assert w._fpp_spots[0]['name'] == 'Spot 1'
+        assert len(w._fpp_rows) == 0  # cleared after save
+
+    def test_clear_all_spots(self, main_window):
+        w = main_window.tab_four_point
+        w._fpp_spots = [{'name': 'test', 'n': 1, 'rs_mean': 1, 'rs_std': 0,
+                          'rho_mean': 0, 'rho_std': 0, 'sigma_mean': 0, 'sigma_std': 0, 'rows': []}]
+        main_window._clear_all_fpp_spots()
+        assert len(w._fpp_spots) == 0
+        assert w._fpp_spot_counter == 1
+
+    def test_delta_mode_settings(self, main_window):
+        """Delta mode checkbox should be gatherable in settings."""
+        w = main_window.tab_four_point
+        w.fpp_delta_mode.setChecked(True)
+        w.fpp_delta_settling.setValue(0.2)
+        s = main_window.gather_settings_for_mode('four_point')
+        assert s['measurement']['fpp_delta_mode'] is True
+        assert s['measurement']['fpp_delta_settling'] == 0.2

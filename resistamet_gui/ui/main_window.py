@@ -17,7 +17,7 @@ from ..buffers import EnhancedDataBuffer
 from ..config import ConfigManager
 from ..constants import __version__
 from ..workers import MeasurementWorker
-from .canvas import MplCanvas
+from .canvas import MplCanvas, HistogramCanvas
 from .dialogs import SettingsDialog, UserSelectionDialog
 
 
@@ -445,7 +445,20 @@ class ResistanceMeterApp(QMainWindow):
         adv_form.addRow("Auto Range Voltage:", main_container.fpp_voltage_range_auto)
         adv_form.addRow("Correction Factor α:", main_container.fpp_alpha)
         adv_form.addRow("K Factor:", main_container.fpp_k_factor)
-        # Add as a full-width row in the form
+        # Delta mode (current reversal)
+        main_container.fpp_delta_mode = QCheckBox("Current Reversal (Delta Mode)")
+        main_container.fpp_delta_mode.setToolTip(
+            "Alternates +I and -I for each reading to cancel thermoelectric\n"
+            "EMF from dissimilar probe-sample contacts.\n"
+            "V_delta = (V+ - V-) / 2 eliminates DC offset voltages.\n"
+            "Each reading takes 2x longer (two instrument reads per point).")
+        adv_form.addRow(main_container.fpp_delta_mode)
+        main_container.fpp_delta_settling = QDoubleSpinBox(decimals=3, minimum=0.01, maximum=5.0, singleStep=0.05, suffix=" s")
+        main_container.fpp_delta_settling.setValue(0.1)
+        main_container.fpp_delta_settling.setToolTip("Settling time between polarity flips.\nAllows the instrument and DUT to stabilize after reversing current.")
+        main_container.fpp_delta_settling.setEnabled(False)
+        main_container.fpp_delta_mode.toggled.connect(main_container.fpp_delta_settling.setEnabled)
+        adv_form.addRow("Delta Settling:", main_container.fpp_delta_settling)
         layout.addRow("", adv_group)
         
         # Mark event
@@ -463,8 +476,28 @@ class ResistanceMeterApp(QMainWindow):
         test_conn_button.clicked.connect(self.test_instrument_connection)
         layout.addRow(test_conn_button)
         
-        # CREATE SUMMARY AND TABLE IN RIGHT PANEL
-        main_container.fpp_summary = QGroupBox("Summary Stats")
+        # CREATE RIGHT PANEL CONTENTS: Spot management → Summary → Histogram → Spots table → Readings table
+
+        # Spot management bar
+        spot_bar = QHBoxLayout()
+        main_container.fpp_spot_name = QLineEdit("Spot 1")
+        main_container.fpp_spot_name.setMaximumWidth(120)
+        main_container.fpp_spot_name.setToolTip("Name for the current measurement spot.")
+        save_spot_btn = QPushButton("Save Spot")
+        save_spot_btn.setToolTip("Archive current readings as a named spot,\nthen clear for the next probe position.")
+        save_spot_btn.clicked.connect(self._save_fpp_spot)
+        clear_spots_btn = QPushButton("Clear All")
+        clear_spots_btn.setToolTip("Clear all saved spots and current readings.")
+        clear_spots_btn.clicked.connect(self._clear_all_fpp_spots)
+        spot_bar.addWidget(QLabel("Spot:"))
+        spot_bar.addWidget(main_container.fpp_spot_name)
+        spot_bar.addWidget(save_spot_btn)
+        spot_bar.addWidget(clear_spots_btn)
+        spot_bar.addStretch()
+        right_layout.addLayout(spot_bar)
+
+        # Current reading summary stats
+        main_container.fpp_summary = QGroupBox("Current Spot Stats")
         sum_layout = QFormLayout(main_container.fpp_summary)
         main_container.fpp_n_label = QLabel("0")
         main_container.fpp_rs_label = QLabel("--")
@@ -474,17 +507,30 @@ class ResistanceMeterApp(QMainWindow):
         sum_layout.addRow("Rs mean±std (Ω/□; RSD%):", main_container.fpp_rs_label)
         sum_layout.addRow("ρ mean±std (Ω·cm; RSD%):", main_container.fpp_rho_label)
         sum_layout.addRow("σ mean±std (S/cm; RSD%):", main_container.fpp_sigma_label)
-        
-        # Measurements table
+
+        # Histogram canvas
+        main_container.fpp_histogram = HistogramCanvas(main_container, width=5, height=2.5, dpi=90)
+        main_container.fpp_histogram.setMinimumHeight(150)
+        main_container.fpp_histogram.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        # Spots summary table (compact, shows saved spots)
+        main_container.fpp_spots_table = QTableWidget(0, 5)
+        main_container.fpp_spots_table.setHorizontalHeaderLabels(['Spot', 'N', 'Rs (Ω/□)', 'Std', 'RSD%'])
+        main_container.fpp_spots_table.setMaximumHeight(120)
+        main_container.fpp_spots_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+        # Measurements table (current spot readings)
         main_container.fpp_table = QTableWidget(0, 9)
         main_container.fpp_table.setHorizontalHeaderLabels([
             'Time (s)', 'V (V)', 'I (A)', 'V/I (Ω)', 'Rs (Ω/□)', 'ρ (Ω·cm)', 'σ (S/cm)', 'Comp', 'Event'
         ])
         main_container.fpp_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        
-        # Add summary and table to right panel
+
+        # Add to right panel with stretch factors
         right_layout.addWidget(main_container.fpp_summary)
-        right_layout.addWidget(main_container.fpp_table, 1)  # Table gets most space in right panel
+        right_layout.addWidget(main_container.fpp_histogram, 2)
+        right_layout.addWidget(main_container.fpp_spots_table, 0)
+        right_layout.addWidget(main_container.fpp_table, 3)
         
         # Make parameter inputs compact (preserve existing styling)
         for sb in [main_container.fpp_current, main_container.fpp_voltage_compliance, main_container.fpp_spacing_cm, main_container.fpp_thickness_um, main_container.fpp_alpha, main_container.fpp_k_factor, main_container.fpp_samples]:
@@ -505,8 +551,10 @@ class ResistanceMeterApp(QMainWindow):
         main_container.fpp_spacing_cm.valueChanged.connect(lambda *_: self.update_four_point_model_info())
         main_container.fpp_thickness_um.valueChanged.connect(lambda *_: self.update_four_point_model_info())
         
-        # Internal storage for quick stats (preserve existing functionality)
+        # Internal storage for quick stats
         main_container._fpp_rows = []  # list of tuples (time, v, i, ratio, rs, rho, sigma, comp, event)
+        main_container._fpp_spots = []  # list of dicts: {name, n, rows, rs_mean, rs_std, rho_mean, rho_std, sigma_mean, sigma_std}
+        main_container._fpp_spot_counter = 1
         
         # CRITICAL: Deferred initialization for Windows zero-size fix
         def initialize_splitter_sizes():
@@ -995,6 +1043,10 @@ class ResistanceMeterApp(QMainWindow):
                 m_cfg['fpp_model'] = widget.fpp_model.currentText()
                 m_cfg['fpp_k_factor'] = widget.fpp_k_factor.value()
                 m_cfg['fpp_samples'] = int(widget.fpp_samples.value())
+                if hasattr(widget, 'fpp_delta_mode'):
+                    m_cfg['fpp_delta_mode'] = widget.fpp_delta_mode.isChecked()
+                if hasattr(widget, 'fpp_delta_settling'):
+                    m_cfg['fpp_delta_settling'] = widget.fpp_delta_settling.value()
         except AttributeError as e:
             raise ValueError(f"UI Widgets not found for mode {mode}: {e}")
         # Read NPLC and sampling rate from the tab (overrides settings dialog)
@@ -1270,6 +1322,19 @@ class ResistanceMeterApp(QMainWindow):
         w.fpp_rho_label.setText(fmt(rho_s))
         w.fpp_sigma_label.setText(fmt(sig_s))
 
+        # Update histogram (throttle: every 5th point after 200)
+        if hasattr(w, 'fpp_histogram') and (n <= 200 or n % 5 == 0):
+            # Use Rs values by default for histogram
+            rs_values = [r[4] for r in rows]
+            if hasattr(w, '_fpp_spots') and len(w._fpp_spots) >= 2:
+                # Show bar chart when multiple spots saved
+                names = [s['name'] for s in w._fpp_spots]
+                means = [s['rs_mean'] for s in w._fpp_spots]
+                stds = [s['rs_std'] for s in w._fpp_spots]
+                w.fpp_histogram.update_bar_chart(names, means, stds)
+            else:
+                w.fpp_histogram.update_histogram(rs_values, 'Rs (Ω/□)')
+
     def update_four_point_model_info(self, w=None, *args):
         # Robustly resolve the 4PP widget whether called with a widget, a value from a signal, or no args.
         if w is None or not hasattr(w, 'fpp_spacing_cm'):
@@ -1469,6 +1534,38 @@ class ResistanceMeterApp(QMainWindow):
                 w.writerow(["Sheet Resistance (Ω/□)", safe_format(Rs_mean), safe_format(Rs_std)])
                 w.writerow(["Resistivity (Ω·cm)", safe_format(rho_mean), safe_format(rho_std)])
                 w.writerow(["Conductivity (S/cm)", safe_format(sigma_mean), safe_format(sigma_std)])
+
+                # Multi-spot section (if spots were saved)
+                fpp_widget = self.tab_four_point
+                spots = getattr(fpp_widget, '_fpp_spots', [])
+                if spots:
+                    w.writerow([])
+                    w.writerow(["Per-Spot Results"])
+                    w.writerow(["Spot", "N", "Rs Mean (Ω/□)", "Rs Std", "Rs RSD%",
+                                "ρ Mean (Ω·cm)", "ρ Std", "σ Mean (S/cm)", "σ Std"])
+                    for sp in spots:
+                        rs_rsd = (sp['rs_std'] / sp['rs_mean'] * 100) if sp['rs_mean'] != 0 else 0
+                        w.writerow([sp['name'], sp['n'],
+                                    safe_format(sp['rs_mean']), safe_format(sp['rs_std']), f"{rs_rsd:.2f}",
+                                    safe_format(sp['rho_mean']), safe_format(sp['rho_std']),
+                                    safe_format(sp['sigma_mean']), safe_format(sp['sigma_std'])])
+                    # Include unsaved current readings as "Current"
+                    if fpp_widget._fpp_rows:
+                        w.writerow(["(Current unsaved)", len(fpp_widget._fpp_rows),
+                                    safe_format(Rs_mean), safe_format(Rs_std), "", "", "", "", ""])
+                    # Inter-spot uniformity
+                    if len(spots) >= 2:
+                        spot_rs = [sp['rs_mean'] for sp in spots if sp['rs_mean'] != 0]
+                        if spot_rs:
+                            inter_mean = np.mean(spot_rs)
+                            inter_std = np.std(spot_rs, ddof=1)
+                            inter_rsd = (inter_std / inter_mean * 100) if inter_mean != 0 else 0
+                            w.writerow([])
+                            w.writerow(["Inter-spot Uniformity"])
+                            w.writerow(["Rs Mean-of-Means (Ω/□)", safe_format(inter_mean)])
+                            w.writerow(["Rs Std-of-Means (Ω/□)", safe_format(inter_std)])
+                            w.writerow(["Inter-spot RSD%", f"{inter_rsd:.2f}"])
+
             self.log_status(f"Summary saved: {filename}")
         except Exception as e:
             QMessageBox.critical(self, "Save Summary", f"Failed to save summary: {e}")
@@ -1548,12 +1645,11 @@ class ResistanceMeterApp(QMainWindow):
         self.log_status("All plots and data cleared.")
 
     def _clear_four_point_data(self):
-        """Clear 4-Point Probe specific data structures (table, stats, internal rows)"""
+        """Clear 4-Point Probe current spot data (table, stats, rows)."""
         widget = self.tab_four_point
         if hasattr(widget, '_fpp_rows') and hasattr(widget, 'fpp_table'):
-            widget._fpp_rows.clear()  # Clear internal stats data
-            widget.fpp_table.setRowCount(0)  # Clear measurements table
-            # Reset summary stats display to initial state
+            widget._fpp_rows.clear()
+            widget.fpp_table.setRowCount(0)
             if hasattr(widget, 'fpp_n_label'):
                 widget.fpp_n_label.setText("0")
             if hasattr(widget, 'fpp_rs_label'):
@@ -1562,6 +1658,75 @@ class ResistanceMeterApp(QMainWindow):
                 widget.fpp_rho_label.setText("--")
             if hasattr(widget, 'fpp_sigma_label'):
                 widget.fpp_sigma_label.setText("--")
+            if hasattr(widget, 'fpp_histogram'):
+                widget.fpp_histogram.clear_histogram()
+
+    def _save_fpp_spot(self):
+        """Archive current readings as a named spot, reset for next position."""
+        w = self.tab_four_point
+        if not hasattr(w, '_fpp_rows') or not w._fpp_rows:
+            self.log_status("No readings to save as a spot.", color="orange")
+            return
+        import math
+        name = w.fpp_spot_name.text().strip() or f"Spot {w._fpp_spot_counter}"
+        rows = list(w._fpp_rows)
+        n = len(rows)
+
+        def stat(idx):
+            arr = [r[idx] for r in rows if isinstance(r[idx], (int, float)) and not math.isnan(r[idx])]
+            if not arr:
+                return 0.0, 0.0
+            mean = float(np.mean(arr))
+            std = float(np.std(arr, ddof=1)) if len(arr) > 1 else 0.0
+            return mean, std
+
+        rs_mean, rs_std = stat(4)
+        rho_mean, rho_std = stat(5)
+        sigma_mean, sigma_std = stat(6)
+
+        spot = {
+            'name': name, 'n': n, 'rows': rows,
+            'rs_mean': rs_mean, 'rs_std': rs_std,
+            'rho_mean': rho_mean, 'rho_std': rho_std,
+            'sigma_mean': sigma_mean, 'sigma_std': sigma_std,
+        }
+        w._fpp_spots.append(spot)
+
+        # Update spots summary table
+        table = w.fpp_spots_table
+        row_idx = table.rowCount()
+        table.insertRow(row_idx)
+        rsd = (rs_std / rs_mean * 100) if rs_mean != 0 else 0
+        for col, val in enumerate([name, str(n), f"{rs_mean:.5g}", f"{rs_std:.3g}", f"{rsd:.2f}"]):
+            table.setItem(row_idx, col, QTableWidgetItem(val))
+
+        self.log_status(f"Spot '{name}' saved: N={n}, Rs={rs_mean:.5g} ± {rs_std:.3g} Ω/□", color="darkGreen")
+
+        # Increment auto-name and clear current readings
+        w._fpp_spot_counter += 1
+        w.fpp_spot_name.setText(f"Spot {w._fpp_spot_counter}")
+        self._clear_four_point_data()
+
+        # Update histogram to bar chart if ≥2 spots
+        if len(w._fpp_spots) >= 2:
+            names = [s['name'] for s in w._fpp_spots]
+            means = [s['rs_mean'] for s in w._fpp_spots]
+            stds = [s['rs_std'] for s in w._fpp_spots]
+            w.fpp_histogram.update_bar_chart(names, means, stds)
+
+    def _clear_all_fpp_spots(self):
+        """Clear all saved spots and current readings."""
+        w = self.tab_four_point
+        if hasattr(w, '_fpp_spots'):
+            w._fpp_spots.clear()
+        if hasattr(w, '_fpp_spot_counter'):
+            w._fpp_spot_counter = 1
+        if hasattr(w, 'fpp_spot_name'):
+            w.fpp_spot_name.setText("Spot 1")
+        if hasattr(w, 'fpp_spots_table'):
+            w.fpp_spots_table.setRowCount(0)
+        self._clear_four_point_data()
+        self.log_status("All spots and readings cleared.")
 
     def show_about(self):
         about_text = f"""

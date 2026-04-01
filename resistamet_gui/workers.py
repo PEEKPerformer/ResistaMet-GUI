@@ -261,6 +261,11 @@ class MeasurementWorker(QThread):
                     self.keithley.write(f":SENS:VOLT:NPLC {nplc}")
                     self.keithley.write(":FORM:ELEM VOLT,CURR,STAT")
 
+                    # Delta mode settings
+                    self._fpp_delta_mode = bool(measurement_settings.get('fpp_delta_mode', False))
+                    self._fpp_delta_settling = float(measurement_settings.get('fpp_delta_settling', 0.1))
+                    self._fpp_source_current = source_current
+
                     metadata = {
                         'Mode': 'Four-Point Probe',
                         'Source Current (A)': source_current,
@@ -270,9 +275,12 @@ class MeasurementWorker(QThread):
                         'Alpha': measurement_settings.get('fpp_alpha'),
                         'K Factor': measurement_settings.get('fpp_k_factor'),
                         'Model': measurement_settings.get('fpp_model'),
+                        'Delta Mode': self._fpp_delta_mode,
                     }
                     csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Voltage (V)', 'Current (A)', 'V/I (Ohms)', 'Sheet Rs (Ohms/sq)', 'Resistivity (Ohm*cm)', 'Conductivity (S/cm)', 'Compliance Status', 'Event']
                     source_value_str = f"{source_current*1000:.2f}mA"
+                    if self._fpp_delta_mode:
+                        source_value_str += "_delta"
 
                 self.keithley.write(":TRIG:DEL 0")
                 self.keithley.write(":SOUR:DEL 0")
@@ -358,37 +366,57 @@ class MeasurementWorker(QThread):
                     reading_str = None
                     read_success = False
 
-                    for retry in range(max_retries):
+                    # Delta mode: alternating +I/-I for 4PP thermoelectric cancellation
+                    use_delta = (self.mode == 'four_point' and
+                                 getattr(self, '_fpp_delta_mode', False) and
+                                 self.keithley is not None)
+
+                    if use_delta:
                         try:
-                            reading_str = self.keithley.query(":READ?").strip()
+                            reading_str = self._read_delta()
                             last_measurement_time = time.time()
                             read_success = True
-                            if retry > 0:
-                                self.status_update.emit(f"Communication recovered after {retry} retries")
                             consecutive_errors = 0
-                            break
-                        except pyvisa.errors.VisaIOError as e:
+                        except Exception as e:
                             consecutive_errors += 1
-                            if retry < max_retries - 1:
-                                # Exponential backoff: 0.1, 0.2, 0.4, 0.8, 1.6s
-                                delay = 0.1 * (2 ** retry)
-                                self.status_update.emit(
-                                    f"VISA error (retry {retry + 1}/{max_retries}): {str(e)[:50]}... "
-                                    f"Retrying in {delay:.1f}s"
-                                )
-                                time.sleep(delay)
-                                # Try to clear interface before retry
+                            if consecutive_errors >= max_retries:
+                                self.error_occurred.emit(f"Delta read error after {consecutive_errors} failures: {str(e)}. Stopping.")
+                            else:
+                                self.status_update.emit(f"Delta read error (attempt {consecutive_errors}): {str(e)[:50]}")
                                 try:
                                     self.keithley.write("*CLS")
                                 except Exception:
                                     pass
-                            else:
-                                self.error_occurred.emit(
-                                    f"VISA Read Error after {max_retries} retries: {str(e)}. Stopping."
-                                )
-                        except Exception as e:
-                            self.error_occurred.emit(f"Unexpected Read Error: {str(e)}. Stopping.")
-                            break
+                    else:
+                        for retry in range(max_retries):
+                            try:
+                                reading_str = self.keithley.query(":READ?").strip()
+                                last_measurement_time = time.time()
+                                read_success = True
+                                if retry > 0:
+                                    self.status_update.emit(f"Communication recovered after {retry} retries")
+                                consecutive_errors = 0
+                                break
+                            except pyvisa.errors.VisaIOError as e:
+                                consecutive_errors += 1
+                                if retry < max_retries - 1:
+                                    delay = 0.1 * (2 ** retry)
+                                    self.status_update.emit(
+                                        f"VISA error (retry {retry + 1}/{max_retries}): {str(e)[:50]}... "
+                                        f"Retrying in {delay:.1f}s"
+                                    )
+                                    time.sleep(delay)
+                                    try:
+                                        self.keithley.write("*CLS")
+                                    except Exception:
+                                        pass
+                                else:
+                                    self.error_occurred.emit(
+                                        f"VISA Read Error after {max_retries} retries: {str(e)}. Stopping."
+                                    )
+                            except Exception as e:
+                                self.error_occurred.emit(f"Unexpected Read Error: {str(e)}. Stopping.")
+                                break
 
                     if not read_success:
                         break
@@ -720,3 +748,40 @@ class MeasurementWorker(QThread):
             if error:
                 self.status_update.emit(f"Warning: {error}")
                 logger.warning(f"Instrument error during measurement: {error}")
+
+    def _read_delta(self) -> str:
+        """Perform a current-reversal (delta) measurement for 4PP.
+
+        Takes two readings at +I and -I, computes V_delta = (V+ - V-) / 2
+        to cancel thermoelectric EMF. Returns a synthetic reading string
+        in the same format as a normal :READ? response (VOLT,CURR,STAT).
+        """
+        i_mag = abs(self._fpp_source_current)
+        settling = self._fpp_delta_settling
+
+        # +I reading
+        self.keithley.write(f":SOUR:CURR {i_mag}")
+        time.sleep(settling)
+        raw_plus = self.keithley.query(":READ?").strip()
+        parts_plus = [p.strip() for p in raw_plus.split(',')]
+        v_plus = float(parts_plus[0])
+        stat_plus = int(float(parts_plus[-1]))
+
+        # -I reading
+        self.keithley.write(f":SOUR:CURR {-i_mag}")
+        time.sleep(settling)
+        raw_minus = self.keithley.query(":READ?").strip()
+        parts_minus = [p.strip() for p in raw_minus.split(',')]
+        v_minus = float(parts_minus[0])
+        stat_minus = int(float(parts_minus[-1]))
+
+        # Restore positive polarity for next cycle
+        self.keithley.write(f":SOUR:CURR {i_mag}")
+
+        # Delta calculation: V_delta = (V+ - V-) / 2
+        v_delta = (v_plus - v_minus) / 2.0
+        # Compliance: OR of both readings
+        stat_combined = stat_plus | stat_minus
+
+        # Return synthetic reading string matching VOLT,CURR,STAT format
+        return f"{v_delta},{i_mag},{stat_combined}"
