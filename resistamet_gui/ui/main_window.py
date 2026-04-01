@@ -18,6 +18,7 @@ from ..config import ConfigManager
 from ..constants import __version__
 from ..workers import MeasurementWorker
 from .canvas import MplCanvas, HistogramCanvas
+from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, format_engineering
 from .dialogs import SettingsDialog, UserSelectionDialog
 
 
@@ -148,10 +149,10 @@ class ResistanceMeterApp(QMainWindow):
 
     def create_resistance_tab(self):
         widget = self.create_tab_widget('resistance'); layout = widget.param_layout
-        widget.res_test_current = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=3.0, singleStep=1e-3, suffix=" A")
-        widget.res_test_current.setToolTip("DC current sourced through the DUT to measure resistance.\nHigher currents give better signal-to-noise but may heat the sample.\nTypical: 1 mA for metals, 1 µA for semiconductors.")
+        widget.res_test_current = EngineeringSpinBox(unit='A', minimum=1e-7, maximum=3.0, default=1e-3)
+        widget.res_test_current.setToolTip("DC current sourced through the DUT to measure resistance.\nHigher currents give better signal-to-noise but may heat the sample.\nTypical: 1 mA for metals, 1 µA for semiconductors.\nAccepts: 1mA, 100µA, 0.001, etc.")
         layout.addRow("Test Current:", widget.res_test_current)
-        widget.res_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
+        widget.res_voltage_compliance = NoScrollSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
         widget.res_voltage_compliance.setToolTip("Maximum voltage the instrument will apply across the DUT.\nIf the DUT resistance is too high, voltage will be clamped here\nand a compliance warning will appear. Protects sensitive samples.")
         layout.addRow("Voltage Compliance:", widget.res_voltage_compliance)
         widget.res_measurement_type = QComboBox(); widget.res_measurement_type.addItems(["2-wire", "4-wire"])
@@ -160,11 +161,7 @@ class ResistanceMeterApp(QMainWindow):
         widget.res_auto_range = QCheckBox("Auto Range Resistance")
         widget.res_auto_range.setToolTip("When checked, the instrument automatically selects the best\nmeasurement range for the DUT resistance. Disable for faster\nmeasurements at a fixed range.")
         layout.addRow(widget.res_auto_range)
-        # NPLC and sampling rate (also in Settings dialog, but useful here for quick access)
-        widget.nplc = QDoubleSpinBox(decimals=2, minimum=0.01, maximum=10.0, singleStep=0.1)
-        widget.nplc.setToolTip("Number of Power Line Cycles for integration.\nHigher = slower but less noise. 1 PLC = 16.7 ms at 60 Hz.\n0.01: fastest, noisy | 1: balanced | 10: highest precision")
-        layout.addRow("NPLC:", widget.nplc)
-        widget.sampling_rate = QDoubleSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
+        widget.sampling_rate = NoScrollSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
         widget.sampling_rate.setToolTip("How many readings per second to take.\nLimited by NPLC — high NPLC with high rate will bottleneck\nat the instrument's actual measurement speed.")
         layout.addRow("Sampling Rate:", widget.sampling_rate)
         widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
@@ -182,18 +179,17 @@ class ResistanceMeterApp(QMainWindow):
 
     def create_voltage_source_tab(self):
         widget = self.create_tab_widget('source_v'); layout = widget.param_layout
-        widget.vsource_voltage = QDoubleSpinBox(decimals=3, minimum=-200.0, maximum=200.0, singleStep=0.1, suffix=" V")
-        widget.vsource_voltage.setToolTip("DC voltage applied to the DUT.\nNegative values reverse polarity. The instrument will source\nthis exact voltage and measure the resulting current.")
+        widget.vsource_voltage = EngineeringSpinBox(unit='V', minimum=-200.0, maximum=200.0, default=1.0, allow_negative=True)
+        widget.vsource_voltage.setToolTip("DC voltage applied to the DUT.\nNegative values reverse polarity. The instrument will source\nthis exact voltage and measure the resulting current.\nAccepts: 100mV, 1V, -0.5V, etc.")
         layout.addRow("Source Voltage:", widget.vsource_voltage)
-        widget.vsource_current_compliance = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=3.0, singleStep=1e-3, suffix=" A")
-        widget.vsource_current_compliance.setToolTip("Maximum current allowed to flow through the DUT.\nIf the DUT draws more than this, the instrument limits current\nand reports compliance. Protects the DUT from overcurrent.")
+        widget.vsource_current_compliance = EngineeringSpinBox(unit='A', minimum=1e-7, maximum=3.0, default=0.1)
+        widget.vsource_current_compliance.setToolTip("Maximum current allowed to flow through the DUT.\nIf the DUT draws more than this, the instrument limits current\nand reports compliance. Protects the DUT from overcurrent.\nAccepts: 100mA, 1mA, 0.1A, etc.")
         layout.addRow("Current Compliance:", widget.vsource_current_compliance)
         widget.vsource_current_range_auto = QCheckBox("Auto Range Current Measurement")
         widget.vsource_current_range_auto.setToolTip("Automatically select the best current measurement range.\nDisable for faster measurements when you know the expected range.")
         layout.addRow(widget.vsource_current_range_auto)
-        # Duration with run-until-stopped checkbox
         dur_layout = QHBoxLayout()
-        widget.vsource_duration = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
+        widget.vsource_duration = NoScrollSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
         widget.vsource_duration.setToolTip("How long to run the measurement.\nSet a specific duration, or check 'Run until stopped'.")
         widget.vsource_run_continuous = QCheckBox("Run until stopped")
         widget.vsource_run_continuous.setToolTip("When checked, measurement runs indefinitely until you press Stop.")
@@ -202,10 +198,7 @@ class ResistanceMeterApp(QMainWindow):
         widget.vsource_run_continuous.toggled.connect(lambda c: widget.vsource_duration.setEnabled(not c))
         dur_layout.addWidget(widget.vsource_duration); dur_layout.addWidget(widget.vsource_run_continuous)
         layout.addRow("Duration:", dur_layout)
-        widget.nplc = QDoubleSpinBox(decimals=2, minimum=0.01, maximum=10.0, singleStep=0.1)
-        widget.nplc.setToolTip("Number of Power Line Cycles for integration.\nHigher = slower but less noise. 1 PLC = 16.7 ms at 60 Hz.")
-        layout.addRow("NPLC:", widget.nplc)
-        widget.sampling_rate = QDoubleSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
+        widget.sampling_rate = NoScrollSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
         widget.sampling_rate.setToolTip("How many readings per second to take.")
         layout.addRow("Sampling Rate:", widget.sampling_rate)
         widget.v_plot_var = QComboBox(); widget.v_plot_var.addItems(["current", "voltage", "resistance"])
@@ -227,17 +220,17 @@ class ResistanceMeterApp(QMainWindow):
 
     def create_current_source_tab(self):
         widget = self.create_tab_widget('source_i'); layout = widget.param_layout
-        widget.isource_current = QDoubleSpinBox(decimals=6, minimum=-3.0, maximum=3.0, singleStep=1e-3, suffix=" A")
-        widget.isource_current.setToolTip("DC current sourced through the DUT.\nNegative values reverse polarity. The instrument measures\nthe resulting voltage across the DUT.")
+        widget.isource_current = EngineeringSpinBox(unit='A', minimum=-3.0, maximum=3.0, default=1e-3, allow_negative=True)
+        widget.isource_current.setToolTip("DC current sourced through the DUT.\nNegative values reverse polarity. The instrument measures\nthe resulting voltage across the DUT.\nAccepts: 1mA, -100µA, 0.001, etc.")
         layout.addRow("Source Current:", widget.isource_current)
-        widget.isource_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
+        widget.isource_voltage_compliance = NoScrollSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
         widget.isource_voltage_compliance.setToolTip("Maximum voltage the instrument will apply.\nIf the DUT resistance causes voltage to exceed this,\nthe instrument clamps and reports compliance.")
         layout.addRow("Voltage Compliance:", widget.isource_voltage_compliance)
         widget.isource_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
         widget.isource_voltage_range_auto.setToolTip("Automatically select the best voltage measurement range.\nDisable for faster measurements at a fixed range.")
         layout.addRow(widget.isource_voltage_range_auto)
         dur_layout = QHBoxLayout()
-        widget.isource_duration = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
+        widget.isource_duration = NoScrollSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
         widget.isource_duration.setToolTip("How long to run the measurement.\nSet a specific duration, or check 'Run until stopped'.")
         widget.isource_run_continuous = QCheckBox("Run until stopped")
         widget.isource_run_continuous.setToolTip("When checked, measurement runs indefinitely until you press Stop.")
@@ -246,10 +239,7 @@ class ResistanceMeterApp(QMainWindow):
         widget.isource_run_continuous.toggled.connect(lambda c: widget.isource_duration.setEnabled(not c))
         dur_layout.addWidget(widget.isource_duration); dur_layout.addWidget(widget.isource_run_continuous)
         layout.addRow("Duration:", dur_layout)
-        widget.nplc = QDoubleSpinBox(decimals=2, minimum=0.01, maximum=10.0, singleStep=0.1)
-        widget.nplc.setToolTip("Number of Power Line Cycles for integration.\nHigher = slower but less noise. 1 PLC = 16.7 ms at 60 Hz.")
-        layout.addRow("NPLC:", widget.nplc)
-        widget.sampling_rate = QDoubleSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
+        widget.sampling_rate = NoScrollSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
         widget.sampling_rate.setToolTip("How many readings per second to take.")
         layout.addRow("Sampling Rate:", widget.sampling_rate)
         widget.i_plot_var = QComboBox(); widget.i_plot_var.addItems(["voltage", "current", "resistance"])
@@ -387,10 +377,10 @@ class ResistanceMeterApp(QMainWindow):
         layout = param_layout  # Use the parameter layout for form fields
         
         # Instrument parameters
-        main_container.fpp_current = QDoubleSpinBox(decimals=6, minimum=-3.0, maximum=3.0, singleStep=1e-3, suffix=" A")
-        main_container.fpp_current.setToolTip("DC current sourced through the outer two probe tips.\nThe instrument measures voltage across the inner two tips.\nTypical: 1 mA for metals, 100 µA for thin films.")
+        main_container.fpp_current = EngineeringSpinBox(unit='A', minimum=-3.0, maximum=3.0, default=1e-3, allow_negative=True)
+        main_container.fpp_current.setToolTip("DC current sourced through the outer two probe tips.\nThe instrument measures voltage across the inner two tips.\nTypical: 1 mA for metals, 100 µA for thin films.\nAccepts: 1mA, 100µA, 0.001, etc.")
         layout.addRow("Source Current:", main_container.fpp_current)
-        main_container.fpp_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
+        main_container.fpp_voltage_compliance = NoScrollSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
         main_container.fpp_voltage_compliance.setToolTip("Maximum voltage the instrument will apply.\nProtects samples from overvoltage damage.")
         layout.addRow("Voltage Compliance:", main_container.fpp_voltage_compliance)
         main_container.fpp_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
@@ -415,10 +405,7 @@ class ResistanceMeterApp(QMainWindow):
         main_container.fpp_samples.setToolTip("Number of readings to take before stopping.\n0 = continuous (run until you press Stop).")
         layout.addRow("Samples (0=cont.):", main_container.fpp_samples)
         # NPLC and sampling rate
-        main_container.nplc = QDoubleSpinBox(decimals=2, minimum=0.01, maximum=10.0, singleStep=0.1)
-        main_container.nplc.setToolTip("Number of Power Line Cycles for integration.\nHigher = slower but less noise. 1 PLC = 16.7 ms at 60 Hz.")
-        layout.addRow("NPLC:", main_container.nplc)
-        main_container.sampling_rate = QDoubleSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
+        main_container.sampling_rate = NoScrollSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
         main_container.sampling_rate.setToolTip("How many readings per second to take.")
         layout.addRow("Sampling Rate:", main_container.sampling_rate)
         # Plot variable and plot visibility
@@ -445,6 +432,9 @@ class ResistanceMeterApp(QMainWindow):
         adv_form.addRow("Auto Range Voltage:", main_container.fpp_voltage_range_auto)
         adv_form.addRow("Correction Factor α:", main_container.fpp_alpha)
         adv_form.addRow("K Factor:", main_container.fpp_k_factor)
+        main_container.nplc = NoScrollSpinBox(decimals=2, minimum=0.01, maximum=10.0, singleStep=0.1)
+        main_container.nplc.setToolTip("Number of Power Line Cycles for integration.\nHigher = slower but less noise. 1 PLC = 16.7 ms at 60 Hz.\n0.01: fastest, noisy | 1: balanced | 10: highest precision")
+        adv_form.addRow("NPLC:", main_container.nplc)
         # Delta mode (current reversal)
         main_container.fpp_delta_mode = QCheckBox("Current Reversal (Delta Mode)")
         main_container.fpp_delta_mode.setToolTip(
@@ -926,7 +916,6 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_resistance.res_voltage_compliance.setValue(m_cfg['res_voltage_compliance'])
         self.tab_resistance.res_measurement_type.setCurrentText(m_cfg['res_measurement_type'])
         self.tab_resistance.res_auto_range.setChecked(m_cfg['res_auto_range'])
-        self.tab_resistance.nplc.setValue(m_cfg['nplc'])
         self.tab_resistance.sampling_rate.setValue(m_cfg['sampling_rate'])
         self.tab_resistance.canvas.set_plot_properties('Elapsed Time (s)', 'Resistance (Ohms)', 'Resistance Measurement', d_cfg['plot_color_r'])
         self.tab_voltage_source.vsource_voltage.setValue(m_cfg['vsource_voltage'])
@@ -935,7 +924,6 @@ class ResistanceMeterApp(QMainWindow):
         dur_v = m_cfg.get('vsource_duration_hours', 0.0)
         self.tab_voltage_source.vsource_duration.setValue(dur_v)
         self.tab_voltage_source.vsource_run_continuous.setChecked(dur_v == 0.0)
-        self.tab_voltage_source.nplc.setValue(m_cfg['nplc'])
         self.tab_voltage_source.sampling_rate.setValue(m_cfg['sampling_rate'])
         self.tab_voltage_source.v_plot_var.setCurrentText('current')
         self.tab_voltage_source.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Current (A)', 'Voltage Source Output', d_cfg['plot_color_v'])
@@ -945,7 +933,6 @@ class ResistanceMeterApp(QMainWindow):
         dur_i = m_cfg.get('isource_duration_hours', 0.0)
         self.tab_current_source.isource_duration.setValue(dur_i)
         self.tab_current_source.isource_run_continuous.setChecked(dur_i == 0.0)
-        self.tab_current_source.nplc.setValue(m_cfg['nplc'])
         self.tab_current_source.sampling_rate.setValue(m_cfg['sampling_rate'])
         self.tab_current_source.i_plot_var.setCurrentText('voltage')
         self.tab_current_source.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Voltage (V)', 'Current Source Output', d_cfg['plot_color_i'])
@@ -1170,25 +1157,22 @@ class ResistanceMeterApp(QMainWindow):
         else:
             buffer.add_voltage_current(timestamp, value.get('voltage', float('nan')), value.get('current', float('nan')), compliance_status)
 
-        # Update live readout
+        # Update live readout with engineering notation
         widget = self.get_widget_for_mode(self.active_mode)
         if widget and hasattr(widget, 'live_readout'):
             if self.active_mode == 'resistance':
                 r = value.get('resistance', float('nan'))
-                if np.isfinite(r):
-                    widget.live_readout.setText(f"{r:.6g} \u03a9")
-                else:
-                    widget.live_readout.setText("-- \u03a9")
+                widget.live_readout.setText(format_engineering(r, '\u03a9') if np.isfinite(r) else "-- \u03a9")
             elif self.active_mode in ('source_v', 'source_i', 'four_point'):
                 v = value.get('voltage', float('nan'))
                 i = value.get('current', float('nan'))
                 parts = []
                 if np.isfinite(v):
-                    parts.append(f"V: {v:.5g} V")
+                    parts.append(f"V: {format_engineering(v, 'V')}")
                 if np.isfinite(i):
-                    parts.append(f"I: {i:.5g} A")
+                    parts.append(f"I: {format_engineering(i, 'A')}")
                 if np.isfinite(v) and np.isfinite(i) and i != 0:
-                    parts.append(f"R: {v/i:.5g} \u03a9")
+                    parts.append(f"R: {format_engineering(v/i, '\u03a9')}")
                 widget.live_readout.setText("   ".join(parts) if parts else "--")
 
         # Append a row to 4PP table and update stats live

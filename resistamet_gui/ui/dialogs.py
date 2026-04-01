@@ -9,6 +9,7 @@ from PyQt5.QtCore import Qt
 import pyvisa
 
 from ..config import ConfigManager
+from .widgets import EngineeringSpinBox, NoScrollSpinBox
 
 
 class SettingsDialog(QDialog):
@@ -88,8 +89,8 @@ class SettingsDialog(QDialog):
 
         # Resistance mode defaults
         res_layout = QFormLayout()
-        self.res_test_current = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=3.0, singleStep=1e-3, suffix=" A")
-        self.res_test_current.setToolTip("DC current sourced through the DUT to measure resistance.")
+        self.res_test_current = EngineeringSpinBox(unit='A', minimum=1e-7, maximum=3.0, default=1e-3)
+        self.res_test_current.setToolTip("DC current sourced through the DUT to measure resistance.\nAccepts: 1mA, 100µA, 0.001, etc.")
         res_layout.addRow("Test Current:", self.res_test_current)
         self.res_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
         self.res_voltage_compliance.setToolTip("Maximum voltage allowed across the DUT.")
@@ -103,11 +104,11 @@ class SettingsDialog(QDialog):
 
         # Voltage source mode defaults
         vsrc_layout = QFormLayout()
-        self.vsource_voltage = QDoubleSpinBox(decimals=3, minimum=-200.0, maximum=200.0, singleStep=0.1, suffix=" V")
-        self.vsource_voltage.setToolTip("DC voltage to apply to the DUT.")
+        self.vsource_voltage = EngineeringSpinBox(unit='V', minimum=-200.0, maximum=200.0, default=1.0, allow_negative=True)
+        self.vsource_voltage.setToolTip("DC voltage to apply to the DUT.\nAccepts: 100mV, 1V, -0.5V, etc.")
         vsrc_layout.addRow("Source Voltage:", self.vsource_voltage)
-        self.vsource_current_compliance = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=3.0, singleStep=1e-3, suffix=" A")
-        self.vsource_current_compliance.setToolTip("Maximum current allowed through the DUT.")
+        self.vsource_current_compliance = EngineeringSpinBox(unit='A', minimum=1e-7, maximum=3.0, default=0.1)
+        self.vsource_current_compliance.setToolTip("Maximum current allowed through the DUT.\nAccepts: 100mA, 1mA, 0.1A, etc.")
         vsrc_layout.addRow("Current Compliance:", self.vsource_current_compliance)
         self.vsource_duration_hours = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
         self.vsource_duration_hours.setToolTip("Measurement duration. 0 = run until stopped.")
@@ -116,8 +117,8 @@ class SettingsDialog(QDialog):
 
         # Current source mode defaults
         isrc_layout = QFormLayout()
-        self.isource_current = QDoubleSpinBox(decimals=6, minimum=-3.0, maximum=3.0, singleStep=1e-3, suffix=" A")
-        self.isource_current.setToolTip("DC current to source through the DUT.")
+        self.isource_current = EngineeringSpinBox(unit='A', minimum=-3.0, maximum=3.0, default=1e-3, allow_negative=True)
+        self.isource_current.setToolTip("DC current to source through the DUT.\nAccepts: 1mA, -100µA, 0.001, etc.")
         isrc_layout.addRow("Source Current:", self.isource_current)
         self.isource_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
         self.isource_voltage_compliance.setToolTip("Maximum voltage allowed across the DUT.")

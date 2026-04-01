@@ -58,7 +58,6 @@ class TestTabCreation:
         assert hasattr(w, 'res_voltage_compliance')
         assert hasattr(w, 'res_measurement_type')
         assert hasattr(w, 'res_auto_range')
-        assert hasattr(w, 'nplc')
         assert hasattr(w, 'sampling_rate')
         assert hasattr(w, 'live_readout')
         assert hasattr(w, 'canvas')
@@ -67,6 +66,8 @@ class TestTabCreation:
         assert hasattr(w, 'pause_button')
         assert hasattr(w, 'mark_event_button')
         assert hasattr(w, 'status_label')
+        # NPLC is NOT on the tab (it's in Settings dialog)
+        assert not hasattr(w, 'nplc')
 
     def test_voltage_source_tab_has_widgets(self, main_window):
         w = main_window.tab_voltage_source
@@ -75,10 +76,10 @@ class TestTabCreation:
         assert hasattr(w, 'vsource_current_range_auto')
         assert hasattr(w, 'vsource_duration')
         assert hasattr(w, 'vsource_run_continuous')
-        assert hasattr(w, 'nplc')
         assert hasattr(w, 'sampling_rate')
         assert hasattr(w, 'live_readout')
         assert hasattr(w, 'v_plot_var')
+        assert not hasattr(w, 'nplc')
 
     def test_current_source_tab_has_widgets(self, main_window):
         w = main_window.tab_current_source
@@ -87,10 +88,10 @@ class TestTabCreation:
         assert hasattr(w, 'isource_voltage_range_auto')
         assert hasattr(w, 'isource_duration')
         assert hasattr(w, 'isource_run_continuous')
-        assert hasattr(w, 'nplc')
         assert hasattr(w, 'sampling_rate')
         assert hasattr(w, 'live_readout')
         assert hasattr(w, 'i_plot_var')
+        assert not hasattr(w, 'nplc')
 
     def test_four_point_tab_has_widgets(self, main_window):
         w = main_window.tab_four_point
