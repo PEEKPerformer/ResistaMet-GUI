@@ -418,7 +418,7 @@ class MeasurementWorker(QThread):
                         compliance_type = 'Voltage'
                         if hw_compliance:
                             compliance_status = 'V_COMP'
-                        if not np.isfinite(value) or value < 0:
+                        if not np.isfinite(value):
                             value = float('nan')
                             self.status_update.emit(f"Invalid value detected ({reading_str})")
                         data_dict = {'resistance': value}

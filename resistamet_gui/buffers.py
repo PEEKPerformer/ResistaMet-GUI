@@ -48,14 +48,14 @@ class EnhancedDataBuffer:
 
     def add_resistance(self, timestamp: float, resistance: float, compliance: str = 'OK', event: str = "") -> None:
         self.timestamps.append(timestamp)
-        self.resistance.append(resistance if np.isfinite(resistance) and resistance >= 0 else float('nan'))
+        self.resistance.append(resistance if np.isfinite(resistance) else float('nan'))
         self.voltage.append(None)
         self.current.append(None)
         self.events.append(event)
         self.compliance_status.append(compliance)
         if compliance != 'OK':
             self.last_compliance_hit = compliance
-        if np.isfinite(resistance) and resistance >= 0:
+        if np.isfinite(resistance):
             self._update_stat('resistance', resistance)
 
     def add_voltage_current(self, timestamp: float, voltage: float, current: float, compliance: str = 'OK', event: str = "") -> None:

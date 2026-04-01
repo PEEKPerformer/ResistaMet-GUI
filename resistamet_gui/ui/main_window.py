@@ -8,9 +8,9 @@ from PyQt5.QtWidgets import (
     QAction, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QShortcut, QTextEdit,
     QTabWidget, QVBoxLayout, QWidget, QFileDialog, QSplitter, QTableWidget, QTableWidgetItem, QDialog,
-    QSpinBox, QSizePolicy
+    QSpinBox, QSizePolicy, QInputDialog
 )
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon, QFont
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
 from ..buffers import EnhancedDataBuffer
@@ -94,6 +94,16 @@ class ResistanceMeterApp(QMainWindow):
     def create_tab_widget(self, mode: str) -> QWidget:
         tab_widget = QWidget(); tab_layout = QVBoxLayout(tab_widget)
         param_group = QGroupBox("Parameters"); param_layout = QFormLayout(); param_group.setLayout(param_layout)
+
+        # Live numeric readout — large font display of current reading
+        live_readout = QLabel("--")
+        live_readout.setAlignment(Qt.AlignCenter)
+        live_font = QFont(); live_font.setPointSize(28); live_font.setBold(True)
+        live_readout.setFont(live_font)
+        live_readout.setStyleSheet("color: #222; background: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; padding: 4px;")
+        live_readout.setMinimumHeight(50)
+        live_readout.setToolTip("Live measurement reading — updates in real time during measurement")
+
         plot_group = QGroupBox("Real-time Data"); plot_layout = QVBoxLayout()
         canvas = MplCanvas(self, width=8, height=5, dpi=90); toolbar = NavigationToolbar(canvas, self)
         plot_layout.addWidget(toolbar); plot_layout.addWidget(canvas); plot_group.setLayout(plot_layout)
@@ -117,15 +127,17 @@ class ResistanceMeterApp(QMainWindow):
         # Vertical splitter to resize/collapse sections per tab
         tab_splitter = QSplitter(); tab_splitter.setOrientation(Qt.Vertical)
         tab_splitter.addWidget(param_group)
+        tab_splitter.addWidget(live_readout)
         tab_splitter.addWidget(plot_group)
         tab_splitter.addWidget(control_group)
         tab_splitter.setStretchFactor(0, 1)
-        tab_splitter.setStretchFactor(1, 5)
-        tab_splitter.setStretchFactor(2, 1)
+        tab_splitter.setStretchFactor(1, 0)
+        tab_splitter.setStretchFactor(2, 5)
+        tab_splitter.setStretchFactor(3, 1)
         tab_layout.addWidget(tab_splitter)
         tab_widget.mode = mode; tab_widget.param_layout = param_layout; tab_widget.canvas = canvas
         tab_widget.start_button = start_button; tab_widget.stop_button = stop_button; tab_widget.pause_button = pause_button
-        tab_widget.status_label = status_label
+        tab_widget.status_label = status_label; tab_widget.live_readout = live_readout
         tab_widget.param_group = param_group
         tab_widget.plot_group = plot_group
         tab_widget.control_group = control_group
@@ -136,11 +148,32 @@ class ResistanceMeterApp(QMainWindow):
 
     def create_resistance_tab(self):
         widget = self.create_tab_widget('resistance'); layout = widget.param_layout
-        widget.res_test_current = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=3.0, singleStep=1e-3, suffix=" A"); layout.addRow("Test Current:", widget.res_test_current)
-        widget.res_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V"); layout.addRow("Voltage Compliance:", widget.res_voltage_compliance)
-        widget.res_measurement_type = QComboBox(); widget.res_measurement_type.addItems(["2-wire", "4-wire"]); layout.addRow("Measurement Type:", widget.res_measurement_type)
-        widget.res_auto_range = QCheckBox("Auto Range Resistance"); layout.addRow(widget.res_auto_range)
-        widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)"); widget.mark_event_button.setEnabled(False); layout.addRow(widget.mark_event_button)
+        widget.res_test_current = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=3.0, singleStep=1e-3, suffix=" A")
+        widget.res_test_current.setToolTip("DC current sourced through the DUT to measure resistance.\nHigher currents give better signal-to-noise but may heat the sample.\nTypical: 1 mA for metals, 1 µA for semiconductors.")
+        layout.addRow("Test Current:", widget.res_test_current)
+        widget.res_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
+        widget.res_voltage_compliance.setToolTip("Maximum voltage the instrument will apply across the DUT.\nIf the DUT resistance is too high, voltage will be clamped here\nand a compliance warning will appear. Protects sensitive samples.")
+        layout.addRow("Voltage Compliance:", widget.res_voltage_compliance)
+        widget.res_measurement_type = QComboBox(); widget.res_measurement_type.addItems(["2-wire", "4-wire"])
+        widget.res_measurement_type.setToolTip("2-wire: Simple connection, includes lead resistance.\n4-wire (Kelvin): Separate sense leads eliminate lead resistance.\nUse 4-wire for low-resistance DUTs (<10 Ω) or precision work.")
+        layout.addRow("Measurement Type:", widget.res_measurement_type)
+        widget.res_auto_range = QCheckBox("Auto Range Resistance")
+        widget.res_auto_range.setToolTip("When checked, the instrument automatically selects the best\nmeasurement range for the DUT resistance. Disable for faster\nmeasurements at a fixed range.")
+        layout.addRow(widget.res_auto_range)
+        # NPLC and sampling rate (also in Settings dialog, but useful here for quick access)
+        widget.nplc = QDoubleSpinBox(decimals=2, minimum=0.01, maximum=10.0, singleStep=0.1)
+        widget.nplc.setToolTip("Number of Power Line Cycles for integration.\nHigher = slower but less noise. 1 PLC = 16.7 ms at 60 Hz.\n0.01: fastest, noisy | 1: balanced | 10: highest precision")
+        layout.addRow("NPLC:", widget.nplc)
+        widget.sampling_rate = QDoubleSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
+        widget.sampling_rate.setToolTip("How many readings per second to take.\nLimited by NPLC — high NPLC with high rate will bottleneck\nat the instrument's actual measurement speed.")
+        layout.addRow("Sampling Rate:", widget.sampling_rate)
+        widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
+        widget.mark_event_button.setToolTip("Insert a named event marker into the data stream (keyboard shortcut: M).\nUseful for annotating probe moves, temperature changes, etc.")
+        widget.mark_event_button.setEnabled(False); layout.addRow(widget.mark_event_button)
+        test_conn_button = QPushButton("Test Connection")
+        test_conn_button.setToolTip("Check if the instrument is reachable at the configured GPIB address\nbefore starting a measurement.")
+        test_conn_button.clicked.connect(self.test_instrument_connection)
+        layout.addRow(test_conn_button)
         widget.start_button.clicked.connect(lambda: self.start_measurement('resistance'))
         widget.stop_button.clicked.connect(self.stop_current_measurement)
         widget.mark_event_button.clicked.connect(self.mark_event_shortcut)
@@ -149,12 +182,42 @@ class ResistanceMeterApp(QMainWindow):
 
     def create_voltage_source_tab(self):
         widget = self.create_tab_widget('source_v'); layout = widget.param_layout
-        widget.vsource_voltage = QDoubleSpinBox(decimals=3, minimum=-200.0, maximum=200.0, singleStep=0.1, suffix=" V"); layout.addRow("Source Voltage:", widget.vsource_voltage)
-        widget.vsource_current_compliance = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=3.0, singleStep=1e-3, suffix=" A"); layout.addRow("Current Compliance:", widget.vsource_current_compliance)
-        widget.vsource_current_range_auto = QCheckBox("Auto Range Current Measurement"); layout.addRow(widget.vsource_current_range_auto)
-        widget.vsource_duration = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h"); layout.addRow("Duration (hours):", widget.vsource_duration)
-        widget.v_plot_var = QComboBox(); widget.v_plot_var.addItems(["current", "voltage", "resistance"]); layout.addRow("Plot Variable:", widget.v_plot_var)
-        widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)"); widget.mark_event_button.setEnabled(False); layout.addRow(widget.mark_event_button)
+        widget.vsource_voltage = QDoubleSpinBox(decimals=3, minimum=-200.0, maximum=200.0, singleStep=0.1, suffix=" V")
+        widget.vsource_voltage.setToolTip("DC voltage applied to the DUT.\nNegative values reverse polarity. The instrument will source\nthis exact voltage and measure the resulting current.")
+        layout.addRow("Source Voltage:", widget.vsource_voltage)
+        widget.vsource_current_compliance = QDoubleSpinBox(decimals=6, minimum=1e-7, maximum=3.0, singleStep=1e-3, suffix=" A")
+        widget.vsource_current_compliance.setToolTip("Maximum current allowed to flow through the DUT.\nIf the DUT draws more than this, the instrument limits current\nand reports compliance. Protects the DUT from overcurrent.")
+        layout.addRow("Current Compliance:", widget.vsource_current_compliance)
+        widget.vsource_current_range_auto = QCheckBox("Auto Range Current Measurement")
+        widget.vsource_current_range_auto.setToolTip("Automatically select the best current measurement range.\nDisable for faster measurements when you know the expected range.")
+        layout.addRow(widget.vsource_current_range_auto)
+        # Duration with run-until-stopped checkbox
+        dur_layout = QHBoxLayout()
+        widget.vsource_duration = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
+        widget.vsource_duration.setToolTip("How long to run the measurement.\nSet a specific duration, or check 'Run until stopped'.")
+        widget.vsource_run_continuous = QCheckBox("Run until stopped")
+        widget.vsource_run_continuous.setToolTip("When checked, measurement runs indefinitely until you press Stop.")
+        widget.vsource_run_continuous.setChecked(True)
+        widget.vsource_duration.setEnabled(False)
+        widget.vsource_run_continuous.toggled.connect(lambda c: widget.vsource_duration.setEnabled(not c))
+        dur_layout.addWidget(widget.vsource_duration); dur_layout.addWidget(widget.vsource_run_continuous)
+        layout.addRow("Duration:", dur_layout)
+        widget.nplc = QDoubleSpinBox(decimals=2, minimum=0.01, maximum=10.0, singleStep=0.1)
+        widget.nplc.setToolTip("Number of Power Line Cycles for integration.\nHigher = slower but less noise. 1 PLC = 16.7 ms at 60 Hz.")
+        layout.addRow("NPLC:", widget.nplc)
+        widget.sampling_rate = QDoubleSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
+        widget.sampling_rate.setToolTip("How many readings per second to take.")
+        layout.addRow("Sampling Rate:", widget.sampling_rate)
+        widget.v_plot_var = QComboBox(); widget.v_plot_var.addItems(["current", "voltage", "resistance"])
+        widget.v_plot_var.setToolTip("Which measurement variable to plot in real time.")
+        layout.addRow("Plot Variable:", widget.v_plot_var)
+        widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
+        widget.mark_event_button.setToolTip("Insert a named event marker into the data stream (keyboard shortcut: M).")
+        widget.mark_event_button.setEnabled(False); layout.addRow(widget.mark_event_button)
+        test_conn_button = QPushButton("Test Connection")
+        test_conn_button.setToolTip("Check if the instrument is reachable before starting.")
+        test_conn_button.clicked.connect(self.test_instrument_connection)
+        layout.addRow(test_conn_button)
         widget.start_button.clicked.connect(lambda: self.start_measurement('source_v'))
         widget.stop_button.clicked.connect(self.stop_current_measurement)
         widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
@@ -164,12 +227,41 @@ class ResistanceMeterApp(QMainWindow):
 
     def create_current_source_tab(self):
         widget = self.create_tab_widget('source_i'); layout = widget.param_layout
-        widget.isource_current = QDoubleSpinBox(decimals=6, minimum=-3.0, maximum=3.0, singleStep=1e-3, suffix=" A"); layout.addRow("Source Current:", widget.isource_current)
-        widget.isource_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V"); layout.addRow("Voltage Compliance:", widget.isource_voltage_compliance)
-        widget.isource_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement"); layout.addRow(widget.isource_voltage_range_auto)
-        widget.isource_duration = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h"); layout.addRow("Duration (hours):", widget.isource_duration)
-        widget.i_plot_var = QComboBox(); widget.i_plot_var.addItems(["voltage", "current", "resistance"]); layout.addRow("Plot Variable:", widget.i_plot_var)
-        widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)"); widget.mark_event_button.setEnabled(False); layout.addRow(widget.mark_event_button)
+        widget.isource_current = QDoubleSpinBox(decimals=6, minimum=-3.0, maximum=3.0, singleStep=1e-3, suffix=" A")
+        widget.isource_current.setToolTip("DC current sourced through the DUT.\nNegative values reverse polarity. The instrument measures\nthe resulting voltage across the DUT.")
+        layout.addRow("Source Current:", widget.isource_current)
+        widget.isource_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
+        widget.isource_voltage_compliance.setToolTip("Maximum voltage the instrument will apply.\nIf the DUT resistance causes voltage to exceed this,\nthe instrument clamps and reports compliance.")
+        layout.addRow("Voltage Compliance:", widget.isource_voltage_compliance)
+        widget.isource_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
+        widget.isource_voltage_range_auto.setToolTip("Automatically select the best voltage measurement range.\nDisable for faster measurements at a fixed range.")
+        layout.addRow(widget.isource_voltage_range_auto)
+        dur_layout = QHBoxLayout()
+        widget.isource_duration = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
+        widget.isource_duration.setToolTip("How long to run the measurement.\nSet a specific duration, or check 'Run until stopped'.")
+        widget.isource_run_continuous = QCheckBox("Run until stopped")
+        widget.isource_run_continuous.setToolTip("When checked, measurement runs indefinitely until you press Stop.")
+        widget.isource_run_continuous.setChecked(True)
+        widget.isource_duration.setEnabled(False)
+        widget.isource_run_continuous.toggled.connect(lambda c: widget.isource_duration.setEnabled(not c))
+        dur_layout.addWidget(widget.isource_duration); dur_layout.addWidget(widget.isource_run_continuous)
+        layout.addRow("Duration:", dur_layout)
+        widget.nplc = QDoubleSpinBox(decimals=2, minimum=0.01, maximum=10.0, singleStep=0.1)
+        widget.nplc.setToolTip("Number of Power Line Cycles for integration.\nHigher = slower but less noise. 1 PLC = 16.7 ms at 60 Hz.")
+        layout.addRow("NPLC:", widget.nplc)
+        widget.sampling_rate = QDoubleSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
+        widget.sampling_rate.setToolTip("How many readings per second to take.")
+        layout.addRow("Sampling Rate:", widget.sampling_rate)
+        widget.i_plot_var = QComboBox(); widget.i_plot_var.addItems(["voltage", "current", "resistance"])
+        widget.i_plot_var.setToolTip("Which measurement variable to plot in real time.")
+        layout.addRow("Plot Variable:", widget.i_plot_var)
+        widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
+        widget.mark_event_button.setToolTip("Insert a named event marker into the data stream (keyboard shortcut: M).")
+        widget.mark_event_button.setEnabled(False); layout.addRow(widget.mark_event_button)
+        test_conn_button = QPushButton("Test Connection")
+        test_conn_button.setToolTip("Check if the instrument is reachable before starting.")
+        test_conn_button.clicked.connect(self.test_instrument_connection)
+        layout.addRow(test_conn_button)
         widget.start_button.clicked.connect(lambda: self.start_measurement('source_i'))
         widget.stop_button.clicked.connect(self.stop_current_measurement)
         widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
@@ -227,7 +319,7 @@ class ResistanceMeterApp(QMainWindow):
         toolbar = NavigationToolbar(canvas, self)
         plot_layout.addWidget(toolbar)
         plot_layout.addWidget(canvas)
-        plot_group.setVisible(False)  # Hidden by default
+        plot_group.setVisible(True)  # Visible by default (matches fpp_show_plot checkbox)
         
         # BOTTOM: Controls group (standard approach)
         control_group = QGroupBox("Control")
@@ -285,30 +377,48 @@ class ResistanceMeterApp(QMainWindow):
         
         # Instrument parameters
         main_container.fpp_current = QDoubleSpinBox(decimals=6, minimum=-3.0, maximum=3.0, singleStep=1e-3, suffix=" A")
+        main_container.fpp_current.setToolTip("DC current sourced through the outer two probe tips.\nThe instrument measures voltage across the inner two tips.\nTypical: 1 mA for metals, 100 µA for thin films.")
         layout.addRow("Source Current:", main_container.fpp_current)
         main_container.fpp_voltage_compliance = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
+        main_container.fpp_voltage_compliance.setToolTip("Maximum voltage the instrument will apply.\nProtects samples from overvoltage damage.")
         layout.addRow("Voltage Compliance:", main_container.fpp_voltage_compliance)
         main_container.fpp_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
+        main_container.fpp_voltage_range_auto.setToolTip("Automatically select the best voltage measurement range.")
         # Probe geometry & calc params
         main_container.fpp_spacing_cm = QDoubleSpinBox(decimals=5, minimum=0.001, maximum=5.0, singleStep=0.001, suffix=" cm")
+        main_container.fpp_spacing_cm.setToolTip("Distance between adjacent probe tips (s).\nFor the SP4-40085TBQ probe head: s = 0.1016 cm (40 mil).\nUsed in resistivity calculations for the semi-infinite model.")
         layout.addRow("Probe Spacing s:", main_container.fpp_spacing_cm)
         main_container.fpp_thickness_um = QDoubleSpinBox(decimals=3, minimum=0.0, maximum=5000.0, singleStep=0.1, suffix=" µm")
+        main_container.fpp_thickness_um.setToolTip("Film thickness for resistivity calculation.\nSet to 0 if unknown — sheet resistance will still be valid.\nρ = K · t · (V/I) for thin film models.")
         layout.addRow("Thickness t (optional):", main_container.fpp_thickness_um)
         main_container.fpp_alpha = QDoubleSpinBox(decimals=4, minimum=0.0, maximum=10.0, singleStep=0.01)
+        main_container.fpp_alpha.setToolTip("Finite sample size correction factor.\nAccounts for edge effects when the sample is not much\nlarger than the probe spacing. Default: 1.0 (no correction).")
         main_container.fpp_k_factor = QDoubleSpinBox(decimals=4, minimum=0.1, maximum=50.0, singleStep=0.001)
+        main_container.fpp_k_factor.setToolTip("Geometric correction factor (K).\n4.532 is the standard value for a linear 4-point probe\non an infinite thin film (F.M. Smits, 1958).")
         main_container.fpp_model = QComboBox()
         main_container.fpp_model.addItems(["thin_film", "semi_infinite", "finite_thin", "finite_alpha"])
+        main_container.fpp_model.setToolTip("Calculation model:\n• thin_film: Rs = K·α·(V/I), ρ = K·α·t·(V/I)\n• semi_infinite: ρ = 2π·s·(V/I) — for bulk samples\n• finite_thin: like thin_film but without α correction")
         layout.addRow("Model:", main_container.fpp_model)
         # Samples to acquire
         main_container.fpp_samples = QSpinBox(); main_container.fpp_samples.setRange(0, 1000000); main_container.fpp_samples.setSingleStep(10)
+        main_container.fpp_samples.setToolTip("Number of readings to take before stopping.\n0 = continuous (run until you press Stop).")
         layout.addRow("Samples (0=cont.):", main_container.fpp_samples)
+        # NPLC and sampling rate
+        main_container.nplc = QDoubleSpinBox(decimals=2, minimum=0.01, maximum=10.0, singleStep=0.1)
+        main_container.nplc.setToolTip("Number of Power Line Cycles for integration.\nHigher = slower but less noise. 1 PLC = 16.7 ms at 60 Hz.")
+        layout.addRow("NPLC:", main_container.nplc)
+        main_container.sampling_rate = QDoubleSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
+        main_container.sampling_rate.setToolTip("How many readings per second to take.")
+        layout.addRow("Sampling Rate:", main_container.sampling_rate)
         # Plot variable and plot visibility
         main_container.fpp_plot_var = QComboBox()
         main_container.fpp_plot_var.addItems(["voltage", "current", "V/I", "sheet_Rs", "rho"])
+        main_container.fpp_plot_var.setToolTip("Which derived quantity to plot in real time.")
         layout.addRow("Plot Variable:", main_container.fpp_plot_var)
         main_container.fpp_show_plot = QCheckBox("Show Plot")
-        main_container.fpp_show_plot.setChecked(False)
-        # The plot section will be hidden by default; checkbox toggles it
+        main_container.fpp_show_plot.setChecked(True)
+        main_container.fpp_show_plot.setToolTip("Toggle the real-time plot display below the table.")
+        # Plot visible by default now
         main_container.fpp_show_plot.toggled.connect(lambda v: plot_group.setVisible(v))
         layout.addRow(main_container.fpp_show_plot)
 
@@ -330,12 +440,18 @@ class ResistanceMeterApp(QMainWindow):
         
         # Mark event
         main_container.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
+        main_container.mark_event_button.setToolTip("Insert a named event marker into the data stream (keyboard shortcut: M).")
         main_container.mark_event_button.setEnabled(False)
         layout.addRow(main_container.mark_event_button)
         # Quick report button
         main_container.report_button = QPushButton(QIcon.fromTheme("document-save"), "Export Summary...")
+        main_container.report_button.setToolTip("Export a CSV summary of all 4PP measurements\nincluding mean, standard deviation, and RSD.")
         main_container.report_button.clicked.connect(self.export_fpp_summary)
         layout.addRow(main_container.report_button)
+        test_conn_button = QPushButton("Test Connection")
+        test_conn_button.setToolTip("Check if the instrument is reachable before starting.")
+        test_conn_button.clicked.connect(self.test_instrument_connection)
+        layout.addRow(test_conn_button)
         
         # CREATE SUMMARY AND TABLE IN RIGHT PANEL
         main_container.fpp_summary = QGroupBox("Summary Stats")
@@ -747,17 +863,27 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_resistance.res_voltage_compliance.setValue(m_cfg['res_voltage_compliance'])
         self.tab_resistance.res_measurement_type.setCurrentText(m_cfg['res_measurement_type'])
         self.tab_resistance.res_auto_range.setChecked(m_cfg['res_auto_range'])
+        self.tab_resistance.nplc.setValue(m_cfg['nplc'])
+        self.tab_resistance.sampling_rate.setValue(m_cfg['sampling_rate'])
         self.tab_resistance.canvas.set_plot_properties('Elapsed Time (s)', 'Resistance (Ohms)', 'Resistance Measurement', d_cfg['plot_color_r'])
         self.tab_voltage_source.vsource_voltage.setValue(m_cfg['vsource_voltage'])
         self.tab_voltage_source.vsource_current_compliance.setValue(m_cfg['vsource_current_compliance'])
         self.tab_voltage_source.vsource_current_range_auto.setChecked(m_cfg['vsource_current_range_auto'])
-        self.tab_voltage_source.vsource_duration.setValue(m_cfg.get('vsource_duration_hours', 0.0))
+        dur_v = m_cfg.get('vsource_duration_hours', 0.0)
+        self.tab_voltage_source.vsource_duration.setValue(dur_v)
+        self.tab_voltage_source.vsource_run_continuous.setChecked(dur_v == 0.0)
+        self.tab_voltage_source.nplc.setValue(m_cfg['nplc'])
+        self.tab_voltage_source.sampling_rate.setValue(m_cfg['sampling_rate'])
         self.tab_voltage_source.v_plot_var.setCurrentText('current')
         self.tab_voltage_source.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Current (A)', 'Voltage Source Output', d_cfg['plot_color_v'])
         self.tab_current_source.isource_current.setValue(m_cfg['isource_current'])
         self.tab_current_source.isource_voltage_compliance.setValue(m_cfg['isource_voltage_compliance'])
         self.tab_current_source.isource_voltage_range_auto.setChecked(m_cfg['isource_voltage_range_auto'])
-        self.tab_current_source.isource_duration.setValue(m_cfg.get('isource_duration_hours', 0.0))
+        dur_i = m_cfg.get('isource_duration_hours', 0.0)
+        self.tab_current_source.isource_duration.setValue(dur_i)
+        self.tab_current_source.isource_run_continuous.setChecked(dur_i == 0.0)
+        self.tab_current_source.nplc.setValue(m_cfg['nplc'])
+        self.tab_current_source.sampling_rate.setValue(m_cfg['sampling_rate'])
         self.tab_current_source.i_plot_var.setCurrentText('voltage')
         self.tab_current_source.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Voltage (V)', 'Current Source Output', d_cfg['plot_color_i'])
         # Four-Point Probe
@@ -774,6 +900,8 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_four_point.fpp_model.setCurrentText(m_cfg.get('fpp_model', 'thin_film'))
         self.tab_four_point.fpp_k_factor.setValue(m_cfg.get('fpp_k_factor', 4.532))
         self.tab_four_point.fpp_samples.setValue(int(m_cfg.get('fpp_samples', 0)))
+        self.tab_four_point.nplc.setValue(m_cfg['nplc'])
+        self.tab_four_point.sampling_rate.setValue(m_cfg['sampling_rate'])
         self.tab_four_point.fpp_plot_var.setCurrentText('sheet_Rs')
         self.tab_four_point.canvas.set_plot_properties('Elapsed Time (s)', 'Sheet Resistance (Ω/□)', '4-Point Probe', d_cfg['plot_color_r'])
         buffer_size = d_cfg.get('buffer_size')
@@ -854,8 +982,20 @@ class ResistanceMeterApp(QMainWindow):
                 m_cfg['fpp_samples'] = int(widget.fpp_samples.value())
         except AttributeError as e:
             raise ValueError(f"UI Widgets not found for mode {mode}: {e}")
-        m_cfg['sampling_rate'] = self.user_settings['measurement']['sampling_rate']
-        m_cfg['nplc'] = self.user_settings['measurement']['nplc']
+        # Read NPLC and sampling rate from the tab (overrides settings dialog)
+        if hasattr(widget, 'nplc'):
+            m_cfg['nplc'] = widget.nplc.value()
+        else:
+            m_cfg['nplc'] = self.user_settings['measurement']['nplc']
+        if hasattr(widget, 'sampling_rate'):
+            m_cfg['sampling_rate'] = widget.sampling_rate.value()
+        else:
+            m_cfg['sampling_rate'] = self.user_settings['measurement']['sampling_rate']
+        # Handle run-until-stopped checkboxes (duration=0 means infinite)
+        if mode == 'source_v' and hasattr(widget, 'vsource_run_continuous') and widget.vsource_run_continuous.isChecked():
+            m_cfg['vsource_duration_hours'] = 0.0
+        if mode == 'source_i' and hasattr(widget, 'isource_run_continuous') and widget.isource_run_continuous.isChecked():
+            m_cfg['isource_duration_hours'] = 0.0
         m_cfg['settling_time'] = self.user_settings['measurement']['settling_time']
         m_cfg['gpib_address'] = self.user_settings['measurement']['gpib_address']
         return effective_settings
@@ -942,13 +1082,17 @@ class ResistanceMeterApp(QMainWindow):
 
     def mark_event_shortcut(self):
         if self.measurement_running and self.measurement_worker:
-            self.measurement_worker.mark_event("MARK")
-            self.log_status("⭐ Event marked.", color="purple")
-            widget = self.get_widget_for_mode(self.active_mode)
-            if widget and hasattr(widget, 'mark_event_button'):
-                original_style = widget.mark_event_button.styleSheet()
-                widget.mark_event_button.setStyleSheet("background-color: yellow;")
-                QTimer.singleShot(500, lambda: widget.mark_event_button.setStyleSheet(original_style))
+            text, ok = QInputDialog.getText(self, "Mark Event",
+                                            "Event label:", QLineEdit.Normal, "MARK")
+            if ok and text.strip():
+                label = text.strip()
+                self.measurement_worker.mark_event(label)
+                self.log_status(f"⭐ Event marked: {label}", color="purple")
+                widget = self.get_widget_for_mode(self.active_mode)
+                if widget and hasattr(widget, 'mark_event_button'):
+                    original_style = widget.mark_event_button.styleSheet()
+                    widget.mark_event_button.setStyleSheet("background-color: yellow;")
+                    QTimer.singleShot(500, lambda: widget.mark_event_button.setStyleSheet(original_style))
 
     def update_data(self, timestamp: float, value: Dict[str, float], compliance_status: str, event: str):
         if not self.measurement_running or self.active_mode is None:
@@ -958,6 +1102,27 @@ class ResistanceMeterApp(QMainWindow):
             buffer.add_resistance(timestamp, value.get('resistance', float('nan')), compliance_status)
         else:
             buffer.add_voltage_current(timestamp, value.get('voltage', float('nan')), value.get('current', float('nan')), compliance_status)
+
+        # Update live readout
+        widget = self.get_widget_for_mode(self.active_mode)
+        if widget and hasattr(widget, 'live_readout'):
+            if self.active_mode == 'resistance':
+                r = value.get('resistance', float('nan'))
+                if np.isfinite(r):
+                    widget.live_readout.setText(f"{r:.6g} \u03a9")
+                else:
+                    widget.live_readout.setText("-- \u03a9")
+            elif self.active_mode in ('source_v', 'source_i', 'four_point'):
+                v = value.get('voltage', float('nan'))
+                i = value.get('current', float('nan'))
+                parts = []
+                if np.isfinite(v):
+                    parts.append(f"V: {v:.5g} V")
+                if np.isfinite(i):
+                    parts.append(f"I: {i:.5g} A")
+                if np.isfinite(v) and np.isfinite(i) and i != 0:
+                    parts.append(f"R: {v/i:.5g} \u03a9")
+                widget.live_readout.setText("   ".join(parts) if parts else "--")
 
         # Append a row to 4PP table and update stats live
         if self.active_mode == 'four_point':
@@ -1129,8 +1294,14 @@ class ResistanceMeterApp(QMainWindow):
         if widget:
             widget.status_label.setText(f"Status: {compliance_type.upper()} COMPLIANCE")
             widget.status_label.setStyleSheet("font-weight: bold; color: red;")
+            # Flash the live readout red briefly
+            if hasattr(widget, 'live_readout'):
+                widget.live_readout.setStyleSheet("color: red; background: #ffe0e0; border: 2px solid red; border-radius: 4px; padding: 4px;")
+                QTimer.singleShot(2000, lambda: widget.live_readout.setStyleSheet(
+                    "color: #222; background: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; padding: 4px;"))
         self.log_status(f"⚠️ {compliance_type} Compliance Hit during {mode} measurement!", color="orange")
-        QMessageBox.warning(self, f"{compliance_type} Compliance Warning", f"The {compliance_type.lower()} compliance limit was reached during the {mode} measurement.")
+        # Non-blocking: show in status bar instead of modal popup
+        self.statusBar().showMessage(f"⚠️ {compliance_type} COMPLIANCE — {mode} measurement", 10000)
 
     def on_worker_finished(self):
         self.log_status(f"Measurement worker thread ({self.active_mode}) finished.", color="grey")
@@ -1155,7 +1326,12 @@ class ResistanceMeterApp(QMainWindow):
                 widget.mark_event_button.setEnabled(False)
         self.set_all_controls_enabled(True)
         self.shortcut_mark.setEnabled(False)
-        self.statusBar().showMessage("Ready", 0); self.log_status("Measurement stopped. UI controls re-enabled.")
+        # Show last saved file path in status bar
+        if self.measurement_worker and hasattr(self.measurement_worker, 'filename') and self.measurement_worker.filename:
+            self.statusBar().showMessage(f"Data saved: {self.measurement_worker.filename}")
+        else:
+            self.statusBar().showMessage("Ready", 0)
+        self.log_status("Measurement stopped. UI controls re-enabled.")
 
     def set_controls_for_mode(self, mode: str, running: bool):
         widget = self.get_widget_for_mode(mode)
@@ -1189,13 +1365,11 @@ class ResistanceMeterApp(QMainWindow):
 
     def handle_tab_change(self, index):
         if self.measurement_running:
+            # Allow viewing other tabs (read-only) during measurement
+            # The active mode's controls are already locked by set_all_controls_enabled
             current_widget = self.main_tabs.widget(index)
-            if not hasattr(current_widget, 'mode') or current_widget.mode != self.active_mode:
-                QMessageBox.warning(self, "Measurement Active", f"Cannot switch tabs while a measurement ({self.active_mode}) is running. Please stop the current measurement first.")
-                for i in range(self.main_tabs.count()):
-                    widget = self.main_tabs.widget(i)
-                    if hasattr(widget, 'mode') and widget.mode == self.active_mode:
-                        self.main_tabs.blockSignals(True); self.main_tabs.setCurrentIndex(i); self.main_tabs.blockSignals(False); break
+            if hasattr(current_widget, 'mode') and current_widget.mode != self.active_mode:
+                self.statusBar().showMessage(f"Viewing {current_widget.mode} tab (read-only) — {self.active_mode} measurement running", 3000)
 
     def export_fpp_summary(self):
         # Export summary for 4-point probe using current buffer and settings
@@ -1372,19 +1546,55 @@ class ResistanceMeterApp(QMainWindow):
 
     def show_about(self):
         about_text = f"""
-        <h2>ResistaMet GUI (Tabbed)</h2>
+        <h2>ResistaMet GUI</h2>
         <p>Version: {__version__}</p>
-        <p>Original Author: Brenden Ferland</p>
+        <p>Author: Brenden Ferland</p>
         <hr>
-        <p>A graphical interface for controlling Keithley SourceMeasure Units, providing modes for:</p>
+        <p>A graphical interface for controlling Keithley 2400/2450 SourceMeter units, providing modes for:</p>
         <ul>
             <li>Resistance Measurement (Source Current, Measure Resistance)</li>
             <li>Voltage Source (Source Voltage, Measure Current)</li>
             <li>Current Source (Source Current, Measure Voltage)</li>
+            <li>Four-Point Probe (Sheet Resistance, Resistivity, Conductivity)</li>
         </ul>
-        <p>Supports real-time plotting, data logging, user profiles, and compliance monitoring.</p>
+        <p>Features: real-time plotting, dual-format data export (JSON + CSV),
+        user profiles, compliance monitoring, and event markers.</p>
         """
         QMessageBox.about(self, f"About ResistaMet GUI v{__version__}", about_text)
+
+    def test_instrument_connection(self):
+        """Quick connection test — queries *IDN? at the configured GPIB address."""
+        if not self.user_settings:
+            QMessageBox.warning(self, "No Settings", "Please select a user first.")
+            return
+        addr = self.user_settings['measurement']['gpib_address']
+        self.statusBar().showMessage(f"Testing connection to {addr}...")
+        try:
+            import pyvisa
+            rm = pyvisa.ResourceManager()
+            resources = rm.list_resources()
+            if addr not in resources:
+                rm.close()
+                QMessageBox.warning(self, "Connection Failed",
+                                    f"Instrument at '{addr}' not found.\n\nAvailable: {', '.join(resources) if resources else 'none'}")
+                self.statusBar().showMessage("Connection failed", 5000)
+                return
+            dev = rm.open_resource(addr)
+            dev.timeout = 5000
+            try:
+                dev.read_termination = '\n'
+                dev.write_termination = '\n'
+            except Exception:
+                pass
+            idn = dev.query("*IDN?").strip()
+            dev.close()
+            rm.close()
+            QMessageBox.information(self, "Connection OK", f"Connected to:\n{idn}")
+            self.log_status(f"Connection test OK: {idn}", color="darkGreen")
+            self.statusBar().showMessage(f"Connected: {idn}", 5000)
+        except Exception as e:
+            QMessageBox.critical(self, "Connection Failed", f"Error connecting to {addr}:\n{str(e)}")
+            self.statusBar().showMessage("Connection failed", 5000)
 
     def showEvent(self, event):
         """Override to handle post-show initialization - critical for Windows splitter sizing"""
