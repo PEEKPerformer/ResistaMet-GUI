@@ -312,6 +312,15 @@ class ResistanceMeterApp(QMainWindow):
         top_splitter.setStretchFactor(0, 2)  # Parameters: moderate stretch (40%)
         top_splitter.setStretchFactor(1, 3)  # Right panel: higher stretch (60%)
         
+        # Live numeric readout for 4PP
+        live_readout = QLabel("--")
+        live_readout.setAlignment(Qt.AlignCenter)
+        live_font = QFont(); live_font.setPointSize(28); live_font.setBold(True)
+        live_readout.setFont(live_font)
+        live_readout.setStyleSheet("color: #222; background: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; padding: 4px;")
+        live_readout.setMinimumHeight(50)
+        live_readout.setToolTip("Live measurement reading — updates in real time during measurement")
+
         # MIDDLE: Plot group (standard approach, initially hidden)
         plot_group = QGroupBox("Real-time Data")
         plot_layout = QVBoxLayout(plot_group)
@@ -353,7 +362,8 @@ class ResistanceMeterApp(QMainWindow):
         
         # Assemble main layout with proper stretch factors
         main_layout.addWidget(top_splitter, 10)  # Top gets most space
-        main_layout.addWidget(plot_group, 5)     # Plot when visible  
+        main_layout.addWidget(live_readout, 0)   # Live readout (compact)
+        main_layout.addWidget(plot_group, 5)     # Plot when visible
         main_layout.addWidget(control_group, 1)  # Controls minimal height
         
         # Store all references needed by other methods (maintain exact compatibility)
@@ -361,8 +371,9 @@ class ResistanceMeterApp(QMainWindow):
         main_container.canvas = canvas
         main_container.start_button = start_button
         main_container.stop_button = stop_button
-        main_container.pause_button = pause_button 
+        main_container.pause_button = pause_button
         main_container.status_label = status_label
+        main_container.live_readout = live_readout
         main_container.param_group = param_group
         main_container.plot_group = plot_group
         main_container.control_group = control_group
@@ -829,6 +840,11 @@ class ResistanceMeterApp(QMainWindow):
                 if 'fpp_alpha' in prof: w.fpp_alpha.setValue(float(prof['fpp_alpha']))
                 if 'fpp_k_factor' in prof: w.fpp_k_factor.setValue(float(prof['fpp_k_factor']))
                 if 'fpp_model' in prof: w.fpp_model.setCurrentText(str(prof['fpp_model']))
+            # Load NPLC and sampling rate if present (applies to all modes)
+            if 'nplc' in prof and hasattr(w, 'nplc'):
+                w.nplc.setValue(float(prof['nplc']))
+            if 'sampling_rate' in prof and hasattr(w, 'sampling_rate'):
+                w.sampling_rate.setValue(float(prof['sampling_rate']))
             self.log_status(f"Profile loaded: {filename}")
         except Exception as e:
             QMessageBox.critical(self, "Load Profile", f"Failed to load profile: {e}")
@@ -1311,6 +1327,10 @@ class ResistanceMeterApp(QMainWindow):
         if not self.active_mode:
             return
         finished_mode = self.active_mode
+        # Capture filename before clearing the worker reference
+        saved_file = None
+        if self.measurement_worker and hasattr(self.measurement_worker, 'filename'):
+            saved_file = self.measurement_worker.filename
         self.measurement_running = False
         self.active_mode = None
         self.measurement_worker = None
@@ -1327,8 +1347,8 @@ class ResistanceMeterApp(QMainWindow):
         self.set_all_controls_enabled(True)
         self.shortcut_mark.setEnabled(False)
         # Show last saved file path in status bar
-        if self.measurement_worker and hasattr(self.measurement_worker, 'filename') and self.measurement_worker.filename:
-            self.statusBar().showMessage(f"Data saved: {self.measurement_worker.filename}")
+        if saved_file:
+            self.statusBar().showMessage(f"Data saved: {saved_file}")
         else:
             self.statusBar().showMessage("Ready", 0)
         self.log_status("Measurement stopped. UI controls re-enabled.")
