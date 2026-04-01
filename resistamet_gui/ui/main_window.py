@@ -328,7 +328,7 @@ class ResistanceMeterApp(QMainWindow):
         toolbar = NavigationToolbar(canvas, self)
         plot_layout.addWidget(toolbar)
         plot_layout.addWidget(canvas)
-        plot_group.setVisible(True)  # Visible by default (matches fpp_show_plot checkbox)
+        plot_group.setVisible(False)  # Hidden by default — 4PP readings should be flat
         
         # BOTTOM: Controls group (standard approach)
         control_group = QGroupBox("Control")
@@ -427,9 +427,8 @@ class ResistanceMeterApp(QMainWindow):
         main_container.fpp_plot_var.setToolTip("Which derived quantity to plot in real time.")
         layout.addRow("Plot Variable:", main_container.fpp_plot_var)
         main_container.fpp_show_plot = QCheckBox("Show Plot")
-        main_container.fpp_show_plot.setChecked(True)
-        main_container.fpp_show_plot.setToolTip("Toggle the real-time plot display below the table.")
-        # Plot visible by default now
+        main_container.fpp_show_plot.setChecked(False)
+        main_container.fpp_show_plot.setToolTip("Toggle the real-time plot display.\nUsually not needed for 4PP since readings should be stable.")
         main_container.fpp_show_plot.toggled.connect(lambda v: plot_group.setVisible(v))
         layout.addRow(main_container.fpp_show_plot)
 
