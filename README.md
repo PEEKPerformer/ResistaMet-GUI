@@ -1,391 +1,203 @@
 # ResistaMet GUI
 
-A comprehensive graphical interface for electrical measurements using Keithley sourcemeters with advanced four-point probe capabilities.
+Open-source graphical interface for electrical characterization using Keithley 2400/2450 sourcemeters, with advanced four-point probe analysis.
 
-**Version:** 1.2.0
+**Version:** 1.3.0
 **Author:** Brenden Ferland
-**Based on:** ResistaMet v0.9.2
 
 ![ResistaMet GUI Screenshot](resistamet-gui-screenshot.PNG)
 
 ## Overview
 
-ResistaMet GUI is a powerful PyQt5-based application for electrical characterization using Keithley instruments (2400/2450 series). Originally designed for resistance measurements, it has evolved into a full-featured measurement suite with support for multiple measurement modes, advanced data analysis, and a modular architecture.
+ResistaMet GUI is a PyQt5-based desktop application for controlling Keithley sourcemeters and performing electrical measurements. It supports four measurement modes, real-time data visualization, multi-spot four-point probe analysis with delta mode, and dual-format data export.
 
-## Key Features
+## Features
 
-### 🔬 Measurement Modes
+### Measurement Modes
 
-#### 1. **Resistance Measurement**
-- 2-wire and 4-wire measurement support
-- Configurable test current (up to 3A)
-- Voltage compliance (up to 200V)
-- Auto-ranging capability
-- Real-time resistance monitoring
+| Mode | Sources | Measures | Use Case |
+|------|---------|----------|----------|
+| **Resistance** | Current (up to 3A) | Resistance | 2-wire/4-wire resistance measurement |
+| **Voltage Source** | Voltage (-200 to +200V) | Current | Bias stress, I-V characterization |
+| **Current Source** | Current (-3 to +3A) | Voltage | Material characterization |
+| **Four-Point Probe** | Current | Voltage | Sheet resistance, resistivity, conductivity |
 
-#### 2. **Voltage Source Mode**
-- Programmable DC voltage output (-200V to +200V)
-- Current compliance monitoring (up to 3A)
-- Time-based measurements with configurable duration
-- Negative bias support for advanced characterization
-- Plot current, voltage, or calculated resistance
+### Four-Point Probe
 
-#### 3. **Current Source Mode**
-- Programmable DC current output (-3A to +3A)
-- Voltage compliance monitoring (up to 200V)
-- Time-based measurements
-- Bidirectional current sourcing
-- Plot voltage, current, or calculated resistance
+- Sheet resistance (Rs), resistivity, and conductivity calculated in real time
+- **Multi-spot tracking** -- save measurements at multiple probe positions, compare uniformity
+- **Live histogram** of Rs distribution (replaces flat-line plot)
+- **Current reversal (delta mode)** -- alternates +I/-I to cancel thermoelectric EMF
+- Models: thin film, semi-infinite, finite thin, with configurable K factor and alpha correction
+- Inter-spot uniformity statistics in export
 
-#### 4. **Four-Point Probe (4PP) Mode** ⭐ _New in v1.2.0_
-- Full van der Pauw and linear 4-point probe support
-- Real-time sheet resistance (Rs), resistivity (ρ), and conductivity (σ) calculations
-- Configurable probe geometry (spacing in cm)
-- Thin film and bulk material models
-- Advanced options:
-  - Custom K correction factor (default 4.532)
-  - Alpha multiplier for thin films
-  - Thickness input (µm) for resistivity calculations
-  - Sample averaging (continuous or fixed count)
-- Live statistics: mean, standard deviation, RSD
-- Measurement table with individual data points
-- Summary export with averaged results
-- Remote sensing automatically enabled
+### Engineering Notation Input
 
-### 📊 Data Visualization & Analysis
+Type natural lab notation instead of raw decimals:
+- `1mA` instead of `0.001000 A`
+- `100uA` or `100uA` instead of `0.000100 A`
+- `10mV` instead of `0.010 V`
 
-- **Real-time Plotting:**
-  - Live updating matplotlib graphs
-  - Interactive controls (zoom, pan, save)
-  - Configurable plot variables per mode
-  - Dynamic axis labels
-  - Optional plot hiding for data-only workflows
+The live readout displays in engineering notation too: `V: 2.830 mV  I: 1.000 mA  R: 2.830 Ohm`
 
-- **Results Viewer:** ⭐ _New in v1.2.0_
-  - Built-in CSV viewer for analyzing past measurements
-  - Plot any column from historical data
-  - Integrated into main window
+### Data Export
 
-- **Statistics Display:**
-  - Min/max/average for standard modes
-  - Mean/std/RSD for 4PP measurements
-  - Live updates during measurement
+- **Dual format** -- JSON (with full metadata) + CSV (Excel-friendly) written simultaneously
+- **Crash recovery** -- periodic checkpoints saved as `.json.tmp`, recoverable after power loss
+- **4PP summary export** -- per-spot breakdown with inter-spot uniformity RSD
+- Configurable auto-save interval
 
-### 🎨 Modern UI Features ⭐ _Enhanced in v1.2.0_
+### Instrument Safety
 
-- **Resizable Panels:**
-  - QSplitter-based layout for flexible workspace
-  - Adjustable Parameters, Plot, Controls, and Status Log sections
-  - Persistent splitter positions
+- Compliance monitoring via Keithley STAT word bit 3 + threshold fallback
+- Non-blocking compliance warnings (status bar flash, no modal popup spam)
+- "Test Connection" button on every tab for pre-flight verification
+- Configurable stop-on-compliance
+- System sleep prevention during long measurements
 
-- **View Menu Toggles:**
-  - Hide/show Parameters panel
-  - Hide/show Controls panel
-  - Hide/show Status Log
-  - Maximize plot area when needed
+### UI
 
-- **4PP Optimized Layout:**
-  - Horizontal split: Parameters left, Summary/Table right
-  - Efficient use of screen real estate
-  - Windows-compatible rendering
-
-### 💾 Data Management
-
-- **Automatic Data Export:**
-  - CSV format with timestamps
-  - UTF-8 encoding with BOM (Excel-compatible special characters: Ω, µ, ρ)
-  - Separate data and summary exports for 4PP
-  - Configurable auto-save intervals
-
-- **Profiles System:** ⭐ _New in v1.2.0_
-  - Save measurement configurations per mode
-  - Load profiles for repeatable experiments
-  - JSON format for easy sharing
-  - Per-mode profile management
-
-- **Multi-user Support:**
-  - Per-user configuration settings
-  - User-specific data storage directories
-  - Quick user switching
-
-### 🔧 Advanced Features
-
-- **Pause/Resume:** Temporarily halt measurements without losing data
-- **Event Marking:** Press 'M' to mark important events during measurement
-- **Compliance Stop:** Automatic measurement termination on compliance
-- **Quick GPIB Selection:** Popup selector on connection errors
-- **Settings Persistence:** All configurations saved between sessions
+- Live numeric readout (large font) on all tabs
+- Real-time matplotlib plots with interactive toolbar
+- Resizable panels via splitters
+- Tooltips on every setting explaining what it does and typical values
+- Scroll-wheel protection on all spinboxes
+- Tab switching allowed during measurement (read-only)
+- "Run until stopped" checkbox on timed modes
+- Custom event markers with text labels (press M)
+- Multi-user profiles with per-user settings
 
 ## Installation
 
 ### Requirements
 
-- Python 3.6 or higher
+- Python 3.6+
 - PyQt5
-- PyVISA
+- PyVISA + a VISA backend (NI-VISA or pyvisa-py)
 - Matplotlib
 - NumPy
 
-### Installation Steps
+### Setup
 
-1. **Clone the repository:**
+```bash
+git clone https://github.com/PEEKPerformer/ResistaMet-GUI.git
+cd ResistaMet-GUI
+pip install -r requirements.txt
+python resistamet-gui.py
+```
 
-   ```bash
-   git clone https://github.com/PEEKPerformer/ResistaMet-GUI.git
-   cd ResistaMet-GUI
-   ```
+For NI GPIB adapters, install [NI-VISA](https://www.ni.com/en/support/downloads/drivers/download.ni-visa.html). For Prologix USB adapters, `pyvisa-py` (included in requirements) works directly.
 
-2. **Install required Python packages:**
+## Quick Start
 
-   ```bash
-   pip install pyqt5 pyvisa pyvisa-py numpy matplotlib
-   ```
-
-3. **Hardware-specific dependencies:**
-
-   Depending on your GPIB interface:
-
-   - **National Instruments GPIB:** Install NI-VISA
-   - **Prologix GPIB-USB:** Use pyvisa-py (included above)
-   - **Other adapters:** Install appropriate drivers
-
-4. **Run the application:**
-
-   ```bash
-   python resistamet-gui.py
-   ```
-
-## Quick Start Guide
-
-### First Time Setup
-
-1. **Launch the application** and select or create a user profile
-2. **Connect your instrument:**
-   - File → Connect to Device
-   - Select the correct GPIB address (default: GPIB0::24::INSTR)
-3. **Choose a measurement mode** from the tabs
-
-### Making a Measurement
-
-#### Resistance Measurement
-1. Select "Resistance" tab
-2. Configure:
-   - Test Current (e.g., 1 mA = 0.001 A)
-   - Voltage Compliance (e.g., 10 V)
-   - Measurement Type (2-wire or 4-wire)
+1. Launch and create a user profile
+2. Click **Test Connection** to verify instrument communication
 3. Enter a sample name
-4. Click "Start Measurement"
+4. Set source level and compliance (type `1mA`, `5V`, etc.)
+5. Click **Start**
 
-#### Four-Point Probe Measurement
-1. Select "Four Point Probe" tab
-2. Configure probe geometry:
-   - Probe Spacing (e.g., 0.1 cm)
-   - Thickness (optional, in µm)
-   - Model (infinite/semi-infinite/thin film)
-3. Set measurement parameters:
-   - Source Current (typical: 1-100 µA)
-   - Voltage Compliance
-   - Samples (0 = continuous, or set count)
-4. Click "Start Measurement"
-5. View live Rs, ρ, σ in the summary panel
-6. Export summary statistics when complete
+### Four-Point Probe Workflow
 
-### Using Profiles
+1. Set source current, probe spacing, and thickness
+2. Start measurement -- readings appear in table with live histogram
+3. Click **Save Spot** to archive current position's stats
+4. Move probe to next position, repeat
+5. After all spots: histogram shows bar chart of Rs uniformity
+6. Click **Export Summary** for full report
 
-- **Save a profile:** File → Profiles → Save Current Profile
-- **Load a profile:** File → Profiles → Load Profile
-- Profiles store all mode-specific settings for easy reuse
+### Delta Mode (Thermoelectric Cancellation)
 
-### Keyboard Shortcuts
+1. In the 4PP tab, expand **Advanced**
+2. Check **Current Reversal (Delta Mode)**
+3. Set settling time (default 0.1s between polarity flips)
+4. Each reading now alternates +I/-I, reporting V_delta = (V+ - V-) / 2
 
-- **M:** Mark event during measurement
-- **Ctrl+S:** Save current plot
-- Standard shortcuts for zoom, pan in matplotlib toolbar
-
-## Instrument Specifications
-
-ResistaMet GUI supports the full capabilities of modern Keithley sourcemeters:
-
-| Parameter | Range | Notes |
-|-----------|-------|-------|
-| Voltage Output | -200V to +200V | Keithley 2450/2400 dependent |
-| Current Output | -3A to +3A | Full instrument range |
-| Voltage Compliance | 0.1V to 200V | Protection limit |
-| Current Compliance | 1e-7A to 3A | Protection limit |
-| Measurement Modes | 2-wire, 4-wire | Remote sensing for 4PP |
-
-## Architecture ⭐ _New in v1.2.0_
-
-The codebase has been modularized into a clean package structure:
+## Project Structure
 
 ```
 ResistaMet-GUI/
-├── resistamet-gui.py          # Entry point
-├── resistamet_gui/            # Main package
-│   ├── __init__.py
-│   ├── constants.py           # Global constants
-│   ├── config.py              # Configuration management
-│   ├── buffers.py             # Data buffer classes
-│   ├── workers.py             # Measurement worker threads
-│   ├── instrument.py          # Keithley VISA wrapper
-│   └── ui/                    # UI modules
-│       ├── __init__.py
-│       ├── main_window.py     # Main application window
-│       ├── dialogs.py         # Settings and dialogs
-│       └── canvas.py          # Matplotlib integration
-├── README.md
+├── resistamet-gui.py              # Entry point
+├── resistamet_gui/
+│   ├── constants.py               # Version, defaults
+│   ├── config.py                  # User profiles, JSON persistence
+│   ├── buffers.py                 # Circular buffer with statistics
+│   ├── calculations.py            # 4PP formulas (pure functions)
+│   ├── instrument.py              # Keithley VISA wrapper
+│   ├── workers.py                 # Measurement thread (QThread)
+│   ├── data_export.py             # Dual JSON+CSV export with checkpoints
+│   ├── system_utils.py            # Sleep prevention, platform detection
+│   ├── logging_config.py          # Python logging setup
+│   └── ui/
+│       ├── main_window.py         # Main application window
+│       ├── dialogs.py             # Settings dialog
+│       ├── canvas.py              # Matplotlib + histogram canvas
+│       └── widgets.py             # EngineeringSpinBox, NoScrollSpinBox
+├── tests/
+│   ├── test_buffers.py
+│   ├── test_calculations.py
+│   ├── test_config.py
+│   ├── test_data_export.py
+│   ├── test_system_utils.py
+│   ├── test_gui_smoke.py          # Qt widget lifecycle tests
+│   └── test_widgets.py            # Engineering notation parsing tests
 └── requirements.txt
 ```
 
-This modular design improves:
-- Code maintainability
-- Testability
-- Future extensibility
-- Separation of concerns
+## Testing
 
-## Configuration Options
+```bash
+# Run all tests (142 total)
+QT_QPA_PLATFORM=offscreen pytest tests/ -v
 
-### Measurement Settings
-
-- **Test Current / Source Current:** Applied current (A)
-- **Voltage Compliance / Source Voltage:** Voltage limit or output (V)
-- **Sampling Rate:** Measurements per second (Hz)
-- **NPLC:** Power line cycle integration (0.01 - 10)
-- **Settling Time:** Pre-measurement delay (seconds)
-- **Duration:** Time-based measurement length (hours)
-- **Stop on Compliance:** Auto-stop when limits reached
-
-### Display Settings
-
-- **Plot Update Interval:** Refresh rate (ms)
-- **Plot Color:** Line color selection
-- **Buffer Size:** Data points in memory
-
-### File Settings
-
-- **Auto-save Interval:** Automatic save frequency (seconds)
-- **Data Directory:** Base folder for CSV exports
-
-## Troubleshooting
-
-### Connection Issues
-
-1. **GPIB not found:**
-   - Verify GPIB interface is connected
-   - Check drivers (NI-VISA or pyvisa-py)
-   - Try: `python -m visa info`
-
-2. **Wrong GPIB address:**
-   - Use File → Connect to Device
-   - Try auto-detection or manual entry
-   - Common addresses: 22, 23, 24
-
-3. **Timeout errors:**
-   - Increase timeout in settings
-   - Check instrument is not in local mode
-   - Verify cable connections
-
-### Measurement Issues
-
-1. **Compliance errors:**
-   - Increase compliance limit
-   - Reduce source level
-   - Check sample connections
-
-2. **Noisy data:**
-   - Increase NPLC (slower but more accurate)
-   - Use 4-wire measurement
-   - Enable auto-range
-   - Check for ground loops
-
-3. **4PP calculations seem wrong:**
-   - Verify probe spacing is correct (cm)
-   - Check thickness input (µm, not cm)
-   - Ensure correct model selected
-   - Verify K factor (default 4.532 for linear array)
-
-### UI Issues
-
-1. **Windows: Panels too small:**
-   - v1.2.0 includes fixes for zero-size rendering
-   - Drag splitter handles to resize
-   - Use View menu to hide/show sections
-
-2. **Plot not updating:**
-   - Check "Enable Plot" is on
-   - Verify plot isn't hidden (View menu)
-   - Reduce update interval if CPU is slow
-
-## Data File Formats
-
-### Standard Measurement CSV
-```
-Timestamp,Elapsed Time (s),Resistance (Ω),Voltage (V),Current (A),Event
-2025-11-19 10:30:00,0.0,1234.56,1.23,0.001,
-2025-11-19 10:30:01,1.0,1234.58,1.23,0.001,
-2025-11-19 10:30:05,5.0,1235.12,1.23,0.001,Max Compression
+# Unit tests only (no Qt dependency)
+pytest tests/ -v --ignore=tests/test_gui_smoke.py
 ```
 
-### Four-Point Probe CSV
-```
-Timestamp,Elapsed Time (s),V/I (Ω),Rs (Ω/sq),ρ (Ω·cm),σ (S/cm)
-2025-11-19 10:30:00,0.0,100.5,45.2,1.2e-3,833.3
-```
+## Instrument Compatibility
 
-### Four-Point Probe Summary CSV
-```
-Parameter,Mean,Std Dev,RSD (%)
-Sheet Resistance (Ω/sq),45.23,0.15,0.33
-Resistivity (Ω·cm),1.23e-3,4.2e-6,0.34
-Conductivity (S/cm),812.5,2.8,0.34
-```
+Tested with:
+- **Keithley 2420** (3A model, firmware C30) via GPIB
+- Should work with any Keithley 2400/2450 series via GPIB or USB
 
 ## Version History
 
+### v1.3.0 (2026-04-01)
+- Fixed 5 critical SCPI bugs found via live Keithley 2420 hardware testing
+- Engineering notation input for current/voltage fields
+- Live numeric readout on all tabs
+- 4PP histogram, multi-spot tracking, current reversal (delta mode)
+- Dual-format data export (JSON + CSV) with crash recovery
+- 11 UX improvements (non-blocking compliance, tab switching, tooltips, etc.)
+- GUI smoke test suite (142 total tests)
+- System sleep prevention, instrument health monitoring
+
 ### v1.2.0 (2025-11-19)
-- Added Four-Point Probe measurement mode
+- Four-Point Probe measurement mode
 - Modularized codebase architecture
-- Instrument abstraction and profiles system
-- Results viewer for CSV analysis
+- Profiles system, results viewer
 - Enhanced UI with splitters and view toggles
-- Increased instrument limits to 200V/3A
-- Windows compatibility improvements
-- Numerous bug fixes
 
 ### v1.1.0 (2025-03-25)
-- Added voltage and current source modes
-- Enhanced data buffering
-- Improved CSV export
+- Voltage and current source modes
+- Enhanced data buffering, improved CSV export
 
 ### v1.0.0
-- Initial release
-- Basic resistance measurement
-- 2-wire and 4-wire support
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit issues or pull requests.
-
-## License
-
-ResistaMet GUI is provided under the MIT License with Academic Citation Clause.
+- Initial release -- basic resistance measurement
 
 ## Citation
 
 If you use ResistaMet GUI in your research, please cite:
 
 ```
-Ferland, B. (2025). ResistaMet GUI: A Comprehensive Electrical Measurement Suite
-for Keithley Sourcemeters (Version 1.2.0) [Software].
+Ferland, B. (2026). ResistaMet GUI: An Open-Source Electrical Measurement Suite
+for Keithley Sourcemeters (Version 1.3.0) [Software].
 https://github.com/PEEKPerformer/ResistaMet-GUI
 ```
 
-## Support
+## Contributing
 
-For questions, bug reports, or feature requests:
-- Open an issue on GitHub
-- Contact: brendenferland@gmail.com
+Contributions welcome -- open an issue or submit a pull request.
 
----
+## License
 
-**Happy measuring!** 🔬⚡
+MIT License with Academic Citation Clause.
