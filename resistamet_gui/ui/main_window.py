@@ -1414,6 +1414,10 @@ class ResistanceMeterApp(QMainWindow):
                 if label and label.widget(): label.widget().setEnabled(not running)
             if hasattr(widget, 'mark_event_button'):
                 widget.mark_event_button.setEnabled(running)
+            # Re-enable plot variable selector during measurement
+            for attr in ('v_plot_var', 'i_plot_var', 'fpp_plot_var', 'fpp_show_plot'):
+                if hasattr(widget, attr):
+                    getattr(widget, attr).setEnabled(True)
 
     def set_all_controls_enabled(self, enabled: bool, except_mode: Optional[str] = None):
         for mode in ['resistance', 'source_v', 'source_i', 'four_point']:
