@@ -1974,9 +1974,10 @@ class ResistanceMeterApp(QMainWindow):
 
             # Store in settings (software subtraction — 2400 series lacks :SENS:RES:REL)
             self.user_settings['measurement']['res_cable_null'] = ref
-            self.tab_resistance.null_label.setText(f"Cable null: {format_engineering(ref, '\u03a9')}")
+            ohm = '\u03a9'
+            self.tab_resistance.null_label.setText(f"Cable null: {format_engineering(ref, ohm)}")
             self.tab_resistance.null_label.setStyleSheet("color: green; font-weight: bold;")
-            self.log_status(f"Cable null set: {format_engineering(ref, '\u03a9')} (software subtraction)", color="darkGreen")
+            self.log_status(f"Cable null set: {format_engineering(ref, ohm)} (software subtraction)", color="darkGreen")
         except Exception as e:
             QMessageBox.critical(self, "Null Failed", f"Error during cable null: {e}")
 
