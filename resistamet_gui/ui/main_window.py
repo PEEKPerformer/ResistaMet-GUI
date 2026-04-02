@@ -1360,7 +1360,8 @@ class ResistanceMeterApp(QMainWindow):
                 if np.isfinite(i):
                     parts.append(f"I: {format_engineering(i, 'A')}")
                 if np.isfinite(v) and np.isfinite(i) and i != 0:
-                    parts.append(f"R: {format_engineering(v/i, '\u03a9')}")
+                    ohm = '\u03a9'
+                    parts.append(f"R: {format_engineering(v/i, ohm)}")
                 widget.live_readout.setText("   ".join(parts) if parts else "--")
 
         # Append a row to 4PP table and update stats live
