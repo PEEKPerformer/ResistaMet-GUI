@@ -33,7 +33,7 @@ DEFAULT_SETTINGS = {
         "gpib_address": "GPIB0::24::INSTR",  # GPIB address of the instrument
         "stop_on_compliance": False,
         "auto_zero": "on",                   # "on" (accurate), "once" (fast), "off" (fastest, drifts)
-        "filter_enabled": False,             # enable built-in Keithley averaging filter
+        "filter_enabled": True,              # enable built-in Keithley averaging filter
         "filter_type": "repeat",             # "repeat" or "moving"
         "filter_count": 10,                  # number of readings to average (1-100)
         "res_offset_comp": False,            # offset-compensated ohms (cancels thermoelectric EMF)
