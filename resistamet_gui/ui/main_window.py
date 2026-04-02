@@ -1932,7 +1932,7 @@ class ResistanceMeterApp(QMainWindow):
         self.log_status("All spots and readings cleared.")
 
     def _null_cables(self):
-        """Measure cable resistance and store as null reference."""
+        """Measure cable resistance and store as software null reference."""
         if self.measurement_running:
             QMessageBox.warning(self, "Busy", "Cannot null cables during a measurement.")
             return
@@ -1941,7 +1941,8 @@ class ResistanceMeterApp(QMainWindow):
             return
         reply = QMessageBox.question(
             self, "Null Cables",
-            "Short the probe tips together, then click OK to measure cable resistance.",
+            "Short the probe tips together, then click OK to measure cable resistance.\n\n"
+            "This value will be subtracted from all future resistance readings.",
             QMessageBox.Ok | QMessageBox.Cancel)
         if reply != QMessageBox.Ok:
             return
@@ -1970,11 +1971,11 @@ class ResistanceMeterApp(QMainWindow):
                 QMessageBox.warning(self, "Null Failed", f"Invalid reading: {ref}. Ensure probes are shorted.")
                 return
 
-            # Store in settings
+            # Store in settings (software subtraction — 2400 series lacks :SENS:RES:REL)
             self.user_settings['measurement']['res_cable_null'] = ref
-            self.tab_resistance.null_label.setText(f"Cable null: {format_engineering(ref, 'Ω')}")
+            self.tab_resistance.null_label.setText(f"Cable null: {format_engineering(ref, '\u03a9')}")
             self.tab_resistance.null_label.setStyleSheet("color: green; font-weight: bold;")
-            self.log_status(f"Cable null set: {format_engineering(ref, 'Ω')}", color="darkGreen")
+            self.log_status(f"Cable null set: {format_engineering(ref, '\u03a9')} (software subtraction)", color="darkGreen")
         except Exception as e:
             QMessageBox.critical(self, "Null Failed", f"Error during cable null: {e}")
 

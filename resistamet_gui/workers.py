@@ -186,11 +186,8 @@ class MeasurementWorker(QThread):
                     # Offset-compensated ohms: cancels thermoelectric EMF
                     if measurement_settings.get('res_offset_comp', False):
                         self.keithley.write(":SENS:RES:OCOM ON")
-                    # Re-apply cable null if previously set
-                    cable_null = float(measurement_settings.get('res_cable_null', 0.0))
-                    if cable_null != 0.0:
-                        self.keithley.write(f":SENS:RES:REL {cable_null}")
-                        self.keithley.write(":SENS:RES:REL:STAT ON")
+                    # Cable null: software subtraction (2400 series lacks :SENS:RES:REL)
+                    self._cable_null = float(measurement_settings.get('res_cable_null', 0.0))
                     # Include STAT for hardware compliance detection (bit 3)
                     # Fixed element order: RES, STAT
                     self.keithley.write(":FORM:ELEM RES,STAT")
@@ -341,14 +338,13 @@ class MeasurementWorker(QThread):
                     csv_headers = ['Point', 'Voltage (V)', 'Current (A)', 'Compliance Status']
                     source_value_str = f"sweep_{sweep_start}to{sweep_stop}"
 
-                # Hardware averaging filter
+                # Hardware averaging filter (2400 series uses :SENS:AVER, not per-function paths)
                 if measurement_settings.get('filter_enabled', False):
                     ftype = str(measurement_settings.get('filter_type', 'repeat')).upper()[:3]
                     fcount = int(measurement_settings.get('filter_count', 10))
-                    sense_func = {'resistance': 'RES', 'source_v': 'CURR', 'source_i': 'VOLT', 'four_point': 'VOLT'}.get(self.mode, 'VOLT')
-                    self.keithley.write(f":SENS:{sense_func}:AVER:TCON {ftype}")
-                    self.keithley.write(f":SENS:{sense_func}:AVER:COUN {fcount}")
-                    self.keithley.write(f":SENS:{sense_func}:AVER ON")
+                    self.keithley.write(f":SENS:AVER:TCON {ftype}")
+                    self.keithley.write(f":SENS:AVER:COUN {fcount}")
+                    self.keithley.write(":SENS:AVER ON")
                     self.status_update.emit(f"Hardware filter: {ftype} x{fcount}")
 
                 self.keithley.write(":TRIG:DEL 0")
@@ -602,6 +598,10 @@ class MeasurementWorker(QThread):
                         if not np.isfinite(value):
                             value = float('nan')
                             self.status_update.emit(f"Invalid value detected ({reading_str})")
+                        # Apply software cable null if set
+                        cable_null = getattr(self, '_cable_null', 0.0)
+                        if cable_null != 0.0 and np.isfinite(value):
+                            value -= cable_null
                         data_dict = {'resistance': value}
                     elif self.mode == 'source_v':
                         # Keithley 2400 series returns elements in fixed order:
