@@ -1271,7 +1271,7 @@ class ResistanceMeterApp(QMainWindow):
             self._clear_four_point_data()
         widget.status_label.setText("Status: Sweeping..." if mode == 'sweep' else "Status: Running")
         widget.status_label.setStyleSheet("font-weight: bold; color: green;")
-        if hasattr(widget, 'mark_event_button'): widget.mark_event_button.setEnabled(True)
+        if getattr(widget, 'mark_event_button', None): widget.mark_event_button.setEnabled(True)
         self.log_status(f"Starting {mode} measurement for sample: {sample_name}..."); self.statusBar().showMessage(f"Measurement running ({mode})...")
         self.measurement_worker = MeasurementWorker(mode=mode, sample_name=sample_name, username=self.current_user, settings=current_settings)
         self.measurement_worker.data_point.connect(self.update_data)
@@ -1297,9 +1297,9 @@ class ResistanceMeterApp(QMainWindow):
                 widget.stop_button.setEnabled(False)
                 widget.status_label.setText("Status: Stopping...")
                 widget.status_label.setStyleSheet("font-weight: bold; color: orange;")
-                if hasattr(widget, 'mark_event_button'):
+                if getattr(widget, 'mark_event_button', None):
                     widget.mark_event_button.setEnabled(False)
-                if hasattr(widget, 'pause_button'):
+                if getattr(widget, 'pause_button', None):
                     widget.pause_button.setEnabled(False)
             self.shortcut_mark.setEnabled(False)
             self.plot_timer.stop()
@@ -1331,7 +1331,7 @@ class ResistanceMeterApp(QMainWindow):
                 self.measurement_worker.mark_event(label)
                 self.log_status(f"⭐ Event marked: {label}", color="purple")
                 widget = self.get_widget_for_mode(self.active_mode)
-                if widget and hasattr(widget, 'mark_event_button'):
+                if widget and getattr(widget, 'mark_event_button', None):
                     original_style = widget.mark_event_button.styleSheet()
                     widget.mark_event_button.setStyleSheet("background-color: yellow;")
                     QTimer.singleShot(500, lambda: widget.mark_event_button.setStyleSheet(original_style))
@@ -1602,9 +1602,9 @@ class ResistanceMeterApp(QMainWindow):
         if widget:
             widget.status_label.setText("Status: Idle"); widget.status_label.setStyleSheet("font-weight: bold; color: black;")
             widget.start_button.setEnabled(True); widget.stop_button.setEnabled(False)
-            if hasattr(widget, 'pause_button'):
+            if getattr(widget, 'pause_button', None):
                 widget.pause_button.setEnabled(False); widget.pause_button.setChecked(False)
-            if hasattr(widget, 'mark_event_button'):
+            if getattr(widget, 'mark_event_button', None):
                 widget.mark_event_button.setEnabled(False)
         self.set_all_controls_enabled(True)
         self.shortcut_mark.setEnabled(False)
@@ -1619,14 +1619,14 @@ class ResistanceMeterApp(QMainWindow):
         widget = self.get_widget_for_mode(mode)
         if widget:
             widget.start_button.setEnabled(not running); widget.stop_button.setEnabled(running)
-            if hasattr(widget, 'pause_button'):
+            if getattr(widget, 'pause_button', None):
                 widget.pause_button.setEnabled(running)
             for i in range(widget.param_layout.rowCount()):
                 field = widget.param_layout.itemAt(i, QFormLayout.FieldRole)
                 if field and field.widget(): field.widget().setEnabled(not running)
                 label = widget.param_layout.itemAt(i, QFormLayout.LabelRole)
                 if label and label.widget(): label.widget().setEnabled(not running)
-            if hasattr(widget, 'mark_event_button'):
+            if getattr(widget, 'mark_event_button', None):
                 widget.mark_event_button.setEnabled(running)
             # Re-enable plot variable selector during measurement
             for attr in ('v_plot_var', 'i_plot_var', 'fpp_plot_var', 'fpp_show_plot'):
@@ -1639,9 +1639,9 @@ class ResistanceMeterApp(QMainWindow):
             widget = self.get_widget_for_mode(mode)
             if widget:
                 widget.start_button.setEnabled(enabled); widget.stop_button.setEnabled(False)
-                if hasattr(widget, 'pause_button'):
+                if getattr(widget, 'pause_button', None):
                     widget.pause_button.setEnabled(False); widget.pause_button.setChecked(False)
-                if hasattr(widget, 'mark_event_button'):
+                if getattr(widget, 'mark_event_button', None):
                     widget.mark_event_button.setEnabled(False)
                 for i in range(widget.param_layout.rowCount()):
                     field = widget.param_layout.itemAt(i, QFormLayout.FieldRole)
