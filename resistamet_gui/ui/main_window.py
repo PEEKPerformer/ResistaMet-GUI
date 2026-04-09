@@ -1399,6 +1399,8 @@ class ResistanceMeterApp(QMainWindow):
     def update_active_plot(self):
         if not self.measurement_running or self.active_mode is None or not self.user_settings:
             return
+        if self.active_mode == 'sweep':
+            return  # I-V sweep uses IVCanvas.plot_sweep(), not time-series update_plot()
         mode = self.active_mode; widget = self.get_widget_for_mode(mode); buffer = self.data_buffers[mode]
         if not widget or not buffer:
             return
