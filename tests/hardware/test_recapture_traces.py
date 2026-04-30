@@ -6,10 +6,17 @@ floating-point measurements byte-for-byte (real readings have noise) —
 only configuration round-trips and STAT compliance bits are pinned.
 
 Skipped unless RESISTAMET_HARDWARE_ADDR is set.
+
+The captured traces span multiple DUT resistances (currently 100Ω and
+10kΩ). The wired DUT on the bench must match the trace's
+``dut_resistance_ohms`` field or :READ? values will fall outside
+tolerance. Set ``RESISTAMET_DUT_OHMS=<value>`` to filter traces to a
+single DUT — otherwise every committed trace is run.
 """
 from __future__ import annotations
 
 import math
+import os
 import time
 
 import pytest
@@ -23,7 +30,16 @@ _ABSOLUTE_TOLERANCE = 1e-5
 
 
 def _all_traces():
-    return [pytest.param(p, id=p.stem) for p in iter_trace_files()]
+    files = list(iter_trace_files())
+    dut_env = os.environ.get("RESISTAMET_DUT_OHMS")
+    if dut_env:
+        target = float(dut_env)
+        files = [
+            p for p in files
+            if math.isclose(Trace.read(p).dut_resistance_ohms, target,
+                            rel_tol=0.01, abs_tol=0.5)
+        ]
+    return [pytest.param(p, id=p.stem) for p in files]
 
 
 def _drain(dev):

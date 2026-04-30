@@ -21,7 +21,12 @@ Captures and quirk validation were performed against:
 | Firmware | C30, March 17 2006 |
 | Line frequency | 60 Hz |
 | Interface | GPIB-USB-HS, address 24 |
-| DUT | 100 Ω reference resistor (measured 99.53 Ω) in 4-wire Kelvin |
+| DUTs | 100 Ω reference resistor (measured 99.53 Ω, 4-wire Kelvin) and 10 kΩ reference resistor (measured 9914 Ω, 4-wire Kelvin) |
+
+The 10 kΩ traces (six scenarios at the higher operating point) extend
+coverage to a different current range and a different source-V range —
+the simulator's range handling is exercised by the same trace-replay
+test without any code changes.
 
 The simulator targets the broader 2400/2410/2420/2425/2430/2440/2450 family.
 Bits encoded in the FORM:ELEM `STAT` element (notably the compliance bit at
@@ -113,11 +118,11 @@ provides the only safety net.
 |---|---|---|---|
 | Pure unit | No | `test_buffers.py`, `test_calculations.py`, `test_config.py`, `test_data_export.py`, `test_system_utils.py`, `test_widgets.py` | (existing) |
 | GUI smoke | No (offscreen Qt) | `test_gui_smoke.py` | (existing) |
-| Trace replay | No | `test_fake_matches_hardware.py` | 16/16 |
+| Trace replay | No | `test_fake_matches_hardware.py` | 22/22 (15 at 100Ω, 6 at 10kΩ, 1 diagnosis) |
 | SCPI wrapper | No | `test_instrument.py` | 21/21 |
 | Worker integration | No | `test_workers.py` | 17/17 |
 | Hardware quirks | Yes | `tests/hardware/test_quirk_triggers.py` | 6/6 (validated 2026-04-30) |
-| Hardware recapture | Yes | `tests/hardware/test_recapture_traces.py` | 15/15 (validated 2026-04-30) |
+| Hardware recapture | Yes | `tests/hardware/test_recapture_traces.py` | 21/21 (15 at 100Ω + 6 at 10kΩ, validated 2026-04-30); set `RESISTAMET_DUT_OHMS` to filter to one DUT |
 
 The CI pipeline (`.github/workflows/`) runs the four no-hardware tiers on
 every push. The two hardware tiers run locally before each release with

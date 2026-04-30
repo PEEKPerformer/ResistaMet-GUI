@@ -1,0 +1,99 @@
+{
+  "name": "resistance_4wire_100ua_10kohm",
+  "description": "Resistance mode, 4-wire, 100uA test current. 3 readings on a 10kohm DUT.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30T16:17:10Z",
+  "dut_resistance_ohms": 10000.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SYST:RSEN ON",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC:CONC OFF",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC 'RES'",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:RES:MODE MAN",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:FUNC CURR",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:CURR:RANG 100e-6",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:CURR 100e-6",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:VOLT:PROT 5",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:RES:NPLC 1",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:RES:MODE AUTO",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":FORM:ELEM RES,STAT",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP ON",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+9.915667E+03,+4.236292E+06"
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+9.915634E+03,+4.236292E+06"
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+9.915637E+03,+4.236292E+06"
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP OFF",
+      "response": null
+    }
+  ]
+}
