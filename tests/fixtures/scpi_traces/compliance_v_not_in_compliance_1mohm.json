@@ -1,0 +1,84 @@
+{
+  "name": "compliance_v_not_in_compliance_1mohm",
+  "description": "Source 1V into 1Mohm with 10uA current compliance. Reads ~1uA, STAT bit 3 clear.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30T18:50:25Z",
+  "dut_resistance_ohms": 1000000.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SYST:RSEN ON",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC:CONC OFF",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC 'CURR:DC'",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:FUNC VOLT",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:VOLT:RANG 2.0",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:VOLT 1.0",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:CURR:PROT 10e-6",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:CURR:RANG 10e-6",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:CURR:NPLC 1",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":FORM:ELEM VOLT,CURR,STAT",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP ON",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+1.000000E+00,+9.711429E-07,+4.215812E+06"
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP OFF",
+      "response": null
+    }
+  ]
+}

@@ -21,12 +21,18 @@ Captures and quirk validation were performed against:
 | Firmware | C30, March 17 2006 |
 | Line frequency | 60 Hz |
 | Interface | GPIB-USB-HS, address 24 |
-| DUTs | 100 Ω reference resistor (measured 99.53 Ω, 4-wire Kelvin) and 10 kΩ reference resistor (measured 9914 Ω, 4-wire Kelvin) |
+| DUTs | 100 Ω (measured 99.53 Ω), 10 kΩ (measured 9914 Ω), and 1 MΩ (measured 1.029 MΩ) reference resistors, all in 4-wire Kelvin connection |
 
-The 10 kΩ traces (six scenarios at the higher operating point) extend
-coverage to a different current range and a different source-V range —
-the simulator's range handling is exercised by the same trace-replay
-test without any code changes.
+Three decades of resistance are exercised:
+
+- **100 Ω at 1 mA / ~0.1 V** — lowest current range, source-V mode primarily
+- **10 kΩ at 100 µA / ~1 V** — middle range, plus 2-wire and negative-source-V variants
+- **1 MΩ at 1 µA / ~1 V** — lowest source-current range, exercises the µA sense regime
+
+The simulator passes every trace without per-DUT or per-range code
+changes — the trace-replay test only pins the STAT compliance bit, so
+the per-mode STAT baselines that differ across ranges don't trigger
+mismatches.
 
 The simulator targets the broader 2400/2410/2420/2425/2430/2440/2450 family.
 Bits encoded in the FORM:ELEM `STAT` element (notably the compliance bit at
@@ -127,11 +133,11 @@ provides the only safety net.
 |---|---|---|---|
 | Pure unit | No | `test_buffers.py`, `test_calculations.py`, `test_config.py`, `test_data_export.py`, `test_system_utils.py`, `test_widgets.py` | (existing) |
 | GUI smoke | No (offscreen Qt) | `test_gui_smoke.py` | (existing) |
-| Trace replay | No | `test_fake_matches_hardware.py` | 24/24 (23 traces + 1 sanity) |
+| Trace replay | No | `test_fake_matches_hardware.py` | 30/30 (29 traces + 1 sanity) |
 | SCPI wrapper | No | `test_instrument.py` | 21/21 |
 | Worker integration | No | `test_workers.py` | 17/17 |
 | Hardware quirks | Yes | `tests/hardware/test_quirk_triggers.py` | 6/6 (validated 2026-04-30) |
-| Hardware recapture | Yes | `tests/hardware/test_recapture_traces.py` | 23/23 (15 at 100Ω + 8 at 10kΩ, validated 2026-04-30); set `RESISTAMET_DUT_OHMS` to filter to one DUT |
+| Hardware recapture | Yes | `tests/hardware/test_recapture_traces.py` | 29/29 (15 at 100Ω + 8 at 10kΩ + 6 at 1MΩ, validated 2026-04-30); set `RESISTAMET_DUT_OHMS` to filter to one DUT |
 
 The CI pipeline (`.github/workflows/`) runs the four no-hardware tiers on
 every push. The two hardware tiers run locally before each release with
