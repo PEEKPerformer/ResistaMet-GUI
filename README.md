@@ -5,7 +5,7 @@
 
 Open-source graphical interface for electrical characterization using Keithley 2400/2450 sourcemeters, with advanced four-point probe analysis.
 
-**Version:** 1.4.1
+**Version:** 1.5.0
 **Author:** Brenden Ferland
 
 ![ResistaMet GUI Screenshot](resistamet-gui-screenshot.PNG)
@@ -32,6 +32,7 @@ ResistaMet GUI is a PyQt5-based desktop application for controlling Keithley sou
 - **Multi-spot tracking** -- save measurements at multiple probe positions, compare uniformity
 - **Live histogram** of Rs distribution (replaces flat-line plot)
 - **Current reversal (delta mode)** -- alternates +I/-I to cancel thermoelectric EMF
+- **Probe safety envelope** -- configurable warn / hard-stop power thresholds (default 10 mW / 100 mW). A pre-flight check refuses to start if the configured worst-case `I_source × V_compliance` exceeds the hard stop; a runtime check aborts the run and disables output if measured `V × I` exceeds it. Sized for tungsten-carbide tips (Signatone SP4 family) and conservative for thin-film / conductive-polymer samples where local Joule heating can damage the sample before the probe.
 - Models: thin film, semi-infinite, finite thin, with configurable K factor and alpha correction
 - Inter-spot uniformity statistics in export
 
@@ -208,6 +209,16 @@ instrument. See [`docs/sim_fidelity.md`](docs/sim_fidelity.md) for the
 full validation methodology.
 
 ## Version History
+
+### v1.5.0 (2026-04-30)
+- Stateful Keithley 2400-family simulator (`tests/fakes/fake_keithley.py`) validated byte-equivalent against 23 captured SCPI traces from real hardware (3 DUT decades: 100 Ω, 10 kΩ, 1 MΩ)
+- Cross-model validation: every fixture and quirk-trigger reproduces on a Keithley 2400 (1 A) using fixtures originally captured from a 2420 (3 A); 29/29 pass cross-model
+- Model identification at connect — `Keithley2400.detect_model()` parses `*IDN?`, surfaces source/measure caps in the status bar
+- Community trace contribution path: `scripts/community_capture.py` is a self-contained one-file capture tool any contributor can run; `tests/test_community_traces.py` auto-discovers and replays accepted submissions in CI
+- Live power readout (`P = V × I`) on resistance, source-V, source-I, and 4PP modes
+- 4PP probe-safety envelope: pre-flight check refuses runs with worst-case power above the hard stop; runtime check aborts and disables output if measured V×I exceeds it; configurable warn / hard-stop thresholds
+- Hardware-tier test suite (`tests/hardware/`) gated by `RESISTAMET_HARDWARE_ADDR`; CI matrix expanded to Linux + Windows × Python 3.9–3.12
+- Sim fidelity report (`docs/sim_fidelity.md`) documents validated behaviors, intentional gaps, and recapture procedure
 
 ### v1.4.0 (2026-04-01)
 - I-V Sweep mode using the Keithley hardware sweep engine (up/down/up-down)

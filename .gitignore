@@ -178,7 +178,17 @@ cython_debug/
 !CONTRIBUTING.md
 !CODE_OF_CONDUCT.md
 !docs/*.md
+!paper/*.md
 resistamet-gui-1.1.0.py
+
+# v1.4.0 SCPI debugging / diagnostic scratch scripts at repo root.
+# Their findings now live in tests/fixtures/scpi_traces/diagnosis_2420_C30.json
+# and tests/hardware/diagnose_stat_bits.py. Kept locally for archeology, not
+# tracked.
+debug_*.py
+diag_*.py
+production_test.py
+test_settings.py
 resistamet-gui_old.py
 
 # macOS system files
