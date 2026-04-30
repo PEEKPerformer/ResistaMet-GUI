@@ -10,18 +10,29 @@ be exercised in CI without a real instrument. This document records:
 3. How to recapture the golden traces when firmware drifts or new scenarios
    are needed.
 
-## Reference instrument
+## Reference instruments
 
-Captures and quirk validation were performed against:
+Captures, quirk validation, and trace replay were performed against
+two physical instruments from the Keithley 2400 family:
 
-| Field | Value |
-|---|---|
-| Model | Keithley 2420 (3 A SourceMeter) |
-| Serial | 1230523 |
-| Firmware | C30, March 17 2006 |
-| Line frequency | 60 Hz |
-| Interface | GPIB-USB-HS, address 24 |
-| DUTs | 100 Ω (measured 99.53 Ω), 10 kΩ (measured 9914 Ω), and 1 MΩ (measured 1.029 MΩ) reference resistors, all in 4-wire Kelvin connection |
+| Field | Primary (capture source) | Cross-model validation |
+|---|---|---|
+| Model | Keithley 2420 (3 A SourceMeter) | Keithley 2400 (1 A SourceMeter) |
+| Serial | 1230523 | 1175680 |
+| Firmware | C30, March 17 2006 | C30, March 17 2006 (identical) |
+| Option codes | /H/L | /K/J |
+| Interface | GPIB-USB-HS, address 24 | GPIB, address 3 |
+| Line frequency | 60 Hz | 60 Hz |
+| DUTs | 100 Ω (99.53 Ω), 10 kΩ (9914 Ω), 1 MΩ (1.029 MΩ) | 100 Ω (99.50 Ω) |
+
+**Cross-model evidence**: every SCPI fixture and every quirk-trigger
+test captured from the 2420 reproduces byte-equivalent (configuration
+queries) and within 5% / exact-on-compliance-bit (measurement queries)
+on the 2400 — 15/15 fixtures and 6/6 quirks pass cross-model
+(validated 2026-04-30). The two instruments share firmware C30 but
+differ in model, serial number, current rating, and option codes; the
+fixtures and the simulator are therefore validated against the 2400
+*family* rather than only one specific instrument.
 
 Three decades of resistance are exercised:
 
@@ -136,8 +147,8 @@ provides the only safety net.
 | Trace replay | No | `test_fake_matches_hardware.py` | 30/30 (29 traces + 1 sanity) |
 | SCPI wrapper | No | `test_instrument.py` | 21/21 |
 | Worker integration | No | `test_workers.py` | 17/17 |
-| Hardware quirks | Yes | `tests/hardware/test_quirk_triggers.py` | 6/6 (validated 2026-04-30) |
-| Hardware recapture | Yes | `tests/hardware/test_recapture_traces.py` | 29/29 (15 at 100Ω + 8 at 10kΩ + 6 at 1MΩ, validated 2026-04-30); set `RESISTAMET_DUT_OHMS` to filter to one DUT |
+| Hardware quirks | Yes | `tests/hardware/test_quirk_triggers.py` | 6/6 on 2420 + 6/6 on 2400 (validated 2026-04-30) |
+| Hardware recapture | Yes | `tests/hardware/test_recapture_traces.py` | 29/29 on 2420 + 15/15 (100Ω subset) on 2400 (validated 2026-04-30); set `RESISTAMET_DUT_OHMS` to filter |
 
 The CI pipeline (`.github/workflows/`) runs the four no-hardware tiers on
 every push. The two hardware tiers run locally before each release with
