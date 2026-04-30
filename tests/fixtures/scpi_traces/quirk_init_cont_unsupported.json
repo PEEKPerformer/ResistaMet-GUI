@@ -1,0 +1,29 @@
+{
+  "name": "quirk_init_cont_unsupported",
+  "description": ":INIT:CONT subsystem does not exist on the 2400 series. Should produce -113.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30T14:37:37Z",
+  "dut_resistance_ohms": 100.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":INIT:CONT ON",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:ERR?",
+      "response": "-113,\"Undefined header\""
+    }
+  ]
+}

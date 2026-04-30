@@ -1,0 +1,24 @@
+{
+  "name": "quirk_concurrent_default_on",
+  "description": "After *RST, :SENS:FUNC:CONC is ON \u2014 instrument measures all functions. Every Keithley programming example starts with :SENS:FUNC:CONC OFF.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30T14:37:38Z",
+  "dut_resistance_ohms": 100.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:FUNC:CONC?",
+      "response": "1"
+    }
+  ]
+}

@@ -1,0 +1,94 @@
+{
+  "name": "four_point_1ma_into_100ohm",
+  "description": "Four-point probe configuration (current source, voltage measure). 3 readings.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30T14:37:32Z",
+  "dut_resistance_ohms": 100.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SYST:RSEN OFF",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC:CONC OFF",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC 'VOLT:DC'",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:FUNC CURR",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:CURR:RANG 1e-3",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:CURR 1e-3",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:VOLT:PROT 5",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:VOLT:RANG:AUTO ON",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:VOLT:NPLC 1",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":FORM:ELEM VOLT,CURR,STAT",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP ON",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+9.970991E-02,+1.000000E-03,+3.584400E+04"
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+9.971071E-02,+1.000000E-03,+3.584400E+04"
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+9.971400E-02,+1.000000E-03,+3.584400E+04"
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP OFF",
+      "response": null
+    }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "instrument": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30",
+  "dut": "100Ω reference resistor, 4-wire Kelvin",
+  "line_frequency_hz": 60,
+  "compliance_bit_diagnosis": {
+    "stat_not_in_compliance": 4215812,
+    "stat_in_compliance": 4215820,
+    "xor": 8,
+    "compliance_bit_index": 3,
+    "comment": "STAT element of FORM:ELEM uses a different bit layout than the Measurement Event register (which reports compliance at bit 14 / +114). Bit 3 of the FORM:ELEM STAT word is the compliance flag for the 2400 series."
+  },
+  "form_elem_quirk": {
+    "requested": "CURR,VOLT,STAT",
+    "reported": "VOLT,CURR,STAT",
+    "comment": "Instrument silently re-orders FORM:ELEM arguments to canonical order: VOLT,CURR,RES,TIME,STAT. Argument ORDER is ignored; argument SET is honored."
+  },
+  "auto_ohms_quirk": {
+    "trigger": [":SENS:FUNC 'RES'", ":SOUR:CURR:RANG 1e-3"],
+    "error": "825,\"Invalid with auto-ohms on\"",
+    "fix": ":SENS:RES:MODE MAN before configuring source/compliance",
+    "applies_to": [":SOUR:CURR:RANG", ":SOUR:CURR", ":SENS:VOLT:PROT"]
+  },
+  "init_cont_quirk": {
+    "command": ":INIT:CONT ON",
+    "error": "-113,\"Undefined header\"",
+    "comment": "The :INIT:CONT subsystem does not exist on the 2400 series. :READ? handles init+trigger+fetch atomically."
+  },
+  "reset_state": {
+    ":SYST:LFR?": "60",
+    ":SYST:RSEN?": "0",
+    ":SYST:AZER:STAT?": "1",
+    ":SENS:FUNC?": "\"CURR:DC\"",
+    ":SENS:FUNC:CONC?": "1",
+    ":SENS:VOLT:NPLC?": "1.00",
+    ":SENS:CURR:NPLC?": "1.00",
+    ":SENS:RES:NPLC?": "1.00",
+    ":SENS:RES:MODE?": "AUTO",
+    ":SENS:RES:OCOM?": "0",
+    ":SENS:VOLT:PROT?": "2.100000E+01",
+    ":SENS:CURR:PROT?": "1.050000E-04",
+    ":SENS:VOLT:RANG?": "21.00",
+    ":SENS:CURR:RANG?": "1.050000E-04",
+    ":SENS:VOLT:RANG:AUTO?": "1",
+    ":SENS:CURR:RANG:AUTO?": "1",
+    ":SENS:AVER?": "0",
+    ":SENS:AVER:TCON?": "REP",
+    ":SENS:AVER:COUN?": "10",
+    ":SOUR:FUNC?": "VOLT",
+    ":SOUR:VOLT?": "0.000000E+00",
+    ":SOUR:CURR?": "0.000000E+00",
+    ":SOUR:VOLT:RANG?": "21.00",
+    ":SOUR:CURR:RANG?": "1.050000E-04",
+    ":SOUR:VOLT:MODE?": "FIX",
+    ":SOUR:CURR:MODE?": "FIX",
+    ":SOUR:DEL?": "0.00100",
+    ":SOUR:DEL:AUTO?": "1",
+    ":TRIG:COUN?": "1",
+    ":TRIG:DEL?": "0.00000",
+    ":FORM:ELEM?": "VOLT,CURR,RES,TIME,STAT",
+    ":OUTP?": "0",
+    ":OUTP:SMOD?": "NORM"
+  },
+  "stat_word_baseline_bits": {
+    "value": 4215812,
+    "binary": "10000000101010000000100",
+    "set_bits": [2, 9, 11, 13, 22],
+    "comment": "STAT bits set under normal source-V/measure-I conditions on a 100Ω DUT, no compliance. Bit 3 toggles for compliance; other bits encode range/function info we don't need to decode."
+  }
+}

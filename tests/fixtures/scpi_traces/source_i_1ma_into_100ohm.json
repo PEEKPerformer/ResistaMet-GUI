@@ -1,0 +1,94 @@
+{
+  "name": "source_i_1ma_into_100ohm",
+  "description": "Current source mode, 1mA into 100\u03a9, expect ~0.1V. 3 readings.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30T14:37:31Z",
+  "dut_resistance_ohms": 100.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SYST:RSEN ON",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC:CONC OFF",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC 'VOLT:DC'",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:FUNC CURR",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:CURR:RANG 1e-3",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:CURR 1e-3",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:VOLT:PROT 5",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:VOLT:RANG:AUTO ON",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:VOLT:NPLC 1",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":FORM:ELEM VOLT,CURR,STAT",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP ON",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+9.956992E-02,+1.000000E-03,+4.230148E+06"
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+9.956737E-02,+1.000000E-03,+4.230148E+06"
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+9.956972E-02,+1.000000E-03,+4.230148E+06"
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP OFF",
+      "response": null
+    }
+  ]
+}

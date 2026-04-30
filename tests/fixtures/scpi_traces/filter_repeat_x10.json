@@ -1,0 +1,104 @@
+{
+  "name": "filter_repeat_x10",
+  "description": "Hardware averaging filter (REP, count 10) enabled \u2014 :SENS:AVER ON returns averaged readings.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30T14:37:39Z",
+  "dut_resistance_ohms": 100.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SYST:RSEN ON",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC:CONC OFF",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC 'CURR:DC'",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:FUNC VOLT",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:VOLT 0.1",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:CURR:PROT 0.1",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:CURR:NPLC 1",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:AVER:TCON REP",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:AVER:COUN 10",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:AVER ON",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":FORM:ELEM VOLT,CURR,STAT",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP ON",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+1.000000E-01,+1.005176E-03,+4.215814E+06"
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP OFF",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:AVER?",
+      "response": "1"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:AVER:TCON?",
+      "response": "REP"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:AVER:COUN?",
+      "response": "10"
+    }
+  ]
+}

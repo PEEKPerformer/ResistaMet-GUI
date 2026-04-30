@@ -1,0 +1,104 @@
+{
+  "name": "sweep_v_0_to_0p5v_5pts_into_100ohm",
+  "description": "Voltage sweep 0->0.5V, step 0.125V (5 points). Expect linear I = V/100\u03a9.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30T14:37:34Z",
+  "dut_resistance_ohms": 100.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC:CONC OFF",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:FUNC VOLT",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC 'CURR:DC'",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:CURR:PROT 0.1",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:CURR:NPLC 1",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:VOLT:START 0.0",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:VOLT:STOP 0.5",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:VOLT:STEP 0.125",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:VOLT:MODE SWE",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:SWE:SPAC LIN",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:SWE:RANG AUTO",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":TRIG:COUN 5",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:DEL 0.01",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":FORM:ELEM VOLT,CURR,STAT",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP ON",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+0.000000E+00,+6.580336E-07,+2.150800E+04,+1.250000E-01,+1.254478E-03,+2.150800E+04,+2.500000E-01,+2.508094E-03,+2.150800E+04,+3.750000E-01,+3.761654E-03,+2.150800E+04,+5.000000E-01,+5.015420E-03,+2.150800E+04"
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP OFF",
+      "response": null
+    }
+  ]
+}

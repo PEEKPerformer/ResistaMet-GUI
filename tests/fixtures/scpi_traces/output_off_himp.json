@@ -1,0 +1,34 @@
+{
+  "name": "output_off_himp",
+  "description": ":OUTP:SMOD HIMP physically opens the output relay when output is OFF (DUT safety).",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30T14:37:41Z",
+  "dut_resistance_ohms": 100.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":OUTP:SMOD?",
+      "response": "NORM"
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP:SMOD HIMP",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":OUTP:SMOD?",
+      "response": "HIMP"
+    }
+  ]
+}

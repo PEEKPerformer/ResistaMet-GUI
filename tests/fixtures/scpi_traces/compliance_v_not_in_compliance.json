@@ -1,0 +1,84 @@
+{
+  "name": "compliance_v_not_in_compliance",
+  "description": "Source 0.5V into 100\u03a9 with 100mA current compliance. Hits 5mA, STAT bit 3 clear.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30T14:37:36Z",
+  "dut_resistance_ohms": 100.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SYST:RSEN ON",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC:CONC OFF",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC 'CURR:DC'",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:FUNC VOLT",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:VOLT:RANG 1.0",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:VOLT 0.5",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:CURR:PROT 100e-3",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:CURR:RANG 100e-3",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:CURR:NPLC 1",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":FORM:ELEM VOLT,CURR,STAT",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP ON",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+5.000000E-01,+5.023520E-03,+4.215812E+06"
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP OFF",
+      "response": null
+    }
+  ]
+}

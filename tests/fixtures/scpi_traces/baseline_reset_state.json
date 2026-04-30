@@ -1,0 +1,184 @@
+{
+  "name": "baseline_reset_state",
+  "description": "*RST then query a battery of settings to capture the documented default state.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30T14:37:27Z",
+  "dut_resistance_ohms": 100.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:LFR?",
+      "response": "60"
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:RSEN?",
+      "response": "0"
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:AZER:STAT?",
+      "response": "1"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:FUNC?",
+      "response": "\"CURR:DC\""
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:FUNC:CONC?",
+      "response": "1"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:VOLT:NPLC?",
+      "response": "1.00"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:CURR:NPLC?",
+      "response": "1.00"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:RES:NPLC?",
+      "response": "1.00"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:RES:MODE?",
+      "response": "AUTO"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:RES:OCOM?",
+      "response": "0"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:VOLT:PROT?",
+      "response": "2.100000E+01"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:CURR:PROT?",
+      "response": "1.050000E-04"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:VOLT:RANG?",
+      "response": "21.00"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:CURR:RANG?",
+      "response": "1.050000E-04"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:VOLT:RANG:AUTO?",
+      "response": "1"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:CURR:RANG:AUTO?",
+      "response": "1"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:AVER?",
+      "response": "0"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:AVER:TCON?",
+      "response": "REP"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:AVER:COUN?",
+      "response": "10"
+    },
+    {
+      "op": "query",
+      "cmd": ":SOUR:FUNC?",
+      "response": "VOLT"
+    },
+    {
+      "op": "query",
+      "cmd": ":SOUR:VOLT?",
+      "response": "0.000000E+00"
+    },
+    {
+      "op": "query",
+      "cmd": ":SOUR:CURR?",
+      "response": "0.000000E+00"
+    },
+    {
+      "op": "query",
+      "cmd": ":SOUR:VOLT:RANG?",
+      "response": "21.00"
+    },
+    {
+      "op": "query",
+      "cmd": ":SOUR:CURR:RANG?",
+      "response": "1.050000E-04"
+    },
+    {
+      "op": "query",
+      "cmd": ":SOUR:VOLT:MODE?",
+      "response": "FIX"
+    },
+    {
+      "op": "query",
+      "cmd": ":SOUR:CURR:MODE?",
+      "response": "FIX"
+    },
+    {
+      "op": "query",
+      "cmd": ":SOUR:DEL?",
+      "response": "0.00100"
+    },
+    {
+      "op": "query",
+      "cmd": ":SOUR:DEL:AUTO?",
+      "response": "1"
+    },
+    {
+      "op": "query",
+      "cmd": ":TRIG:COUN?",
+      "response": "1"
+    },
+    {
+      "op": "query",
+      "cmd": ":TRIG:DEL?",
+      "response": "0.00000"
+    },
+    {
+      "op": "query",
+      "cmd": ":FORM:ELEM?",
+      "response": "VOLT,CURR,RES,TIME,STAT"
+    },
+    {
+      "op": "query",
+      "cmd": ":OUTP?",
+      "response": "0"
+    },
+    {
+      "op": "query",
+      "cmd": ":OUTP:SMOD?",
+      "response": "NORM"
+    }
+  ]
+}

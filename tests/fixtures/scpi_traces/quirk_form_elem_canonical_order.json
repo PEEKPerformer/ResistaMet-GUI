@@ -1,0 +1,39 @@
+{
+  "name": "quirk_form_elem_canonical_order",
+  "description": "FORM:ELEM argument order is silently re-ordered to canonical (VOLT,CURR,RES,TIME,STAT). Argument SET is honored, ORDER is ignored.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30T14:37:37Z",
+  "dut_resistance_ohms": 100.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":FORM:ELEM CURR,VOLT,STAT",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":FORM:ELEM?",
+      "response": "VOLT,CURR,STAT"
+    },
+    {
+      "op": "write",
+      "cmd": ":FORM:ELEM STAT,RES,VOLT",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":FORM:ELEM?",
+      "response": "VOLT,RES,STAT"
+    }
+  ]
+}

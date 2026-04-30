@@ -1,0 +1,84 @@
+{
+  "name": "offset_compensated_ohms",
+  "description": ":SENS:RES:OCOM ON cancels thermoelectric EMF in resistance mode.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30T14:37:40Z",
+  "dut_resistance_ohms": 100.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SYST:RSEN ON",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC:CONC OFF",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC 'RES'",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:RES:MODE MAN",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:FUNC CURR",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:CURR 1e-3",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:VOLT:PROT 5",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:RES:OCOM ON",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:RES:OCOM?",
+      "response": "1"
+    },
+    {
+      "op": "write",
+      "cmd": ":FORM:ELEM RES,STAT",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP ON",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+9.958102E+01,+4.366340E+06"
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP OFF",
+      "response": null
+    }
+  ]
+}

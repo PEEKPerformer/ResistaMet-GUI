@@ -1,0 +1,79 @@
+{
+  "name": "quirk_auto_ohms_rejects_source",
+  "description": "After :SENS:FUNC 'RES', auto-ohms is ON and rejects source/compliance commands with error 825. The fix is :SENS:RES:MODE MAN.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30T14:37:36Z",
+  "dut_resistance_ohms": 100.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC 'RES'",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:ERR?",
+      "response": "0,\"No error\""
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:CURR:RANG 1e-3",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:ERR?",
+      "response": "825,\"Invalid with auto-ohms on\""
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:CURR 1e-3",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:ERR?",
+      "response": "825,\"Invalid with auto-ohms on\""
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:VOLT:PROT 5",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:ERR?",
+      "response": "825,\"Invalid with auto-ohms on\""
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:RES:MODE MAN",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:ERR?",
+      "response": "0,\"No error\""
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:CURR 1e-3",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:ERR?",
+      "response": "0,\"No error\""
+    }
+  ]
+}
