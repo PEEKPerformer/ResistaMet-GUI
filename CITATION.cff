@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "ResistaMet GUI: An Open-Source Electrical Measurement Suite for Keithley Sourcemeters"
+abstract: >
+  ResistaMet GUI is a PyQt5 desktop application for electrical characterization
+  using Keithley 2400/2450 sourcemeters. It provides resistance, voltage-source,
+  current-source, four-point probe, and hardware-driven I-V sweep measurement
+  modes with real-time visualization, multi-spot four-point probe analysis with
+  current-reversal (delta) mode, and dual-format JSON+CSV data export with
+  crash recovery.
+authors:
+  - family-names: Ferland
+    given-names: Brenden
+    orcid: "https://orcid.org/0009-0008-6566-6088"
+    affiliation: "Institute of Materials Science, University of Connecticut"
+version: 1.4.1
+date-released: "2026-04-30"
+license: MIT
+repository-code: "https://github.com/PEEKPerformer/ResistaMet-GUI"
+url: "https://github.com/PEEKPerformer/ResistaMet-GUI"
+type: software
+keywords:
+  - electrical-measurement
+  - four-point-probe
+  - keithley
+  - keithley-2400
+  - sheet-resistance
+  - resistivity
+  - sourcemeter
+  - materials-science
+  - laboratory-software
+  - scientific-instruments
+  - data-acquisition

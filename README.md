@@ -2,14 +2,14 @@
 
 Open-source graphical interface for electrical characterization using Keithley 2400/2450 sourcemeters, with advanced four-point probe analysis.
 
-**Version:** 1.3.0
+**Version:** 1.4.1
 **Author:** Brenden Ferland
 
 ![ResistaMet GUI Screenshot](resistamet-gui-screenshot.PNG)
 
 ## Overview
 
-ResistaMet GUI is a PyQt5-based desktop application for controlling Keithley sourcemeters and performing electrical measurements. It supports four measurement modes, real-time data visualization, multi-spot four-point probe analysis with delta mode, and dual-format data export.
+ResistaMet GUI is a PyQt5-based desktop application for controlling Keithley sourcemeters and performing electrical measurements. It supports five measurement modes (including hardware-driven I-V sweeps), real-time data visualization, multi-spot four-point probe analysis with delta mode, and dual-format data export.
 
 ## Features
 
@@ -21,6 +21,7 @@ ResistaMet GUI is a PyQt5-based desktop application for controlling Keithley sou
 | **Voltage Source** | Voltage (-200 to +200V) | Current | Bias stress, I-V characterization |
 | **Current Source** | Current (-3 to +3A) | Voltage | Material characterization |
 | **Four-Point Probe** | Current | Voltage | Sheet resistance, resistivity, conductivity |
+| **I-V Sweep** | Voltage or Current | Current or Voltage | Diode/device curves, hysteresis, breakdown |
 
 ### Four-Point Probe
 
@@ -30,6 +31,24 @@ ResistaMet GUI is a PyQt5-based desktop application for controlling Keithley sou
 - **Current reversal (delta mode)** -- alternates +I/-I to cancel thermoelectric EMF
 - Models: thin film, semi-infinite, finite thin, with configurable K factor and alpha correction
 - Inter-spot uniformity statistics in export
+
+### I-V Sweep
+
+- Hardware staircase sweep using the Keithley sweep engine (precise inter-step timing via the instrument's trigger model)
+- Source voltage or current with configurable start, stop, step, and per-step delay
+- Sweep directions: **up**, **down**, or **up-down** (forward + reverse for hysteresis curves)
+- Live X-Y I-V plot (separate canvas, not time-series)
+- Per-point NPLC and compliance limits
+
+### Instrument Optimizations (v1.4.0)
+
+- **Hardware averaging filter** -- repeat or moving average, 1-100 readings, runs on the Keithley itself (`:SENS:AVER`)
+- **Auto zero control** -- `on` (accurate), `once` (fast), or `off` (fastest, drifts); ~3x speed boost in fast mode
+- **Offset-compensated ohms** -- resistance mode option that cancels thermoelectric EMF in low-R DUTs
+- **Cable null** -- one-button measure-and-subtract of cable/lead resistance (software-side reference)
+- **Auto source delay** -- lets the instrument pick the optimal post-source settling time (`:SOUR:DEL:AUTO ON`)
+- **Non-concurrent functions** -- `:SENS:FUNC:CONC OFF` for cleaner readings on the 2400 series
+- **High-impedance output-off** -- `:OUTP:SMOD HIMP` protects the DUT when the output is disabled
 
 ### Engineering Notation Input
 
@@ -161,6 +180,17 @@ Tested with:
 
 ## Version History
 
+### v1.4.0 (2026-04-01)
+- I-V Sweep mode using the Keithley hardware sweep engine (up/down/up-down)
+- Hardware averaging filter (`:SENS:AVER`, repeat/moving, 1-100 count)
+- Auto zero control (on/once/off)
+- Offset-compensated ohms for resistance mode (thermoelectric cancellation)
+- Cable null / relative reference for lead-resistance subtraction
+- Auto source delay (`:SOUR:DEL:AUTO ON`)
+- Non-concurrent measurement functions (`:SENS:FUNC:CONC OFF`)
+- High-impedance output-off mode (`:OUTP:SMOD HIMP`) for DUT safety
+- Found via full Keithley 2400 manual audit; 144 tests passing
+
 ### v1.3.0 (2026-04-01)
 - Fixed 5 critical SCPI bugs found via live Keithley 2420 hardware testing
 - Engineering notation input for current/voltage fields
@@ -190,7 +220,7 @@ If you use ResistaMet GUI in your research, please cite:
 
 ```
 Ferland, B. (2026). ResistaMet GUI: An Open-Source Electrical Measurement Suite
-for Keithley Sourcemeters (Version 1.3.0) [Software].
+for Keithley Sourcemeters (Version 1.4.1) [Software].
 https://github.com/PEEKPerformer/ResistaMet-GUI
 ```
 
