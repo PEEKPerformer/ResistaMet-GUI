@@ -25,14 +25,19 @@ two physical instruments from the Keithley 2400 family:
 | Line frequency | 60 Hz | 60 Hz |
 | DUTs | 100 Ω (99.53 Ω), 10 kΩ (9914 Ω), 1 MΩ (1.029 MΩ) | 100 Ω (99.50 Ω) |
 
-**Cross-model evidence**: every SCPI fixture and every quirk-trigger
-test captured from the 2420 reproduces byte-equivalent (configuration
-queries) and within 5% / exact-on-compliance-bit (measurement queries)
-on the 2400 — 15/15 fixtures and 6/6 quirks pass cross-model
-(validated 2026-04-30). The two instruments share firmware C30 but
-differ in model, serial number, current rating, and option codes; the
-fixtures and the simulator are therefore validated against the 2400
-*family* rather than only one specific instrument.
+**Cross-model evidence**: every committed SCPI fixture (29 traces
+across 100 Ω / 10 kΩ / 1 MΩ DUTs) and every quirk-trigger test
+captured from the 2420 reproduces byte-equivalent (configuration
+queries) and within 5 % / exact-on-compliance-bit (measurement
+queries) on the 2400 — **29/29 fixtures and 6/6 quirks pass
+cross-model** (validated 2026-04-30). Cross-model pass counts by
+operating regime: 15/15 at 100 Ω (mA / 0.1 V), 8/8 at 10 kΩ (100 µA /
+1 V, including the 2-wire and negative-source-V variants), 6/6 at
+1 MΩ (µA / 1 V). The two instruments share firmware C30 but differ in
+model, serial number, current rating, and option codes; the fixtures
+and the simulator are therefore validated against the 2400 *family*
+across the full operating envelope of the production code, not only
+one specific unit at one operating point.
 
 Three decades of resistance are exercised:
 
@@ -148,7 +153,7 @@ provides the only safety net.
 | SCPI wrapper | No | `test_instrument.py` | 21/21 |
 | Worker integration | No | `test_workers.py` | 17/17 |
 | Hardware quirks | Yes | `tests/hardware/test_quirk_triggers.py` | 6/6 on 2420 + 6/6 on 2400 (validated 2026-04-30) |
-| Hardware recapture | Yes | `tests/hardware/test_recapture_traces.py` | 29/29 on 2420 + 15/15 (100Ω subset) on 2400 (validated 2026-04-30); set `RESISTAMET_DUT_OHMS` to filter |
+| Hardware recapture | Yes | `tests/hardware/test_recapture_traces.py` | 29/29 on 2420 + 29/29 cross-model on 2400 (validated 2026-04-30); set `RESISTAMET_DUT_OHMS` to filter |
 
 The CI pipeline (`.github/workflows/`) runs the four no-hardware tiers on
 every push. The two hardware tiers run locally before each release with
