@@ -1,0 +1,96 @@
+{
+  "name": "source_i_1uA_into_1Mohm",
+  "description": "Current source mode, 1uA into the DUT.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2400,1175680,C30   Mar 17 2006 09:29:29/A02  /K/J",
+  "model": "2400",
+  "serial": "1175680,C30",
+  "captured_at": "2026-04-30T20:04:08Z",
+  "dut_resistance_ohms": 1000000.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SYST:RSEN ON",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC:CONC OFF",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC 'VOLT:DC'",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:FUNC CURR",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:CURR:RANG 1e-06",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:CURR 1e-06",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:VOLT:PROT 5",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:VOLT:RANG:AUTO ON",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:VOLT:NPLC 1",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":FORM:ELEM VOLT,CURR,STAT",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP ON",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+1.030465E+00,+1.000000E-06,+4.230148E+06"
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+1.030480E+00,+1.000000E-06,+4.230148E+06"
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+1.030492E+00,+1.000000E-06,+4.230148E+06"
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP OFF",
+      "response": null
+    }
+  ]
+}

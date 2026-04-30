@@ -1,0 +1,61 @@
+{
+  "name": "quirk_auto_ohms_rejects_source",
+  "description": "Documented 2400-family quirk: after :SENS:FUNC 'RES', auto-ohms is ON and rejects :SOUR:CURR* / :SENS:VOLT:PROT with error 825.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2400,1175680,C30   Mar 17 2006 09:29:29/A02  /K/J",
+  "model": "2400",
+  "serial": "1175680,C30",
+  "captured_at": "2026-04-30T20:04:10Z",
+  "dut_resistance_ohms": 1000000.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC 'RES'",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:ERR?",
+      "response": "0,\"No error\""
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:CURR 1e-3",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:ERR?",
+      "response": "825,\"Invalid with auto-ohms on\""
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:RES:MODE MAN",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:ERR?",
+      "response": "0,\"No error\""
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:CURR 1e-3",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:ERR?",
+      "response": "0,\"No error\""
+    }
+  ]
+}

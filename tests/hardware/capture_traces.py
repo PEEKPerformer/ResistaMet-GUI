@@ -60,7 +60,7 @@ def _new_trace(name: str, description: str, idn: str) -> Trace:
         name=name,
         description=description,
         instrument_idn=idn,
-        captured_at=_dt.datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        captured_at=_dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         dut_resistance_ohms=DUT_OHMS,
     )
 

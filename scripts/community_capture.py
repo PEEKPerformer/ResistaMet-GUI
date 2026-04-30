@@ -192,13 +192,13 @@ def _drain(dev) -> None:
 
 
 def _new_trace(name: str, desc: str, *, idn: str, spec: Optional[ModelSpec],
-                serial: Optional[str], dut_ohms: float) -> Trace:
+                serial: Optional[str], dut: float) -> Trace:
     return Trace(
         name=name, description=desc, instrument_idn=idn,
         model=spec.model if spec else None,
         serial=serial,
-        captured_at=_dt.datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        dut_resistance_ohms=dut_ohms,
+        captured_at=_dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        dut_resistance_ohms=dut,
     )
 
 
@@ -459,7 +459,7 @@ def _polarity_check(dev, dut_ohms: float) -> bool:
     if not (expected_low < avg < expected_high):
         print(f"  MAGNITUDE OUTSIDE ±30% — confirm the DUT is {dut_ohms:g}Ω and Kelvin contacts are clean.")
         return False
-    print("  OK — proceeding to capture.")
+    print("  OK -- proceeding to capture.")
     return True
 
 

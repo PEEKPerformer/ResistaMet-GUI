@@ -1,0 +1,81 @@
+{
+  "name": "baseline_reset_state",
+  "description": "Default settings after *RST \u2014 used to verify model-level defaults match.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2400,1175680,C30   Mar 17 2006 09:29:29/A02  /K/J",
+  "model": "2400",
+  "serial": "1175680,C30",
+  "captured_at": "2026-04-30T20:04:04Z",
+  "dut_resistance_ohms": 1000000.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:LFR?",
+      "response": "60"
+    },
+    {
+      "op": "query",
+      "cmd": ":SYST:RSEN?",
+      "response": "0"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:FUNC?",
+      "response": "\"CURR:DC\""
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:FUNC:CONC?",
+      "response": "1"
+    },
+    {
+      "op": "query",
+      "cmd": ":SENS:RES:MODE?",
+      "response": "AUTO"
+    },
+    {
+      "op": "query",
+      "cmd": ":SOUR:FUNC?",
+      "response": "VOLT"
+    },
+    {
+      "op": "query",
+      "cmd": ":SOUR:VOLT?",
+      "response": "0.000000E+00"
+    },
+    {
+      "op": "query",
+      "cmd": ":SOUR:CURR?",
+      "response": "0.000000E+00"
+    },
+    {
+      "op": "query",
+      "cmd": ":TRIG:COUN?",
+      "response": "1"
+    },
+    {
+      "op": "query",
+      "cmd": ":FORM:ELEM?",
+      "response": "VOLT,CURR,RES,TIME,STAT"
+    },
+    {
+      "op": "query",
+      "cmd": ":OUTP?",
+      "response": "0"
+    },
+    {
+      "op": "query",
+      "cmd": ":OUTP:SMOD?",
+      "response": "NORM"
+    }
+  ]
+}

@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional  # noqa: F401
 
 
 @dataclass
@@ -32,6 +32,10 @@ class Trace:
     captured_at: str             # ISO 8601 date or datetime
     dut_resistance_ohms: float
     events: list[TraceEvent] = field(default_factory=list)
+    # Optional metadata recorded by the community capture script. The original
+    # bench captures predate these fields and load with both as None.
+    model: Optional[str] = None
+    serial: Optional[str] = None
 
     def to_json(self) -> str:
         payload = asdict(self)
