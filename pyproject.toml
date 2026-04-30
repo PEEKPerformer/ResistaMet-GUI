@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "resistamet-gui"
+version = "1.4.1"
+description = "Open-source GUI for electrical characterization with Keithley 2400/2450 sourcemeters and four-point probe analysis"
+readme = "README.md"
+license = { file = "LICENSE.md" }
+authors = [
+    { name = "Brenden Ferland", email = "dhadamsonlab@gmail.com" },
+]
+maintainers = [
+    { name = "Brenden Ferland", email = "dhadamsonlab@gmail.com" },
+]
+requires-python = ">=3.9"
+keywords = [
+    "electrical-measurement",
+    "four-point-probe",
+    "keithley",
+    "keithley-2400",
+    "sheet-resistance",
+    "resistivity",
+    "sourcemeter",
+    "materials-science",
+    "laboratory-software",
+    "scientific-instruments",
+    "data-acquisition",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: System :: Hardware",
+]
+dependencies = [
+    "PyQt5>=5.15.0",
+    "pyvisa>=1.11.0",
+    "pyvisa-py>=0.5.0",
+    "numpy>=1.19.0",
+    "matplotlib>=3.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+resistamet-gui = "resistamet_gui.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/PEEKPerformer/ResistaMet-GUI"
+Repository = "https://github.com/PEEKPerformer/ResistaMet-GUI"
+Issues = "https://github.com/PEEKPerformer/ResistaMet-GUI/issues"
+Releases = "https://github.com/PEEKPerformer/ResistaMet-GUI/releases"
+"DOI (concept)" = "https://doi.org/10.5281/zenodo.19919751"
+
+[tool.setuptools.packages.find]
+include = ["resistamet_gui*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -93,7 +93,7 @@ The live readout displays in engineering notation too: `V: 2.830 mV  I: 1.000 mA
 
 ### Requirements
 
-- Python 3.6+
+- Python 3.9+
 - PyQt5
 - PyVISA + a VISA backend (NI-VISA or pyvisa-py)
 - Matplotlib
