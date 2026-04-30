@@ -34,6 +34,7 @@ class MeasurementWorker(QThread):
     measurement_complete = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     compliance_hit = pyqtSignal(str)  # 'Voltage' or 'Current'
+    overpower_hit = pyqtSignal(float, float)  # measured_power_w, hard_stop_w (4PP only)
     sweep_complete = pyqtSignal(list, list, list)  # voltages, currents, compliance_list
 
     def __init__(self, mode, sample_name, username, settings, parent=None):
@@ -293,6 +294,41 @@ class MeasurementWorker(QThread):
                     self._fpp_delta_mode = bool(measurement_settings.get('fpp_delta_mode', False))
                     self._fpp_delta_settling = float(measurement_settings.get('fpp_delta_settling', 0.1))
                     self._fpp_source_current = source_current
+
+                    # Probe-safety thresholds (4PP only). The pre-flight check
+                    # below uses the configured worst-case I*V_compliance; the
+                    # runtime monitor uses measured V*I per sample.
+                    self._fpp_power_warn_w = float(
+                        measurement_settings.get('fpp_power_warn_w', 1.0e-2)
+                    )
+                    self._fpp_power_stop_w = float(
+                        measurement_settings.get('fpp_power_stop_w', 1.0e-1)
+                    )
+                    self._fpp_stop_on_overpower = bool(
+                        measurement_settings.get('fpp_stop_on_overpower', True)
+                    )
+                    self._fpp_overpower_emitted = False  # debounce: emit once
+
+                    # Pre-flight power envelope check: worst case is the user
+                    # asking for the full source current at the full compliance
+                    # voltage, i.e. probe sees I_source * V_compliance.
+                    worst_case_power = abs(source_current) * abs(voltage_compliance)
+                    if worst_case_power > self._fpp_power_stop_w:
+                        self.error_occurred.emit(
+                            f"Configured 4PP power ({worst_case_power*1e3:.1f} mW = "
+                            f"{abs(source_current)*1e3:.3g} mA × {abs(voltage_compliance):.3g} V) "
+                            f"exceeds the probe-safety hard stop "
+                            f"({self._fpp_power_stop_w*1e3:.0f} mW). Lower the source "
+                            f"current or the voltage compliance, or raise fpp_power_stop_w "
+                            f"in settings if you've reviewed the probe spec."
+                        )
+                        return
+                    if worst_case_power > self._fpp_power_warn_w:
+                        self.status_update.emit(
+                            f"⚠️ 4PP power envelope: up to {worst_case_power*1e3:.1f} mW "
+                            f"(I × V_comp). Above warning threshold "
+                            f"{self._fpp_power_warn_w*1e3:.0f} mW — proceed with care."
+                        )
 
                     metadata = {
                         'Mode': 'Four-Point Probe',
@@ -663,6 +699,41 @@ class MeasurementWorker(QThread):
                         if stop_on_comp:
                             self.status_update.emit("Stopping due to compliance (per settings).")
                             self.running = False
+
+                    # 4PP probe-safety runtime check: measured V*I against the
+                    # configured warn / hard-stop thresholds. Hard stop also
+                    # turns the output off on the worker side as a defense in
+                    # depth — _cleanup will run :OUTP OFF too on exit.
+                    if self.mode == 'four_point':
+                        v_meas = data_dict.get('voltage', float('nan'))
+                        i_meas = data_dict.get('current', float('nan'))
+                        if np.isfinite(v_meas) and np.isfinite(i_meas):
+                            measured_power = abs(v_meas * i_meas)
+                            stop_w = getattr(self, '_fpp_power_stop_w', 1.0e-1)
+                            warn_w = getattr(self, '_fpp_power_warn_w', 1.0e-2)
+                            if (measured_power > stop_w
+                                    and getattr(self, '_fpp_stop_on_overpower', True)):
+                                if not self._fpp_overpower_emitted:
+                                    self._fpp_overpower_emitted = True
+                                    try:
+                                        self.overpower_hit.emit(measured_power, stop_w)
+                                    except Exception:
+                                        pass
+                                self.error_occurred.emit(
+                                    f"4PP overpower: {measured_power*1e3:.1f} mW "
+                                    f"exceeds hard stop {stop_w*1e3:.0f} mW. "
+                                    f"Stopping to protect probe and sample."
+                                )
+                                try:
+                                    self.keithley.write(":OUTP OFF")
+                                except Exception:
+                                    pass
+                                self.running = False
+                            elif measured_power > warn_w:
+                                self.status_update.emit(
+                                    f"⚠️ 4PP power {measured_power*1e3:.1f} mW above "
+                                    f"warn threshold {warn_w*1e3:.0f} mW"
+                                )
 
                     # Atomically get and clear event marker (thread-safe)
                     event_marker = self.get_and_clear_event_marker()

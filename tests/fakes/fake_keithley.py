@@ -217,6 +217,7 @@ class FakeKeithley:
         dut_voltage_offset: float = 0.0,
         idn: Optional[str] = None,
         model: Optional[str] = None,
+        dut_resistance_callable=None,
     ):
         """Construct a fake instrument.
 
@@ -230,12 +231,18 @@ class FakeKeithley:
                 and the production code's ``detect_model()`` will identify
                 it. Defaults to "2420" when neither ``idn`` nor ``model``
                 is given (matches the bench reference instrument).
+            dut_resistance_callable: Optional zero-arg callable returning a
+                fresh resistance value on each :READ?. Lets tests simulate a
+                DUT whose effective R changes during a run (e.g., sample
+                heating, thermistor-like behavior). When set, supersedes
+                ``dut_resistance_ohms`` for read-time computation.
         """
         if idn is not None and model is not None:
             raise ValueError("pass either idn= or model=, not both")
         if idn is None:
             idn = _idn_for_model(model) if model is not None else DEFAULT_IDN
-        self.dut_resistance = dut_resistance_ohms
+        self._dut_r_static = dut_resistance_ohms
+        self._dut_r_callable = dut_resistance_callable
         self.dut_voltage_offset = dut_voltage_offset
         self._idn = idn
 
@@ -256,6 +263,17 @@ class FakeKeithley:
 
         # State
         self._reset()
+
+    @property
+    def dut_resistance(self) -> float:
+        if self._dut_r_callable is not None:
+            return float(self._dut_r_callable())
+        return self._dut_r_static
+
+    @dut_resistance.setter
+    def dut_resistance(self, value: float) -> None:
+        self._dut_r_static = float(value)
+        self._dut_r_callable = None
 
     # ------------------------------------------------------------------ state
 

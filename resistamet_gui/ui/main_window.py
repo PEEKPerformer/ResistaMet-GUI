@@ -470,6 +470,35 @@ class ResistanceMeterApp(QMainWindow):
         main_container.fpp_delta_settling.setEnabled(False)
         main_container.fpp_delta_mode.toggled.connect(main_container.fpp_delta_settling.setEnabled)
         adv_form.addRow("Delta Settling:", main_container.fpp_delta_settling)
+
+        # Probe safety: pre-flight + runtime power envelope.
+        main_container.fpp_power_warn_w = QDoubleSpinBox(
+            decimals=4, minimum=0.0001, maximum=10.0, singleStep=0.001, suffix=" W"
+        )
+        main_container.fpp_power_warn_w.setValue(0.01)
+        main_container.fpp_power_warn_w.setToolTip(
+            "Power envelope at which the run flashes a warning (no stop).\n"
+            "Default 10 mW — typical conservative threshold for thin-film\n"
+            "samples and tungsten-carbide 4PP probes (Signatone SP4 family).")
+        adv_form.addRow("Power Warn:", main_container.fpp_power_warn_w)
+        main_container.fpp_power_stop_w = QDoubleSpinBox(
+            decimals=4, minimum=0.0001, maximum=22.0, singleStep=0.01, suffix=" W"
+        )
+        main_container.fpp_power_stop_w.setValue(0.1)
+        main_container.fpp_power_stop_w.setToolTip(
+            "Hard stop: aborts the run if measured V×I exceeds this.\n"
+            "Default 100 mW. Pre-flight check at Start refuses to begin\n"
+            "if the worst-case I_source × V_compliance exceeds this value.\n"
+            "Raise only after reviewing your specific probe's spec sheet.")
+        adv_form.addRow("Power Stop:", main_container.fpp_power_stop_w)
+        main_container.fpp_stop_on_overpower = QCheckBox("Stop on Overpower")
+        main_container.fpp_stop_on_overpower.setChecked(True)
+        main_container.fpp_stop_on_overpower.setToolTip(
+            "When checked, the run aborts immediately if measured power\n"
+            "exceeds Power Stop. Uncheck to log a warning but keep running\n"
+            "(advanced — not recommended for delicate samples).")
+        adv_form.addRow(main_container.fpp_stop_on_overpower)
+
         layout.addRow("", adv_group)
         
         # Mark event
@@ -1119,6 +1148,12 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_four_point.fpp_model.setCurrentText(m_cfg.get('fpp_model', 'thin_film'))
         self.tab_four_point.fpp_k_factor.setValue(m_cfg.get('fpp_k_factor', 4.532))
         self.tab_four_point.fpp_samples.setValue(int(m_cfg.get('fpp_samples', 0)))
+        if hasattr(self.tab_four_point, 'fpp_power_warn_w'):
+            self.tab_four_point.fpp_power_warn_w.setValue(float(m_cfg.get('fpp_power_warn_w', 1.0e-2)))
+        if hasattr(self.tab_four_point, 'fpp_power_stop_w'):
+            self.tab_four_point.fpp_power_stop_w.setValue(float(m_cfg.get('fpp_power_stop_w', 1.0e-1)))
+        if hasattr(self.tab_four_point, 'fpp_stop_on_overpower'):
+            self.tab_four_point.fpp_stop_on_overpower.setChecked(bool(m_cfg.get('fpp_stop_on_overpower', True)))
         self.tab_four_point.nplc.setValue(m_cfg['nplc'])
         self.tab_four_point.sampling_rate.setValue(m_cfg['sampling_rate'])
         self.tab_four_point.fpp_plot_var.setCurrentText('sheet_Rs')
@@ -1205,6 +1240,12 @@ class ResistanceMeterApp(QMainWindow):
                     m_cfg['fpp_delta_mode'] = widget.fpp_delta_mode.isChecked()
                 if hasattr(widget, 'fpp_delta_settling'):
                     m_cfg['fpp_delta_settling'] = widget.fpp_delta_settling.value()
+                if hasattr(widget, 'fpp_power_warn_w'):
+                    m_cfg['fpp_power_warn_w'] = widget.fpp_power_warn_w.value()
+                if hasattr(widget, 'fpp_power_stop_w'):
+                    m_cfg['fpp_power_stop_w'] = widget.fpp_power_stop_w.value()
+                if hasattr(widget, 'fpp_stop_on_overpower'):
+                    m_cfg['fpp_stop_on_overpower'] = widget.fpp_stop_on_overpower.isChecked()
             elif mode == 'sweep':
                 m_cfg['sweep_source'] = widget.sweep_source.currentText()
                 m_cfg['sweep_start'] = widget.sweep_start.value()
@@ -1351,7 +1392,19 @@ class ResistanceMeterApp(QMainWindow):
         if widget and hasattr(widget, 'live_readout'):
             if self.active_mode == 'resistance':
                 r = value.get('resistance', float('nan'))
-                widget.live_readout.setText(format_engineering(r, '\u03a9') if np.isfinite(r) else "-- \u03a9")
+                if np.isfinite(r):
+                    parts = [format_engineering(r, '\u03a9')]
+                    # In resistance mode the worker doesn't emit V/I, but we know
+                    # the configured test current \u2014 compute P = I^2 * R.
+                    try:
+                        i_test = float(widget.res_test_current.value())
+                    except Exception:
+                        i_test = float('nan')
+                    if np.isfinite(i_test) and i_test != 0:
+                        parts.append(f"P: {format_engineering(abs(i_test * i_test * r), 'W')}")
+                    widget.live_readout.setText("   ".join(parts))
+                else:
+                    widget.live_readout.setText("-- \u03a9")
             elif self.active_mode in ('source_v', 'source_i'):
                 v = value.get('voltage', float('nan'))
                 i = value.get('current', float('nan'))
@@ -1363,6 +1416,8 @@ class ResistanceMeterApp(QMainWindow):
                 if np.isfinite(v) and np.isfinite(i) and i != 0:
                     ohm = '\u03a9'
                     parts.append(f"R: {format_engineering(v/i, ohm)}")
+                if np.isfinite(v) and np.isfinite(i):
+                    parts.append(f"P: {format_engineering(abs(v * i), 'W')}")
                 widget.live_readout.setText("   ".join(parts) if parts else "--")
             elif self.active_mode == 'four_point':
                 self._update_fpp_live_readout(widget, value, is_bd)
@@ -1517,6 +1572,8 @@ class ResistanceMeterApp(QMainWindow):
                 parts.append(f"I: {format_engineering(i, 'A')}")
             if np.isfinite(v) and np.isfinite(i) and i != 0:
                 parts.append(f"R: {format_engineering(v/i, 'Ω')}")
+            if np.isfinite(v) and np.isfinite(i):
+                parts.append(f"P: {format_engineering(abs(v * i), 'W')}")
             widget.live_readout.setText("   ".join(parts) if parts else "--")
             widget.live_readout.setStyleSheet(
                 "color: #222; background: #f0f0f0; border: 1px solid #ccc; "

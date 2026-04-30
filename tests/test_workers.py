@@ -105,7 +105,9 @@ def _source_i_settings(tmp_path):
     return s
 
 
-def _four_point_settings(tmp_path, samples=3, delta_mode=False):
+def _four_point_settings(tmp_path, samples=3, delta_mode=False,
+                           power_warn_w=1.0e-2, power_stop_w=1.0e-1,
+                           stop_on_overpower=True):
     s = _base_settings(tmp_path)
     s["measurement"].update({
         "fpp_current": 1e-3,
@@ -119,6 +121,9 @@ def _four_point_settings(tmp_path, samples=3, delta_mode=False):
         "fpp_model": "thin_film",
         "fpp_delta_mode": delta_mode,
         "fpp_delta_settling": 0.01,
+        "fpp_power_warn_w": power_warn_w,
+        "fpp_power_stop_w": power_stop_w,
+        "fpp_stop_on_overpower": stop_on_overpower,
     })
     return s
 
@@ -334,6 +339,90 @@ class TestFourPointMode:
         seen_neg = any(_value(c) < 0 for c in sour_curr_writes)
         assert seen_pos, f"no +I write in delta mode: {sour_curr_writes}"
         assert seen_neg, f"no -I write in delta mode: {sour_curr_writes}"
+
+
+class TestFourPointPowerSafety:
+    """Pre-flight and runtime safety checks for the 4PP probe power envelope."""
+
+    def test_preflight_blocks_run_above_hard_stop(self, qapp, fake_rm, tmp_path):
+        """Worst-case I × V_comp = 1mA × 100V = 100mW; hard stop at 50mW
+        should refuse to start the run."""
+        settings = _four_point_settings(
+            tmp_path, samples=3,
+            power_warn_w=10e-3, power_stop_w=50e-3, stop_on_overpower=True,
+        )
+        settings["measurement"]["fpp_current"] = 1e-3
+        settings["measurement"]["fpp_voltage_compliance"] = 100.0  # I*V = 100mW > 50mW
+        worker = MeasurementWorker("four_point", "preflight", "alice", settings)
+        spies = _drive_worker(qapp, worker, timeout_s=4.0)
+
+        # Should error out without ever taking a sample
+        assert spies.data_point == []
+        assert any("hard stop" in e.lower() for e in spies.error_occurred), (
+            f"expected hard-stop error, got: {spies.error_occurred}"
+        )
+        assert any("100" in e and "mW" in e for e in spies.error_occurred)
+
+    def test_preflight_warns_above_warn_threshold(self, qapp, fake_rm, tmp_path):
+        """Worst-case 1mA × 30V = 30mW; warn at 10mW, stop at 100mW.
+        Should warn but proceed to sample."""
+        settings = _four_point_settings(
+            tmp_path, samples=2,
+            power_warn_w=10e-3, power_stop_w=100e-3, stop_on_overpower=True,
+        )
+        settings["measurement"]["fpp_current"] = 1e-3
+        settings["measurement"]["fpp_voltage_compliance"] = 30.0
+        worker = MeasurementWorker("four_point", "warn", "alice", settings)
+        spies = _drive_worker(qapp, worker, timeout_s=8.0)
+
+        assert spies.error_occurred == []
+        assert len(spies.data_point) >= 1
+        assert any("4PP power envelope" in s for s in spies.status_update)
+
+    # Note on the missing runtime-abort test:
+    # In source-I mode (which 4PP always uses), measured power is always
+    # ≤ I_setpoint × V_compliance — the same quantity the pre-flight check
+    # uses. So the runtime "abort" path can't trigger without pre-flight
+    # also blocking. The runtime *condition* (the same `if measured > stop`
+    # check that triggers the abort) is exercised by
+    # ``test_runtime_overpower_warns_only_when_stop_disabled`` below; the
+    # only difference between warn and abort is the boolean flag and which
+    # signal fires. The runtime check is genuinely useful as defense in
+    # depth against DUTs that exhibit dynamic resistance changes a real
+    # instrument would surface but our fake doesn't model (e.g., a sample
+    # whose R drops as it heats up under bias).
+
+    def test_runtime_overpower_warns_only_when_stop_disabled(self, qapp, fake_rm, tmp_path):
+        """With stop_on_overpower=False, warn but keep running. Exercises the
+        same runtime-power check that drives the abort path."""
+        settings = _four_point_settings(
+            tmp_path, samples=3,
+            # Default fake: 1mA × 100Ω = 100µW measured. Set warn at 10µW so
+            # every sample trips warn; stop at 1mW so neither pre-flight (1mA
+            # × 5V = 5mW) nor measured (100µW) trip stop.
+            power_warn_w=10e-6, power_stop_w=10e-3, stop_on_overpower=False,
+        )
+        worker = MeasurementWorker("four_point", "rt_warn", "alice", settings)
+        spies = _drive_worker(qapp, worker, timeout_s=6.0)
+
+        assert spies.error_occurred == []
+        assert len(spies.data_point) == 3
+        assert any("warn threshold" in s for s in spies.status_update), (
+            f"expected warn message in status: {spies.status_update}"
+        )
+
+    def test_safe_run_does_not_warn_or_stop(self, qapp, fake_rm, tmp_path):
+        """Defaults: 1mA × 5V comp = 5mW pre-flight, 100µW measured.
+        Both below default warn (10mW) and stop (100mW)."""
+        settings = _four_point_settings(tmp_path, samples=3)
+        worker = MeasurementWorker("four_point", "safe", "alice", settings)
+        spies = _drive_worker(qapp, worker, timeout_s=8.0)
+
+        assert spies.error_occurred == []
+        assert len(spies.data_point) == 3
+        # No power-related warnings
+        assert not any("envelope" in s or "above warn" in s
+                       for s in spies.status_update)
 
 
 class TestSweepMode:

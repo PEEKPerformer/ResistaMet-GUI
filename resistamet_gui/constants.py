@@ -50,6 +50,13 @@ DEFAULT_SETTINGS = {
         "fpp_model": "thin_film",             # one of: thin_film, semi_infinite, finite_thin, finite_alpha
         "fpp_delta_mode": False,              # current reversal (delta) mode — alternates +I/-I to cancel thermoelectric EMF
         "fpp_delta_settling": 0.1,            # settling time (s) between polarity flips in delta mode
+        # 4PP probe safety. Defaults sized for the Signatone SP4 series:
+        # tungsten-carbide tips with ~100 mA continuous spec; tens of mW is a
+        # conservative warning threshold for thin films and conductive polymers
+        # where local Joule heating can melt the sample before the probe.
+        "fpp_power_warn_w": 1.0e-2,           # warn (status flash) above this measured V*I, watts
+        "fpp_power_stop_w": 1.0e-1,           # hard stop above this measured V*I, watts
+        "fpp_stop_on_overpower": True,        # abort 4PP run if measured power exceeds fpp_power_stop_w
         # I-V Sweep defaults
         "sweep_source": "voltage",           # "voltage" or "current"
         "sweep_start": 0.0,                  # sweep start value (V or A)
