@@ -111,6 +111,15 @@ provides the only safety net.
   Event Register layout must run on real hardware.
 - **Front-panel state, calibration data, save/recall slots**: ignored by
   the simulator.
+- **Delta mode hardware capture**: the production worker's current-
+  reversal path (`+I → :READ? → -I → :READ? → +I`) is exercised in CI by
+  `test_workers.py::test_four_point_delta_mode_alternates_polarity`, which
+  asserts the right SCPI command sequence is sent. We do not currently
+  ship a hardware trace for delta mode; an attempt at 10kΩ exposed a
+  polarity asymmetry in the lab Kelvin wiring that was wiring-specific
+  (current direction reversal hit voltage-protection compliance) rather
+  than instrument-specific, so the trace was not committed. A future
+  capture on a known-symmetric setup would close this gap.
 
 ## Test tier overview
 
@@ -118,11 +127,11 @@ provides the only safety net.
 |---|---|---|---|
 | Pure unit | No | `test_buffers.py`, `test_calculations.py`, `test_config.py`, `test_data_export.py`, `test_system_utils.py`, `test_widgets.py` | (existing) |
 | GUI smoke | No (offscreen Qt) | `test_gui_smoke.py` | (existing) |
-| Trace replay | No | `test_fake_matches_hardware.py` | 22/22 (15 at 100Ω, 6 at 10kΩ, 1 diagnosis) |
+| Trace replay | No | `test_fake_matches_hardware.py` | 24/24 (23 traces + 1 sanity) |
 | SCPI wrapper | No | `test_instrument.py` | 21/21 |
 | Worker integration | No | `test_workers.py` | 17/17 |
 | Hardware quirks | Yes | `tests/hardware/test_quirk_triggers.py` | 6/6 (validated 2026-04-30) |
-| Hardware recapture | Yes | `tests/hardware/test_recapture_traces.py` | 21/21 (15 at 100Ω + 6 at 10kΩ, validated 2026-04-30); set `RESISTAMET_DUT_OHMS` to filter to one DUT |
+| Hardware recapture | Yes | `tests/hardware/test_recapture_traces.py` | 23/23 (15 at 100Ω + 8 at 10kΩ, validated 2026-04-30); set `RESISTAMET_DUT_OHMS` to filter to one DUT |
 
 The CI pipeline (`.github/workflows/`) runs the four no-hardware tiers on
 every push. The two hardware tiers run locally before each release with

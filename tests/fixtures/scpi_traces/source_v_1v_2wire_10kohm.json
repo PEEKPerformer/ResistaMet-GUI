@@ -1,0 +1,94 @@
+{
+  "name": "source_v_1v_2wire_10kohm",
+  "description": "Source-V mode in 2-wire (:SYST:RSEN OFF) \u2014 the path that source-V production code uses by default. 1V into 10kohm, expect ~100uA.",
+  "instrument_idn": "KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L",
+  "captured_at": "2026-04-30T16:24:30Z",
+  "dut_resistance_ohms": 10000.0,
+  "events": [
+    {
+      "op": "write",
+      "cmd": "*RST",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": "*CLS",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SYST:RSEN OFF",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC:CONC OFF",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:FUNC 'CURR:DC'",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:FUNC VOLT",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:VOLT:RANG 2.0",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SOUR:VOLT 1.0",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:CURR:PROT 1e-3",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:CURR:RANG:AUTO ON",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":SENS:CURR:NPLC 1",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":FORM:ELEM VOLT,CURR,STAT",
+      "response": null
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP ON",
+      "response": null
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+1.000000E+00,+1.008537E-04,+2.150800E+04"
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+1.000000E+00,+1.008536E-04,+2.150800E+04"
+    },
+    {
+      "op": "query",
+      "cmd": ":READ?",
+      "response": "+1.000000E+00,+1.008543E-04,+2.150800E+04"
+    },
+    {
+      "op": "write",
+      "cmd": ":OUTP OFF",
+      "response": null
+    }
+  ]
+}
