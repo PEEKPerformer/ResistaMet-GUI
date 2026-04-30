@@ -178,7 +178,6 @@ cython_debug/
 !CONTRIBUTING.md
 !CODE_OF_CONDUCT.md
 !docs/*.md
-!paper/*.md
 resistamet-gui-1.1.0.py
 
 # v1.4.0 SCPI debugging / diagnostic scratch scripts at repo root.
@@ -189,6 +188,7 @@ debug_*.py
 diag_*.py
 production_test.py
 test_settings.py
+paper/
 resistamet-gui_old.py
 
 # macOS system files
