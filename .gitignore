@@ -177,6 +177,7 @@ cython_debug/
 !LICENSE.md
 !CONTRIBUTING.md
 !CODE_OF_CONDUCT.md
+!docs/*.md
 resistamet-gui-1.1.0.py
 resistamet-gui_old.py
 
