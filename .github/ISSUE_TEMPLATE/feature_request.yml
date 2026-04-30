@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest a new feature or measurement mode
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: What measurement workflow or use case is currently awkward or impossible?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would the feature work? Mock-ups, equations, SCPI commands all welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other tools, scripts, or workarounds you've used.
+
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware context
+      description: Which Keithley models / firmwares does this apply to? Are there SCPI command differences across the 2400 series for this feature?
