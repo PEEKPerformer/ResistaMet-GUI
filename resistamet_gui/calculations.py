@@ -136,6 +136,74 @@ def calculate_resistivity(
         return alpha * 2 * np.pi * spacing_cm * ratio
 
 
+# Keithley 2400-series current measurement ranges
+_KEITHLEY_2400_CURRENT_RANGES = (1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0)
+# Conservative noise floor as fraction of full-scale on the active range
+_KEITHLEY_2400_FLOOR_FRACTION = 1e-3
+
+
+def estimate_current_floor(source_current: float) -> float:
+    """Conservative noise floor of the 2400-series current meter on the active range.
+
+    The 2400's measurement range tracks the source range. Returns roughly 0.1%
+    of the full-scale of the smallest range that contains source_current.
+
+    Args:
+        source_current: Programmed source current in Amps (sign ignored)
+
+    Returns:
+        Estimated current measurement noise floor in Amps
+    """
+    fallback = _KEITHLEY_2400_CURRENT_RANGES[-1] * _KEITHLEY_2400_FLOOR_FRACTION
+    if not np.isfinite(source_current) or source_current == 0:
+        return fallback
+    abs_i = abs(source_current)
+    for r in _KEITHLEY_2400_CURRENT_RANGES:
+        if abs_i <= r:
+            return r * _KEITHLEY_2400_FLOOR_FRACTION
+    return fallback
+
+
+def calculate_four_point_probe_bound(
+    v_compliance: float,
+    measured_current: float,
+    source_current: float,
+    spacing_cm: float,
+    thickness_um: float,
+    k_factor: float = DEFAULT_K_FACTOR,
+    alpha: float = 1.0,
+    model: str = 'thin_film',
+) -> 'FourPointProbeResult':
+    """Compute defensible bounds when the source is in voltage compliance.
+
+    With V pinned at v_compliance, the actual current that flowed is bounded
+    above by max(|I_measured|, current_floor). The returned values are LOWER
+    bounds for ratio, sheet_resistance, resistivity, and an UPPER bound for
+    conductivity. Display them with ≤ / ≥ — never as bare measurements.
+    """
+    i_floor = estimate_current_floor(source_current)
+    if np.isfinite(measured_current):
+        i_eff = max(abs(measured_current), i_floor)
+    else:
+        i_eff = i_floor
+    if i_eff == 0:
+        nan = float('nan')
+        return FourPointProbeResult(nan, nan, nan, nan)
+    bounded_ratio = abs(v_compliance) / i_eff
+    rs_min = calculate_sheet_resistance(bounded_ratio, k_factor, alpha, model)
+    thickness_cm = thickness_um * 1e-4
+    rho_min = calculate_resistivity(
+        bounded_ratio, spacing_cm, thickness_cm, k_factor, alpha, model
+    )
+    sigma_max = calculate_conductivity(rho_min)
+    return FourPointProbeResult(
+        ratio=bounded_ratio,
+        sheet_resistance=rs_min,
+        resistivity=rho_min,
+        conductivity=sigma_max,
+    )
+
+
 def calculate_conductivity(resistivity: float) -> float:
     """Calculate conductivity from resistivity.
 

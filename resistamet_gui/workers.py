@@ -662,17 +662,28 @@ class MeasurementWorker(QThread):
                     elif self.mode == 'four_point':
                         v = data_dict.get('voltage', float('nan'))
                         i = data_dict.get('current', float('nan'))
-                        # Use calculations module for 4PP
-                        from .calculations import calculate_four_point_probe
-                        result = calculate_four_point_probe(
-                            voltage=v,
-                            current=i,
+                        # Use calculations module for 4PP. When in compliance the
+                        # derived values are bounds, not measurements.
+                        fpp_kwargs = dict(
                             spacing_cm=float(measurement_settings.get('fpp_spacing_cm') or 0.1016),
                             thickness_um=float(measurement_settings.get('fpp_thickness_um') or 0.0),
                             k_factor=float(measurement_settings.get('fpp_k_factor') or 4.532),
                             alpha=float(measurement_settings.get('fpp_alpha') or 1.0),
-                            model=str(measurement_settings.get('fpp_model') or 'thin_film')
+                            model=str(measurement_settings.get('fpp_model') or 'thin_film'),
                         )
+                        if compliance_status != 'OK':
+                            from .calculations import calculate_four_point_probe_bound
+                            result = calculate_four_point_probe_bound(
+                                v_compliance=float(measurement_settings.get('fpp_voltage_compliance') or 5.0),
+                                measured_current=i,
+                                source_current=float(measurement_settings.get('fpp_current') or 1e-3),
+                                **fpp_kwargs,
+                            )
+                        else:
+                            from .calculations import calculate_four_point_probe
+                            result = calculate_four_point_probe(
+                                voltage=v, current=i, **fpp_kwargs,
+                            )
                         row_data = [
                             elapsed_time, v, i,
                             result.ratio, result.sheet_resistance,

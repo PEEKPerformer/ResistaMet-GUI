@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QTabWidget, QVBoxLayout, QWidget, QFileDialog, QSplitter, QTableWidget, QTableWidgetItem, QDialog,
     QSpinBox, QSizePolicy, QInputDialog
 )
-from PyQt5.QtGui import QIcon, QFont
+from PyQt5.QtGui import QIcon, QFont, QBrush, QColor
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
 from ..buffers import EnhancedDataBuffer
@@ -1347,11 +1347,12 @@ class ResistanceMeterApp(QMainWindow):
 
         # Update live readout with engineering notation
         widget = self.get_widget_for_mode(self.active_mode)
+        is_bd = (compliance_status != 'OK')
         if widget and hasattr(widget, 'live_readout'):
             if self.active_mode == 'resistance':
                 r = value.get('resistance', float('nan'))
                 widget.live_readout.setText(format_engineering(r, '\u03a9') if np.isfinite(r) else "-- \u03a9")
-            elif self.active_mode in ('source_v', 'source_i', 'four_point'):
+            elif self.active_mode in ('source_v', 'source_i'):
                 v = value.get('voltage', float('nan'))
                 i = value.get('current', float('nan'))
                 parts = []
@@ -1363,35 +1364,42 @@ class ResistanceMeterApp(QMainWindow):
                     ohm = '\u03a9'
                     parts.append(f"R: {format_engineering(v/i, ohm)}")
                 widget.live_readout.setText("   ".join(parts) if parts else "--")
+            elif self.active_mode == 'four_point':
+                self._update_fpp_live_readout(widget, value, is_bd)
 
         # Append a row to 4PP table and update stats live
         if self.active_mode == 'four_point':
             w = self.tab_four_point
             v = value.get('voltage', float('nan'))
             i = value.get('current', float('nan'))
-            ratio = (v / i) if (isinstance(i, (int, float)) and i != 0 and not np.isnan(i)) else float('nan')
-            s = w.fpp_spacing_cm.value()
-            t_um = w.fpp_thickness_um.value(); t_cm = t_um * 1e-4
-            alpha = w.fpp_alpha.value(); k = w.fpp_k_factor.value() or 4.532
-            model = w.fpp_model.currentText()
-            if model == 'thin_film' and alpha and alpha != 1.0:
-                rs = (k * alpha * ratio) if np.isfinite(ratio) else float('nan')
+            from ..calculations import (
+                calculate_four_point_probe,
+                calculate_four_point_probe_bound,
+            )
+            fpp_kwargs = dict(
+                spacing_cm=w.fpp_spacing_cm.value(),
+                thickness_um=w.fpp_thickness_um.value(),
+                k_factor=w.fpp_k_factor.value() or 4.532,
+                alpha=w.fpp_alpha.value(),
+                model=w.fpp_model.currentText(),
+            )
+            if is_bd:
+                result = calculate_four_point_probe_bound(
+                    v_compliance=w.fpp_voltage_compliance.value(),
+                    measured_current=i,
+                    source_current=w.fpp_current.value(),
+                    **fpp_kwargs,
+                )
             else:
-                rs = (k * ratio) if np.isfinite(ratio) else float('nan')
-            if model == 'semi_infinite':
-                rho = 2*np.pi*s*ratio if np.isfinite(ratio) else float('nan')
-            elif model in ('thin_film','finite_thin'):
-                k_eff = k * (alpha if (model == 'thin_film' and alpha and alpha != 1.0) else 1.0)
-                rho = (k_eff * t_cm * ratio) if np.isfinite(ratio) else float('nan')
-            else:
-                rho = (alpha * 2*np.pi*s*ratio) if np.isfinite(ratio) else float('nan')
-            # Calculate conductivity safely to avoid divide by zero warnings
-            with np.errstate(divide='ignore', invalid='ignore'):
-                sigma = (1.0 / rho) if (np.isfinite(rho) and rho != 0) else float('nan')
-            # Elapsed time relative to first timestamp in buffer
+                result = calculate_four_point_probe(voltage=v, current=i, **fpp_kwargs)
             ts, _, _ = buffer.get_data_for_plot('voltage')
             elapsed = (timestamp - ts[0]) if ts else 0.0
-            row = (elapsed, v, i, ratio, rs, rho, sigma, compliance_status, event)
+            row = (
+                elapsed, v, i,
+                result.ratio, result.sheet_resistance,
+                result.resistivity, result.conductivity,
+                compliance_status, event,
+            )
             w._fpp_rows.append(row)
             self._append_four_point_row(row)
             self._update_four_point_stats()
@@ -1463,26 +1471,100 @@ class ResistanceMeterApp(QMainWindow):
                 }
             widget.canvas.update_plot(timestamps, values, compliance_list, stats, self.current_user, self.sample_input.text())
 
+    def _update_fpp_live_readout(self, widget, value, is_bd):
+        """Live readout for 4PP. Bare numbers only when the point is valid;
+        BD points show the upper bound on σ with explicit ≤ and amber styling.
+        """
+        v = value.get('voltage', float('nan'))
+        i = value.get('current', float('nan'))
+        if is_bd:
+            from ..calculations import (
+                calculate_four_point_probe_bound, estimate_current_floor,
+            )
+            src_i = widget.fpp_current.value()
+            i_floor = estimate_current_floor(src_i)
+            bound = calculate_four_point_probe_bound(
+                v_compliance=widget.fpp_voltage_compliance.value(),
+                measured_current=i,
+                source_current=src_i,
+                spacing_cm=widget.fpp_spacing_cm.value(),
+                thickness_um=widget.fpp_thickness_um.value(),
+                k_factor=widget.fpp_k_factor.value() or 4.532,
+                alpha=widget.fpp_alpha.value(),
+                model=widget.fpp_model.currentText(),
+            )
+            v_txt = f"V: {format_engineering(v, 'V')} (clamped)" if np.isfinite(v) else "V: --"
+            i_txt = f"I: < {format_engineering(i_floor, 'A')}"
+            sigma_txt = (
+                f"σ ≤ {bound.conductivity:.3g} S/cm"
+                if np.isfinite(bound.conductivity) else "σ: --"
+            )
+            widget.live_readout.setText(f"{v_txt}   {i_txt}   {sigma_txt}   [BD]")
+            widget.live_readout.setStyleSheet(
+                "color: #a85a00; background: #fff4e0; "
+                "border: 1px solid #e8a85b; border-radius: 4px; padding: 4px;"
+            )
+            widget.live_readout.setToolTip(
+                "Below detection: V at compliance, I below the meter's noise "
+                "floor on this range. Lower source current to tighten the bound, "
+                "or check probe contact."
+            )
+        else:
+            parts = []
+            if np.isfinite(v):
+                parts.append(f"V: {format_engineering(v, 'V')}")
+            if np.isfinite(i):
+                parts.append(f"I: {format_engineering(i, 'A')}")
+            if np.isfinite(v) and np.isfinite(i) and i != 0:
+                parts.append(f"R: {format_engineering(v/i, 'Ω')}")
+            widget.live_readout.setText("   ".join(parts) if parts else "--")
+            widget.live_readout.setStyleSheet(
+                "color: #222; background: #f0f0f0; border: 1px solid #ccc; "
+                "border-radius: 4px; padding: 4px;"
+            )
+            widget.live_readout.setToolTip(
+                "Live measurement reading — updates in real time during measurement"
+            )
+
     def _append_four_point_row(self, row):
         w = self.tab_four_point
         table = w.fpp_table
         table.insertRow(table.rowCount())
+        is_bd = (len(row) >= 8 and row[7] != 'OK')
+        bd_brush = QBrush(QColor("#fff4e0")) if is_bd else None
+        bd_fg = QBrush(QColor("#a85a00")) if is_bd else None
         for col, val in enumerate(row):
             if isinstance(val, float):
                 text = f"{val:.6g}"
+                # Mark bound columns (V/I, Rs, ρ, σ) with ≤/≥ when BD
+                if is_bd and col in (3, 4, 5):
+                    text = f"≥ {text}"
+                elif is_bd and col == 6:
+                    text = f"≤ {text}"
             else:
                 text = str(val)
-            table.setItem(table.rowCount()-1, col, QTableWidgetItem(text))
+            item = QTableWidgetItem(text)
+            if bd_brush is not None:
+                item.setBackground(bd_brush)
+                item.setForeground(bd_fg)
+            table.setItem(table.rowCount()-1, col, item)
         table.scrollToBottom()
 
     def _update_four_point_stats(self):
         w = self.tab_four_point
         rows = w._fpp_rows
         n = len(rows)
-        w.fpp_n_label.setText(str(n))
+        valid_rows = [r for r in rows if len(r) < 8 or r[7] == 'OK']
+        bd_count = n - len(valid_rows)
+        if bd_count:
+            w.fpp_n_label.setText(f"{len(valid_rows)} valid · {bd_count} BD")
+            w.fpp_n_label.setStyleSheet("color: #a85a00;")
+        else:
+            w.fpp_n_label.setText(str(n))
+            w.fpp_n_label.setStyleSheet("")
         import math
         def stats(idx):
-            arr = [r[idx] for r in rows]
+            arr = [r[idx] for r in valid_rows]
             arr = [a for a in arr if isinstance(a, (int, float)) and not math.isnan(a)]
             if not arr:
                 return None
@@ -1497,12 +1579,10 @@ class ResistanceMeterApp(QMainWindow):
         w.fpp_rho_label.setText(fmt(rho_s))
         w.fpp_sigma_label.setText(fmt(sig_s))
 
-        # Update histogram (throttle: every 5th point after 200)
+        # Update histogram (throttle: every 5th point after 200), valid points only
         if hasattr(w, 'fpp_histogram') and (n <= 200 or n % 5 == 0):
-            # Use Rs values by default for histogram
-            rs_values = [r[4] for r in rows]
+            rs_values = [r[4] for r in valid_rows]
             if hasattr(w, '_fpp_spots') and len(w._fpp_spots) >= 2:
-                # Show bar chart when multiple spots saved
                 names = [s['name'] for s in w._fpp_spots]
                 means = [s['rs_mean'] for s in w._fpp_spots]
                 stds = [s['rs_std'] for s in w._fpp_spots]
@@ -1574,8 +1654,9 @@ class ResistanceMeterApp(QMainWindow):
         if widget:
             widget.status_label.setText(f"Status: {compliance_type.upper()} COMPLIANCE")
             widget.status_label.setStyleSheet("font-weight: bold; color: red;")
-            # Flash the live readout red briefly
-            if hasattr(widget, 'live_readout'):
+            # 4PP drives its own live_readout styling (BD vs OK) from update_data;
+            # for other modes, keep the existing brief red flash for visibility.
+            if hasattr(widget, 'live_readout') and mode != 'four_point':
                 widget.live_readout.setStyleSheet("color: red; background: #ffe0e0; border: 2px solid red; border-radius: 4px; padding: 4px;")
                 QTimer.singleShot(2000, lambda: widget.live_readout.setStyleSheet(
                     "color: #222; background: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; padding: 4px;"))

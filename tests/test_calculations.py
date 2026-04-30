@@ -19,6 +19,8 @@ from resistamet_gui.calculations import (
     calculate_resistivity,
     calculate_conductivity,
     calculate_four_point_probe,
+    calculate_four_point_probe_bound,
+    estimate_current_floor,
     FourPointProbeResult,
     DEFAULT_K_FACTOR,
 )
@@ -277,3 +279,91 @@ class TestCalculateFourPointProbe:
 
         # With ratio=1, k=1: rho = k * t_cm * ratio = 1 * 0.01 * 1 = 0.01
         assert result.resistivity == pytest.approx(0.01)
+
+
+class TestEstimateCurrentFloor:
+    """Tests for the 2400-series current measurement floor estimate."""
+
+    def test_floor_for_1ma_source(self):
+        # 1 mA source → 1 mA range → floor ~ 0.1% FS = 1 µA
+        assert estimate_current_floor(1e-3) == pytest.approx(1e-6)
+
+    def test_floor_for_100na_source(self):
+        # 100 nA fits the 1 µA range → floor ~ 1 nA
+        assert estimate_current_floor(1e-7) == pytest.approx(1e-9)
+
+    def test_floor_picks_smallest_containing_range(self):
+        # 5 µA fits the 10 µA range → floor ~ 10 nA
+        assert estimate_current_floor(5e-6) == pytest.approx(1e-8)
+
+    def test_floor_handles_negative_source(self):
+        # Sign should not change the floor
+        assert estimate_current_floor(-1e-3) == pytest.approx(1e-6)
+
+    def test_floor_handles_zero(self):
+        # Zero source → fall back to top range
+        assert estimate_current_floor(0.0) == pytest.approx(1e-3)
+
+
+class TestCalculateFourPointProbeBound:
+    """Tests for the compliance-bound 4PP calculation."""
+
+    def test_bound_uses_floor_when_measured_below_it(self):
+        # Source 1 mA, V_comp 5 V, measured 100 nA (below 1 µA floor)
+        # Effective I = 1 µA, R_min = 5 V / 1 µA = 5e6 Ω
+        result = calculate_four_point_probe_bound(
+            v_compliance=5.0, measured_current=1e-7,
+            source_current=1e-3, spacing_cm=0.1016,
+            thickness_um=100, model='thin_film'
+        )
+        assert result.ratio == pytest.approx(5e6)
+
+    def test_bound_uses_measured_when_above_floor(self):
+        # Measured 10 µA on 1 mA range (floor = 1 µA) → use 10 µA
+        # R_min = 5 V / 10 µA = 5e5 Ω
+        result = calculate_four_point_probe_bound(
+            v_compliance=5.0, measured_current=1e-5,
+            source_current=1e-3, spacing_cm=0.1016,
+            thickness_um=100, model='thin_film'
+        )
+        assert result.ratio == pytest.approx(5e5)
+
+    def test_lowering_source_current_tightens_bound(self):
+        # Same V_comp, same insulator: lower source current → tighter (larger) R_min
+        loose = calculate_four_point_probe_bound(
+            v_compliance=5.0, measured_current=0.0,
+            source_current=1e-3, spacing_cm=0.1, thickness_um=100,
+        )
+        tight = calculate_four_point_probe_bound(
+            v_compliance=5.0, measured_current=0.0,
+            source_current=1e-7, spacing_cm=0.1, thickness_um=100,
+        )
+        assert tight.ratio > loose.ratio
+        assert tight.conductivity < loose.conductivity
+
+    def test_bound_handles_nan_measurement(self):
+        # NaN measured current → fall back to floor
+        result = calculate_four_point_probe_bound(
+            v_compliance=5.0, measured_current=float('nan'),
+            source_current=1e-3, spacing_cm=0.1, thickness_um=100,
+        )
+        assert np.isfinite(result.ratio)
+        assert result.ratio == pytest.approx(5e6)
+
+    def test_negative_v_comp_uses_magnitude(self):
+        a = calculate_four_point_probe_bound(
+            v_compliance=5.0, measured_current=0.0,
+            source_current=1e-3, spacing_cm=0.1, thickness_um=100,
+        )
+        b = calculate_four_point_probe_bound(
+            v_compliance=-5.0, measured_current=0.0,
+            source_current=1e-3, spacing_cm=0.1, thickness_um=100,
+        )
+        assert a.ratio == pytest.approx(b.ratio)
+
+    def test_bound_returns_named_tuple(self):
+        result = calculate_four_point_probe_bound(
+            v_compliance=5.0, measured_current=0.0,
+            source_current=1e-3, spacing_cm=0.1, thickness_um=100,
+        )
+        assert isinstance(result, FourPointProbeResult)
