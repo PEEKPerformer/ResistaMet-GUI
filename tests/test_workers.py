@@ -193,6 +193,48 @@ def _drive_worker(qapp, worker: MeasurementWorker, *,
 # Mode tests
 # ============================================================================
 
+class TestModelDetection:
+    """The worker should announce the detected model (and its limits) at connect."""
+
+    def test_detected_model_appears_in_status(self, qapp, fake_rm, tmp_path):
+        settings = _source_v_settings(tmp_path)
+        worker = MeasurementWorker("source_v", "model_test", "alice", settings)
+        spies = _drive_worker(qapp, worker, stop_after_n_points=1)
+
+        assert spies.error_occurred == []
+        # Default fake reports as a 2420 — status update should mention it
+        assert any("Detected: Keithley 2420" in s for s in spies.status_update), (
+            f"no model-detection line in status updates: {spies.status_update}"
+        )
+        # Should also include the source-V/I/W caps
+        detected = [s for s in spies.status_update if "Detected:" in s]
+        assert detected, "expected a Detected: line"
+        assert "60V" in detected[0] and "3.05A" in detected[0], (
+            f"expected 60V / 3.05A in detection line: {detected[0]}"
+        )
+
+    def test_unknown_model_warns_but_proceeds(self, qapp, fake_rm, tmp_path):
+        # Reach into the FakeResourceManager and re-init opening with an
+        # IDN that won't match any model in the spec table.
+        from tests.fakes.fake_keithley import FakeKeithley
+        original = fake_rm.open_resource
+
+        def open_with_unknown(name, **kw):
+            return FakeKeithley(idn="KEITHLEY INSTRUMENTS INC.,MODEL 9999,1,1")
+        fake_rm.open_resource = open_with_unknown
+
+        settings = _source_v_settings(tmp_path)
+        worker = MeasurementWorker("source_v", "unknown_model", "alice", settings)
+        spies = _drive_worker(qapp, worker, stop_after_n_points=1)
+
+        # Restore to keep the rest of the suite well-behaved
+        fake_rm.open_resource = original
+
+        assert any("model not in known table" in s.lower() for s in spies.status_update), (
+            f"expected a 'not in known table' warning: {spies.status_update}"
+        )
+
+
 class TestResistanceMode:
     def test_resistance_runs_and_writes_data(self, qapp, fake_rm, tmp_path):
         settings = _resistance_settings(tmp_path)

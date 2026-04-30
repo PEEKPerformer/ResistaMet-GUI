@@ -133,6 +133,20 @@ class MeasurementWorker(QThread):
                 self.keithley = Keithley2400(gpib_address).connect()
                 self._instrument_idn = self.keithley.query("*IDN?").strip()
                 self.status_update.emit(f"Connected to: {self._instrument_idn}")
+                # Identify model and surface its limits — informational only;
+                # the instrument enforces its own ranges via SCPI errors.
+                self._model_spec = self.keithley.detect_model()
+                if self._model_spec is not None:
+                    spec = self._model_spec
+                    self.status_update.emit(
+                        f"Detected: Keithley {spec.model} — "
+                        f"max {spec.max_source_v:g}V / {spec.max_source_i:g}A / "
+                        f"{spec.max_power_w:g}W"
+                    )
+                else:
+                    self.status_update.emit(
+                        "Warning: instrument model not in known table — proceeding with defaults"
+                    )
                 try:
                     line_freq = float(self.keithley.query(":SYST:LFR?"))
                 except Exception:

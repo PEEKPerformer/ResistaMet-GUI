@@ -74,6 +74,19 @@ DEFAULT_IDN = (
 )
 
 
+def _idn_for_model(model: str) -> str:
+    """Synthesize a 2400-family-shaped IDN string for the given model number.
+
+    Used by ``FakeKeithley(model=...)`` so production code's
+    ``detect_model()`` can identify the simulated instrument exactly the
+    way it would identify a real one.
+    """
+    return (
+        f"KEITHLEY INSTRUMENTS INC.,MODEL {model},9999999,"
+        f"C30   Mar 17 2006 09:29:29/A02  /SIM"
+    )
+
+
 def _format_keithley(value: float) -> str:
     """Format a float as the Keithley 2400 does: ``+1.234567E+01``.
 
@@ -202,8 +215,26 @@ class FakeKeithley:
         self,
         dut_resistance_ohms: float = 100.0,
         dut_voltage_offset: float = 0.0,
-        idn: str = DEFAULT_IDN,
+        idn: Optional[str] = None,
+        model: Optional[str] = None,
     ):
+        """Construct a fake instrument.
+
+        Args:
+            dut_resistance_ohms: Resistance the fake DUT presents to Ohm's law.
+            dut_voltage_offset: Offset added to V (simulates thermoelectric EMF).
+            idn: Override the *IDN? response verbatim. Mutually exclusive
+                with ``model``.
+            model: Four-digit model number ("2400", "2410", "2420", "2450",
+                ...). When set, the fake generates an IDN with that model
+                and the production code's ``detect_model()`` will identify
+                it. Defaults to "2420" when neither ``idn`` nor ``model``
+                is given (matches the bench reference instrument).
+        """
+        if idn is not None and model is not None:
+            raise ValueError("pass either idn= or model=, not both")
+        if idn is None:
+            idn = _idn_for_model(model) if model is not None else DEFAULT_IDN
         self.dut_resistance = dut_resistance_ohms
         self.dut_voltage_offset = dut_voltage_offset
         self._idn = idn
@@ -688,12 +719,17 @@ class FakeResourceManager:
         gpib_address: str = "GPIB0::24::INSTR",
         dut_resistance_ohms: float = 100.0,
         dut_voltage_offset: float = 0.0,
-        idn: str = DEFAULT_IDN,
+        idn: Optional[str] = None,
+        model: Optional[str] = None,
     ):
+        if idn is not None and model is not None:
+            raise ValueError("pass either idn= or model=, not both")
         self._addr = gpib_address
         self._dut_r = dut_resistance_ohms
         self._dut_v = dut_voltage_offset
-        self._idn = idn
+        self._idn = idn if idn is not None else (
+            _idn_for_model(model) if model is not None else DEFAULT_IDN
+        )
         self.opened: list[FakeKeithley] = []
 
         # Pre-injection: applied to the next opened FakeKeithley. Used by

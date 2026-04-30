@@ -1,7 +1,66 @@
+import re
 import time
+from dataclasses import dataclass
 from typing import Optional
 
 import pyvisa
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """Documented capabilities of one Keithley 2400-series model.
+
+    Source/measure limits come from the Keithley datasheets; ``family``
+    distinguishes the original 2400 SCPI surface (2400/2410/2420/2425/2430/
+    2440) from the 2450's TSP+SCPI surface, which diverges in some places.
+    """
+    model: str
+    max_source_v: float
+    max_source_i: float
+    max_power_w: float
+    family: str
+    notes: str = ""
+
+
+# Keyed by the four-digit model number that appears in the IDN string,
+# e.g. "MODEL 2420" -> "2420". Sourced from the 2400-series datasheets.
+# Add new entries when community submissions land hardware traces.
+_MODELS: dict[str, ModelSpec] = {
+    "2400": ModelSpec("2400", 200.0, 1.05, 22.0, family="2400"),
+    "2401": ModelSpec("2401", 20.0,  1.05, 22.0, family="2400",
+                       notes="Low-voltage variant of the 2400 (20V max)"),
+    "2410": ModelSpec("2410", 1100.0, 1.05, 22.0, family="2400",
+                       notes="High-voltage model — special handling for >100V"),
+    "2420": ModelSpec("2420", 60.0,  3.05, 22.0, family="2400"),
+    "2425": ModelSpec("2425", 100.0, 3.05, 22.0, family="2400"),
+    "2430": ModelSpec("2430", 100.0, 3.05, 22.0, family="2400",
+                       notes="Pulse mode supports up to 10A (5W avg)"),
+    "2440": ModelSpec("2440", 40.0,  5.05, 22.0, family="2400"),
+    "2450": ModelSpec("2450", 200.0, 1.05, 22.0, family="2450",
+                       notes="Touchscreen successor — TSP+SCPI surface; "
+                             "some FORM/STAT details may differ from 2400 family"),
+}
+
+_IDN_MODEL_RE = re.compile(r"MODEL\s+(\d{4})", re.IGNORECASE)
+
+
+def parse_model_from_idn(idn: str) -> Optional[ModelSpec]:
+    """Parse a Keithley *IDN? string and return the matching :class:`ModelSpec`.
+
+    Returns ``None`` if the IDN doesn't match a documented 2400-family model.
+    Callers should treat ``None`` as "unknown — proceed with defaults."
+    """
+    if not idn:
+        return None
+    m = _IDN_MODEL_RE.search(idn)
+    if not m:
+        return None
+    return _MODELS.get(m.group(1))
+
+
+def known_models() -> tuple[str, ...]:
+    """Return the model numbers we have a :class:`ModelSpec` entry for."""
+    return tuple(_MODELS.keys())
 
 
 class VisaInstrument:
@@ -53,6 +112,19 @@ class VisaInstrument:
 
 
 class Keithley2400(VisaInstrument):
+    def detect_model(self) -> Optional[ModelSpec]:
+        """Identify the connected instrument from its *IDN? response.
+
+        Returns a :class:`ModelSpec` for documented 2400-family members,
+        or ``None`` if the model number is not in the known table — in
+        which case callers should proceed with conservative defaults
+        rather than refusing to operate.
+        """
+        try:
+            return parse_model_from_idn(self.idn())
+        except Exception:
+            return None
+
     def enable_autozero(self, on: bool = True):
         self.write(f":SYST:AZER:STAT {'ON' if on else 'OFF'}")
 
