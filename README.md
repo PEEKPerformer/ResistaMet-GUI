@@ -1,5 +1,8 @@
 # ResistaMet GUI
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19919751.svg)](https://doi.org/10.5281/zenodo.19919751)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Open-source graphical interface for electrical characterization using Keithley 2400/2450 sourcemeters, with advanced four-point probe analysis.
 
 **Version:** 1.4.1
@@ -221,8 +224,13 @@ If you use ResistaMet GUI in your research, please cite:
 ```
 Ferland, B. (2026). ResistaMet GUI: An Open-Source Electrical Measurement Suite
 for Keithley Sourcemeters (Version 1.4.1) [Software].
-https://github.com/PEEKPerformer/ResistaMet-GUI
+Zenodo. https://doi.org/10.5281/zenodo.19919751
 ```
+
+The DOI above is the *concept DOI* and always resolves to the latest archived version.
+Zenodo also provides a per-version DOI for citing a specific release.
+
+A `CITATION.cff` is included in the repository for machine-readable citation metadata.
 
 ## Contributing
 

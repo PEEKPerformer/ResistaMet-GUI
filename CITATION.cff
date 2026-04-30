@@ -18,6 +18,11 @@ date-released: "2026-04-30"
 license: MIT
 repository-code: "https://github.com/PEEKPerformer/ResistaMet-GUI"
 url: "https://github.com/PEEKPerformer/ResistaMet-GUI"
+doi: "10.5281/zenodo.19919751"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.19919751"
+    description: "Concept DOI — always resolves to the latest archived version"
 type: software
 keywords:
   - electrical-measurement
