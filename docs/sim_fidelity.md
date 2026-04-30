@@ -163,6 +163,27 @@ the bench instrument connected:
 RESISTAMET_HARDWARE_ADDR=GPIB0::24::INSTR pytest tests/hardware/ -v
 ```
 
+## Community cross-model submissions
+
+Anyone with a Keithley 2400-family instrument can run
+``scripts/community_capture.py`` against a 100 Ω, 10 kΩ, or 1 MΩ
+4-wire Kelvin reference DUT and submit the resulting SCPI traces via
+the ``Keithley compatibility`` issue template. Accepted submissions
+land under ``tests/fixtures/scpi_traces_community/<model>_<serial>/``
+and are automatically replayed through the simulator by
+``tests/test_community_traces.py`` on every CI run.
+
+When a submitted trace fails the simulator, that's evidence of real
+cross-model variance — the maintainers either update the simulator to
+handle it (with the trace as the regression fixture) or document the
+divergence here as a known gap. Either way, the testable surface
+grows.
+
+The model spec table in ``resistamet_gui/instrument.py`` (mirrored in
+``scripts/community_capture.py`` so the script can run without the
+project installed) is updated as new models are confirmed by
+submissions.
+
 ## Recapturing golden traces
 
 When firmware changes or new measurement scenarios need coverage:

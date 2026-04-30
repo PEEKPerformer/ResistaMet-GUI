@@ -1,0 +1,92 @@
+name: Keithley compatibility submission
+description: Share captured SCPI traces from your Keithley 2400-series instrument to expand cross-model fidelity.
+title: "[compat] Keithley <model>: <DUT>"
+labels: ["compatibility", "community-traces"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping validate ResistaMet-GUI across the Keithley 2400 family!
+
+        **Before submitting**:
+        1. Run `scripts/community_capture.py` against your instrument with one of the
+           recommended DUTs (100 Ω, 10 kΩ, or 1 MΩ in 4-wire Kelvin connection).
+        2. Zip the output directory it produces (`scpi_traces_<model>_<serial>/`).
+        3. Attach the zip below and fill in the rest of this form.
+
+        Submitted traces are reviewed before merge. If your instrument exposes
+        new behaviors (a quirk we haven't seen, or a STAT-bit layout that differs
+        from the 2400 family baseline), that's exactly the kind of evidence the
+        simulator needs to grow — please submit even if some scenarios fail.
+
+  - type: input
+    id: idn
+    attributes:
+      label: "*IDN? response"
+      description: The full IDN string from your instrument (the capture script prints this).
+      placeholder: "KEITHLEY INSTRUMENTS INC.,MODEL 2410,1234567,C30   Mar 17 2006..."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: model
+    attributes:
+      label: Model
+      options:
+        - "2400"
+        - "2401"
+        - "2410"
+        - "2420"
+        - "2425"
+        - "2430"
+        - "2440"
+        - "2450"
+        - other (specify in IDN above)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: dut
+    attributes:
+      label: DUT used
+      description: Which reference resistor was wired during capture?
+      options:
+        - 100 Ω (4-wire Kelvin)
+        - 10 kΩ (4-wire Kelvin)
+        - 1 MΩ (4-wire Kelvin)
+        - other (specify in additional context)
+    validations:
+      required: true
+
+  - type: input
+    id: dut_measured
+    attributes:
+      label: DUT measured value
+      description: The actual measured resistance from the polarity check (typically within ±1% of nominal).
+      placeholder: "99.53 Ω"
+    validations:
+      required: true
+
+  - type: textarea
+    id: capture_output
+    attributes:
+      label: Capture script output
+      description: Paste the stdout of `community_capture.py` (especially helpful if any scenarios failed).
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context
+      description: Anything unusual about your setup (firmware version, GPIB adapter, OS, lab conditions). Optional.
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        **Don't forget to attach the trace zip.** Drag-and-drop the `.zip` directly
+        into this comment box (GitHub will upload and link it).

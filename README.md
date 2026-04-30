@@ -177,9 +177,35 @@ pytest tests/ -v --ignore=tests/test_gui_smoke.py
 
 ## Instrument Compatibility
 
-Tested with:
-- **Keithley 2420** (3A model, firmware C30) via GPIB
-- Should work with any Keithley 2400/2450 series via GPIB or USB
+Hardware-validated (29 SCPI fixtures + 6 documented quirks, three DUT decades):
+- **Keithley 2420** (3 A model, firmware C30) — primary capture source
+- **Keithley 2400** (1 A model, firmware C30) — cross-model validation, 29/29 pass
+
+Should work with any Keithley 2400/2450 series via GPIB or USB. The
+production code identifies the connected model from `*IDN?` and surfaces
+its source/measure caps at connect time; if your model isn't in the
+known table, ResistaMet still proceeds — see "Help validate cross-model
+fidelity" below to contribute a trace.
+
+### Help validate cross-model fidelity
+
+If you have a different Keithley 2400-family instrument (2400/2401/2410/
+2420/2425/2430/2440/2450) and a precision reference resistor in 4-wire
+Kelvin (100 Ω, 10 kΩ, or 1 MΩ recommended), please consider running:
+
+```bash
+pip install pyvisa pyvisa-py
+python scripts/community_capture.py
+```
+
+The script auto-detects the GPIB instrument, runs a polarity sanity
+check, captures a small set of representative SCPI traces, and prints
+instructions for opening an issue with the output zip attached. Each
+accepted submission becomes one row of cross-model validation in
+`tests/fixtures/scpi_traces_community/` and runs in CI on every push,
+helping ensure the simulator faithfully reproduces every supported
+instrument. See [`docs/sim_fidelity.md`](docs/sim_fidelity.md) for the
+full validation methodology.
 
 ## Version History
 
