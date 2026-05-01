@@ -5,10 +5,10 @@ from typing import Dict, Optional
 import numpy as np
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QShortcut, QTextEdit,
-    QTabWidget, QVBoxLayout, QWidget, QFileDialog, QSplitter, QTableWidget, QTableWidgetItem, QDialog,
-    QSpinBox, QSizePolicy, QInputDialog
+    QAction, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QScrollArea, QShortcut,
+    QTextEdit, QTabWidget, QVBoxLayout, QWidget, QFileDialog, QSplitter, QTableWidget, QTableWidgetItem,
+    QDialog, QSpinBox, QSizePolicy, QInputDialog
 )
 from PyQt5.QtGui import QIcon, QFont, QBrush, QColor
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -95,6 +95,18 @@ class ResistanceMeterApp(QMainWindow):
         self.shortcut_mark = QShortcut(Qt.Key_M, self); self.shortcut_mark.activated.connect(self.mark_event_shortcut)
         self.shortcut_mark.setEnabled(False)
 
+    @staticmethod
+    def _wrap_in_scroll(widget: QWidget) -> QScrollArea:
+        """Wrap a widget in a frameless QScrollArea so the form scrolls when
+        the available space is shorter than the widget's preferred height."""
+        scroll = QScrollArea()
+        scroll.setWidget(widget)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        return scroll
+
     def create_tab_widget(self, mode: str) -> QWidget:
         tab_widget = QWidget(); tab_layout = QVBoxLayout(tab_widget)
         param_group = QGroupBox("Parameters"); param_layout = QFormLayout(); param_group.setLayout(param_layout)
@@ -128,9 +140,13 @@ class ResistanceMeterApp(QMainWindow):
         control_layout.addWidget(hide_controls_btn)
         control_layout.addStretch(); control_layout.addWidget(status_label); control_group.setLayout(control_layout)
 
+        # Wrap parameters in a scroll area so the form scrolls when the
+        # splitter pane is shorter than the form's preferred height
+        param_scroll = self._wrap_in_scroll(param_group)
+
         # Vertical splitter to resize/collapse sections per tab
         tab_splitter = QSplitter(); tab_splitter.setOrientation(Qt.Vertical)
-        tab_splitter.addWidget(param_group)
+        tab_splitter.addWidget(param_scroll)
         tab_splitter.addWidget(live_readout)
         tab_splitter.addWidget(plot_group)
         tab_splitter.addWidget(control_group)
@@ -143,6 +159,7 @@ class ResistanceMeterApp(QMainWindow):
         tab_widget.start_button = start_button; tab_widget.stop_button = stop_button; tab_widget.pause_button = pause_button
         tab_widget.status_label = status_label; tab_widget.live_readout = live_readout
         tab_widget.param_group = param_group
+        tab_widget.param_container = param_scroll
         tab_widget.plot_group = plot_group
         tab_widget.control_group = control_group
         tab_widget.splitter = tab_splitter
@@ -307,19 +324,26 @@ class ResistanceMeterApp(QMainWindow):
         
         # CRITICAL: Set size policies to prevent Windows zero-size issues
         param_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        param_group.setMinimumWidth(350)  # Ensure parameters always visible
-        param_group.setMaximumWidth(480)  # Don't let it dominate the screen
-        
+
+        # Wrap parameters in a scroll area so a tall form scrolls instead of crushing rows
+        param_scroll = self._wrap_in_scroll(param_group)
+        param_scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        param_scroll.setMinimumWidth(350)  # Ensure parameters always visible
+        param_scroll.setMaximumWidth(480)  # Don't let it dominate the screen
+
         right_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         right_panel.setMinimumWidth(420)   # Guarantee table visibility
         right_panel.setMinimumHeight(300)  # Ensure reasonable table height
-        
+
         top_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        top_splitter.setMinimumHeight(450)  # Prevent total collapse
-        
+        # right_panel's setMinimumHeight(300) keeps the splitter from collapsing;
+        # an explicit splitter minimum here was forcing total height past the tab's
+        # available space, causing QVBoxLayout below to overlap live_readout and
+        # control_group on top of the splitter. Let the children drive the minimum.
+
         # Add panels to splitter with stretch factors to control initial proportions
-        top_splitter.addWidget(param_group)
-        top_splitter.addWidget(right_panel)  
+        top_splitter.addWidget(param_scroll)
+        top_splitter.addWidget(right_panel)
         top_splitter.setStretchFactor(0, 2)  # Parameters: moderate stretch (40%)
         top_splitter.setStretchFactor(1, 3)  # Right panel: higher stretch (60%)
         
@@ -386,6 +410,7 @@ class ResistanceMeterApp(QMainWindow):
         main_container.status_label = status_label
         main_container.live_readout = live_readout
         main_container.param_group = param_group
+        main_container.param_container = param_scroll
         main_container.plot_group = plot_group
         main_container.control_group = control_group
         main_container.hide_params_btn = hide_params_btn
@@ -703,9 +728,13 @@ class ResistanceMeterApp(QMainWindow):
         widget.live_readout.setFont(live_font)
         widget.live_readout.setStyleSheet("color: #222; background: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; padding: 4px;")
 
+        # Wrap parameters in a scroll area so the form scrolls if it doesn't fit
+        param_scroll = self._wrap_in_scroll(param_group)
+        widget.param_container = param_scroll
+
         # Layout assembly
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(param_group)
+        splitter.addWidget(param_scroll)
         splitter.addWidget(plot_group)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
@@ -832,8 +861,11 @@ class ResistanceMeterApp(QMainWindow):
             w = self.get_widget_for_mode(mode)
             if not w:
                 continue
-            if section == 'params' and hasattr(w, 'param_group'):
-                w.param_group.setVisible(visible)
+            if section == 'params':
+                # Prefer hiding the scroll wrapper so its viewport doesn't leave a blank pane
+                target = getattr(w, 'param_container', None) or getattr(w, 'param_group', None)
+                if target is not None:
+                    target.setVisible(visible)
             if section == 'controls' and hasattr(w, 'control_group'):
                 w.control_group.setVisible(visible)
         self.update_hide_show_buttons()
@@ -853,8 +885,10 @@ class ResistanceMeterApp(QMainWindow):
             w = self.get_widget_for_mode(mode)
             if not w:
                 continue
-            if hasattr(w, 'param_group') and hasattr(w, 'hide_params_btn'):
-                w.hide_params_btn.setText('Hide Params' if w.param_group.isVisible() else 'Show Params')
+            if hasattr(w, 'hide_params_btn'):
+                target = getattr(w, 'param_container', None) or getattr(w, 'param_group', None)
+                if target is not None:
+                    w.hide_params_btn.setText('Hide Params' if target.isVisible() else 'Show Params')
             if hasattr(w, 'control_group') and hasattr(w, 'hide_controls_btn'):
                 w.hide_controls_btn.setText('Hide Controls' if w.control_group.isVisible() else 'Show Controls')
 

@@ -12,7 +12,7 @@ class HistogramCanvas(FigureCanvas):
     """
 
     def __init__(self, parent=None, width=5, height=3, dpi=90):
-        self.fig = Figure(figsize=(width, height), dpi=dpi)
+        self.fig = Figure(figsize=(width, height), dpi=dpi, constrained_layout=True)
         self.axes = self.fig.add_subplot(111)
         super().__init__(self.fig)
         if parent is not None:
@@ -20,7 +20,6 @@ class HistogramCanvas(FigureCanvas):
                 self.setParent(parent)
             except Exception:
                 pass
-        self.fig.tight_layout(pad=2.0)
         self._mode = 'histogram'  # 'histogram' or 'bar_chart'
         self.clear_histogram()
 
@@ -63,7 +62,6 @@ class HistogramCanvas(FigureCanvas):
         self.axes.set_ylabel('Count')
         self.axes.set_title('Measurement Distribution')
         self.axes.legend(loc='upper left', fontsize=8)
-        self.fig.tight_layout(pad=2.0)
         self.draw_idle()
 
     def update_bar_chart(self, spot_names, means, stds):
@@ -85,17 +83,24 @@ class HistogramCanvas(FigureCanvas):
         self.axes.set_ylabel('Rs (Ω/□)')
         self.axes.set_title('Spot-to-Spot Uniformity')
 
+        # Auto-zoom y-axis around the data range so small variation is visible
+        finite = [m for m in means if np.isfinite(m)]
+        if finite:
+            lo = min(m - s for m, s in zip(means, stds) if np.isfinite(m))
+            hi = max(m + s for m, s in zip(means, stds) if np.isfinite(m))
+            span = hi - lo if hi > lo else max(abs(hi), 1.0) * 0.1
+            self.axes.set_ylim(lo - span * 0.15, hi + span * 0.25)
+
         # Annotate overall stats
         if len(means) > 1:
             overall_mean = np.mean(means)
             overall_std = np.std(means, ddof=1)
             rsd = (overall_std / overall_mean * 100) if overall_mean != 0 else 0
             self.axes.axhline(overall_mean, color='red', linewidth=1, linestyle='--', alpha=0.7)
-            self.axes.text(0.97, 0.95, f'Inter-spot RSD: {rsd:.1f}%',
-                           transform=self.axes.transAxes, ha='right', va='top', fontsize=9,
+            self.axes.text(0.02, 0.97, f'Inter-spot RSD: {rsd:.1f}%',
+                           transform=self.axes.transAxes, ha='left', va='top', fontsize=9,
                            bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='grey', alpha=0.8))
 
-        self.fig.tight_layout(pad=2.0)
         self.draw_idle()
 
     def clear_histogram(self):
@@ -105,15 +110,15 @@ class HistogramCanvas(FigureCanvas):
                        ha='center', va='center', fontsize=11, color='grey')
         self.axes.set_xlabel('')
         self.axes.set_ylabel('')
-        self.fig.tight_layout(pad=2.0)
         self.draw_idle()
 
 
 class MplCanvas(FigureCanvas):
     def __init__(self, parent=None, width=8, height=5, dpi=100):
-        self.fig = Figure(figsize=(width, height), dpi=dpi)
+        self.fig = Figure(figsize=(width, height), dpi=dpi, constrained_layout=True)
         self.axes = self.fig.add_subplot(111)
-        self.axes.ticklabel_format(useOffset=False, style='plain')
+        # Use scientific notation for extreme magnitudes; plain in the middle range
+        self.axes.ticklabel_format(useOffset=False, style='sci', scilimits=(-3, 4))
         super().__init__(self.fig)
         # Set Qt parent properly and avoid shadowing QWidget.parent()
         if parent is not None:
@@ -123,18 +128,23 @@ class MplCanvas(FigureCanvas):
                 pass
 
         self.line, = self.axes.plot([], [], 'r-', label='Measurement')
-        self.min_text = self.axes.text(0.02, 0.95, '', transform=self.axes.transAxes, ha='left', va='top', fontsize=9)
+        # Stats stack: upper-left, inside axes
+        self.min_text = self.axes.text(0.02, 0.97, '', transform=self.axes.transAxes, ha='left', va='top', fontsize=9)
         self.max_text = self.axes.text(0.02, 0.90, '', transform=self.axes.transAxes, ha='left', va='top', fontsize=9)
-        self.avg_text = self.axes.text(0.02, 0.85, '', transform=self.axes.transAxes, ha='left', va='top', fontsize=9)
-        self.info_text = self.axes.text(0.98, 0.95, '', transform=self.axes.transAxes, ha='right', va='top', fontsize=9)
-        self.compliance_indicator = self.axes.text(0.5, 1.02, '', transform=self.axes.transAxes, ha='center', va='bottom', fontsize=10, color='red', weight='bold')
+        self.avg_text = self.axes.text(0.02, 0.83, '', transform=self.axes.transAxes, ha='left', va='top', fontsize=9)
+        # User/sample: bottom-right inside axes, out of legend's way
+        self.info_text = self.axes.text(0.98, 0.03, '', transform=self.axes.transAxes, ha='right', va='bottom', fontsize=8)
+        # Compliance banner: top-center inside axes, below the title
+        self.compliance_indicator = self.axes.text(
+            0.5, 0.97, '', transform=self.axes.transAxes, ha='center', va='top',
+            fontsize=10, color='red', weight='bold',
+        )
 
         bbox_props = dict(boxstyle="round,pad=0.3", fc="white", ec="grey", alpha=0.7)
         for t in (self.min_text, self.max_text, self.avg_text, self.info_text):
             t.set_bbox(bbox_props)
 
         self.axes.legend(loc='upper right')
-        self.fig.tight_layout(rect=[0, 0, 1, 0.95])
         self.set_plot_properties('Time (s)', 'Value', 'Measurement')
 
     def set_plot_properties(self, xlabel, ylabel, title, color='blue'):
@@ -167,10 +177,11 @@ class MplCanvas(FigureCanvas):
         min_val = stats.get('min', float('inf'))
         max_val = stats.get('max', float('-inf'))
         avg_val = stats.get('avg', 0)
-        self.min_text.set_text(f'Min: {min_val:.3f} {unit}' if np.isfinite(min_val) else 'Min: --')
-        self.max_text.set_text(f'Max: {max_val:.3f} {unit}' if np.isfinite(max_val) else 'Max: --')
-        self.avg_text.set_text(f'Avg: {avg_val:.3f} {unit}' if np.isfinite(avg_val) else 'Avg: --')
-        self.info_text.set_text(f'User: {username}\nSample: {sample_name}')
+        # .4g adapts to magnitude: 102.3, 1.234e-7, 1.235e+8 all render readably
+        self.min_text.set_text(f'Min: {min_val:.4g} {unit}' if np.isfinite(min_val) else 'Min: --')
+        self.max_text.set_text(f'Max: {max_val:.4g} {unit}' if np.isfinite(max_val) else 'Max: --')
+        self.avg_text.set_text(f'Avg: {avg_val:.4g} {unit}' if np.isfinite(avg_val) else 'Avg: --')
+        self.info_text.set_text(f'User: {username}  Sample: {sample_name}')
 
         last_compliance = compliance_list[-1] if compliance_list else 'OK'
         comp_text = ""
@@ -178,6 +189,10 @@ class MplCanvas(FigureCanvas):
             comp_text = "VOLTAGE COMPLIANCE HIT!"
         elif last_compliance == 'I_COMP':
             comp_text = "CURRENT COMPLIANCE HIT!"
+        if comp_text:
+            self.compliance_indicator.set_bbox(dict(boxstyle='round,pad=0.3', fc='#ffe5e5', ec='red', alpha=0.95))
+        else:
+            self.compliance_indicator.set_bbox(None)
         self.compliance_indicator.set_text(comp_text)
         self.draw_idle()
 
@@ -197,7 +212,7 @@ class IVCanvas(FigureCanvas):
     """X-Y plot for I-V sweep data (not time-series)."""
 
     def __init__(self, parent=None, width=8, height=5, dpi=100):
-        self.fig = Figure(figsize=(width, height), dpi=dpi)
+        self.fig = Figure(figsize=(width, height), dpi=dpi, constrained_layout=True)
         self.axes = self.fig.add_subplot(111)
         super().__init__(self.fig)
         if parent is not None:
@@ -209,7 +224,6 @@ class IVCanvas(FigureCanvas):
         self.axes.set_ylabel('Current (A)')
         self.axes.set_title('I-V Characteristic')
         self.axes.grid(True)
-        self.fig.tight_layout(rect=[0, 0, 1, 0.95])
         self._lines = []
 
     def plot_sweep(self, voltages, currents, label='Forward', color='blue'):
@@ -220,7 +234,6 @@ class IVCanvas(FigureCanvas):
         self.axes.legend(loc='best', fontsize=8)
         self.axes.relim()
         self.axes.autoscale_view(True, True, True)
-        self.fig.tight_layout(rect=[0, 0, 1, 0.95])
         self.draw_idle()
 
     def set_labels(self, xlabel, ylabel, title):
@@ -238,5 +251,4 @@ class IVCanvas(FigureCanvas):
         self.axes.set_ylabel('Current (A)')
         self.axes.set_title('I-V Characteristic')
         self.axes.grid(True)
-        self.fig.tight_layout(rect=[0, 0, 1, 0.95])
         self.draw_idle()
