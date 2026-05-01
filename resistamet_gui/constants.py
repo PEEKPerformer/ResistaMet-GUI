@@ -39,7 +39,7 @@ DEFAULT_SETTINGS = {
         "res_offset_comp": False,            # offset-compensated ohms (cancels thermoelectric EMF)
         "res_cable_null": 0.0,               # cable null reference value (0 = disabled)         # Stop run when compliance is hit
         # Four-Point Probe (FPP) defaults (SP4-40085TBQ)
-        "fpp_current": 1.0e-3,               # Source current in Amperes
+        "fpp_current": 1.0e-4,               # Source current in Amperes (100 µA — safe for unknown films)
         "fpp_voltage_compliance": 5.0,       # Voltage compliance (V)
         "fpp_voltage_range_auto": True,      # Auto range for voltage measurement
         "fpp_spacing_cm": 0.1016,            # s = 0.040 inches = 0.1016 cm
