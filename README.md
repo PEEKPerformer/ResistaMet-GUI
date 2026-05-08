@@ -8,7 +8,22 @@ Open-source graphical interface for electrical characterization using Keithley 2
 **Version:** 1.5.1
 **Author:** Brenden Ferland
 
-![ResistaMet GUI Screenshot](resistamet-gui-screenshot.PNG)
+![ResistaMet GUI — I-V Sweep tab](docs/screenshots/05_iv_sweep.png)
+
+<details>
+<summary>More tabs (click to expand)</summary>
+
+| Tab | Screenshot |
+|-----|-----------|
+| Resistance Measurement | ![Resistance](docs/screenshots/01_resistance.png) |
+| Voltage Source | ![Voltage Source](docs/screenshots/02_voltage_source.png) |
+| Current Source | ![Current Source](docs/screenshots/03_current_source.png) |
+| 4-Point Probe | ![4-Point Probe](docs/screenshots/04_four_point_probe.png) |
+| I-V Sweep | ![I-V Sweep](docs/screenshots/05_iv_sweep.png) |
+
+Generated reproducibly via `python tools/generate_screenshots.py` — runs headless under Qt's offscreen platform, no instrument required.
+
+</details>
 
 ## Overview
 
