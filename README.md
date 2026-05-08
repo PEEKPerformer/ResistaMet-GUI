@@ -5,7 +5,7 @@
 
 Open-source graphical interface for electrical characterization using Keithley 2400/2450 sourcemeters, with advanced four-point probe analysis.
 
-**Version:** 1.5.0
+**Version:** 1.5.1
 **Author:** Brenden Ferland
 
 ![ResistaMet GUI Screenshot](resistamet-gui-screenshot.PNG)
@@ -209,6 +209,10 @@ instrument. See [`docs/sim_fidelity.md`](docs/sim_fidelity.md) for the
 full validation methodology.
 
 ## Version History
+
+### v1.5.1 (2026-05-08)
+- Fixed live-plot overlap and small-window layout breakage on non-maximized windows
+- 4PP source current now defaults to 100 µA
 
 ### v1.5.0 (2026-04-30)
 - Stateful Keithley 2400-family simulator (`tests/fakes/fake_keithley.py`) validated byte-equivalent against 23 captured SCPI traces from real hardware (3 DUT decades: 100 Ω, 10 kΩ, 1 MΩ)
