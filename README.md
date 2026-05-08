@@ -5,7 +5,7 @@
 
 Open-source graphical interface for electrical characterization using Keithley 2400/2450 sourcemeters, with advanced four-point probe analysis.
 
-**Version:** 1.5.1
+**Version:** 1.6.0
 **Author:** Brenden Ferland
 
 ![ResistaMet GUI — I-V Sweep tab](docs/screenshots/05_iv_sweep.png)
@@ -259,6 +259,16 @@ instrument. See [`docs/sim_fidelity.md`](docs/sim_fidelity.md) for the
 full validation methodology.
 
 ## Version History
+
+### v1.6.0 (2026-05-08)
+- `--simulate` CLI flag launches the full GUI against the in-package Keithley 2400-family simulator — no NI-VISA / pyvisa-py / GPIB needed (`--sim-resistance` and `--sim-model` configure the fake DUT). Powered by the same simulator that validates SCPI fidelity against captured hardware traces.
+- Layout overhaul: every tab now uses a single horizontal-splitter pattern (parameters left, plot/data right). Removed the Hide Params / Hide Controls workarounds that existed for the old vertical-stack layout, plus their View-menu equivalents.
+- Two-column parameter forms across all five tabs (Resistance / Voltage Source / Current Source / 4-Point Probe / I-V Sweep) — roughly halves the number of form rows per tab.
+- `pip install -e .` now registers a `resistamet-gui` console command (entry point in `pyproject.toml`); `python resistamet-gui.py` from the repo behaves identically.
+- Removed: hidden 4PP `MplCanvas` + "Show Plot" toggle (the right-panel histogram is what users look at), File-menu "Open Result (CSV)..." duplicate (kept the Results Viewer button), `QTimer.singleShot(150)` deferred 4PP splitter init.
+- Window minimum 900×700 → 720×560; 4PP fixed-pixel widths replaced with `fontMetrics`-derived multiples; SettingsDialog tabs wrapped in QScrollArea and capped at 90% of screen height.
+- `Cmd/Ctrl + 1..5` jumps to a tab.
+- Reproducible screenshot generator (`tools/generate_screenshots.py`) — runs headless, no instrument required.
 
 ### v1.5.1 (2026-05-08)
 - Fixed live-plot overlap and small-window layout breakage on non-maximized windows
