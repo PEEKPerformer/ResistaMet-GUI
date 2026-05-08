@@ -114,6 +114,25 @@ class ResistanceMeterApp(QMainWindow):
         return scroll
 
     @staticmethod
+    def _form_pair(label1: str, w1: QWidget, label2: str, w2: QWidget):
+        """Pack two label-field pairs onto one form row.
+
+        Returns ``(label1_text, container)`` ready for ``form.addRow(*...)``.
+        The container holds ``[w1, label2, w2]`` so a single QFormLayout row
+        carries two fields. setEnabled() on the container cascades — keeps
+        param_layout.itemAt(i, FieldRole) compatible with the existing
+        enable/disable loop.
+        """
+        container = QWidget()
+        h = QHBoxLayout(container)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+        h.addWidget(w1, 1)
+        h.addWidget(QLabel(label2 + ":"), 0)
+        h.addWidget(w2, 1)
+        return label1 + ":", container
+
+    @staticmethod
     def _build_live_readout(font_pt: int = 28) -> QLabel:
         """Big centered measurement readout used at the top of each tab."""
         live = QLabel("--")
@@ -164,11 +183,13 @@ class ResistanceMeterApp(QMainWindow):
         tab_widget.mode = mode
         tab_layout = QVBoxLayout(tab_widget)
 
-        # Parameters (left column, scroll-wrapped for tall forms)
+        # Parameters (left column). No QScrollArea wrap — its small default
+        # sizeHint causes the splitter to collapse the params pane to a few
+        # px, forcing horizontal scrollbars. Letting the QGroupBox report its
+        # real sizeHint is enough; the form is only ~9 rows.
         param_group = QGroupBox("Parameters")
         param_layout = QFormLayout()
         param_group.setLayout(param_layout)
-        param_scroll = self._wrap_in_scroll(param_group)
 
         # Plot (right column)
         plot_group = QGroupBox("Real-time Data")
@@ -186,10 +207,10 @@ class ResistanceMeterApp(QMainWindow):
 
         # Horizontal splitter — params left, plot right
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(param_scroll)
+        splitter.addWidget(param_group)
         splitter.addWidget(plot_group)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(0, 0)  # params keeps its sizeHint width
+        splitter.setStretchFactor(1, 1)  # plot eats all extra space
         splitter.setChildrenCollapsible(False)
 
         tab_layout.addWidget(splitter, 1)
@@ -205,7 +226,6 @@ class ResistanceMeterApp(QMainWindow):
         tab_widget.status_label = status_label
         tab_widget.live_readout = live_readout
         tab_widget.param_group = param_group
-        tab_widget.param_container = param_scroll
         tab_widget.plot_group = plot_group
         tab_widget.control_group = control_group
         tab_widget.splitter = splitter
@@ -215,20 +235,34 @@ class ResistanceMeterApp(QMainWindow):
         widget = self.create_tab_widget('resistance'); layout = widget.param_layout
         widget.res_test_current = EngineeringSpinBox(unit='A', minimum=1e-7, maximum=3.0, default=1e-3)
         widget.res_test_current.setToolTip("DC current sourced through the DUT to measure resistance.\nHigher currents give better signal-to-noise but may heat the sample.\nTypical: 1 mA for metals, 1 µA for semiconductors.\nAccepts: 1mA, 100µA, 0.001, etc.")
-        layout.addRow("Test Current:", widget.res_test_current)
         widget.res_voltage_compliance = NoScrollSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
         widget.res_voltage_compliance.setToolTip("Maximum voltage the instrument will apply across the DUT.\nIf the DUT resistance is too high, voltage will be clamped here\nand a compliance warning will appear. Protects sensitive samples.")
-        layout.addRow("Voltage Compliance:", widget.res_voltage_compliance)
+        layout.addRow(*self._form_pair(
+            "Test Current", widget.res_test_current,
+            "V Compliance", widget.res_voltage_compliance,
+        ))
+
         widget.res_measurement_type = QComboBox(); widget.res_measurement_type.addItems(["2-wire", "4-wire"])
         widget.res_measurement_type.setToolTip("2-wire: Simple connection, includes lead resistance.\n4-wire (Kelvin): Separate sense leads eliminate lead resistance.\nUse 4-wire for low-resistance DUTs (<10 Ω) or precision work.")
-        layout.addRow("Measurement Type:", widget.res_measurement_type)
+        widget.sampling_rate = NoScrollSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
+        widget.sampling_rate.setToolTip("How many readings per second to take.\nLimited by NPLC — high NPLC with high rate will bottleneck\nat the instrument's actual measurement speed.")
+        layout.addRow(*self._form_pair(
+            "Measurement Type", widget.res_measurement_type,
+            "Sampling Rate", widget.sampling_rate,
+        ))
+
         widget.res_auto_range = QCheckBox("Auto Range Resistance")
         widget.res_auto_range.setToolTip("When checked, the instrument automatically selects the best\nmeasurement range for the DUT resistance. Disable for faster\nmeasurements at a fixed range.")
-        layout.addRow(widget.res_auto_range)
         widget.res_offset_comp = QCheckBox("Offset Compensated Ohms")
         widget.res_offset_comp.setToolTip("Cancels thermoelectric EMF by automatically measuring with\ncurrent ON and OFF, then subtracting. Halves measurement\nspeed but improves accuracy for low-resistance DUTs.")
-        layout.addRow(widget.res_offset_comp)
-        # Cable null
+        cb_row = QWidget(); cb_h = QHBoxLayout(cb_row)
+        cb_h.setContentsMargins(0, 0, 0, 0)
+        cb_h.addWidget(widget.res_auto_range)
+        cb_h.addWidget(widget.res_offset_comp)
+        cb_h.addStretch()
+        layout.addRow("", cb_row)
+
+        # Cable null row
         null_layout = QHBoxLayout()
         widget.null_cables_btn = QPushButton("Null Cables")
         widget.null_cables_btn.setToolTip("Short the probes together, then click to measure and subtract\ncable resistance from all future readings (2-wire mode).")
@@ -243,16 +277,19 @@ class ResistanceMeterApp(QMainWindow):
         null_layout.addWidget(widget.null_label)
         null_layout.addStretch()
         layout.addRow("Cable Null:", null_layout)
-        widget.sampling_rate = NoScrollSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
-        widget.sampling_rate.setToolTip("How many readings per second to take.\nLimited by NPLC — high NPLC with high rate will bottleneck\nat the instrument's actual measurement speed.")
-        layout.addRow("Sampling Rate:", widget.sampling_rate)
+
+        # Action buttons (Mark Event + Test Connection on one row)
         widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
         widget.mark_event_button.setToolTip("Insert a named event marker into the data stream (keyboard shortcut: M).\nUseful for annotating probe moves, temperature changes, etc.")
-        widget.mark_event_button.setEnabled(False); layout.addRow(widget.mark_event_button)
+        widget.mark_event_button.setEnabled(False)
         test_conn_button = QPushButton("Test Connection")
         test_conn_button.setToolTip("Check if the instrument is reachable at the configured GPIB address\nbefore starting a measurement.")
         test_conn_button.clicked.connect(self.test_instrument_connection)
-        layout.addRow(test_conn_button)
+        action_row = QWidget(); action_h = QHBoxLayout(action_row)
+        action_h.setContentsMargins(0, 0, 0, 0)
+        action_h.addWidget(widget.mark_event_button)
+        action_h.addWidget(test_conn_button)
+        layout.addRow("", action_row)
         widget.start_button.clicked.connect(lambda: self.start_measurement('resistance'))
         widget.stop_button.clicked.connect(self.stop_current_measurement)
         widget.mark_event_button.clicked.connect(self.mark_event_shortcut)
@@ -263,36 +300,51 @@ class ResistanceMeterApp(QMainWindow):
         widget = self.create_tab_widget('source_v'); layout = widget.param_layout
         widget.vsource_voltage = EngineeringSpinBox(unit='V', minimum=-200.0, maximum=200.0, default=1.0, allow_negative=True)
         widget.vsource_voltage.setToolTip("DC voltage applied to the DUT.\nNegative values reverse polarity. The instrument will source\nthis exact voltage and measure the resulting current.\nAccepts: 100mV, 1V, -0.5V, etc.")
-        layout.addRow("Source Voltage:", widget.vsource_voltage)
         widget.vsource_current_compliance = EngineeringSpinBox(unit='A', minimum=1e-7, maximum=3.0, default=0.1)
         widget.vsource_current_compliance.setToolTip("Maximum current allowed to flow through the DUT.\nIf the DUT draws more than this, the instrument limits current\nand reports compliance. Protects the DUT from overcurrent.\nAccepts: 100mA, 1mA, 0.1A, etc.")
-        layout.addRow("Current Compliance:", widget.vsource_current_compliance)
-        widget.vsource_current_range_auto = QCheckBox("Auto Range Current Measurement")
-        widget.vsource_current_range_auto.setToolTip("Automatically select the best current measurement range.\nDisable for faster measurements when you know the expected range.")
-        layout.addRow(widget.vsource_current_range_auto)
-        dur_layout = QHBoxLayout()
+        layout.addRow(*self._form_pair(
+            "Source Voltage", widget.vsource_voltage,
+            "I Compliance", widget.vsource_current_compliance,
+        ))
+
         widget.vsource_duration = NoScrollSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
         widget.vsource_duration.setToolTip("How long to run the measurement.\nSet a specific duration, or check 'Run until stopped'.")
+        widget.sampling_rate = NoScrollSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
+        widget.sampling_rate.setToolTip("How many readings per second to take.")
+        layout.addRow(*self._form_pair(
+            "Duration", widget.vsource_duration,
+            "Sampling Rate", widget.sampling_rate,
+        ))
+
+        widget.vsource_current_range_auto = QCheckBox("Auto Range Current")
+        widget.vsource_current_range_auto.setToolTip("Automatically select the best current measurement range.\nDisable for faster measurements when you know the expected range.")
         widget.vsource_run_continuous = QCheckBox("Run until stopped")
         widget.vsource_run_continuous.setToolTip("When checked, measurement runs indefinitely until you press Stop.")
         widget.vsource_run_continuous.setChecked(True)
         widget.vsource_duration.setEnabled(False)
         widget.vsource_run_continuous.toggled.connect(lambda c: widget.vsource_duration.setEnabled(not c))
-        dur_layout.addWidget(widget.vsource_duration); dur_layout.addWidget(widget.vsource_run_continuous)
-        layout.addRow("Duration:", dur_layout)
-        widget.sampling_rate = NoScrollSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
-        widget.sampling_rate.setToolTip("How many readings per second to take.")
-        layout.addRow("Sampling Rate:", widget.sampling_rate)
+        cb_row = QWidget(); cb_h = QHBoxLayout(cb_row)
+        cb_h.setContentsMargins(0, 0, 0, 0)
+        cb_h.addWidget(widget.vsource_current_range_auto)
+        cb_h.addWidget(widget.vsource_run_continuous)
+        cb_h.addStretch()
+        layout.addRow("", cb_row)
+
         widget.v_plot_var = QComboBox(); widget.v_plot_var.addItems(["current", "voltage", "resistance"])
         widget.v_plot_var.setToolTip("Which measurement variable to plot in real time.")
         layout.addRow("Plot Variable:", widget.v_plot_var)
+
         widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
         widget.mark_event_button.setToolTip("Insert a named event marker into the data stream (keyboard shortcut: M).")
-        widget.mark_event_button.setEnabled(False); layout.addRow(widget.mark_event_button)
+        widget.mark_event_button.setEnabled(False)
         test_conn_button = QPushButton("Test Connection")
         test_conn_button.setToolTip("Check if the instrument is reachable before starting.")
         test_conn_button.clicked.connect(self.test_instrument_connection)
-        layout.addRow(test_conn_button)
+        action_row = QWidget(); action_h = QHBoxLayout(action_row)
+        action_h.setContentsMargins(0, 0, 0, 0)
+        action_h.addWidget(widget.mark_event_button)
+        action_h.addWidget(test_conn_button)
+        layout.addRow("", action_row)
         widget.start_button.clicked.connect(lambda: self.start_measurement('source_v'))
         widget.stop_button.clicked.connect(self.stop_current_measurement)
         widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
@@ -304,36 +356,51 @@ class ResistanceMeterApp(QMainWindow):
         widget = self.create_tab_widget('source_i'); layout = widget.param_layout
         widget.isource_current = EngineeringSpinBox(unit='A', minimum=-3.0, maximum=3.0, default=1e-3, allow_negative=True)
         widget.isource_current.setToolTip("DC current sourced through the DUT.\nNegative values reverse polarity. The instrument measures\nthe resulting voltage across the DUT.\nAccepts: 1mA, -100µA, 0.001, etc.")
-        layout.addRow("Source Current:", widget.isource_current)
         widget.isource_voltage_compliance = NoScrollSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
         widget.isource_voltage_compliance.setToolTip("Maximum voltage the instrument will apply.\nIf the DUT resistance causes voltage to exceed this,\nthe instrument clamps and reports compliance.")
-        layout.addRow("Voltage Compliance:", widget.isource_voltage_compliance)
-        widget.isource_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
-        widget.isource_voltage_range_auto.setToolTip("Automatically select the best voltage measurement range.\nDisable for faster measurements at a fixed range.")
-        layout.addRow(widget.isource_voltage_range_auto)
-        dur_layout = QHBoxLayout()
+        layout.addRow(*self._form_pair(
+            "Source Current", widget.isource_current,
+            "V Compliance", widget.isource_voltage_compliance,
+        ))
+
         widget.isource_duration = NoScrollSpinBox(decimals=2, minimum=0.0, maximum=168.0, singleStep=0.5, suffix=" h")
         widget.isource_duration.setToolTip("How long to run the measurement.\nSet a specific duration, or check 'Run until stopped'.")
+        widget.sampling_rate = NoScrollSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
+        widget.sampling_rate.setToolTip("How many readings per second to take.")
+        layout.addRow(*self._form_pair(
+            "Duration", widget.isource_duration,
+            "Sampling Rate", widget.sampling_rate,
+        ))
+
+        widget.isource_voltage_range_auto = QCheckBox("Auto Range Voltage")
+        widget.isource_voltage_range_auto.setToolTip("Automatically select the best voltage measurement range.\nDisable for faster measurements at a fixed range.")
         widget.isource_run_continuous = QCheckBox("Run until stopped")
         widget.isource_run_continuous.setToolTip("When checked, measurement runs indefinitely until you press Stop.")
         widget.isource_run_continuous.setChecked(True)
         widget.isource_duration.setEnabled(False)
         widget.isource_run_continuous.toggled.connect(lambda c: widget.isource_duration.setEnabled(not c))
-        dur_layout.addWidget(widget.isource_duration); dur_layout.addWidget(widget.isource_run_continuous)
-        layout.addRow("Duration:", dur_layout)
-        widget.sampling_rate = NoScrollSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
-        widget.sampling_rate.setToolTip("How many readings per second to take.")
-        layout.addRow("Sampling Rate:", widget.sampling_rate)
+        cb_row = QWidget(); cb_h = QHBoxLayout(cb_row)
+        cb_h.setContentsMargins(0, 0, 0, 0)
+        cb_h.addWidget(widget.isource_voltage_range_auto)
+        cb_h.addWidget(widget.isource_run_continuous)
+        cb_h.addStretch()
+        layout.addRow("", cb_row)
+
         widget.i_plot_var = QComboBox(); widget.i_plot_var.addItems(["voltage", "current", "resistance"])
         widget.i_plot_var.setToolTip("Which measurement variable to plot in real time.")
         layout.addRow("Plot Variable:", widget.i_plot_var)
+
         widget.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
         widget.mark_event_button.setToolTip("Insert a named event marker into the data stream (keyboard shortcut: M).")
-        widget.mark_event_button.setEnabled(False); layout.addRow(widget.mark_event_button)
+        widget.mark_event_button.setEnabled(False)
         test_conn_button = QPushButton("Test Connection")
         test_conn_button.setToolTip("Check if the instrument is reachable before starting.")
         test_conn_button.clicked.connect(self.test_instrument_connection)
-        layout.addRow(test_conn_button)
+        action_row = QWidget(); action_h = QHBoxLayout(action_row)
+        action_h.setContentsMargins(0, 0, 0, 0)
+        action_h.addWidget(widget.mark_event_button)
+        action_h.addWidget(test_conn_button)
+        layout.addRow("", action_row)
         widget.start_button.clicked.connect(lambda: self.start_measurement('source_i'))
         widget.stop_button.clicked.connect(self.stop_current_measurement)
         widget.pause_button.toggled.connect(lambda checked: self.pause_resume_measurement(checked))
@@ -366,17 +433,11 @@ class ResistanceMeterApp(QMainWindow):
         right_layout.setContentsMargins(6, 6, 6, 6)
         right_layout.setSpacing(6)
         
-        # CRITICAL: Set size policies to prevent Windows zero-size issues
-        param_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-
-        # Wrap parameters in a scroll area so a tall form scrolls instead of crushing rows
-        param_scroll = self._wrap_in_scroll(param_group)
-        param_scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         # Width minimums in "char widths" so the layout scales with DPI/font
         # instead of staying frozen at 96-DPI pixel counts.
         ch = self.fontMetrics().averageCharWidth()
-        param_scroll.setMinimumWidth(40 * ch)
-        param_scroll.setMaximumWidth(56 * ch)
+        param_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        param_group.setMinimumWidth(40 * ch)
 
         right_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         right_panel.setMinimumWidth(48 * ch)
@@ -388,11 +449,12 @@ class ResistanceMeterApp(QMainWindow):
         # available space, causing QVBoxLayout below to overlap live_readout and
         # control_group on top of the splitter. Let the children drive the minimum.
 
-        # Add panels to splitter with stretch factors to control initial proportions
-        top_splitter.addWidget(param_scroll)
+        # Add panels to splitter — params keeps its sizeHint width, right
+        # panel takes everything else.
+        top_splitter.addWidget(param_group)
         top_splitter.addWidget(right_panel)
-        top_splitter.setStretchFactor(0, 2)  # Parameters: moderate stretch (40%)
-        top_splitter.setStretchFactor(1, 3)  # Right panel: higher stretch (60%)
+        top_splitter.setStretchFactor(0, 0)
+        top_splitter.setStretchFactor(1, 1)
         
         # Live readout + Control row (shared chrome)
         live_readout = self._build_live_readout()
@@ -413,7 +475,6 @@ class ResistanceMeterApp(QMainWindow):
         main_container.status_label = status_label
         main_container.live_readout = live_readout
         main_container.param_group = param_group
-        main_container.param_container = param_scroll
         main_container.control_group = control_group
         main_container.splitter = top_splitter
         main_container.top_splitter = top_splitter  # legacy alias
@@ -425,19 +486,24 @@ class ResistanceMeterApp(QMainWindow):
         # Instrument parameters
         main_container.fpp_current = EngineeringSpinBox(unit='A', minimum=-3.0, maximum=3.0, default=1e-3, allow_negative=True)
         main_container.fpp_current.setToolTip("DC current sourced through the outer two probe tips.\nThe instrument measures voltage across the inner two tips.\nTypical: 1 mA for metals, 100 µA for thin films.\nAccepts: 1mA, 100µA, 0.001, etc.")
-        layout.addRow("Source Current:", main_container.fpp_current)
         main_container.fpp_voltage_compliance = NoScrollSpinBox(decimals=2, minimum=0.1, maximum=200.0, singleStep=0.1, suffix=" V")
         main_container.fpp_voltage_compliance.setToolTip("Maximum voltage the instrument will apply.\nProtects samples from overvoltage damage.")
-        layout.addRow("Voltage Compliance:", main_container.fpp_voltage_compliance)
+        layout.addRow(*self._form_pair(
+            "Source Current", main_container.fpp_current,
+            "V Compliance", main_container.fpp_voltage_compliance,
+        ))
+
         main_container.fpp_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
         main_container.fpp_voltage_range_auto.setToolTip("Automatically select the best voltage measurement range.")
-        # Probe geometry & calc params
         main_container.fpp_spacing_cm = QDoubleSpinBox(decimals=5, minimum=0.001, maximum=5.0, singleStep=0.001, suffix=" cm")
         main_container.fpp_spacing_cm.setToolTip("Distance between adjacent probe tips (s).\nFor the SP4-40085TBQ probe head: s = 0.1016 cm (40 mil).\nUsed in resistivity calculations for the semi-infinite model.")
-        layout.addRow("Probe Spacing s:", main_container.fpp_spacing_cm)
         main_container.fpp_thickness_um = QDoubleSpinBox(decimals=3, minimum=0.0, maximum=5000.0, singleStep=0.1, suffix=" µm")
         main_container.fpp_thickness_um.setToolTip("Film thickness for resistivity calculation.\nSet to 0 if unknown — sheet resistance will still be valid.\nρ = K · t · (V/I) for thin film models.")
-        layout.addRow("Thickness t (optional):", main_container.fpp_thickness_um)
+        layout.addRow(*self._form_pair(
+            "Probe Spacing s", main_container.fpp_spacing_cm,
+            "Thickness t", main_container.fpp_thickness_um,
+        ))
+
         main_container.fpp_alpha = QDoubleSpinBox(decimals=4, minimum=0.0, maximum=10.0, singleStep=0.01)
         main_container.fpp_alpha.setToolTip("Finite sample size correction factor.\nAccounts for edge effects when the sample is not much\nlarger than the probe spacing. Default: 1.0 (no correction).")
         main_container.fpp_k_factor = QDoubleSpinBox(decimals=4, minimum=0.1, maximum=50.0, singleStep=0.001)
@@ -445,20 +511,22 @@ class ResistanceMeterApp(QMainWindow):
         main_container.fpp_model = QComboBox()
         main_container.fpp_model.addItems(["thin_film", "semi_infinite", "finite_thin", "finite_alpha"])
         main_container.fpp_model.setToolTip("Calculation model:\n• thin_film: Rs = K·α·(V/I), ρ = K·α·t·(V/I)\n• semi_infinite: ρ = 2π·s·(V/I) — for bulk samples\n• finite_thin: like thin_film but without α correction")
-        layout.addRow("Model:", main_container.fpp_model)
-        # Samples to acquire
         main_container.fpp_samples = QSpinBox(); main_container.fpp_samples.setRange(0, 1000000); main_container.fpp_samples.setSingleStep(10)
         main_container.fpp_samples.setToolTip("Number of readings to take before stopping.\n0 = continuous (run until you press Stop).")
-        layout.addRow("Samples (0=cont.):", main_container.fpp_samples)
-        # NPLC and sampling rate
+        layout.addRow(*self._form_pair(
+            "Model", main_container.fpp_model,
+            "Samples (0=cont.)", main_container.fpp_samples,
+        ))
+
         main_container.sampling_rate = NoScrollSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
         main_container.sampling_rate.setToolTip("How many readings per second to take.")
-        layout.addRow("Sampling Rate:", main_container.sampling_rate)
-        # Plot variable and plot visibility
         main_container.fpp_plot_var = QComboBox()
         main_container.fpp_plot_var.addItems(["voltage", "current", "V/I", "sheet_Rs", "rho"])
         main_container.fpp_plot_var.setToolTip("Which derived quantity to plot.\nThe histogram in the right panel updates live; this only affects post-run analysis.")
-        layout.addRow("Plot Variable:", main_container.fpp_plot_var)
+        layout.addRow(*self._form_pair(
+            "Sampling Rate", main_container.sampling_rate,
+            "Plot Variable", main_container.fpp_plot_var,
+        ))
 
         # Model info
         main_container.fpp_model_info = QLabel("")
@@ -521,20 +589,22 @@ class ResistanceMeterApp(QMainWindow):
 
         layout.addRow("", adv_group)
         
-        # Mark event
+        # Action buttons: Mark Event | Export Summary | Test Connection on one row
         main_container.mark_event_button = QPushButton(QIcon.fromTheme("emblem-important"), "Mark Event (M)")
         main_container.mark_event_button.setToolTip("Insert a named event marker into the data stream (keyboard shortcut: M).")
         main_container.mark_event_button.setEnabled(False)
-        layout.addRow(main_container.mark_event_button)
-        # Quick report button
-        main_container.report_button = QPushButton(QIcon.fromTheme("document-save"), "Export Summary...")
+        main_container.report_button = QPushButton(QIcon.fromTheme("document-save"), "Export Summary…")
         main_container.report_button.setToolTip("Export a CSV summary of all 4PP measurements\nincluding mean, standard deviation, and RSD.")
         main_container.report_button.clicked.connect(self.export_fpp_summary)
-        layout.addRow(main_container.report_button)
         test_conn_button = QPushButton("Test Connection")
         test_conn_button.setToolTip("Check if the instrument is reachable before starting.")
         test_conn_button.clicked.connect(self.test_instrument_connection)
-        layout.addRow(test_conn_button)
+        action_row = QWidget(); action_h = QHBoxLayout(action_row)
+        action_h.setContentsMargins(0, 0, 0, 0)
+        action_h.addWidget(main_container.mark_event_button)
+        action_h.addWidget(main_container.report_button)
+        action_h.addWidget(test_conn_button)
+        layout.addRow("", action_row)
         
         # CREATE RIGHT PANEL CONTENTS: Spot management → Summary → Histogram → Spots table → Readings table
 
@@ -615,10 +685,8 @@ class ResistanceMeterApp(QMainWindow):
         main_container._fpp_spots = []  # list of dicts: {name, n, rows, rs_mean, rs_std, rho_mean, rho_std, sigma_mean, sigma_std}
         main_container._fpp_spot_counter = 1
 
-        # Seed splitter with sensible defaults; setChildrenCollapsible(False)
-        # plus right_panel.setMinimumWidth(420) keeps the right pane from
-        # collapsing on Windows even before the user resizes.
-        top_splitter.setSizes([400, 800])
+        # Stretch factor [0, 1] + setChildrenCollapsible(False) is enough now:
+        # params holds its sizeHint width, right_panel claims the remainder.
 
         # Initialize model info text using this widget (before self.tab_four_point is assigned)
         self.update_four_point_model_info(main_container)
@@ -641,50 +709,57 @@ class ResistanceMeterApp(QMainWindow):
         widget.sweep_source.addItems(["voltage", "current"])
         widget.sweep_source.setToolTip("Source function for the sweep.\nVoltage: sweep V, measure I\nCurrent: sweep I, measure V")
         widget.sweep_source.currentTextChanged.connect(self._update_sweep_labels)
-        param_layout.addRow("Source:", widget.sweep_source)
+        widget.sweep_direction = QComboBox()
+        widget.sweep_direction.addItems(["up", "down", "up_down"])
+        widget.sweep_direction.setToolTip("Sweep direction:\n• Up: start → stop\n• Down: stop → start\n• Up-Down: forward + reverse (shows hysteresis)")
+        param_layout.addRow(*self._form_pair(
+            "Source", widget.sweep_source,
+            "Direction", widget.sweep_direction,
+        ))
 
         widget.sweep_start = EngineeringSpinBox(unit='V', minimum=-200.0, maximum=200.0, default=0.0, allow_negative=True)
         widget.sweep_start.setToolTip("Sweep start value")
-        param_layout.addRow("Start:", widget.sweep_start)
-
         widget.sweep_stop = EngineeringSpinBox(unit='V', minimum=-200.0, maximum=200.0, default=1.0, allow_negative=True)
         widget.sweep_stop.setToolTip("Sweep stop value")
-        param_layout.addRow("Stop:", widget.sweep_stop)
+        param_layout.addRow(*self._form_pair(
+            "Start", widget.sweep_start,
+            "Stop", widget.sweep_stop,
+        ))
 
         widget.sweep_step = EngineeringSpinBox(unit='V', minimum=1e-6, maximum=200.0, default=0.05)
         widget.sweep_step.setToolTip("Step size (always positive — direction is determined by start/stop)")
-        param_layout.addRow("Step:", widget.sweep_step)
-
         widget.sweep_compliance = EngineeringSpinBox(unit='A', minimum=1e-7, maximum=3.0, default=0.1)
         widget.sweep_compliance.setToolTip("Compliance limit for the measured function.\nAccepts: 100mA, 1mA, 0.1A, etc.")
-        param_layout.addRow("Compliance:", widget.sweep_compliance)
+        param_layout.addRow(*self._form_pair(
+            "Step", widget.sweep_step,
+            "Compliance", widget.sweep_compliance,
+        ))
 
         widget.sweep_delay = NoScrollSpinBox(decimals=3, minimum=0.0, maximum=10.0, singleStep=0.01, suffix=" s")
         widget.sweep_delay.setValue(0.01)
         widget.sweep_delay.setToolTip("Source delay per step — time for DUT to settle after each step.\n0.01s is typical. Increase for capacitive DUTs.")
-        param_layout.addRow("Step Delay:", widget.sweep_delay)
-
-        widget.sweep_direction = QComboBox()
-        widget.sweep_direction.addItems(["up", "down", "up_down"])
-        widget.sweep_direction.setToolTip("Sweep direction:\n• Up: start → stop\n• Down: stop → start\n• Up-Down: forward + reverse (shows hysteresis)")
-        param_layout.addRow("Direction:", widget.sweep_direction)
-
         widget.sweep_nplc = NoScrollSpinBox(decimals=2, minimum=0.01, maximum=10.0, singleStep=0.1)
         widget.sweep_nplc.setValue(1.0)
         widget.sweep_nplc.setToolTip("NPLC for each measurement point in the sweep.")
-        param_layout.addRow("NPLC:", widget.sweep_nplc)
+        param_layout.addRow(*self._form_pair(
+            "Step Delay", widget.sweep_delay,
+            "NPLC", widget.sweep_nplc,
+        ))
 
-        # Points preview
+        # Points preview + Test Connection on one row
         widget.sweep_points_label = QLabel("Points: 21")
-        param_layout.addRow("", widget.sweep_points_label)
         widget.sweep_start.valueChanged.connect(lambda: self._update_sweep_points())
         widget.sweep_stop.valueChanged.connect(lambda: self._update_sweep_points())
         widget.sweep_step.valueChanged.connect(lambda: self._update_sweep_points())
-
         test_conn_button = QPushButton("Test Connection")
         test_conn_button.setToolTip("Check instrument connection before sweeping.")
         test_conn_button.clicked.connect(self.test_instrument_connection)
-        param_layout.addRow(test_conn_button)
+        bottom_row = QWidget(); bottom_h = QHBoxLayout(bottom_row)
+        bottom_h.setContentsMargins(0, 0, 0, 0)
+        bottom_h.addWidget(widget.sweep_points_label)
+        bottom_h.addStretch()
+        bottom_h.addWidget(test_conn_button)
+        param_layout.addRow("", bottom_row)
 
         # I-V Plot
         plot_group = QGroupBox("I-V Characteristic")
@@ -708,15 +783,11 @@ class ResistanceMeterApp(QMainWindow):
         widget.pause_button = None
         widget.mark_event_button = None
 
-        # Wrap parameters in a scroll area so the form scrolls if it doesn't fit
-        param_scroll = self._wrap_in_scroll(param_group)
-        widget.param_container = param_scroll
-
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(param_scroll)
+        splitter.addWidget(param_group)
         splitter.addWidget(plot_group)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(0, 0)  # params keeps its sizeHint width
+        splitter.setStretchFactor(1, 1)
         splitter.setChildrenCollapsible(False)
         widget.splitter = splitter
         widget.plot_group = plot_group

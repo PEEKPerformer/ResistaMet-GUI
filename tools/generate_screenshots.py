@@ -54,21 +54,6 @@ def make_app() -> tuple[QApplication, ResistanceMeterApp]:
     win = ResistanceMeterApp()
     win.sample_input.setText(DEMO_SAMPLE)
     win.resize(1920, 1080)
-
-    # Match the in-app horizontal-splitter layout; pick sizes so spinbox
-    # values fit without truncation.
-    for tab in (
-        win.tab_resistance, win.tab_voltage_source,
-        win.tab_current_source, win.tab_sweep,
-    ):
-        if hasattr(tab, "splitter"):
-            tab.splitter.setSizes([400, 1480])
-    if hasattr(win.tab_four_point, "top_splitter"):
-        # The 4PP params scroll is capped at 480px in production code, which
-        # crops some EngineeringSpinBox values; lift the cap for screenshots.
-        if hasattr(win.tab_four_point, "param_container"):
-            win.tab_four_point.param_container.setMaximumWidth(16777215)
-        win.tab_four_point.top_splitter.setSizes([560, 1320])
     win.main_splitter.setSizes([900, 150])
 
     # Replace the noisy startup log with a clean, demo-friendly message.
