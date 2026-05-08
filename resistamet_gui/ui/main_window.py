@@ -1337,12 +1337,11 @@ class ResistanceMeterApp(QMainWindow):
         if mode == 'sweep':
             widget.iv_canvas.clear_plot()
             widget._sweep_trace_count = 0
+        elif mode == 'four_point':
+            # 4PP visualizes via histogram + tables, no time-series MplCanvas
+            self._clear_four_point_data()
         else:
             widget.canvas.clear_plot()
-
-        # Clear 4PP-specific data structures on new measurement start
-        if mode == 'four_point':
-            self._clear_four_point_data()
         widget.status_label.setText("Status: Sweeping..." if mode == 'sweep' else "Status: Running")
         widget.status_label.setStyleSheet("font-weight: bold; color: green;")
         if getattr(widget, 'mark_event_button', None): widget.mark_event_button.setEnabled(True)
