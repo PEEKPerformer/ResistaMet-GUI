@@ -5,7 +5,7 @@
 
 Open-source graphical interface for electrical characterization using Keithley 2400/2450 sourcemeters, with advanced four-point probe analysis.
 
-**Version:** 1.6.0
+**Version:** 1.6.1
 **Author:** Brenden Ferland
 
 ![ResistaMet GUI — I-V Sweep tab](docs/screenshots/05_iv_sweep.png)
@@ -259,6 +259,9 @@ instrument. See [`docs/sim_fidelity.md`](docs/sim_fidelity.md) for the
 full validation methodology.
 
 ## Version History
+
+### v1.6.1 (2026-05-08)
+- Fix: pressing **Start** on the 4-Point Probe tab in v1.6.0 raised `AttributeError` because the layout refactor removed the (hidden) MplCanvas but the start path still tried to clear it. 4PP now correctly routes through the histogram path.
 
 ### v1.6.0 (2026-05-08)
 - `--simulate` CLI flag launches the full GUI against the in-package Keithley 2400-family simulator — no NI-VISA / pyvisa-py / GPIB needed (`--sim-resistance` and `--sim-model` configure the fake DUT). Powered by the same simulator that validates SCPI fidelity against captured hardware traces.
