@@ -25,6 +25,19 @@ Generated reproducibly via `python tools/generate_screenshots.py` — runs headl
 
 </details>
 
+## Try it now (no instrument required)
+
+```bash
+git clone https://github.com/PEEKPerformer/ResistaMet-GUI.git
+cd ResistaMet-GUI
+pip install -e .
+resistamet-gui --simulate
+```
+
+This launches the full GUI against an in-package Keithley 2400-family simulator. Every measurement mode works end-to-end with no NI-VISA, no pyvisa-py, and no GPIB hardware. The simulator is the same one tests validate byte-equivalent against captured hardware traces — see [`docs/sim_fidelity.md`](docs/sim_fidelity.md).
+
+Optional: `--sim-resistance 1000` (1 kΩ DUT) or `--sim-model 2410` (advertise a different Keithley model).
+
 ## Overview
 
 ResistaMet GUI is a PyQt5-based desktop application for controlling Keithley sourcemeters and performing electrical measurements. It supports five measurement modes (including hardware-driven I-V sweeps), real-time data visualization, multi-spot four-point probe analysis with delta mode, and dual-format data export.
@@ -110,21 +123,43 @@ The live readout displays in engineering notation too: `V: 2.830 mV  I: 1.000 mA
 ### Requirements
 
 - Python 3.9+
-- PyQt5
-- PyVISA + a VISA backend (NI-VISA or pyvisa-py)
-- Matplotlib
-- NumPy
+- PyQt5, PyVISA, NumPy, Matplotlib (installed automatically)
+- A VISA backend if you want to talk to real hardware (see below)
 
 ### Setup
 
 ```bash
 git clone https://github.com/PEEKPerformer/ResistaMet-GUI.git
 cd ResistaMet-GUI
-pip install -r requirements.txt
-python resistamet-gui.py
+pip install -e .
+resistamet-gui              # real instrument (needs VISA backend)
+resistamet-gui --simulate   # in-package simulator, no hardware
 ```
 
-For NI GPIB adapters, install [NI-VISA](https://www.ni.com/en/support/downloads/drivers/download.ni-visa.html). For Prologix USB adapters, `pyvisa-py` (included in requirements) works directly.
+`pip install -e .` reads [`pyproject.toml`](pyproject.toml) and registers the `resistamet-gui` console command. You can also run `python resistamet-gui.py` from the repo root.
+
+#### VISA backend (real-hardware only)
+
+If you launch without `--simulate` you need a VISA backend so PyVISA can reach the instrument:
+
+- **NI-VISA** ([download](https://www.ni.com/en/support/downloads/drivers/download.ni-visa.html)) — needed for NI GPIB adapters; works on Windows, Linux, macOS.
+- **`pyvisa-py`** (`pip install pyvisa-py`) — pure-Python backend, suitable for Prologix USB-GPIB adapters and serial sourcemeters.
+
+If neither is installed and you're not using `--simulate`, **Test Connection** will fail with `ValueError: Could not locate a VISA implementation`.
+
+#### Linux system packages (PyQt5 runtime)
+
+Headless Linux distributions (and many CI images) don't ship the X11/Qt platform shared libraries that PyQt5 dynamically loads. On Debian/Ubuntu:
+
+```bash
+sudo apt-get install -y \
+    libegl1 libxkbcommon-x11-0 libdbus-1-3 \
+    libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+    libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+    libxcb-sync1 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1
+```
+
+(This is the same list our CI uses — see [`.github/workflows/tests.yml`](.github/workflows/tests.yml).)
 
 ## Quick Start
 
