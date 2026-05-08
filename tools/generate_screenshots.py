@@ -53,36 +53,23 @@ def make_app() -> tuple[QApplication, ResistanceMeterApp]:
 
     win = ResistanceMeterApp()
     win.sample_input.setText(DEMO_SAMPLE)
-    # 1920×1080 isn't tall enough for a few tabs once the params group, the
-    # plot canvas, and the status log all claim their preferred height, so we
-    # render a bit taller. Splitter sizes below match this geometry.
-    win.resize(1920, 1280)
+    win.resize(1920, 1080)
 
-    if hasattr(win.tab_sweep, "splitter"):
-        win.tab_sweep.splitter.setSizes([400, 1480])
+    # Match the in-app horizontal-splitter layout; pick sizes so spinbox
+    # values fit without truncation.
+    for tab in (
+        win.tab_resistance, win.tab_voltage_source,
+        win.tab_current_source, win.tab_sweep,
+    ):
+        if hasattr(tab, "splitter"):
+            tab.splitter.setSizes([400, 1480])
     if hasattr(win.tab_four_point, "top_splitter"):
-        # The 4PP params scroll is capped at 480px wide in main_window.py,
-        # which crops EngineeringSpinBox values like "100.0 µA". Lift the cap
-        # for the screenshot and give the panel a comfortable width.
+        # The 4PP params scroll is capped at 480px in production code, which
+        # crops some EngineeringSpinBox values; lift the cap for screenshots.
         if hasattr(win.tab_four_point, "param_container"):
             win.tab_four_point.param_container.setMaximumWidth(16777215)
         win.tab_four_point.top_splitter.setSizes([560, 1320])
-    win.main_splitter.setSizes([1100, 150])
-
-    # Force each tab's params (scroll-wrapped) and plot canvas to claim their
-    # preferred height. Without this the scroll area shrinks and the plot
-    # collapses to a thin strip.
-    for tab in (
-        win.tab_resistance, win.tab_voltage_source,
-        win.tab_current_source, win.tab_sweep, win.tab_four_point,
-    ):
-        sa = getattr(tab, "param_container", None)
-        inner = sa.widget() if sa is not None else None
-        if inner is not None:
-            sa.setMinimumHeight(inner.sizeHint().height())
-        canvas = getattr(tab, "canvas", None)
-        if canvas is not None:
-            canvas.setMinimumHeight(450)
+    win.main_splitter.setSizes([900, 150])
 
     # Replace the noisy startup log with a clean, demo-friendly message.
     win.status_display.clear()

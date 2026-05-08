@@ -122,11 +122,9 @@ class TestTabCreation:
         assert hasattr(w, 'nplc')
         assert hasattr(w, 'sampling_rate')
         assert hasattr(w, 'live_readout')
-        assert hasattr(w, 'fpp_show_plot')
         assert hasattr(w, 'fpp_table')
         assert hasattr(w, 'fpp_summary')
-        assert hasattr(w, 'canvas')
-        # New: histogram, spots, delta mode
+        # 4PP visualizes via the histogram + tables, not a time-series MplCanvas
         assert hasattr(w, 'fpp_histogram')
         assert hasattr(w, 'fpp_spots_table')
         assert hasattr(w, 'fpp_spot_name')

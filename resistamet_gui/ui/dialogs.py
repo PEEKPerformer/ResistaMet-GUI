@@ -1,7 +1,7 @@
 import os
 from PyQt5.QtWidgets import (
-    QDialog, QTabWidget, QWidget, QVBoxLayout, QFormLayout, QHBoxLayout,
-    QLineEdit, QPushButton, QDoubleSpinBox, QSpinBox, QComboBox, QLabel,
+    QDialog, QFrame, QScrollArea, QTabWidget, QWidget, QVBoxLayout, QFormLayout,
+    QHBoxLayout, QLineEdit, QPushButton, QDoubleSpinBox, QSpinBox, QComboBox, QLabel,
     QFileDialog, QMessageBox, QCheckBox
 )
 from PyQt5.QtCore import Qt
@@ -38,12 +38,28 @@ class SettingsDialog(QDialog):
         self.init_ui()
         self.load_settings()
 
+    @staticmethod
+    def _wrap_scroll(widget: QWidget) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setWidget(widget)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        return scroll
+
     def init_ui(self):
         self.setMinimumWidth(600)
+        # Cap the dialog at a fraction of the screen so the Measurement tab
+        # (4×QFormLayout stack — taller than 1080p in places) doesn't push
+        # buttons off the bottom on small displays.
+        screen = self.screen() if hasattr(self, "screen") else None
+        if screen is not None:
+            avail = screen.availableGeometry()
+            self.setMaximumHeight(int(avail.height() * 0.9))
+            self.setMaximumWidth(int(avail.width() * 0.9))
         self.tabs = QTabWidget()
-        self.measurement_tab = self.create_measurement_tab()
-        self.display_tab = self.create_display_tab()
-        self.file_tab = self.create_file_tab()
+        self.measurement_tab = self._wrap_scroll(self.create_measurement_tab())
+        self.display_tab = self._wrap_scroll(self.create_display_tab())
+        self.file_tab = self._wrap_scroll(self.create_file_tab())
         self.tabs.addTab(self.measurement_tab, "Measurement")
         self.tabs.addTab(self.display_tab, "Display")
         self.tabs.addTab(self.file_tab, "File")
@@ -345,6 +361,10 @@ class UserSelectionDialog(QDialog):
 
     def init_ui(self):
         from PyQt5.QtWidgets import QVBoxLayout, QGroupBox, QHBoxLayout
+        # Default size: wide enough for "Create New User" group label and the
+        # user combo on a single row, regardless of profile-name length.
+        ch = self.fontMetrics().averageCharWidth()
+        self.setMinimumWidth(48 * ch)
         layout = QVBoxLayout()
         users = self.config_manager.get_users()
         last_user = self.config_manager.get_last_user()

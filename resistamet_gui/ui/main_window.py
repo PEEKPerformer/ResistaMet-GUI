@@ -41,7 +41,10 @@ class ResistanceMeterApp(QMainWindow):
         self.measurement_running = False
         self.active_mode = None
         self.setWindowTitle(f"ResistaMet GUI v{__version__}")
-        self.setMinimumSize(900, 700)
+        # 720×560 fits comfortably on 1366×768 laptops after taskbar/title-bar
+        # chrome. The horizontal-splitter layout makes this floor reachable;
+        # the previous 900×700 was tied to the old vertical-splitter layout.
+        self.setMinimumSize(720, 560)
         self.setWindowIcon(QIcon.fromTheme("accessories-voltmeter"))
         self.init_ui()
         self.select_user()
@@ -90,10 +93,13 @@ class ResistanceMeterApp(QMainWindow):
         main_layout.addWidget(self.main_splitter, 1)
         self.statusBar().showMessage("Ready")
         self.create_menus()
-        # Sync initial hide/show button text
-        self.update_hide_show_buttons()
         self.shortcut_mark = QShortcut(Qt.Key_M, self); self.shortcut_mark.activated.connect(self.mark_event_shortcut)
         self.shortcut_mark.setEnabled(False)
+
+        # Cmd/Ctrl + 1..5 jumps to a tab. Match macOS / browser convention.
+        for idx, key in enumerate((Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4, Qt.Key_5)):
+            sc = QShortcut(Qt.ControlModifier | key, self)
+            sc.activated.connect(lambda i=idx: self.main_tabs.setCurrentIndex(i))
 
     @staticmethod
     def _wrap_in_scroll(widget: QWidget) -> QScrollArea:
@@ -107,64 +113,102 @@ class ResistanceMeterApp(QMainWindow):
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         return scroll
 
+    @staticmethod
+    def _build_live_readout(font_pt: int = 28) -> QLabel:
+        """Big centered measurement readout used at the top of each tab."""
+        live = QLabel("--")
+        live.setAlignment(Qt.AlignCenter)
+        f = QFont(); f.setPointSize(font_pt); f.setBold(True)
+        live.setFont(f)
+        live.setStyleSheet(
+            "color: #222; background: #f0f0f0; border: 1px solid #ccc; "
+            "border-radius: 4px; padding: 4px;"
+        )
+        live.setMinimumHeight(50)
+        live.setToolTip(
+            "Live measurement reading — updates in real time during measurement"
+        )
+        return live
+
+    @staticmethod
+    def _build_control_row(with_pause: bool = True):
+        """Bottom Control row: Start / Stop / [Pause] / status_label.
+
+        Returns ``(group, start, stop, pause_or_None, status_label)``.
+        """
+        group = QGroupBox("Control")
+        layout = QHBoxLayout(group)
+        start = QPushButton(QIcon.fromTheme("media-playback-start"), "Start")
+        stop = QPushButton(QIcon.fromTheme("media-playback-stop"), "Stop")
+        stop.setEnabled(False)
+        pause = None
+        if with_pause:
+            pause = QPushButton(QIcon.fromTheme("media-playback-pause"), "Pause")
+            pause.setEnabled(False)
+            pause.setCheckable(True)
+        status_label = QLabel("Status: Idle")
+        status_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(start)
+        layout.addWidget(stop)
+        if pause is not None:
+            layout.addWidget(pause)
+        layout.addStretch()
+        layout.addWidget(status_label)
+        return group, start, stop, pause, status_label
+
     def create_tab_widget(self, mode: str) -> QWidget:
-        tab_widget = QWidget(); tab_layout = QVBoxLayout(tab_widget)
-        param_group = QGroupBox("Parameters"); param_layout = QFormLayout(); param_group.setLayout(param_layout)
+        """Time-series tab layout: Parameters left, plot right; live readout
+        and Control row stacked beneath. Matches the I-V Sweep / 4PP pattern
+        so all five tabs share the same shape."""
+        tab_widget = QWidget()
+        tab_widget.mode = mode
+        tab_layout = QVBoxLayout(tab_widget)
 
-        # Live numeric readout — large font display of current reading
-        live_readout = QLabel("--")
-        live_readout.setAlignment(Qt.AlignCenter)
-        live_font = QFont(); live_font.setPointSize(28); live_font.setBold(True)
-        live_readout.setFont(live_font)
-        live_readout.setStyleSheet("color: #222; background: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; padding: 4px;")
-        live_readout.setMinimumHeight(50)
-        live_readout.setToolTip("Live measurement reading — updates in real time during measurement")
-
-        plot_group = QGroupBox("Real-time Data"); plot_layout = QVBoxLayout()
-        canvas = MplCanvas(self, width=8, height=5, dpi=90); toolbar = NavigationToolbar(canvas, self)
-        plot_layout.addWidget(toolbar); plot_layout.addWidget(canvas); plot_group.setLayout(plot_layout)
-        control_group = QGroupBox("Control"); control_layout = QHBoxLayout()
-        start_button = QPushButton(QIcon.fromTheme("media-playback-start"), "Start")
-        stop_button = QPushButton(QIcon.fromTheme("media-playback-stop"), "Stop"); stop_button.setEnabled(False)
-        pause_button = QPushButton(QIcon.fromTheme("media-playback-pause"), "Pause"); pause_button.setEnabled(False); pause_button.setCheckable(True)
-        status_label = QLabel("Status: Idle"); status_label.setStyleSheet("font-weight: bold;")
-        control_layout.addWidget(start_button); control_layout.addWidget(stop_button); control_layout.addWidget(pause_button)
-        # Hide buttons for quicker collapsing
-        hide_params_btn = QPushButton("Hide Params")
-        hide_params_btn.setToolTip("Hide/show parameters section")
-        hide_params_btn.clicked.connect(self._toggle_params_action)
-        hide_controls_btn = QPushButton("Hide Controls")
-        hide_controls_btn.setToolTip("Hide/show controls section")
-        hide_controls_btn.clicked.connect(self._toggle_controls_action)
-        control_layout.addWidget(hide_params_btn)
-        control_layout.addWidget(hide_controls_btn)
-        control_layout.addStretch(); control_layout.addWidget(status_label); control_group.setLayout(control_layout)
-
-        # Wrap parameters in a scroll area so the form scrolls when the
-        # splitter pane is shorter than the form's preferred height
+        # Parameters (left column, scroll-wrapped for tall forms)
+        param_group = QGroupBox("Parameters")
+        param_layout = QFormLayout()
+        param_group.setLayout(param_layout)
         param_scroll = self._wrap_in_scroll(param_group)
 
-        # Vertical splitter to resize/collapse sections per tab
-        tab_splitter = QSplitter(); tab_splitter.setOrientation(Qt.Vertical)
-        tab_splitter.addWidget(param_scroll)
-        tab_splitter.addWidget(live_readout)
-        tab_splitter.addWidget(plot_group)
-        tab_splitter.addWidget(control_group)
-        tab_splitter.setStretchFactor(0, 1)
-        tab_splitter.setStretchFactor(1, 0)
-        tab_splitter.setStretchFactor(2, 5)
-        tab_splitter.setStretchFactor(3, 1)
-        tab_layout.addWidget(tab_splitter)
-        tab_widget.mode = mode; tab_widget.param_layout = param_layout; tab_widget.canvas = canvas
-        tab_widget.start_button = start_button; tab_widget.stop_button = stop_button; tab_widget.pause_button = pause_button
-        tab_widget.status_label = status_label; tab_widget.live_readout = live_readout
+        # Plot (right column)
+        plot_group = QGroupBox("Real-time Data")
+        plot_layout = QVBoxLayout(plot_group)
+        canvas = MplCanvas(self, width=8, height=5, dpi=90)
+        toolbar = NavigationToolbar(canvas, self)
+        plot_layout.addWidget(toolbar)
+        plot_layout.addWidget(canvas)
+
+        # Live readout + Control row (full-width, beneath the splitter)
+        live_readout = self._build_live_readout()
+        control_group, start_button, stop_button, pause_button, status_label = (
+            self._build_control_row(with_pause=True)
+        )
+
+        # Horizontal splitter — params left, plot right
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(param_scroll)
+        splitter.addWidget(plot_group)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 3)
+        splitter.setChildrenCollapsible(False)
+
+        tab_layout.addWidget(splitter, 1)
+        tab_layout.addWidget(live_readout, 0)
+        tab_layout.addWidget(control_group, 0)
+
+        # Stash references used by other methods
+        tab_widget.param_layout = param_layout
+        tab_widget.canvas = canvas
+        tab_widget.start_button = start_button
+        tab_widget.stop_button = stop_button
+        tab_widget.pause_button = pause_button
+        tab_widget.status_label = status_label
+        tab_widget.live_readout = live_readout
         tab_widget.param_group = param_group
         tab_widget.param_container = param_scroll
         tab_widget.plot_group = plot_group
         tab_widget.control_group = control_group
-        tab_widget.splitter = tab_splitter
-        tab_widget.hide_params_btn = hide_params_btn
-        tab_widget.hide_controls_btn = hide_controls_btn
+        tab_widget.splitter = splitter
         return tab_widget
 
     def create_resistance_tab(self):
@@ -328,12 +372,15 @@ class ResistanceMeterApp(QMainWindow):
         # Wrap parameters in a scroll area so a tall form scrolls instead of crushing rows
         param_scroll = self._wrap_in_scroll(param_group)
         param_scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        param_scroll.setMinimumWidth(350)  # Ensure parameters always visible
-        param_scroll.setMaximumWidth(480)  # Don't let it dominate the screen
+        # Width minimums in "char widths" so the layout scales with DPI/font
+        # instead of staying frozen at 96-DPI pixel counts.
+        ch = self.fontMetrics().averageCharWidth()
+        param_scroll.setMinimumWidth(40 * ch)
+        param_scroll.setMaximumWidth(56 * ch)
 
         right_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        right_panel.setMinimumWidth(420)   # Guarantee table visibility
-        right_panel.setMinimumHeight(300)  # Ensure reasonable table height
+        right_panel.setMinimumWidth(48 * ch)
+        right_panel.setMinimumHeight(20 * self.fontMetrics().height())
 
         top_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         # right_panel's setMinimumHeight(300) keeps the splitter from collapsing;
@@ -347,63 +394,19 @@ class ResistanceMeterApp(QMainWindow):
         top_splitter.setStretchFactor(0, 2)  # Parameters: moderate stretch (40%)
         top_splitter.setStretchFactor(1, 3)  # Right panel: higher stretch (60%)
         
-        # Live numeric readout for 4PP
-        live_readout = QLabel("--")
-        live_readout.setAlignment(Qt.AlignCenter)
-        live_font = QFont(); live_font.setPointSize(28); live_font.setBold(True)
-        live_readout.setFont(live_font)
-        live_readout.setStyleSheet("color: #222; background: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; padding: 4px;")
-        live_readout.setMinimumHeight(50)
-        live_readout.setToolTip("Live measurement reading — updates in real time during measurement")
+        # Live readout + Control row (shared chrome)
+        live_readout = self._build_live_readout()
+        control_group, start_button, stop_button, pause_button, status_label = (
+            self._build_control_row(with_pause=True)
+        )
 
-        # MIDDLE: Plot group (standard approach, initially hidden)
-        plot_group = QGroupBox("Real-time Data")
-        plot_layout = QVBoxLayout(plot_group)
-        canvas = MplCanvas(self, width=8, height=5, dpi=90)
-        toolbar = NavigationToolbar(canvas, self)
-        plot_layout.addWidget(toolbar)
-        plot_layout.addWidget(canvas)
-        plot_group.setVisible(False)  # Hidden by default — 4PP readings should be flat
-        
-        # BOTTOM: Controls group (standard approach)
-        control_group = QGroupBox("Control")
-        control_layout = QHBoxLayout(control_group)
-        
-        start_button = QPushButton(QIcon.fromTheme("media-playback-start"), "Start")
-        stop_button = QPushButton(QIcon.fromTheme("media-playback-stop"), "Stop")
-        pause_button = QPushButton(QIcon.fromTheme("media-playback-pause"), "Pause")
-        status_label = QLabel("Status: Idle")
-        
-        stop_button.setEnabled(False)
-        pause_button.setEnabled(False) 
-        pause_button.setCheckable(True)
-        status_label.setStyleSheet("font-weight: bold;")
-        
-        # Add hide/show buttons (maintain existing functionality)
-        hide_params_btn = QPushButton("Hide Params")
-        hide_controls_btn = QPushButton("Hide Controls")
-        hide_params_btn.setToolTip("Hide/show parameters section")
-        hide_controls_btn.setToolTip("Hide/show controls section")
-        hide_params_btn.clicked.connect(self._toggle_params_action)
-        hide_controls_btn.clicked.connect(self._toggle_controls_action)
-        
-        control_layout.addWidget(start_button)
-        control_layout.addWidget(stop_button)  
-        control_layout.addWidget(pause_button)
-        control_layout.addWidget(hide_params_btn)
-        control_layout.addWidget(hide_controls_btn)
-        control_layout.addStretch()
-        control_layout.addWidget(status_label)
-        
-        # Assemble main layout with proper stretch factors
-        main_layout.addWidget(top_splitter, 10)  # Top gets most space
-        main_layout.addWidget(live_readout, 0)   # Live readout (compact)
-        main_layout.addWidget(plot_group, 5)     # Plot when visible
-        main_layout.addWidget(control_group, 1)  # Controls minimal height
-        
-        # Store all references needed by other methods (maintain exact compatibility)
+        # Assemble main layout
+        main_layout.addWidget(top_splitter, 1)
+        main_layout.addWidget(live_readout, 0)
+        main_layout.addWidget(control_group, 0)
+
+        # Store references used by other methods
         main_container.param_layout = param_layout
-        main_container.canvas = canvas
         main_container.start_button = start_button
         main_container.stop_button = stop_button
         main_container.pause_button = pause_button
@@ -411,12 +414,9 @@ class ResistanceMeterApp(QMainWindow):
         main_container.live_readout = live_readout
         main_container.param_group = param_group
         main_container.param_container = param_scroll
-        main_container.plot_group = plot_group
         main_container.control_group = control_group
-        main_container.hide_params_btn = hide_params_btn
-        main_container.hide_controls_btn = hide_controls_btn
-        main_container.splitter = top_splitter  # Note: this is now the horizontal splitter, not vertical
-        main_container.top_splitter = top_splitter  # Additional reference for initialization
+        main_container.splitter = top_splitter
+        main_container.top_splitter = top_splitter  # legacy alias
         main_container.right_panel = right_panel
         
         # CREATE ALL 4PP-SPECIFIC WIDGETS (exactly as before)
@@ -457,13 +457,8 @@ class ResistanceMeterApp(QMainWindow):
         # Plot variable and plot visibility
         main_container.fpp_plot_var = QComboBox()
         main_container.fpp_plot_var.addItems(["voltage", "current", "V/I", "sheet_Rs", "rho"])
-        main_container.fpp_plot_var.setToolTip("Which derived quantity to plot in real time.")
+        main_container.fpp_plot_var.setToolTip("Which derived quantity to plot.\nThe histogram in the right panel updates live; this only affects post-run analysis.")
         layout.addRow("Plot Variable:", main_container.fpp_plot_var)
-        main_container.fpp_show_plot = QCheckBox("Show Plot")
-        main_container.fpp_show_plot.setChecked(False)
-        main_container.fpp_show_plot.setToolTip("Toggle the real-time plot display.\nUsually not needed for 4PP since readings should be stable.")
-        main_container.fpp_show_plot.toggled.connect(lambda v: plot_group.setVisible(v))
-        layout.addRow(main_container.fpp_show_plot)
 
         # Model info
         main_container.fpp_model_info = QLabel("")
@@ -602,7 +597,6 @@ class ResistanceMeterApp(QMainWindow):
             sb.setMaximumWidth(140)
         main_container.fpp_plot_var.setMaximumWidth(140)
         main_container.fpp_model.setMaximumWidth(160)
-        main_container.fpp_show_plot.setMaximumWidth(120)
         
         # Connect all events (exactly as before)
         main_container.start_button.clicked.connect(lambda: self.start_measurement('four_point'))
@@ -620,18 +614,12 @@ class ResistanceMeterApp(QMainWindow):
         main_container._fpp_rows = []  # list of tuples (time, v, i, ratio, rs, rho, sigma, comp, event)
         main_container._fpp_spots = []  # list of dicts: {name, n, rows, rs_mean, rs_std, rho_mean, rho_std, sigma_mean, sigma_std}
         main_container._fpp_spot_counter = 1
-        
-        # CRITICAL: Deferred initialization for Windows zero-size fix
-        def initialize_splitter_sizes():
-            """Initialize splitter sizes after widget is properly sized"""
-            total_width = main_container.width()
-            if total_width > 200:  # Only if properly sized
-                left_width = max(380, int(total_width * 0.35))  # 35% for params, minimum 380px
-                right_width = total_width - left_width          # 65% for summary+table
-                top_splitter.setSizes([left_width, right_width])
-        
-        main_container._initialize_splitter = initialize_splitter_sizes
-        
+
+        # Seed splitter with sensible defaults; setChildrenCollapsible(False)
+        # plus right_panel.setMinimumWidth(420) keeps the right pane from
+        # collapsing on Windows even before the user resizes.
+        top_splitter.setSizes([400, 800])
+
         # Initialize model info text using this widget (before self.tab_four_point is assigned)
         self.update_four_point_model_info(main_container)
 
@@ -707,47 +695,35 @@ class ResistanceMeterApp(QMainWindow):
         plot_layout.addWidget(toolbar)
         plot_layout.addWidget(widget.iv_canvas)
 
-        # Controls
-        control_group = QGroupBox("Control")
-        control_layout = QHBoxLayout(control_group)
+        # Live readout + Control row (shared chrome). Sweep uses a smaller
+        # readout font because the message ("41 points acquired") is long, and
+        # the run is atomic so no Pause button.
+        widget.live_readout = self._build_live_readout(font_pt=20)
+        control_group, widget.start_button, widget.stop_button, _, widget.status_label = (
+            self._build_control_row(with_pause=False)
+        )
+        widget.start_button.setText("Run Sweep")
+        widget.stop_button.setText("Abort")
         widget.control_group = control_group
-        widget.start_button = QPushButton(QIcon.fromTheme("media-playback-start"), "Run Sweep")
-        widget.stop_button = QPushButton(QIcon.fromTheme("media-playback-stop"), "Abort")
-        widget.stop_button.setEnabled(False)
-        widget.status_label = QLabel("Status: Idle")
-        widget.status_label.setStyleSheet("font-weight: bold;")
-        control_layout.addWidget(widget.start_button)
-        control_layout.addWidget(widget.stop_button)
-        control_layout.addStretch()
-        control_layout.addWidget(widget.status_label)
-
-        # Live readout
-        widget.live_readout = QLabel("--")
-        widget.live_readout.setAlignment(Qt.AlignCenter)
-        live_font = QFont(); live_font.setPointSize(20); live_font.setBold(True)
-        widget.live_readout.setFont(live_font)
-        widget.live_readout.setStyleSheet("color: #222; background: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; padding: 4px;")
+        widget.pause_button = None
+        widget.mark_event_button = None
 
         # Wrap parameters in a scroll area so the form scrolls if it doesn't fit
         param_scroll = self._wrap_in_scroll(param_group)
         widget.param_container = param_scroll
 
-        # Layout assembly
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(param_scroll)
         splitter.addWidget(plot_group)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
+        splitter.setChildrenCollapsible(False)
         widget.splitter = splitter
         widget.plot_group = plot_group
 
-        tab_layout.addWidget(splitter, 5)
+        tab_layout.addWidget(splitter, 1)
         tab_layout.addWidget(widget.live_readout, 0)
         tab_layout.addWidget(control_group, 0)
-
-        # No pause button for sweep (atomic operation)
-        widget.pause_button = None
-        widget.mark_event_button = None
 
         # Connect
         widget.start_button.clicked.connect(lambda: self.start_measurement('sweep'))
@@ -794,14 +770,12 @@ class ResistanceMeterApp(QMainWindow):
         file_menu = menu_bar.addMenu("&File")
         save_plot_action = QAction(QIcon.fromTheme("document-save"), "Save Plot...", self)
         save_plot_action.triggered.connect(self.save_active_plot)
-        open_result_action = QAction(QIcon.fromTheme("document-open"), "Open Result (CSV)...", self)
-        open_result_action.triggered.connect(self.open_result_csv)
         exit_action = QAction(QIcon.fromTheme("application-exit"), "Exit", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(save_plot_action)
-        file_menu.addAction(open_result_action)
         file_menu.addSeparator()
         file_menu.addAction(exit_action)
+        # Note: "Open Result (CSV)..." lives on the Results Viewer tab itself
         # Profiles
         profiles_menu = menu_bar.addMenu("&Profiles")
         save_prof_action = QAction("Save Profile for Current Mode...", self)
@@ -826,18 +800,9 @@ class ResistanceMeterApp(QMainWindow):
 
         # View
         view_menu = menu_bar.addMenu("&View")
-        self.action_show_params = QAction("Show Parameters", self, checkable=True)
-        self.action_show_params.setChecked(True)
-        self.action_show_params.toggled.connect(lambda v: self.toggle_section_visibility('params', v))
-        self.action_show_controls = QAction("Show Controls", self, checkable=True)
-        self.action_show_controls.setChecked(True)
-        self.action_show_controls.toggled.connect(lambda v: self.toggle_section_visibility('controls', v))
         self.action_show_status = QAction("Show Status Log", self, checkable=True)
         self.action_show_status.setChecked(True)
         self.action_show_status.toggled.connect(lambda v: self.toggle_status_visibility(v))
-        view_menu.addAction(self.action_show_params)
-        view_menu.addAction(self.action_show_controls)
-        view_menu.addSeparator()
         view_menu.addAction(self.action_show_status)
 
         # Results viewer tab (ensure only one is added)
@@ -853,44 +818,6 @@ class ResistanceMeterApp(QMainWindow):
     def toggle_status_visibility(self, visible: bool):
         if hasattr(self, 'status_group') and self.status_group:
             self.status_group.setVisible(visible)
-        self.update_hide_show_buttons()
-
-    def toggle_section_visibility(self, section: str, visible: bool):
-        # section in {'params','controls'}
-        for mode in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
-            w = self.get_widget_for_mode(mode)
-            if not w:
-                continue
-            if section == 'params':
-                # Prefer hiding the scroll wrapper so its viewport doesn't leave a blank pane
-                target = getattr(w, 'param_container', None) or getattr(w, 'param_group', None)
-                if target is not None:
-                    target.setVisible(visible)
-            if section == 'controls' and hasattr(w, 'control_group'):
-                w.control_group.setVisible(visible)
-        self.update_hide_show_buttons()
-
-    def _toggle_params_action(self):
-        # invert global action and let handlers do the rest
-        if hasattr(self, 'action_show_params'):
-            self.action_show_params.setChecked(not self.action_show_params.isChecked())
-
-    def _toggle_controls_action(self):
-        if hasattr(self, 'action_show_controls'):
-            self.action_show_controls.setChecked(not self.action_show_controls.isChecked())
-
-    def update_hide_show_buttons(self):
-        # Sync button text with current visibility state
-        for mode in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
-            w = self.get_widget_for_mode(mode)
-            if not w:
-                continue
-            if hasattr(w, 'hide_params_btn'):
-                target = getattr(w, 'param_container', None) or getattr(w, 'param_group', None)
-                if target is not None:
-                    w.hide_params_btn.setText('Hide Params' if target.isVisible() else 'Show Params')
-            if hasattr(w, 'control_group') and hasattr(w, 'hide_controls_btn'):
-                w.hide_controls_btn.setText('Hide Controls' if w.control_group.isVisible() else 'Show Controls')
 
     def create_results_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab)
@@ -1191,7 +1118,8 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_four_point.nplc.setValue(m_cfg['nplc'])
         self.tab_four_point.sampling_rate.setValue(m_cfg['sampling_rate'])
         self.tab_four_point.fpp_plot_var.setCurrentText('sheet_Rs')
-        self.tab_four_point.canvas.set_plot_properties('Elapsed Time (s)', 'Sheet Resistance (Ω/□)', '4-Point Probe', d_cfg['plot_color_r'])
+        # 4PP doesn't carry a time-series MplCanvas — its histogram lives in
+        # the right panel and updates from update_active_plot directly.
         buffer_size = d_cfg.get('buffer_size')
         new_size = None if buffer_size is None or buffer_size <= 0 else buffer_size
         for mode, buffer in list(self.data_buffers.items()):
@@ -1498,10 +1426,10 @@ class ResistanceMeterApp(QMainWindow):
             return
         if self.active_mode == 'sweep':
             return  # I-V sweep uses IVCanvas.plot_sweep(), not time-series update_plot()
+        if self.active_mode == 'four_point':
+            return  # 4PP visualizes via fpp_histogram (right panel); no time-series canvas
         mode = self.active_mode; widget = self.get_widget_for_mode(mode); buffer = self.data_buffers[mode]
         if not widget or not buffer:
-            return
-        if mode == 'four_point' and hasattr(widget, 'fpp_show_plot') and not widget.fpp_show_plot.isChecked():
             return
         if self.user_settings['display']['enable_plot']:
             if mode == 'resistance':
@@ -1512,52 +1440,10 @@ class ResistanceMeterApp(QMainWindow):
                 var = widget.v_plot_var.currentText() if hasattr(widget, 'v_plot_var') else 'current'
                 timestamps, values, compliance_list = buffer.get_data_for_plot(var)
                 stats = buffer.get_statistics(var)
-            elif mode == 'source_i':
+            else:  # source_i
                 var = widget.i_plot_var.currentText() if hasattr(widget, 'i_plot_var') else 'voltage'
                 timestamps, values, compliance_list = buffer.get_data_for_plot(var)
                 stats = buffer.get_statistics(var)
-            else:  # four_point
-                # derive variables from V and I
-                t, vvals, cl = buffer.get_data_for_plot('voltage')
-                _, ivals, _ = buffer.get_data_for_plot('current')
-                var = widget.fpp_plot_var.currentText() if hasattr(widget, 'fpp_plot_var') else 'sheet_Rs'
-                ratio = []
-                for v, i in zip(vvals, ivals):
-                    if isinstance(i, (int, float)) and i != 0 and not np.isnan(i):
-                        ratio.append(v / i)
-                    else:
-                        ratio.append(float('nan'))
-                s = self.tab_four_point.fpp_spacing_cm.value()
-                t_um = self.tab_four_point.fpp_thickness_um.value()
-                t_thick = t_um * 1e-4  # convert µm to cm
-                k_factor = self.tab_four_point.fpp_k_factor.value() or 4.532
-                alpha = self.tab_four_point.fpp_alpha.value()
-                model = self.tab_four_point.fpp_model.currentText()
-                if var == 'V/I':
-                    values = ratio
-                elif var == 'sheet_Rs':
-                    # Allow custom correction (alpha) and K factor in thin_film mode
-                    k_eff = k_factor * (alpha if (model == 'thin_film' and alpha and alpha != 1.0) else 1.0)
-                    values = [k_eff * r if np.isfinite(r) else float('nan') for r in ratio]
-                elif var == 'rho':
-                    if model == 'semi_infinite':
-                        values = [2*np.pi*s*r if np.isfinite(r) else float('nan') for r in ratio]
-                    elif model in ('thin_film','finite_thin'):
-                        # Apply alpha for thin_film when provided and use K factor
-                        k = k_factor * (alpha if (model == 'thin_film' and alpha and alpha != 1.0) else 1.0)
-                        values = [k * t_thick * r if np.isfinite(r) else float('nan') for r in ratio]
-                    else:
-                        values = [alpha * 2*np.pi*s*r if np.isfinite(r) else float('nan') for r in ratio]
-                elif var == 'voltage':
-                    values = vvals
-                else:
-                    values = ivals
-                timestamps = t; compliance_list = cl
-                stats = {
-                    'min': np.nanmin(values) if values else float('inf'),
-                    'max': np.nanmax(values) if values else float('-inf'),
-                    'avg': np.nanmean(values) if values else 0.0,
-                }
             widget.canvas.update_plot(timestamps, values, compliance_list, stats, self.current_user, self.sample_input.text())
 
     def _update_fpp_live_readout(self, widget, value, is_bd):
@@ -1803,7 +1689,7 @@ class ResistanceMeterApp(QMainWindow):
             if getattr(widget, 'mark_event_button', None):
                 widget.mark_event_button.setEnabled(running)
             # Re-enable plot variable selector during measurement
-            for attr in ('v_plot_var', 'i_plot_var', 'fpp_plot_var', 'fpp_show_plot'):
+            for attr in ('v_plot_var', 'i_plot_var', 'fpp_plot_var'):
                 if hasattr(widget, attr):
                     getattr(widget, attr).setEnabled(True)
 
@@ -2013,13 +1899,12 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_resistance.canvas.clear_plot()
         self.tab_voltage_source.canvas.clear_plot()
         self.tab_current_source.canvas.clear_plot()
-        self.tab_four_point.canvas.clear_plot()
         self.tab_sweep.iv_canvas.clear_plot()
         self.tab_sweep._sweep_trace_count = 0
-        
-        # Also clear 4PP-specific data structures
+
+        # 4PP visualizes via histogram + tables; reset those data structures
         self._clear_four_point_data()
-        
+
         self.log_status("All plots and data cleared.")
 
     def _clear_four_point_data(self):
@@ -2214,23 +2099,6 @@ class ResistanceMeterApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Connection Failed", f"Error connecting to {addr}:\n{str(e)}")
             self.statusBar().showMessage("Connection failed", 5000)
-
-    def showEvent(self, event):
-        """Override to handle post-show initialization - critical for Windows splitter sizing"""
-        super().showEvent(event)
-        if not getattr(self, '_splitters_initialized', False):
-            # Initialize 4PP splitter after window is fully shown - fixes Windows zero-size issues
-            QTimer.singleShot(150, self._initialize_4pp_splitter)
-            self._splitters_initialized = True
-
-    def _initialize_4pp_splitter(self):
-        """Initialize 4PP splitter sizes - Windows timing fix for zero-size panes"""
-        if hasattr(self.tab_four_point, '_initialize_splitter'):
-            try:
-                self.tab_four_point._initialize_splitter()
-                self.log_status("4PP layout initialized successfully")
-            except Exception as e:
-                self.log_status(f"Warning: 4PP layout initialization failed: {e}", color="orange")
 
     def closeEvent(self, event):
         if self.measurement_running:
