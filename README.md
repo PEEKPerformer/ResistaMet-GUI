@@ -219,12 +219,18 @@ ResistaMet-GUI/
 ## Testing
 
 ```bash
-# Run all tests (142 total)
+# Unit + integration suite (250 tests; pytest.ini ignores the e2e file by default)
 QT_QPA_PLATFORM=offscreen pytest tests/ -v
 
+# End-to-end suite (drives every tab through the in-package simulator,
+# asserts recorded values against Ohm's law on a known fake DUT)
+QT_QPA_PLATFORM=offscreen pytest tests/test_e2e_simulator.py -v
+
 # Unit tests only (no Qt dependency)
-pytest tests/ -v --ignore=tests/test_gui_smoke.py
+pytest tests/ -v --ignore=tests/test_gui_smoke.py --ignore=tests/test_e2e_simulator.py
 ```
+
+The e2e suite runs in its own pytest invocation because it leaves process-wide state (a `pyvisa.ResourceManager` monkey-patch and a live `QApplication`) that interacts poorly with module-scoped fixtures from earlier test files. CI runs both invocations in sequence — see `.github/workflows/test.yml`.
 
 ## Instrument Compatibility
 

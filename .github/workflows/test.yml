@@ -51,7 +51,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run pytest
+      - name: Run pytest (unit + integration)
         env:
           QT_QPA_PLATFORM: offscreen
         run: pytest tests/ -v
+
+      - name: Run pytest (end-to-end against simulator)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        # E2E suite drives the GUI + worker through the in-package fake
+        # Keithley. It runs in its own pytest invocation because it leaves
+        # process-wide state (pyvisa.ResourceManager monkey-patch, QThreads)
+        # that interacts poorly with module-scoped fixtures from earlier
+        # test files when both run in the same invocation.
+        run: pytest tests/test_e2e_simulator.py -v
