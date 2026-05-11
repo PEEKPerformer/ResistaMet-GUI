@@ -16,10 +16,13 @@ from resistamet_gui.constants import __version__
 
 
 def _parse_args(argv):
+    # Help text stays plain ASCII — argparse prints to stdout, and the
+    # default Windows console codec (cp1252) can't encode Ω / em-dash / etc.,
+    # which crashes --help on Windows. The GUI itself is UTF-8 throughout.
     parser = argparse.ArgumentParser(
         prog="resistamet-gui",
         description=(
-            "ResistaMet GUI — electrical characterization for Keithley "
+            "ResistaMet GUI - electrical characterization for Keithley "
             "2400/2450 sourcemeters."
         ),
     )
@@ -30,7 +33,7 @@ def _parse_args(argv):
     )
     parser.add_argument(
         "--sim-resistance", type=float, default=100.0, metavar="OHMS",
-        help="DUT resistance the simulator presents (default: 100 Ω). "
+        help="DUT resistance the simulator presents in ohms (default: 100). "
              "Only meaningful with --simulate.",
     )
     parser.add_argument(
