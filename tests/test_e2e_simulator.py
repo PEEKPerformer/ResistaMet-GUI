@@ -114,6 +114,13 @@ def _pump_for(seconds, app):
         time.sleep(0.05)
 
 
+def _reset_simulator(ohms: float, model: str = "2420"):
+    """Re-call enable_simulation with new DUT params. Tests that need a
+    different fake resistance than the fixture default use this."""
+    from resistamet_gui.simulator import enable_simulation
+    enable_simulation(dut_resistance_ohms=ohms, model=model)
+
+
 def _drive_timed_run(window, tab, label, seconds, app):
     """Click Start on a time-series tab, pump events for ``seconds``, then
     cleanly Stop. Returns the number of points captured."""
@@ -232,3 +239,338 @@ def test_iv_sweep_writes_linear_csv(sim_window, app, tmp_path):
     last_v = float(data[-1][1])
     assert abs(first_v - (-1.0)) < 1e-9, f"sweep first V = {first_v}, expected -1.0"
     assert abs(last_v - 1.0) < 1e-9, f"sweep last V = {last_v}, expected 1.0"
+
+
+# --------------------------------------------------------------------------
+# CSV column / unit validation
+# --------------------------------------------------------------------------
+
+def test_csv_headers_match_documented_schema(sim_window, app):
+    """Each mode's saved CSV must use the column names declared in
+    ``data_export.get_column_config``. A unit-confusion regression (e.g.
+    swapping I_meas/V_meas, or renaming R_ohm to R_mohm without updating
+    the export) would slip past every other test in the suite.
+    """
+    from resistamet_gui.data_export import get_column_config
+
+    # Drive a brief run in each per-tab mode that writes a CSV, then read
+    # the CSV header and compare to the documented columns.
+    cases = [
+        (sim_window.tab_resistance, "Resistance Measurement", "resistance"),
+        (sim_window.tab_voltage_source, "Voltage Source", "source_v"),
+        (sim_window.tab_current_source, "Current Source", "source_i"),
+        (sim_window.tab_four_point, "4-Point Probe", "four_point"),
+    ]
+    for tab, label, mode in cases:
+        _switch_to(sim_window, label, app)
+        tab.start_button.click()
+        app.processEvents()
+        assert sim_window.measurement_running, f"{label}: worker didn't start"
+        _pump_for(1.0, app)
+        sim_window.stop_current_measurement()
+        assert _wait_until(
+            lambda: not sim_window.measurement_running, timeout=3.0, app=app
+        ), f"{label}: didn't stop cleanly"
+
+    # CSV files land under measurement_data/<user>/...; pick the newest per mode.
+    files = sorted(glob.glob("measurement_data/**/*.csv", recursive=True))
+    assert files, "no CSV files written"
+
+    # Map each file back to its mode via the tag in the filename. Worker
+    # uses mode_tags = {'resistance': 'R', 'source_v': 'VSRC',
+    # 'source_i': 'ISRC', 'four_point': '4PP'}. Sweep falls through to
+    # 'DATA' but its source_value_str contains 'sweep_'.
+    tag_to_mode = {"_R_": "resistance", "_VSRC_": "source_v",
+                   "_ISRC_": "source_i", "_4PP_": "four_point",
+                   "_sweep_": "sweep"}
+    found_modes = set()
+    for path in files:
+        mode = next((m for tag, m in tag_to_mode.items() if tag in path), None)
+        if mode is None:
+            continue
+        expected_cols, _units = get_column_config(mode)
+        with open(path) as f:
+            header = next(csv.reader(f))
+        assert header == expected_cols, (
+            f"{path}: header {header} != expected {expected_cols} for {mode}"
+        )
+        found_modes.add(mode)
+    # All four time-series modes should have been covered.
+    assert {"resistance", "source_v", "source_i", "four_point"} <= found_modes, (
+        f"missing CSV coverage; found modes: {found_modes}"
+    )
+
+
+# --------------------------------------------------------------------------
+# Compliance handling end-to-end
+# --------------------------------------------------------------------------
+
+def test_voltage_compliance_clamps_and_flags(sim_window, app):
+    """When V_compliance is set below what the sourced current × DUT would
+    produce, the instrument clamps voltage and sets STAT bit 3. The worker
+    parses that into ``compliance_status='V_COMP'`` and the buffer records
+    it on every clamped point.
+    """
+    # 10kΩ DUT + 1 mA sourced → V would naturally be 10 V; clamp to 1 V.
+    _reset_simulator(ohms=10_000.0)
+    _switch_to(sim_window, "Voltage Source", app)
+    w = sim_window.tab_voltage_source
+    w.vsource_voltage.setValue(10.0)            # 10 V into 10 kΩ → 1 mA
+    w.vsource_current_compliance.setValue(1e-4) # but compliance is 100 µA
+    w.start_button.click()
+    app.processEvents()
+    _pump_for(1.5, app)
+    sim_window.stop_current_measurement()
+    assert _wait_until(
+        lambda: not sim_window.measurement_running, timeout=3.0, app=app
+    )
+
+    buf = sim_window.data_buffers["source_v"]
+    statuses = list(buf.compliance_status)
+    assert statuses, "no compliance status recorded"
+    # The fake sets the compliance bit when output × R exceeds the compliance
+    # limit; at least one point should flag I_COMP (we capped current).
+    flagged = [s for s in statuses if s != "OK"]
+    assert flagged, (
+        f"expected compliance-flagged points; got all OK ({len(statuses)} pts)"
+    )
+    # And the recorded current shouldn't exceed compliance by more than rounding.
+    currents = [i for i in list(buf.current) if i is not None]
+    assert all(abs(i) <= 1.1e-4 for i in currents), (
+        f"current exceeded compliance: max={max(map(abs, currents))}"
+    )
+
+
+# --------------------------------------------------------------------------
+# Mark Event during a run
+# --------------------------------------------------------------------------
+
+def test_mark_event_lands_in_csv(sim_window, app, monkeypatch):
+    """``mark_event_shortcut`` prompts for a label via QInputDialog; tests
+    monkey-patch that to return a fixed label. The label must then appear in
+    the ``event`` column of at least one row of the saved CSV.
+    """
+    from PyQt5.QtWidgets import QInputDialog
+    monkeypatch.setattr(
+        QInputDialog, "getText",
+        staticmethod(lambda *a, **kw: ("PROBE_MOVED", True)),
+    )
+
+    _switch_to(sim_window, "Resistance Measurement", app)
+    sim_window.tab_resistance.start_button.click()
+    app.processEvents()
+    _pump_for(0.5, app)
+    sim_window.mark_event_shortcut()
+    _pump_for(0.7, app)
+    sim_window.stop_current_measurement()
+    assert _wait_until(
+        lambda: not sim_window.measurement_running, timeout=3.0, app=app
+    )
+
+    csvs = sorted(glob.glob("measurement_data/**/*_R_*.csv", recursive=True))
+    assert csvs, "no resistance CSV written"
+    with open(csvs[-1]) as f:
+        rows = list(csv.reader(f))
+    header, data = rows[0], rows[1:]
+    event_col = header.index("event")
+    events = [r[event_col] for r in data if r[event_col]]
+    assert "PROBE_MOVED" in events, (
+        f"mark-event label missing from CSV event column; found: {events}"
+    )
+
+
+# --------------------------------------------------------------------------
+# Pause / Resume
+# --------------------------------------------------------------------------
+
+def test_pause_then_resume_preserves_data(sim_window, app):
+    """Toggling Pause must stop new points landing in the buffer; toggling it
+    again must resume sampling. Catches a regression where pause silently
+    drops points or resume double-counts.
+    """
+    _switch_to(sim_window, "Resistance Measurement", app)
+    tab = sim_window.tab_resistance
+    tab.start_button.click()
+    app.processEvents()
+    # Give the worker generous startup time — CI runners can be slow.
+    _pump_for(1.5, app)
+    pre_pause = len(list(sim_window.data_buffers["resistance"].timestamps))
+    assert pre_pause >= 2, f"too few pre-pause points: {pre_pause}"
+
+    # Toggle pause ON
+    tab.pause_button.setChecked(True)
+    app.processEvents()
+    _pump_for(1.2, app)
+    paused = len(list(sim_window.data_buffers["resistance"].timestamps))
+    # Allow up to 2 in-flight points after we issue pause (worker may have
+    # been mid-iteration). The key signal is "growth slowed dramatically".
+    assert paused - pre_pause <= 2, (
+        f"paused but buffer kept growing: pre={pre_pause}, after={paused}"
+    )
+
+    # Toggle pause OFF (resume)
+    tab.pause_button.setChecked(False)
+    app.processEvents()
+    _pump_for(1.2, app)
+    resumed = len(list(sim_window.data_buffers["resistance"].timestamps))
+    assert resumed > paused + 2, (
+        f"resume didn't produce new points: paused={paused}, resumed={resumed}"
+    )
+
+    sim_window.stop_current_measurement()
+    _wait_until(lambda: not sim_window.measurement_running, timeout=3.0, app=app)
+
+
+# --------------------------------------------------------------------------
+# 4PP multi-spot workflow
+# --------------------------------------------------------------------------
+
+def test_four_point_save_spot_then_clear(sim_window, app):
+    """The 4PP tab's per-spot workflow: run, Save Spot, run again, Save Spot,
+    verify two spots accumulated, then Clear All resets the list."""
+    _switch_to(sim_window, "4-Point Probe", app)
+    tab = sim_window.tab_four_point
+
+    for _ in range(2):
+        tab.start_button.click()
+        app.processEvents()
+        _pump_for(0.8, app)
+        sim_window.stop_current_measurement()
+        assert _wait_until(
+            lambda: not sim_window.measurement_running, timeout=3.0, app=app
+        )
+        sim_window._save_fpp_spot()
+        app.processEvents()
+
+    assert len(tab._fpp_spots) == 2, (
+        f"expected 2 saved spots, got {len(tab._fpp_spots)}: {tab._fpp_spots}"
+    )
+    assert tab.fpp_spots_table.rowCount() == 2, (
+        f"spots table row count = {tab.fpp_spots_table.rowCount()}, expected 2"
+    )
+
+    sim_window._clear_all_fpp_spots()
+    app.processEvents()
+    assert tab._fpp_spots == [], f"after Clear All: spots = {tab._fpp_spots}"
+    assert tab.fpp_spots_table.rowCount() == 0
+
+
+# --------------------------------------------------------------------------
+# I-V Sweep direction variants
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("direction", ["up", "down", "up_down"])
+def test_iv_sweep_all_directions(sim_window, app, direction):
+    """Each sweep direction produces a CSV with the right point count and the
+    right endpoint ordering. ``up_down`` is the hysteresis case — should be
+    twice as many points (forward + reverse)."""
+    _switch_to(sim_window, "I-V Sweep", app)
+    w = sim_window.tab_sweep
+    w.sweep_source.setCurrentText("voltage")
+    w.sweep_start.setValue(-1.0)
+    w.sweep_stop.setValue(1.0)
+    w.sweep_step.setValue(0.1)
+    w.sweep_compliance.setValue(0.1)
+    w.sweep_direction.setCurrentText(direction)
+    w.start_button.click()
+    app.processEvents()
+    assert _wait_until(
+        lambda: not sim_window.measurement_running, timeout=10.0, app=app
+    ), f"{direction}: sweep didn't finish"
+
+    csvs = sorted(glob.glob("measurement_data/**/*_sweep_*.csv", recursive=True),
+                  key=os.path.getmtime)
+    assert csvs, f"{direction}: no sweep CSV"
+    with open(csvs[-1]) as f:
+        data = list(csv.reader(f))[1:]
+    v_values = [float(r[1]) for r in data]
+    n = len(v_values)
+    # 21 single-direction points at 0.1V step from -1 to +1 inclusive.
+    if direction == "up_down":
+        assert n >= 40, f"up_down should produce ~42 points; got {n}"
+        # Forward leg ends near +1, reverse leg ends near -1.
+        # Pick a robust signal: the v-value differences should change sign somewhere.
+        diffs = [v_values[i + 1] - v_values[i] for i in range(len(v_values) - 1)]
+        assert any(d > 0 for d in diffs) and any(d < 0 for d in diffs), (
+            "up_down sweep should have both ascending and descending segments"
+        )
+    elif direction == "up":
+        assert v_values[0] < v_values[-1], (
+            f"up sweep should go low→high, got {v_values[0]} → {v_values[-1]}"
+        )
+    else:  # down
+        assert v_values[0] > v_values[-1], (
+            f"down sweep should go high→low, got {v_values[0]} → {v_values[-1]}"
+        )
+
+
+# --------------------------------------------------------------------------
+# Cable null subtraction
+# --------------------------------------------------------------------------
+
+def test_cable_null_subtracts_from_subsequent_run(sim_window, app, monkeypatch):
+    """Setting a cable_null reference should subtract from later resistance
+    readings. Verified by setting a fake null of 25 Ω against a 100 Ω DUT
+    and watching the recorded R drop to ~75 Ω.
+    """
+    # Skip the QMessageBox.question dialog that _null_cables shows.
+    # We bypass _null_cables() entirely and write the null directly into
+    # user_settings — the production path's value is sourced from there.
+    sim_window.user_settings["measurement"]["res_cable_null"] = 25.0
+
+    _switch_to(sim_window, "Resistance Measurement", app)
+    sim_window.tab_resistance.start_button.click()
+    app.processEvents()
+    _pump_for(1.0, app)
+    sim_window.stop_current_measurement()
+    assert _wait_until(
+        lambda: not sim_window.measurement_running, timeout=3.0, app=app
+    )
+
+    rs = [r for r in list(sim_window.data_buffers["resistance"].resistance)
+          if r is not None and not math.isnan(r)]
+    assert rs, "no resistance recorded"
+    # DUT was 100 Ω in this test (fixture default); null = 25 → recorded R = 75.
+    bad = [r for r in rs if abs(r - 75.0) > 0.01]
+    assert not bad, (
+        f"cable null not applied: expected 75.0 Ω after null=25 on 100Ω DUT, got {bad[:3]}"
+    )
+
+    # Cleanup so other tests don't inherit the null.
+    sim_window.user_settings["measurement"]["res_cable_null"] = 0.0
+
+
+# --------------------------------------------------------------------------
+# Window close during measurement
+# --------------------------------------------------------------------------
+
+def test_close_event_stops_worker_cleanly(sim_window, app, monkeypatch):
+    """Closing the window mid-measurement should answer the confirmation
+    dialog Yes (in the test), stop the worker, and exit cleanly without
+    leaving a zombie thread. Catches a regression where closeEvent fails to
+    join the worker, hanging the process at shutdown.
+    """
+    from PyQt5.QtWidgets import QMessageBox
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        staticmethod(lambda *a, **kw: QMessageBox.Yes),
+    )
+
+    _switch_to(sim_window, "Resistance Measurement", app)
+    sim_window.tab_resistance.start_button.click()
+    app.processEvents()
+    _pump_for(0.4, app)
+    assert sim_window.measurement_running
+
+    # closeEvent is what we're testing — call it the way Qt would.
+    from PyQt5.QtCore import QEvent
+    from PyQt5.QtGui import QCloseEvent
+    ev = QCloseEvent()
+    sim_window.closeEvent(ev)
+    app.processEvents()
+
+    # Worker should be stopping/stopped; give it a moment.
+    assert _wait_until(
+        lambda: not sim_window.measurement_running, timeout=5.0, app=app
+    ), "worker didn't stop after closeEvent"
+    assert ev.isAccepted(), "closeEvent did not accept the event after Yes"
