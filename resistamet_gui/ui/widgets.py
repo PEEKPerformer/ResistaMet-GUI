@@ -4,6 +4,8 @@ Custom widgets for instrument control UIs.
 EngineeringSpinBox: Text input accepting engineering notation (e.g., "1mA", "100µA")
 NoScrollSpinBox: QDoubleSpinBox that ignores scroll wheel unless focused
 """
+from __future__ import annotations
+
 import math
 import re
 from typing import Optional

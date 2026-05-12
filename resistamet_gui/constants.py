@@ -1,7 +1,7 @@
 import os
 
 # Script version and metadata
-__version__ = "1.8.1"
+__version__ = "1.8.2"
 __original_version__ = "0.9.2"
 __author__ = "Brenden Ferland"
 

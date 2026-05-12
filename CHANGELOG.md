@@ -5,6 +5,11 @@ All notable changes to ResistaMet-GUI are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] - 2026-05-12
+
+### Fixed
+- Python 3.9 import error in `resistamet_gui/ui/widgets.py` caused by PEP 604 `dict | None` syntax. Added `from __future__ import annotations` so type hints are deferred and the file imports cleanly on Python 3.9 through 3.13. v1.8.0 and v1.8.1 worked on Python 3.10+ but failed at import time on 3.9 (the floor declared in `pyproject.toml`); CI caught this on the 3.9 matrix slot.
+
 ## [1.8.1] - 2026-05-12
 
 ### Changed
