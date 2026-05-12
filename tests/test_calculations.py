@@ -375,7 +375,7 @@ class TestCalculateFourPointProbeBound:
 
 
 # ============================================================================
-# ASTM F84-98 correction-factor tests
+# ASTM F84-02 correction-factor tests
 # ----------------------------------------------------------------------------
 # These verify the F84 primitives against the standard's own tabulated values.
 # Tolerances are tight (1e-3 absolute) because the reference values are the

@@ -324,9 +324,9 @@ def calculate_four_point_probe_f84(
 
 
 # ============================================================================
-# ASTM F84-98 correction factors
+# ASTM F84-02 correction factors
 # ----------------------------------------------------------------------------
-# Reference: ASTM F84-98 "Standard Test Method for Measuring Resistivity of
+# Reference: ASTM F84-02 "Standard Test Method for Measuring Resistivity of
 # Silicon Wafers With an In-Line Four-Point Probe".
 #
 # F84 §13.5–13.6 expresses resistivity as:
@@ -465,7 +465,7 @@ def f2_finite_diameter(
 ) -> float:
     """Geometry correction factor for a finite-size specimen.
 
-    For `geometry='circle'` this is F2 from ASTM F84-98 Table 3, a function of
+    For `geometry='circle'` this is F2 from ASTM F84-02 Table 3, a function of
     S/D (probe spacing / wafer diameter). Returns 4.5324 = pi/ln(2) at the
     infinite-diameter limit and decreases for finite slices (~4.171 at S/D=0.10).
 
@@ -520,7 +520,7 @@ def f2_finite_diameter(
 
 
 def f_thickness_correction(thickness_cm: float, spacing_cm: float) -> float:
-    """F(w/S) thickness correction per ASTM F84-98 Appendix X1, Eq. X1.1.
+    """F(w/S) thickness correction per ASTM F84-02 Appendix X1, Eq. X1.1.
 
     Implements the closed-form series:
         F(w/S) = 1.3863 * S / (w * D)
@@ -642,7 +642,7 @@ def calculate_resistivity_f84(
     dopant_type: Optional[str] = None,
     geometry: str = 'circle',
 ) -> F84ResistivityResult:
-    """Compute resistivity per ASTM F84-98 §13.5–13.8.
+    """Compute resistivity per ASTM F84-02 §13.5–13.8.
 
         rho(T)  = R * F2 * w * F(w/S) * F_sp
         rho(23) = rho(T) * (1 - C_T * (T - 23))    [if T, dopant supplied]

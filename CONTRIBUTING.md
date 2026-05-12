@@ -47,4 +47,4 @@ This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). By particip
 
 ## License
 
-Contributions are accepted under the project's existing MIT License with Academic Recognition Clause. By submitting a PR, you agree your contribution is licensed under the same terms.
+Contributions are accepted under the project's existing MIT License. By submitting a PR, you agree your contribution is licensed under the same terms.

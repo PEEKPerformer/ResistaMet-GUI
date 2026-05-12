@@ -9,10 +9,10 @@ description = "Open-source GUI for electrical characterization with Keithley 240
 readme = "README.md"
 license = { file = "LICENSE.md" }
 authors = [
-    { name = "Brenden Ferland", email = "dhadamsonlab@gmail.com" },
+    { name = "Brenden Ferland", email = "brendenferland@gmail.com" },
 ]
 maintainers = [
-    { name = "Brenden Ferland", email = "dhadamsonlab@gmail.com" },
+    { name = "Brenden Ferland", email = "brendenferland@gmail.com" },
 ]
 requires-python = ">=3.9"
 keywords = [

@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **(critical, 4PP):** `:SYST:RSEN OFF` in the 4-Point Probe setup silently routed the voltmeter to the Force terminals instead of the Sense terminals. On the Signatone S-302 (and any probe head wired Force=outer, Sense=inner) this meant every 4PP measurement since the mode shipped was a 2-wire reading across the current-carrying outer pair — R_sample + 2·R_contact, not the intended sheet resistance. Bench-verified on a Keithley 2420: V(OFF)=3199 mV vs V(ON)=−3 µV on a copper plate with a 100 Ω perturbation resistor on the I/O HI lead. Prior 4PP data should be considered invalid; rerun against samples of record after upgrading.
 
 ### Added
-- **ASTM F84-98 correction-factor decomposition** in `calculations.py`:
+- **ASTM F84-02 correction-factor decomposition** in `calculations.py`:
   - `f2_finite_diameter(s, d, geometry)` — Table 3 for circles, plus Smits 1958 tables for square + rectangle L/W ∈ {2, 3, 4}.
   - `f_thickness_correction(w, s)` — Appendix X1.1 closed form, valid out to w/S = 2.0.
   - `f_temperature_correction(rho, T, dopant)` — Table 5 C_T lookup, n- and p-type silicon.

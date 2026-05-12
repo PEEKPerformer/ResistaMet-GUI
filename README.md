@@ -65,7 +65,7 @@ Researchers today either commit to a scripting framework (`pymeasure`, `QCoDeS`)
 
 - Sheet resistance (Rs), resistivity, and conductivity calculated in real time
 - **True 4-wire sense path** — outer probes carry current, inner probes measure voltage via the Keithley's Sense terminals (`:SYST:RSEN ON`). Bench-verified against a Signatone S-302 probe head; see [`tests/hardware/rsen_diagnostic.py`](tests/hardware/rsen_diagnostic.py)
-- **ASTM F84-98 correction factors** — geometry-aware F₂ from Table 3 (circles) and the Smits 1958 table (squares, rectangles L/W ∈ {2, 3, 4}), thickness correction F(w/S) from Appendix X1.1 (valid out to w/S = 2.0), optional temperature correction F_T from Table 5 for n-/p-type silicon. Activated automatically when the user supplies a finite diameter D, non-circle geometry, or temperature + dopant
+- **ASTM F84-02 correction factors** — geometry-aware F₂ from Table 3 (circles) and the Smits 1958 table (squares, rectangles L/W ∈ {2, 3, 4}), thickness correction F(w/S) from Appendix X1.1 (valid out to w/S = 2.0), optional temperature correction F_T from Table 5 for n-/p-type silicon. Activated automatically when the user supplies a finite diameter D, non-circle geometry, or temperature + dopant
 - **Multi-spot tracking** — save measurements at multiple probe positions, compare uniformity
 - **Live histogram** of Rs distribution
 - **Current reversal (delta mode)** — alternates +I/−I to cancel thermoelectric EMF; CSV exports include per-polarity V₊, V₋, R_f, R_r columns (F84 §13.1 diagnostic)
@@ -282,4 +282,4 @@ The fastest way to help right now is to run [`scripts/community_capture.py`](scr
 
 ## License
 
-MIT License with Academic Citation Clause — see [`LICENSE.md`](LICENSE.md).
+MIT License — see [`LICENSE.md`](LICENSE.md).
