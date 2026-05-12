@@ -133,6 +133,38 @@ class TestTabCreation:
         assert hasattr(w, 'fpp_delta_mode')
         assert hasattr(w, 'fpp_delta_settling')
 
+    def test_vdp_tab_has_widgets(self, main_window):
+        w = main_window.tab_vdp
+        # Parameter inputs
+        assert hasattr(w, 'vdp_current')
+        assert hasattr(w, 'vdp_voltage_compliance')
+        assert hasattr(w, 'vdp_voltage_range_auto')
+        assert hasattr(w, 'vdp_thickness_cm')
+        assert hasattr(w, 'vdp_settling_s')
+        assert hasattr(w, 'vdp_readings_per_polarity')
+        assert hasattr(w, 'nplc')
+        # Workflow widgets
+        assert hasattr(w, 'vdp_step_label')
+        assert hasattr(w, 'vdp_proceed_button')
+        assert hasattr(w, 'vdp_readings_table')
+        assert hasattr(w, 'vdp_result_label')
+        assert hasattr(w, 'vdp_homogeneity_banner')
+        # Readings table is 8 rows (4 geometries x 2 polarities) prepopulated
+        # with F76 labels.
+        assert w.vdp_readings_table.rowCount() == 8
+        labels = [w.vdp_readings_table.item(i, 0).text() for i in range(8)]
+        assert labels == [
+            "V_21,34", "V_12,34", "V_32,41", "V_23,41",
+            "V_43,12", "V_34,12", "V_14,23", "V_41,23",
+        ]
+        # Control row buttons
+        assert hasattr(w, 'start_button')
+        assert hasattr(w, 'stop_button')
+        # vdP has no continuous canvas
+        assert w.canvas is None
+        # Proceed button starts disabled (only enabled when worker is waiting)
+        assert not w.vdp_proceed_button.isEnabled()
+
 
 class TestSettingsDialog:
     """Verify settings dialog opens and all widgets are accessible."""
@@ -234,6 +266,16 @@ class TestGatherSettings:
         assert 'nplc' in m
         assert 'sampling_rate' in m
 
+    def test_vdp_settings(self, main_window):
+        s = main_window.gather_settings_for_mode('vdp')
+        m = s['measurement']
+        for key in (
+            'vdp_current', 'vdp_voltage_compliance', 'vdp_voltage_range_auto',
+            'vdp_thickness_cm', 'vdp_settling_s', 'vdp_readings_per_polarity',
+            'nplc',
+        ):
+            assert key in m, f"vdp_settings missing {key}"
+
 
 class TestUIInteractions:
     """Test UI interactions that don't require instruments."""
@@ -255,6 +297,15 @@ class TestUIInteractions:
         """Should not crash for any mode."""
         for mode in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             main_window.update_canvas_labels_for_mode(mode)
+
+    def test_vdp_tab_is_sixth(self, main_window):
+        """Van der Pauw is added as the 6th measurement tab (index 5).
+
+        Total tab count may be 7 (the Results Viewer tab is lazily
+        appended after settings load); we only pin the vdP position.
+        """
+        assert main_window.main_tabs.tabText(5) == "Van der Pauw"
+        assert main_window.main_tabs.widget(5) is main_window.tab_vdp
 
     def test_four_point_model_info(self, main_window):
         """Should not crash."""

@@ -341,6 +341,17 @@ def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] 
             ['point', 'V_source', 'I_meas', 'compliance'],
             ['', 'V', 'A', '']
         ),
+        # Van der Pauw (F76 Method A): 4 rows, one per physical geometry.
+        # Each row captures both polarities of that geometry; the summary
+        # rho/Rs lands in metadata at finalize().
+        'vdp': (
+            ['elapsed_s', 'geometry', 'group',
+             'source_high', 'source_low', 'sense_high', 'sense_low',
+             'label_pos', 'V_pos', 'label_neg', 'V_neg', 'current_A'],
+            ['s', '', '',
+             '', '', '', '',
+             '', 'V', '', 'V', 'A']
+        ),
     }
     cols, units = configs.get(mode, (['elapsed_s', 'value'], ['s', '']))
 
@@ -428,6 +439,15 @@ def build_metadata(
             'alpha': measurement_settings.get('fpp_alpha'),
             'model': measurement_settings.get('fpp_model'),
             'target_samples': measurement_settings.get('fpp_samples'),
+        }
+    elif mode == 'vdp':
+        meta['params'] = {
+            'source_current_A': measurement_settings.get('vdp_current'),
+            'voltage_compliance_V': measurement_settings.get('vdp_voltage_compliance'),
+            'thickness_cm': measurement_settings.get('vdp_thickness_cm'),
+            'settling_s': measurement_settings.get('vdp_settling_s'),
+            'readings_per_polarity': measurement_settings.get('vdp_readings_per_polarity'),
+            'standard': 'ASTM F76-08 Method A',
         }
     elif mode == 'sweep':
         meta['params'] = {

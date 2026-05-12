@@ -16,7 +16,7 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 from ..buffers import EnhancedDataBuffer
 from ..config import ConfigManager
 from ..constants import __version__
-from ..workers import MeasurementWorker
+from ..workers import MeasurementWorker, VdpMeasurementWorker
 from .canvas import MplCanvas, HistogramCanvas, IVCanvas
 from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, format_engineering
 from .dialogs import SettingsDialog, UserSelectionDialog
@@ -71,11 +71,13 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_current_source = self.create_current_source_tab()
         self.tab_four_point = self.create_four_point_tab()
         self.tab_sweep = self.create_sweep_tab()
+        self.tab_vdp = self.create_vdp_tab()
         self.main_tabs.addTab(self.tab_resistance, "Resistance Measurement")
         self.main_tabs.addTab(self.tab_voltage_source, "Voltage Source")
         self.main_tabs.addTab(self.tab_current_source, "Current Source")
         self.main_tabs.addTab(self.tab_four_point, "4-Point Probe")
         self.main_tabs.addTab(self.tab_sweep, "I-V Sweep")
+        self.main_tabs.addTab(self.tab_vdp, "Van der Pauw")
 
         # Status log
         self.status_group = QGroupBox("Status Log"); status_layout = QVBoxLayout()
@@ -96,8 +98,10 @@ class ResistanceMeterApp(QMainWindow):
         self.shortcut_mark = QShortcut(Qt.Key_M, self); self.shortcut_mark.activated.connect(self.mark_event_shortcut)
         self.shortcut_mark.setEnabled(False)
 
-        # Cmd/Ctrl + 1..5 jumps to a tab. Match macOS / browser convention.
-        for idx, key in enumerate((Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4, Qt.Key_5)):
+        # Cmd/Ctrl + 1..6 jumps to a tab. Match macOS / browser convention.
+        for idx, key in enumerate(
+            (Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4, Qt.Key_5, Qt.Key_6)
+        ):
             sc = QShortcut(Qt.ControlModifier | key, self)
             sc.activated.connect(lambda i=idx: self.main_tabs.setCurrentIndex(i))
 
@@ -881,6 +885,362 @@ class ResistanceMeterApp(QMainWindow):
         else:
             w.sweep_points_label.setText(f"Points: {points}")
 
+    # =========================================================================
+    # Van der Pauw tab (ASTM F76 Method A)
+    # =========================================================================
+    def create_vdp_tab(self):
+        """6th tab: van der Pauw resistivity per ASTM F76 Method A.
+
+        Workflow:
+        1. User wires 4 leads to one of F76's 4 cabling configurations.
+        2. UI walks them through the 4 geometries one at a time.
+        3. For each: user presses "Measure This Configuration"; the worker
+           takes +I and -I readings (current reversal embedded per F76).
+        4. After 4 geometries (8 voltage readings) the worker computes
+           rho, R_s, Q, f and the homogeneity gate.
+        """
+        from ..calculations_vdp import f76_geometries
+
+        widget = QWidget()
+        widget.mode = 'vdp'
+        tab_layout = QVBoxLayout(widget)
+
+        # ------- LEFT: parameters -------
+        param_group = QGroupBox("Sample & Source")
+        param_form = QFormLayout(param_group)
+
+        widget.vdp_current = EngineeringSpinBox(unit='A', minimum=1e-9, maximum=1.0, default=1.0e-3)
+        widget.vdp_current.setToolTip(
+            "Source current magnitude I (constant; sign reversed automatically).\n"
+            "F76 sec. 7.3.1: keep I small enough to avoid resistive heating; the\n"
+            "associated electric field should be well under 1 V/cm."
+        )
+        widget.vdp_voltage_compliance = NoScrollSpinBox(
+            decimals=2, minimum=0.001, maximum=200.0, singleStep=0.1, suffix=" V"
+        )
+        widget.vdp_voltage_compliance.setValue(5.0)
+        widget.vdp_voltage_compliance.setToolTip(
+            "Maximum voltage the source will drive. Caps the V at the Force\n"
+            "terminals if the sample is unexpectedly high-impedance."
+        )
+        param_form.addRow(*self._form_pair(
+            "Source Current I", widget.vdp_current,
+            "V Compliance", widget.vdp_voltage_compliance,
+        ))
+
+        widget.vdp_thickness_cm = NoScrollSpinBox(
+            decimals=6, minimum=1e-7, maximum=10.0, singleStep=1e-4, suffix=" cm"
+        )
+        widget.vdp_thickness_cm.setValue(1.0e-4)
+        widget.vdp_thickness_cm.setToolTip(
+            "Sample thickness t in cm (F76 sec. 9.3 wants t/L_p <= 1/15).\n"
+            "rho = (pi/(4*ln2)) * f * t * (V/I) per F76 eq. (1).\n"
+            "Sheet resistance Rs = rho / t is reported separately."
+        )
+        widget.vdp_settling_s = NoScrollSpinBox(
+            decimals=3, minimum=0.0, maximum=10.0, singleStep=0.05, suffix=" s"
+        )
+        widget.vdp_settling_s.setValue(0.2)
+        widget.vdp_settling_s.setToolTip(
+            "Delay after each polarity flip before reading. Lets the source\n"
+            "and DUT settle; longer is safer for capacitive samples."
+        )
+        param_form.addRow(*self._form_pair(
+            "Thickness t", widget.vdp_thickness_cm,
+            "Settling", widget.vdp_settling_s,
+        ))
+
+        widget.vdp_voltage_range_auto = QCheckBox("Auto Range V")
+        widget.vdp_voltage_range_auto.setChecked(True)
+        widget.vdp_voltage_range_auto.setToolTip(
+            "When checked, the Keithley picks the voltage range automatically.\n"
+            "Uncheck for slightly faster, fixed-range measurements."
+        )
+        widget.vdp_readings_per_polarity = NoScrollIntSpinBox(
+            minimum=1, maximum=100, singleStep=1, value=1
+        )
+        widget.vdp_readings_per_polarity.setToolTip(
+            "Software averaging at each polarity. >1 trades time for noise.\n"
+            "Independent of the hardware Filter on the Settings dialog."
+        )
+        param_form.addRow(*self._form_pair(
+            "Auto Range", widget.vdp_voltage_range_auto,
+            "Avg / polarity", widget.vdp_readings_per_polarity,
+        ))
+
+        widget.nplc = NoScrollSpinBox(
+            decimals=2, minimum=0.01, maximum=10.0, singleStep=0.1, suffix=" PLC"
+        )
+        widget.nplc.setValue(1.0)
+        widget.nplc.setToolTip(
+            "Integration time per reading, in power-line cycles.\n"
+            "Higher NPLC = lower noise, slower reading. Standard scientific\n"
+            "choice is 1 NPLC."
+        )
+        widget.sampling_rate = NoScrollSpinBox(  # accepted by gather_settings, unused live
+            decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz"
+        )
+        widget.sampling_rate.setValue(10.0)
+        widget.sampling_rate.setEnabled(False)
+        widget.sampling_rate.setToolTip(
+            "Not used in vdP (the workflow is step-by-step, not streaming).\n"
+            "Kept for settings compatibility with the other tabs."
+        )
+        param_form.addRow(*self._form_pair(
+            "NPLC", widget.nplc,
+            "Sampling Rate", widget.sampling_rate,
+        ))
+
+        # ------- RIGHT: stepper + readings table + result panel -------
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Instruction panel
+        instr_group = QGroupBox("Current Configuration")
+        instr_layout = QVBoxLayout(instr_group)
+        widget.vdp_step_label = QLabel("Idle. Wire 4 contacts (numbered 1-4 counter-clockwise around the sample periphery) and press Start.")
+        widget.vdp_step_label.setWordWrap(True)
+        f = QFont(); f.setPointSize(11); f.setBold(True)
+        widget.vdp_step_label.setFont(f)
+        widget.vdp_step_label.setStyleSheet(
+            "color: #222; background: #f6f6f6; border: 1px solid #ccc; "
+            "border-radius: 4px; padding: 8px;"
+        )
+        widget.vdp_step_label.setMinimumHeight(80)
+        instr_layout.addWidget(widget.vdp_step_label)
+
+        widget.vdp_proceed_button = QPushButton("Measure This Configuration")
+        widget.vdp_proceed_button.setEnabled(False)
+        widget.vdp_proceed_button.setToolTip(
+            "Click after you've reconnected the 4 leads as shown above.\n"
+            "The worker will then source +I, read V, source -I, read V."
+        )
+        widget.vdp_proceed_button.clicked.connect(self._vdp_proceed_clicked)
+        instr_layout.addWidget(widget.vdp_proceed_button)
+        right_layout.addWidget(instr_group)
+
+        # Readings table (8 F76 labels)
+        table_group = QGroupBox("F76 Voltage Readings")
+        table_layout = QVBoxLayout(table_group)
+        widget.vdp_readings_table = QTableWidget(8, 3)
+        widget.vdp_readings_table.setHorizontalHeaderLabels([
+            "F76 Label", "Geometry / Polarity", "V (V)"
+        ])
+        widget.vdp_readings_table.verticalHeader().setVisible(False)
+        widget.vdp_readings_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        widget.vdp_readings_table.setSelectionMode(QTableWidget.NoSelection)
+        for row, geom in enumerate(f76_geometries()):
+            widget.vdp_readings_table.setItem(2 * row, 0, QTableWidgetItem(geom.label_pos))
+            widget.vdp_readings_table.setItem(2 * row, 1, QTableWidgetItem(f"{geom.name}, +I (group {geom.group})"))
+            widget.vdp_readings_table.setItem(2 * row, 2, QTableWidgetItem("--"))
+            widget.vdp_readings_table.setItem(2 * row + 1, 0, QTableWidgetItem(geom.label_neg))
+            widget.vdp_readings_table.setItem(2 * row + 1, 1, QTableWidgetItem(f"{geom.name}, -I (group {geom.group})"))
+            widget.vdp_readings_table.setItem(2 * row + 1, 2, QTableWidgetItem("--"))
+        widget.vdp_readings_table.resizeColumnsToContents()
+        widget.vdp_readings_table.horizontalHeader().setStretchLastSection(True)
+        table_layout.addWidget(widget.vdp_readings_table)
+        right_layout.addWidget(table_group, 1)
+
+        # Result panel
+        result_group = QGroupBox("Result (F76 sec. 11.1)")
+        result_layout = QVBoxLayout(result_group)
+        widget.vdp_result_label = QLabel("Run a measurement to see results.")
+        widget.vdp_result_label.setTextFormat(Qt.RichText)
+        widget.vdp_result_label.setStyleSheet("font-family: monospace;")
+        widget.vdp_result_label.setWordWrap(True)
+        result_layout.addWidget(widget.vdp_result_label)
+        widget.vdp_homogeneity_banner = QLabel("")
+        widget.vdp_homogeneity_banner.setAlignment(Qt.AlignCenter)
+        bf = QFont(); bf.setPointSize(12); bf.setBold(True)
+        widget.vdp_homogeneity_banner.setFont(bf)
+        widget.vdp_homogeneity_banner.setMinimumHeight(32)
+        result_layout.addWidget(widget.vdp_homogeneity_banner)
+        right_layout.addWidget(result_group)
+
+        # Control row (Start / Stop / Status)
+        control_group, start_button, stop_button, _, status_label = (
+            self._build_control_row(with_pause=False)
+        )
+
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(param_group)
+        splitter.addWidget(right_widget)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setChildrenCollapsible(False)
+
+        tab_layout.addWidget(splitter, 1)
+        tab_layout.addWidget(control_group, 0)
+
+        # Wire start/stop
+        start_button.clicked.connect(self.start_vdp_measurement)
+        stop_button.clicked.connect(self.stop_vdp_measurement)
+
+        widget.param_layout = param_form
+        widget.param_group = param_group
+        widget.start_button = start_button
+        widget.stop_button = stop_button
+        widget.pause_button = None
+        widget.status_label = status_label
+        widget.control_group = control_group
+        widget.splitter = splitter
+        # vdP does not have a continuous plot canvas; expose a placeholder
+        # so generic callers that probe `.canvas` don't AttributeError.
+        widget.canvas = None
+        return widget
+
+    def start_vdp_measurement(self):
+        """Begin a van der Pauw run."""
+        if self.measurement_running:
+            QMessageBox.warning(
+                self, "Measurement Active",
+                f"A measurement ({self.active_mode}) is already running. "
+                "Stop it first."
+            )
+            return
+        if not self.current_user:
+            QMessageBox.warning(self, "No User Selected", "Please select or create a user first.")
+            return
+        sample_name = self.sample_input.text().strip()
+        if not sample_name:
+            self.sample_input.setFocus()
+            QMessageBox.warning(self, "Sample Name Required", "Please enter a sample name.")
+            return
+
+        try:
+            current_settings = self.gather_settings_for_mode('vdp')
+        except ValueError as e:
+            QMessageBox.critical(self, "Settings Error", f"Failed to gather settings: {e}")
+            return
+
+        self.active_mode = 'vdp'
+        self.measurement_running = True
+        self.set_controls_for_mode('vdp', running=True)
+        self.set_all_controls_enabled(False, except_mode='vdp')
+        self.sample_input.setEnabled(False)
+        self.change_user_button.setEnabled(False)
+
+        widget = self.tab_vdp
+        widget.status_label.setText("Status: Connecting...")
+        widget.status_label.setStyleSheet("font-weight: bold; color: green;")
+
+        # Reset readings table to blanks
+        for r in range(widget.vdp_readings_table.rowCount()):
+            widget.vdp_readings_table.item(r, 2).setText("--")
+            widget.vdp_readings_table.item(r, 2).setBackground(QBrush(QColor("white")))
+        widget.vdp_result_label.setText("Measuring...")
+        widget.vdp_homogeneity_banner.setText("")
+        widget.vdp_homogeneity_banner.setStyleSheet("")
+        widget.vdp_step_label.setText("Connecting to instrument...")
+
+        self.log_status(f"Starting van der Pauw measurement for sample: {sample_name}...")
+        self.statusBar().showMessage("Measurement running (vdp)...")
+
+        self.measurement_worker = VdpMeasurementWorker(
+            sample_name=sample_name, username=self.current_user,
+            settings=current_settings,
+        )
+        self.measurement_worker.geometry_ready.connect(self._vdp_on_geometry_ready)
+        self.measurement_worker.geometry_complete.connect(self._vdp_on_geometry_complete)
+        self.measurement_worker.vdp_complete.connect(self._vdp_on_complete)
+        self.measurement_worker.status_update.connect(self.log_status_from_worker)
+        self.measurement_worker.error_occurred.connect(self.on_error)
+        self.measurement_worker.compliance_hit.connect(self.on_compliance_hit)
+        self.measurement_worker.finished.connect(self._vdp_on_worker_finished)
+        self.measurement_worker.start()
+
+    def stop_vdp_measurement(self):
+        if self.measurement_worker and self.measurement_running:
+            self.log_status("Stopping van der Pauw measurement...")
+            self.tab_vdp.stop_button.setEnabled(False)
+            self.tab_vdp.vdp_proceed_button.setEnabled(False)
+            self.tab_vdp.status_label.setText("Status: Stopping...")
+            self.tab_vdp.status_label.setStyleSheet("font-weight: bold; color: orange;")
+            self.measurement_worker.stop_measurement()
+
+    def _vdp_proceed_clicked(self):
+        if self.measurement_worker and isinstance(self.measurement_worker, VdpMeasurementWorker):
+            self.tab_vdp.vdp_proceed_button.setEnabled(False)
+            self.tab_vdp.vdp_step_label.setText(
+                self.tab_vdp.vdp_step_label.text() + "\n\nMeasuring (+I then -I)..."
+            )
+            self.measurement_worker.proceed()
+
+    def _vdp_on_geometry_ready(self, idx: int, geom: Dict):
+        widget = self.tab_vdp
+        widget.vdp_step_label.setText(
+            f"<b>{geom['name']}</b>  (group {geom['group']})<br>"
+            f"<br>"
+            f"<b>Force HI</b>  &rarr;  Contact <b>{geom['source_high']}</b>"
+            f"&nbsp;&nbsp;&nbsp;&nbsp;"
+            f"<b>Force LO</b>  &rarr;  Contact <b>{geom['source_low']}</b><br>"
+            f"<b>Sense HI</b>  &rarr;  Contact <b>{geom['sense_high']}</b>"
+            f"&nbsp;&nbsp;&nbsp;&nbsp;"
+            f"<b>Sense LO</b>  &rarr;  Contact <b>{geom['sense_low']}</b><br>"
+            f"<br>"
+            f"Reconnect leads, then press <b>Measure This Configuration</b>.<br>"
+            f"Will produce: {geom['label_pos']} (at +I) and {geom['label_neg']} (at &minus;I)."
+        )
+        widget.vdp_step_label.setTextFormat(Qt.RichText)
+        widget.vdp_proceed_button.setEnabled(True)
+        widget.vdp_proceed_button.setText(f"Measure {geom['name']}")
+
+    def _vdp_on_geometry_complete(self, idx: int, readings: Dict):
+        widget = self.tab_vdp
+        # Update the two rows for this geometry (rows 2*idx and 2*idx+1).
+        widget.vdp_readings_table.item(2 * idx, 2).setText(f"{readings['v_pos']:.6e}")
+        widget.vdp_readings_table.item(2 * idx, 2).setBackground(QBrush(QColor("#e8f5e9")))
+        widget.vdp_readings_table.item(2 * idx + 1, 2).setText(f"{readings['v_neg']:.6e}")
+        widget.vdp_readings_table.item(2 * idx + 1, 2).setBackground(QBrush(QColor("#e8f5e9")))
+
+    def _vdp_on_complete(self, result: Dict):
+        widget = self.tab_vdp
+        widget.vdp_step_label.setText(
+            "All 4 geometries measured. Result below."
+        )
+        widget.vdp_step_label.setTextFormat(Qt.PlainText)
+        widget.vdp_result_label.setText(
+            f"<pre>"
+            f"rho_A       = {result['rho_a']:.6g} Ohm.cm\n"
+            f"rho_B       = {result['rho_b']:.6g} Ohm.cm\n"
+            f"rho_avg     = {result['rho_avg']:.6g} Ohm.cm\n"
+            f"R_sheet     = {result['sheet_resistance']:.6g} Ohm/sq\n"
+            f"Q_A / Q_B   = {result['q_a']:.4f}  /  {result['q_b']:.4f}\n"
+            f"f_A / f_B   = {result['f_a']:.4f}  /  {result['f_b']:.4f}\n"
+            f"asymmetry   = {result['asymmetry_pct']:.3f} %"
+            f"</pre>"
+        )
+        widget.vdp_result_label.setTextFormat(Qt.RichText)
+        if result['homogeneous']:
+            widget.vdp_homogeneity_banner.setText(
+                f"HOMOGENEOUS (asymmetry {result['asymmetry_pct']:.2f}% <= 10% gate)"
+            )
+            widget.vdp_homogeneity_banner.setStyleSheet(
+                "color: white; background: #2e7d32; border-radius: 4px; padding: 4px;"
+            )
+        else:
+            widget.vdp_homogeneity_banner.setText(
+                f"NON-HOMOGENEOUS (asymmetry {result['asymmetry_pct']:.2f}% > 10% gate)"
+            )
+            widget.vdp_homogeneity_banner.setStyleSheet(
+                "color: white; background: #c62828; border-radius: 4px; padding: 4px;"
+            )
+
+    def _vdp_on_worker_finished(self):
+        """QThread finished signal: reset UI back to idle regardless of cause."""
+        self.measurement_running = False
+        self.active_mode = None
+        self.set_controls_for_mode('vdp', running=False)
+        self.set_all_controls_enabled(True)
+        self.sample_input.setEnabled(True)
+        self.change_user_button.setEnabled(True)
+        self.tab_vdp.vdp_proceed_button.setEnabled(False)
+        self.tab_vdp.status_label.setText("Status: Idle")
+        self.tab_vdp.status_label.setStyleSheet("font-weight: bold;")
+        self.statusBar().showMessage("Ready")
+        self.measurement_worker = None
+
     def create_menus(self):
         menu_bar = self.menuBar()
         # File
@@ -1247,6 +1607,16 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_four_point.fpp_plot_var.setCurrentText('sheet_Rs')
         # 4PP doesn't carry a time-series MplCanvas — its histogram lives in
         # the right panel and updates from update_active_plot directly.
+        # Van der Pauw
+        if hasattr(self, 'tab_vdp'):
+            self.tab_vdp.vdp_current.setValue(float(m_cfg.get('vdp_current', 1.0e-3)))
+            self.tab_vdp.vdp_voltage_compliance.setValue(float(m_cfg.get('vdp_voltage_compliance', 5.0)))
+            self.tab_vdp.vdp_voltage_range_auto.setChecked(bool(m_cfg.get('vdp_voltage_range_auto', True)))
+            self.tab_vdp.vdp_thickness_cm.setValue(float(m_cfg.get('vdp_thickness_cm', 1.0e-4)))
+            self.tab_vdp.vdp_settling_s.setValue(float(m_cfg.get('vdp_settling_s', 0.2)))
+            self.tab_vdp.vdp_readings_per_polarity.setValue(int(m_cfg.get('vdp_readings_per_polarity', 1)))
+            self.tab_vdp.nplc.setValue(float(m_cfg.get('nplc', 1.0)))
+            self.tab_vdp.sampling_rate.setValue(float(m_cfg.get('sampling_rate', 10.0)))
         buffer_size = d_cfg.get('buffer_size')
         new_size = None if buffer_size is None or buffer_size <= 0 else buffer_size
         for mode, buffer in list(self.data_buffers.items()):
@@ -1284,6 +1654,7 @@ class ResistanceMeterApp(QMainWindow):
         if mode == 'source_i': return self.tab_current_source
         if mode == 'four_point': return self.tab_four_point
         if mode == 'sweep': return self.tab_sweep
+        if mode == 'vdp': return self.tab_vdp
         return None
 
     def gather_settings_for_mode(self, mode:str) -> Dict:
@@ -1355,6 +1726,13 @@ class ResistanceMeterApp(QMainWindow):
                 m_cfg['sweep_compliance'] = widget.sweep_compliance.value()
                 m_cfg['sweep_delay'] = widget.sweep_delay.value()
                 m_cfg['sweep_direction'] = widget.sweep_direction.currentText()
+            elif mode == 'vdp':
+                m_cfg['vdp_current'] = widget.vdp_current.value()
+                m_cfg['vdp_voltage_compliance'] = widget.vdp_voltage_compliance.value()
+                m_cfg['vdp_voltage_range_auto'] = widget.vdp_voltage_range_auto.isChecked()
+                m_cfg['vdp_thickness_cm'] = widget.vdp_thickness_cm.value()
+                m_cfg['vdp_settling_s'] = widget.vdp_settling_s.value()
+                m_cfg['vdp_readings_per_polarity'] = int(widget.vdp_readings_per_polarity.value())
         except AttributeError as e:
             raise ValueError(f"UI Widgets not found for mode {mode}: {e}")
         # Read NPLC and sampling rate from the tab (overrides settings dialog)
@@ -1832,7 +2210,7 @@ class ResistanceMeterApp(QMainWindow):
                     getattr(widget, attr).setEnabled(True)
 
     def set_all_controls_enabled(self, enabled: bool, except_mode: Optional[str] = None):
-        for mode in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
+        for mode in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep', 'vdp']:
             if mode == except_mode: continue
             widget = self.get_widget_for_mode(mode)
             if widget:

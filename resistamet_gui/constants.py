@@ -1,7 +1,7 @@
 import os
 
 # Script version and metadata
-__version__ = "1.7.0"
+__version__ = "1.8.0"
 __original_version__ = "0.9.2"
 __author__ = "Brenden Ferland"
 
@@ -64,6 +64,15 @@ DEFAULT_SETTINGS = {
         "fpp_power_warn_w": 1.0e-2,           # warn (status flash) above this measured V*I, watts
         "fpp_power_stop_w": 1.0e-1,           # hard stop above this measured V*I, watts
         "fpp_stop_on_overpower": True,        # abort 4PP run if measured power exceeds fpp_power_stop_w
+        # Van der Pauw (vdP) defaults per ASTM F76-08 Method A. 4 manual lead
+        # reconnections, current reversal automated at each geometry → 8
+        # voltage readings total. Thickness in cm to match F76 units.
+        "vdp_current": 1.0e-3,                # source current magnitude (A)
+        "vdp_voltage_compliance": 5.0,        # V compliance for the source
+        "vdp_voltage_range_auto": True,       # auto-range voltage measurement
+        "vdp_thickness_cm": 1.0e-4,           # sample thickness, cm (1 µm default)
+        "vdp_settling_s": 0.2,                # delay after polarity flip before READ?
+        "vdp_readings_per_polarity": 1,       # average N hardware readings per +I and -I
         # I-V Sweep defaults
         "sweep_source": "voltage",           # "voltage" or "current"
         "sweep_start": 0.0,                  # sweep start value (V or A)

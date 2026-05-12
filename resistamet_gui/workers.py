@@ -1133,3 +1133,324 @@ class MeasurementWorker(QThread):
 
         # Return synthetic reading string matching VOLT,CURR,STAT format
         return f"{v_delta},{i_mag},{stat_combined}"
+
+
+class _VdpAborted(Exception):
+    """Internal: worker was stopped via stop_measurement()."""
+
+
+def _sanitize_for_path(name: str) -> str:
+    """Path-safe name; mirrors MeasurementWorker._sanitize_path_component."""
+    sanitized = re.sub(r'\.\.+', '', name)
+    sanitized = re.sub(r'[/\\]', '', sanitized)
+    sanitized = ''.join(c if c.isalnum() or c in '-_' else '_' for c in sanitized)
+    sanitized = re.sub(r'_+', '_', sanitized).strip('_')
+    return sanitized if sanitized else 'unnamed'
+
+
+class VdpMeasurementWorker(QThread):
+    """Van der Pauw measurement worker per ASTM F76-08 Method A.
+
+    State machine over F76's 4 physical cabling configurations. For each
+    geometry the worker emits ``geometry_ready``, waits for the UI to call
+    ``proceed()`` (after the user has reconnected leads), then takes +I
+    and -I voltage readings (current reversal cancels thermal offsets per
+    F76 sec. 11.1) and emits ``geometry_complete``. After 4 geometries it
+    computes the vdP result and emits ``vdp_complete``.
+
+    Signals:
+        geometry_ready(int, dict): index 0..3, instruction dict
+            (name, source_high, source_low, sense_high, sense_low,
+            label_pos, label_neg, group).
+        geometry_complete(int, dict): readings dict
+            (name, label_pos, v_pos, label_neg, v_neg, current_a, group).
+        vdp_complete(dict): final VdpResult fields + raw voltages.
+        status_update(str), error_occurred(str), compliance_hit(str).
+    """
+
+    geometry_ready = pyqtSignal(int, dict)
+    geometry_complete = pyqtSignal(int, dict)
+    vdp_complete = pyqtSignal(dict)
+    status_update = pyqtSignal(str)
+    error_occurred = pyqtSignal(str)
+    compliance_hit = pyqtSignal(str)
+
+    MODE = 'vdp'
+
+    def __init__(self, sample_name, username, settings, parent=None):
+        super().__init__(parent)
+        self.sample_name = sample_name
+        self.username = username
+        self.settings = settings
+        self._state_lock = threading.Lock()
+        self._running = False
+        self._proceed_event = threading.Event()
+        self._voltages: Dict[str, float] = {}
+        self.keithley = None
+        self.exporter: Optional[DualExporter] = None
+        self._instrument_idn = ""
+        self._sleep_inhibitor = SleepInhibitor()
+        self._start_time = 0.0
+        self._i_mag = 0.0
+        self.filename = ""
+
+    @property
+    def running(self) -> bool:
+        with self._state_lock:
+            return self._running
+
+    @running.setter
+    def running(self, value: bool) -> None:
+        with self._state_lock:
+            self._running = value
+
+    def proceed(self) -> None:
+        """UI slot: user has reconnected leads; take this geometry's reading."""
+        self._proceed_event.set()
+
+    def stop_measurement(self) -> None:
+        self.status_update.emit("Stopping vdP measurement...")
+        self.running = False
+        # Unblock any wait_for_user pause.
+        self._proceed_event.set()
+
+    def run(self) -> None:
+        self.running = True
+        try:
+            self._connect_and_configure()
+            self._run_geometries()
+            self._compute_and_emit_result()
+        except _VdpAborted:
+            self.status_update.emit("vdP measurement aborted by user")
+        except Exception as e:
+            logger.exception("vdP measurement failed")
+            self.error_occurred.emit(f"vdP error: {e}")
+        finally:
+            self.running = False
+            self._cleanup()
+
+    def _connect_and_configure(self) -> None:
+        # Lazy imports to avoid a Qt-load-time cost when vdP isn't used.
+        from .calculations_vdp import f76_geometries  # noqa: F401  (touched in _run_geometries)
+
+        measurement = self.settings['measurement']
+        gpib = measurement['gpib_address']
+        self.status_update.emit(f"Connecting to instrument at {gpib}...")
+        self.keithley = Keithley2400(gpib).connect()
+        self._instrument_idn = self.keithley.query("*IDN?").strip()
+        self.status_update.emit(f"Connected to: {self._instrument_idn}")
+
+        i_mag = abs(float(measurement['vdp_current']))
+        v_comp = float(measurement['vdp_voltage_compliance'])
+        nplc = float(measurement.get('nplc', 1.0))
+        auto_range = bool(measurement.get('vdp_voltage_range_auto', True))
+        if i_mag <= 0:
+            raise ValueError("vdp_current must be > 0 A")
+        if v_comp <= 0:
+            raise ValueError("vdp_voltage_compliance must be > 0 V")
+
+        self.keithley.write("*RST"); time.sleep(0.5)
+        self.keithley.write("*CLS")
+        azer = str(measurement.get('auto_zero', 'on')).upper()
+        if azer == 'ONCE':
+            self.keithley.write(":SYST:AZER:STAT ON")
+            self.keithley.write(":SYST:AZER:STAT ONCE")
+        else:
+            self.keithley.write(f":SYST:AZER:STAT {azer}")
+        self.keithley.write(":SENS:FUNC:CONC OFF")
+        self.keithley.write(":OUTP:SMOD HIMP")
+
+        # F76 sec. 7.3.2 requires the voltmeter to draw <0.1 % of the
+        # source current. Routing V through the Force terminals (RSEN OFF)
+        # would re-add contact and lead resistance to every reading --
+        # this is the same lesson as the 4PP RSEN bug fixed in v1.7.0.
+        self.keithley.write(":SYST:RSEN ON")
+        self.keithley.write(":SENS:FUNC 'VOLT:DC'")
+        self.keithley.write(":SOUR:FUNC CURR")
+        self.keithley.write(f":SOUR:CURR:RANG {i_mag}")
+        self.keithley.write(f":SOUR:CURR {i_mag}")
+        self.keithley.write(f":SENS:VOLT:PROT {v_comp}")
+        if auto_range:
+            self.keithley.write(":SENS:VOLT:RANG:AUTO ON")
+        else:
+            self.keithley.write(":SENS:VOLT:RANG:AUTO OFF")
+            self.keithley.write(f":SENS:VOLT:RANG {v_comp}")
+        self.keithley.write(f":SENS:VOLT:NPLC {nplc}")
+        self.keithley.write(":FORM:ELEM VOLT,CURR,STAT")
+        self.keithley.write(":TRIG:DEL 0")
+        self.keithley.write(":SOUR:DEL:AUTO ON")
+
+        if measurement.get('filter_enabled', False):
+            ftype = str(measurement.get('filter_type', 'repeat')).upper()[:3]
+            fcount = int(measurement.get('filter_count', 10))
+            self.keithley.write(f":SENS:AVER:TCON {ftype}")
+            self.keithley.write(f":SENS:AVER:COUN {fcount}")
+            self.keithley.write(":SENS:AVER ON")
+
+        self._i_mag = i_mag
+
+        # Output data file
+        base_dir = Path(self.settings['file']['data_directory'])
+        base_dir.mkdir(parents=True, exist_ok=True)
+        user_dir = base_dir / _sanitize_for_path(self.username)
+        user_dir.mkdir(exist_ok=True)
+        timestamp = int(time.time())
+        sample = _sanitize_for_path(self.sample_name)
+        base_name = f"{timestamp}_{sample}_vdP_{i_mag*1000:.2f}mA"
+        base_path = user_dir / base_name
+        self.filename = str(base_path.with_suffix('.json'))
+
+        columns, units = get_column_config(self.MODE, measurement)
+        export_metadata = build_metadata(
+            user=self.username,
+            sample_name=self.sample_name,
+            mode=self.MODE,
+            settings=self.settings,
+            instrument_idn=self._instrument_idn,
+            start_time=datetime.fromtimestamp(time.time()),
+        )
+        self.exporter = DualExporter(
+            base_path=base_path, metadata=export_metadata,
+            columns=columns, units=units,
+        )
+        self.status_update.emit(f"Data files: {base_path.name}.json/.csv")
+
+        self._sleep_inhibitor.inhibit(f"ResistaMet: vdP on {self.sample_name}")
+        self._start_time = time.time()
+
+    def _run_geometries(self) -> None:
+        from .calculations_vdp import f76_geometries
+
+        measurement = self.settings['measurement']
+        settling = float(measurement.get('vdp_settling_s', 0.2))
+        n_avg = max(1, int(measurement.get('vdp_readings_per_polarity', 1)))
+
+        for idx, geom in enumerate(f76_geometries()):
+            if not self.running:
+                raise _VdpAborted()
+
+            self._proceed_event.clear()
+            self.geometry_ready.emit(idx, {
+                'name': geom.name,
+                'source_high': geom.source_high,
+                'source_low': geom.source_low,
+                'sense_high': geom.sense_high,
+                'sense_low': geom.sense_low,
+                'label_pos': geom.label_pos,
+                'label_neg': geom.label_neg,
+                'group': geom.group,
+            })
+            self.status_update.emit(
+                f"{geom.name}: connect Force HI->C{geom.source_high}, "
+                f"Force LO->C{geom.source_low}, "
+                f"Sense HI->C{geom.sense_high}, "
+                f"Sense LO->C{geom.sense_low}; press Measure."
+            )
+            self._proceed_event.wait()
+            if not self.running:
+                raise _VdpAborted()
+
+            self.keithley.write(":OUTP ON")
+            self.keithley.write(f":SOUR:CURR {self._i_mag}")
+            time.sleep(settling)
+            v_pos, stat_pos = self._read_averaged(n_avg)
+
+            self.keithley.write(f":SOUR:CURR {-self._i_mag}")
+            time.sleep(settling)
+            v_neg, stat_neg = self._read_averaged(n_avg)
+
+            # Return polarity to +I and disable output so the user can
+            # safely reconnect leads for the next geometry.
+            self.keithley.write(f":SOUR:CURR {self._i_mag}")
+            self.keithley.write(":OUTP OFF")
+
+            if (stat_pos | stat_neg) & _STAT_BIT_COMPLIANCE:
+                self.compliance_hit.emit("Voltage")
+
+            self._voltages[geom.label_pos] = v_pos
+            self._voltages[geom.label_neg] = v_neg
+
+            elapsed = time.time() - self._start_time
+            row = [
+                elapsed, geom.name, geom.group,
+                geom.source_high, geom.source_low,
+                geom.sense_high, geom.sense_low,
+                geom.label_pos, v_pos,
+                geom.label_neg, v_neg,
+                self._i_mag,
+            ]
+            try:
+                self.exporter.write_row(row)
+            except Exception:
+                logger.warning("vdP: failed to write export row", exc_info=True)
+
+            self.geometry_complete.emit(idx, {
+                'name': geom.name,
+                'label_pos': geom.label_pos, 'v_pos': v_pos,
+                'label_neg': geom.label_neg, 'v_neg': v_neg,
+                'current_a': self._i_mag,
+                'group': geom.group,
+            })
+
+    def _read_averaged(self, n: int):
+        """Issue N :READ? queries and return (mean V, OR of STAT bits)."""
+        v_sum = 0.0
+        stat_or = 0
+        for _ in range(n):
+            raw = self.keithley.query(":READ?").strip()
+            parts = [p.strip() for p in raw.split(',')]
+            v_sum += float(parts[0])
+            stat_or |= int(float(parts[-1]))
+        return v_sum / n, stat_or
+
+    def _compute_and_emit_result(self) -> None:
+        from .calculations_vdp import calculate_van_der_pauw
+
+        thickness = float(self.settings['measurement']['vdp_thickness_cm'])
+        result = calculate_van_der_pauw(self._voltages, self._i_mag, thickness)
+
+        result_dict = {
+            'rho_a': result.rho_a,
+            'rho_b': result.rho_b,
+            'rho_avg': result.rho_avg,
+            'sheet_resistance': result.sheet_resistance,
+            'q_a': result.q_a,
+            'q_b': result.q_b,
+            'f_a': result.f_a,
+            'f_b': result.f_b,
+            'homogeneous': result.homogeneous,
+            'asymmetry_pct': result.asymmetry_pct,
+            'voltages': dict(self._voltages),
+            'current_a': self._i_mag,
+            'thickness_cm': thickness,
+        }
+        self.vdp_complete.emit(result_dict)
+        self.status_update.emit(
+            f"vdP done: Rs={result.sheet_resistance:.4g} Ohm/sq, "
+            f"rho={result.rho_avg:.4g} Ohm.cm, "
+            f"asym={result.asymmetry_pct:.2f}% "
+            f"({'homogeneous' if result.homogeneous else 'NON-homogeneous'})"
+        )
+        try:
+            self.exporter.finalize({'vdp_result': result_dict})
+        except Exception:
+            logger.warning("vdP: finalize with result failed", exc_info=True)
+
+    def _cleanup(self) -> None:
+        self._sleep_inhibitor.uninhibit()
+        if self.keithley:
+            try:
+                self.keithley.write(":OUTP OFF")
+                self.keithley.close()
+                self.status_update.emit("Instrument disconnected.")
+            except Exception as e:
+                self.status_update.emit(f"Warning: cleanup error: {e}")
+            finally:
+                self.keithley = None
+        if self.exporter:
+            try:
+                # finalize() is idempotent on already-finalized exporters.
+                self.exporter.finalize()
+            except Exception:
+                pass
+            self.exporter = None

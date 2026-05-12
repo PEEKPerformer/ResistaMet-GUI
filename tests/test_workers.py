@@ -822,3 +822,223 @@ class TestFourPointDeltaPerPolarity:
             assert row.count(',') + 1 == header_cols, (
                 f"row width mismatch: header={header_cols}, row={row!r}"
             )
+
+
+# ============================================================================
+# Van der Pauw worker (ASTM F76 Method A)
+# ============================================================================
+
+from resistamet_gui.workers import VdpMeasurementWorker
+
+
+def _vdp_settings(tmp_path):
+    s = _base_settings(tmp_path)
+    s["measurement"].update({
+        "vdp_current": 1.0e-3,
+        "vdp_voltage_compliance": 5.0,
+        "vdp_voltage_range_auto": True,
+        "vdp_thickness_cm": 1.0e-4,
+        "vdp_settling_s": 0.0,           # speed up the test
+        "vdp_readings_per_polarity": 1,
+    })
+    return s
+
+
+def _drive_vdp_worker(qapp, worker: VdpMeasurementWorker, timeout_s: float = 15.0):
+    """Drive a vdP worker by auto-confirming each geometry_ready prompt.
+
+    Real lab workflow: user reconnects leads then presses "Measure". Test:
+    fire proceed() immediately on each geometry_ready signal.
+    """
+    spies = {
+        "geometry_ready": [],
+        "geometry_complete": [],
+        "vdp_complete": [],
+        "status_update": [],
+        "error_occurred": [],
+        "compliance_hit": [],
+    }
+    worker.geometry_ready.connect(
+        lambda idx, g: (spies["geometry_ready"].append((idx, dict(g))),
+                        worker.proceed())
+    )
+    worker.geometry_complete.connect(
+        lambda idx, r: spies["geometry_complete"].append((idx, dict(r)))
+    )
+    worker.vdp_complete.connect(
+        lambda r: spies["vdp_complete"].append(dict(r))
+    )
+    worker.status_update.connect(spies["status_update"].append)
+    worker.error_occurred.connect(spies["error_occurred"].append)
+    worker.compliance_hit.connect(spies["compliance_hit"].append)
+
+    worker.start()
+    deadline = time.time() + timeout_s
+    while worker.isRunning() and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    worker.wait(3000)
+    for _ in range(5):
+        qapp.processEvents()
+        time.sleep(0.01)
+    return spies
+
+
+class TestVdpWorkerEndToEnd:
+    """vdP worker drives the fake through all 4 geometries and emits a result."""
+
+    def test_completes_all_4_geometries(self, qapp, fake_rm, tmp_path):
+        worker = VdpMeasurementWorker("sample", "alice", _vdp_settings(tmp_path))
+        spies = _drive_vdp_worker(qapp, worker)
+        assert not spies["error_occurred"], spies["error_occurred"]
+        assert len(spies["geometry_ready"]) == 4
+        assert len(spies["geometry_complete"]) == 4
+        assert len(spies["vdp_complete"]) == 1
+
+    def test_result_has_required_fields(self, qapp, fake_rm, tmp_path):
+        worker = VdpMeasurementWorker("sample", "alice", _vdp_settings(tmp_path))
+        spies = _drive_vdp_worker(qapp, worker)
+        assert spies["vdp_complete"]
+        result = spies["vdp_complete"][0]
+        for field in (
+            "rho_a", "rho_b", "rho_avg", "sheet_resistance",
+            "q_a", "q_b", "f_a", "f_b",
+            "homogeneous", "asymmetry_pct",
+            "voltages", "current_a", "thickness_cm",
+        ):
+            assert field in result, f"missing {field}"
+        # Uniform fake DUT -> homogeneous result.
+        assert result["homogeneous"] is True
+        assert result["asymmetry_pct"] < 10.0
+        # 8 F76 labels captured.
+        assert len(result["voltages"]) == 8
+
+    def test_csv_and_json_files_written(self, qapp, fake_rm, tmp_path):
+        worker = VdpMeasurementWorker("sample", "alice", _vdp_settings(tmp_path))
+        _drive_vdp_worker(qapp, worker)
+        csv_files = list((tmp_path / "data").rglob("*_vdP_*.csv"))
+        json_files = list((tmp_path / "data").rglob("*_vdP_*.json"))
+        assert csv_files, "vdP run should produce a CSV"
+        assert json_files, "vdP run should produce a JSON"
+        # 4 data rows + header = 5 non-comment lines
+        rows = [
+            l for l in csv_files[0].read_text().splitlines()
+            if not l.startswith("#") and l.strip()
+        ]
+        assert len(rows) == 5
+
+    def test_json_contains_vdp_result_summary(self, qapp, fake_rm, tmp_path):
+        worker = VdpMeasurementWorker("sample", "alice", _vdp_settings(tmp_path))
+        _drive_vdp_worker(qapp, worker)
+        json_files = list((tmp_path / "data").rglob("*_vdP_*.json"))
+        payload = json.loads(json_files[0].read_text())
+        # The exporter stuffs the final summary under meta.end_metadata.
+        # Exact path depends on DualExporter; assert at least that the
+        # vdp_result keys are reachable somewhere.
+        flat = json.dumps(payload)
+        assert "sheet_resistance" in flat or "vdp_result" in flat
+
+
+class TestVdpSCPIContract:
+    """Pin the SCPI commands emitted at setup and at each geometry."""
+
+    def test_setup_uses_rsen_on(self, qapp, fake_rm, tmp_path):
+        # F76 sec. 7.3.2 / S-302 wiring: voltmeter must use sense terminals.
+        worker = VdpMeasurementWorker("sample", "alice", _vdp_settings(tmp_path))
+        _drive_vdp_worker(qapp, worker)
+        cmds = [c for op, c in fake_rm.opened[0].command_log if op == "write"]
+        assert ":SYST:RSEN ON" in cmds
+        assert ":SYST:RSEN OFF" not in cmds
+
+    def test_setup_sources_current_measures_voltage(self, qapp, fake_rm, tmp_path):
+        worker = VdpMeasurementWorker("sample", "alice", _vdp_settings(tmp_path))
+        _drive_vdp_worker(qapp, worker)
+        cmds = [c for op, c in fake_rm.opened[0].command_log if op == "write"]
+        assert ":SOUR:FUNC CURR" in cmds
+        assert ":SENS:FUNC 'VOLT:DC'" in cmds
+
+    def test_setup_form_elem_contains_volt_stat(self, qapp, fake_rm, tmp_path):
+        # We need STAT to detect compliance via bit 3.
+        worker = VdpMeasurementWorker("sample", "alice", _vdp_settings(tmp_path))
+        _drive_vdp_worker(qapp, worker)
+        cmds = [c for op, c in fake_rm.opened[0].command_log if op == "write"]
+        form_cmds = [c for c in cmds if c.startswith(":FORM:ELEM")]
+        assert form_cmds, "no :FORM:ELEM write found"
+        # All FORM:ELEM writes should include VOLT and STAT.
+        for fc in form_cmds:
+            assert "VOLT" in fc
+            assert "STAT" in fc
+
+    def test_each_geometry_writes_plus_then_minus_current(self, qapp, fake_rm, tmp_path):
+        # F76 sec. 11.1: current reversal at each geometry.
+        # SOUR:CURR pattern after setup should alternate +I / -I per geometry.
+        worker = VdpMeasurementWorker("sample", "alice", _vdp_settings(tmp_path))
+        _drive_vdp_worker(qapp, worker)
+        sour_curr_writes = [
+            c for op, c in fake_rm.opened[0].command_log
+            if op == "write" and c.startswith(":SOUR:CURR ") and not c.startswith(":SOUR:CURR:")
+        ]
+        # Setup writes once with +I, then per geometry: +I (after OUTP ON),
+        # then -I, then back to +I -> at least 4 geometries x 3 = 12 writes
+        # plus the initial setup. Just sanity-check that BOTH polarities
+        # appear and that there are matched flips.
+        polarities = []
+        for c in sour_curr_writes:
+            # Parse the trailing value
+            try:
+                val = float(c.split()[-1])
+                polarities.append(1 if val > 0 else -1 if val < 0 else 0)
+            except ValueError:
+                continue
+        assert 1 in polarities and -1 in polarities, (
+            "vdP must source both +I and -I; got "
+            f"{set(polarities)} from {len(sour_curr_writes)} writes"
+        )
+        # There should be at least 4 sign flips (one per geometry).
+        flips = sum(1 for a, b in zip(polarities, polarities[1:]) if a != b)
+        assert flips >= 4, f"expected >=4 polarity flips, got {flips}"
+
+    def test_output_off_between_geometries(self, qapp, fake_rm, tmp_path):
+        # Output should be disabled after each geometry so the user can
+        # safely reconnect leads.
+        worker = VdpMeasurementWorker("sample", "alice", _vdp_settings(tmp_path))
+        _drive_vdp_worker(qapp, worker)
+        cmds = [c for op, c in fake_rm.opened[0].command_log if op == "write"]
+        # Count :OUTP OFF after first :OUTP ON (i.e. during run, not just
+        # final cleanup). We expect >= 4 OFFs for the 4 geometries.
+        outp_off_count = sum(1 for c in cmds if c == ":OUTP OFF")
+        outp_on_count = sum(1 for c in cmds if c == ":OUTP ON")
+        assert outp_on_count >= 4, f"expected >=4 :OUTP ON, got {outp_on_count}"
+        assert outp_off_count >= 4, f"expected >=4 :OUTP OFF, got {outp_off_count}"
+
+    def test_voltage_compliance_set_to_configured_value(self, qapp, fake_rm, tmp_path):
+        settings = _vdp_settings(tmp_path)
+        settings["measurement"]["vdp_voltage_compliance"] = 3.5
+        worker = VdpMeasurementWorker("sample", "alice", settings)
+        _drive_vdp_worker(qapp, worker)
+        cmds = [c for op, c in fake_rm.opened[0].command_log if op == "write"]
+        assert ":SENS:VOLT:PROT 3.5" in cmds
+
+
+class TestVdpStop:
+    """User can abort a vdP run mid-sequence."""
+
+    def test_stop_during_wait_terminates_cleanly(self, qapp, fake_rm, tmp_path):
+        # Don't auto-proceed: let the worker block in the first geometry,
+        # then call stop_measurement.
+        worker = VdpMeasurementWorker("sample", "alice", _vdp_settings(tmp_path))
+        ready = []
+        worker.geometry_ready.connect(lambda i, g: ready.append(i))
+        worker.start()
+        # Wait until the worker has emitted the first ready signal.
+        deadline = time.time() + 5.0
+        while not ready and time.time() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert ready, "worker never emitted geometry_ready"
+        worker.stop_measurement()
+        deadline = time.time() + 3.0
+        while worker.isRunning() and time.time() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert not worker.isRunning()
