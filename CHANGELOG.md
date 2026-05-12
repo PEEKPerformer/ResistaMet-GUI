@@ -5,6 +5,11 @@ All notable changes to ResistaMet-GUI are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-05-12
+
+### Changed
+- Pressing **Start** without a sample name now opens an inline text-input prompt instead of a "Please enter a sample name" warning dialog. Enter the name in the prompt and the run continues; the top-bar sample field is also populated so it stays visible for the rest of the session. Applies to all five measurement tabs.
+
 ## [1.8.0] - 2026-05-12
 
 ### Added

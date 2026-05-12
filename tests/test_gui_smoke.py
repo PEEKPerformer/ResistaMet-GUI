@@ -336,6 +336,46 @@ class TestUIInteractions:
         for mode in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             main_window.update_canvas_labels_for_mode(mode)
 
+    def test_require_sample_name_returns_existing(self, main_window):
+        """If the sample field is populated, no prompt is shown."""
+        main_window.sample_input.setText("preset_sample")
+        # Should NOT call QInputDialog (would hang in a non-interactive test
+        # if it did); just returns the existing value.
+        assert main_window._require_sample_name() == "preset_sample"
+
+    def test_require_sample_name_prompts_when_empty(self, main_window, monkeypatch):
+        """Empty field -> inline QInputDialog; accepted text populates the field."""
+        from PyQt5.QtWidgets import QInputDialog
+        main_window.sample_input.setText("")
+        monkeypatch.setattr(
+            QInputDialog, "getText",
+            classmethod(lambda cls, *a, **k: ("entered_via_prompt", True))
+        )
+        assert main_window._require_sample_name() == "entered_via_prompt"
+        # The top-bar field is populated so the value stays visible.
+        assert main_window.sample_input.text() == "entered_via_prompt"
+
+    def test_require_sample_name_returns_none_on_cancel(self, main_window, monkeypatch):
+        """User cancels the prompt -> helper returns None and field stays empty."""
+        from PyQt5.QtWidgets import QInputDialog
+        main_window.sample_input.setText("")
+        monkeypatch.setattr(
+            QInputDialog, "getText",
+            classmethod(lambda cls, *a, **k: ("", False))
+        )
+        assert main_window._require_sample_name() is None
+        assert main_window.sample_input.text() == ""
+
+    def test_require_sample_name_rejects_whitespace_only(self, main_window, monkeypatch):
+        """Prompt accepted with whitespace-only text -> still treated as missing."""
+        from PyQt5.QtWidgets import QInputDialog
+        main_window.sample_input.setText("")
+        monkeypatch.setattr(
+            QInputDialog, "getText",
+            classmethod(lambda cls, *a, **k: ("   ", True))
+        )
+        assert main_window._require_sample_name() is None
+
     def test_vdp_tab_is_sixth(self, main_window):
         """Van der Pauw is added as the 6th measurement tab (index 5).
 

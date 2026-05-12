@@ -1146,10 +1146,8 @@ class ResistanceMeterApp(QMainWindow):
         if not self.current_user:
             QMessageBox.warning(self, "No User Selected", "Please select or create a user first.")
             return
-        sample_name = self.sample_input.text().strip()
+        sample_name = self._require_sample_name()
         if not sample_name:
-            self.sample_input.setFocus()
-            QMessageBox.warning(self, "Sample Name Required", "Please enter a sample name.")
             return
 
         try:
@@ -1837,6 +1835,32 @@ class ResistanceMeterApp(QMainWindow):
         m_cfg['gpib_address'] = self.user_settings['measurement']['gpib_address']
         return effective_settings
 
+    def _require_sample_name(self) -> Optional[str]:
+        """Return the trimmed sample name, prompting inline if empty.
+
+        Returns the name on success, or None if the user cancelled or
+        provided no text. On success the sample_input field is populated
+        so the value is visible from the top bar for the rest of the run.
+        """
+        sample_name = self.sample_input.text().strip()
+        if sample_name:
+            return sample_name
+        self.sample_input.setFocus()
+        name, ok = QInputDialog.getText(
+            self,
+            "Sample Name",
+            "Enter a sample name for this measurement:",
+            QLineEdit.Normal,
+            "",
+        )
+        if not ok:
+            return None
+        name = name.strip()
+        if not name:
+            return None
+        self.sample_input.setText(name)
+        return name
+
     def start_measurement(self, mode: str):
         if self.measurement_running:
             QMessageBox.warning(self, "Measurement Active", f"A measurement ({self.active_mode}) is already running. Please stop it first.")
@@ -1844,9 +1868,8 @@ class ResistanceMeterApp(QMainWindow):
         if not self.current_user:
             QMessageBox.warning(self, "No User Selected", "Please select or create a user first.")
             return
-        sample_name = self.sample_input.text().strip()
+        sample_name = self._require_sample_name()
         if not sample_name:
-            self.sample_input.setFocus(); QMessageBox.warning(self, "Sample Name Required", "Please enter a sample name.")
             return
         widget = self.get_widget_for_mode(mode)
         if not widget:
