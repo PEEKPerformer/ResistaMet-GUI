@@ -48,6 +48,13 @@ DEFAULT_SETTINGS = {
         "fpp_k_factor": 4.532,              # geometric coefficient replacing 4.532 when needed
         "fpp_samples": 0,                  # number of samples to take (0 = continuous)
         "fpp_model": "thin_film",             # one of: thin_film, semi_infinite, finite_thin, finite_alpha
+        # F84-aligned correction factor inputs. Defaults reproduce legacy behavior
+        # (infinite-diameter circle, no temperature correction) so existing config
+        # files keep producing the same numbers.
+        "fpp_diameter_cm": 0.0,               # specimen diameter D, cm. 0 = treat as infinite (F2 = 4.5324)
+        "fpp_geometry": "circle",             # one of: circle, square, rectangle_2, rectangle_3, rectangle_4
+        "fpp_temperature_c": float('nan'),    # measurement temperature, °C. NaN = no temperature correction
+        "fpp_dopant_type": "none",            # 'n', 'p', or 'none' (none = skip F_T even if temperature is set)
         "fpp_delta_mode": False,              # current reversal (delta) mode — alternates +I/-I to cancel thermoelectric EMF
         "fpp_delta_settling": 0.1,            # settling time (s) between polarity flips in delta mode
         # 4PP probe safety. Defaults sized for the Signatone SP4 series:

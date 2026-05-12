@@ -278,7 +278,13 @@ class MeasurementWorker(QThread):
                     voltage_compliance = measurement_settings.get('fpp_voltage_compliance')
                     auto_range_volt = measurement_settings.get('fpp_voltage_range_auto')
 
-                    self.keithley.write(":SYST:RSEN OFF")
+                    # 4-wire (remote sense) is REQUIRED for a real 4-point probe measurement.
+                    # The probe head wires outer tips to Force HI/LO and inner tips to Sense
+                    # HI/LO (Signatone S-302 manual, page 6). With RSEN OFF the voltmeter
+                    # routes back to the Force terminals, measuring across the current-
+                    # carrying outer pair — i.e. a 2-wire measurement that includes contact
+                    # and spreading resistance.
+                    self.keithley.write(":SYST:RSEN ON")
                     self.keithley.write(":SENS:FUNC 'VOLT:DC'")
                     self.keithley.write(":SOUR:FUNC CURR")
                     self.keithley.write(f":SOUR:CURR:RANG {abs(source_current)}")
@@ -410,7 +416,7 @@ class MeasurementWorker(QThread):
                 self.filename = str(base_path.with_suffix('.json'))  # Primary is JSON
 
                 # Get column configuration for this mode
-                columns, units = get_column_config(self.mode)
+                columns, units = get_column_config(self.mode, measurement_settings)
 
                 # Build metadata
                 export_metadata = build_metadata(
@@ -747,8 +753,27 @@ class MeasurementWorker(QThread):
                     elif self.mode == 'four_point':
                         v = data_dict.get('voltage', float('nan'))
                         i = data_dict.get('current', float('nan'))
-                        # Use calculations module for 4PP. When in compliance the
-                        # derived values are bounds, not measurements.
+
+                        # Decide F84-decomposed path vs legacy K*alpha path.
+                        # F84 is selected if the user supplied any F84-only
+                        # input (finite D, non-circle geometry, or a T+dopant
+                        # combo). Defaults keep the legacy path active so
+                        # existing config.json users see identical numbers.
+                        diameter_cm = float(measurement_settings.get('fpp_diameter_cm') or 0.0)
+                        geometry = str(measurement_settings.get('fpp_geometry') or 'circle')
+                        temp_raw = measurement_settings.get('fpp_temperature_c')
+                        try:
+                            temp_c_val: Optional[float] = float(temp_raw)
+                            if not np.isfinite(temp_c_val):
+                                temp_c_val = None
+                        except (TypeError, ValueError):
+                            temp_c_val = None
+                        dopant = str(measurement_settings.get('fpp_dopant_type') or 'none').lower()
+                        use_f84 = (diameter_cm > 0
+                                   or geometry != 'circle'
+                                   or (temp_c_val is not None and dopant in ('n', 'p')))
+
+                        # Common kwargs for the legacy path.
                         fpp_kwargs = dict(
                             spacing_cm=float(measurement_settings.get('fpp_spacing_cm') or 0.1016),
                             thickness_um=float(measurement_settings.get('fpp_thickness_um') or 0.0),
@@ -756,25 +781,82 @@ class MeasurementWorker(QThread):
                             alpha=float(measurement_settings.get('fpp_alpha') or 1.0),
                             model=str(measurement_settings.get('fpp_model') or 'thin_film'),
                         )
-                        if compliance_status != 'OK':
-                            from .calculations import calculate_four_point_probe_bound
-                            result = calculate_four_point_probe_bound(
-                                v_compliance=float(measurement_settings.get('fpp_voltage_compliance') or 5.0),
-                                measured_current=i,
-                                source_current=float(measurement_settings.get('fpp_current') or 1e-3),
-                                **fpp_kwargs,
+
+                        if use_f84:
+                            # F84 path: F2·w·F(w/S)·F_sp [·F_T].
+                            from .calculations import (
+                                calculate_four_point_probe_f84, calculate_conductivity,
+                                calculate_ratio, estimate_current_floor,
                             )
+                            spacing_cm = fpp_kwargs['spacing_cm']
+                            thickness_um = fpp_kwargs['thickness_um']
+                            thickness_cm = thickness_um * 1e-4
+                            v_for_calc = v
+                            i_for_calc = i
+                            ratio_for_calc = calculate_ratio(v, i)
+                            if compliance_status != 'OK':
+                                src_i = float(measurement_settings.get('fpp_current') or 1e-3)
+                                v_comp = float(measurement_settings.get('fpp_voltage_compliance') or 5.0)
+                                i_floor = estimate_current_floor(src_i)
+                                i_eff = max(abs(i), i_floor) if np.isfinite(i) else i_floor
+                                ratio_for_calc = abs(v_comp) / i_eff if i_eff > 0 else float('nan')
+                                v_for_calc = abs(v_comp)
+                                i_for_calc = i_eff
+                            f84 = calculate_four_point_probe_f84(
+                                voltage=v_for_calc, current=i_for_calc,
+                                spacing_cm=spacing_cm, thickness_um=thickness_um,
+                                diameter_cm=diameter_cm if diameter_cm > 0 else None,
+                                geometry=geometry,
+                                temperature_c=temp_c_val,
+                                dopant_type=dopant if dopant in ('n', 'p') else None,
+                            )
+                            rs_val = (
+                                f84.rho_T / thickness_cm
+                                if (thickness_cm > 0 and np.isfinite(f84.rho_T))
+                                else float('nan')
+                            )
+                            # Use rho_23 when available; otherwise rho_T.
+                            rho_report = f84.rho_23 if f84.rho_23 is not None else f84.rho_T
+                            sigma = calculate_conductivity(rho_report)
+                            row_data = [
+                                elapsed_time, v, i,
+                                ratio_for_calc, rs_val,
+                                rho_report, sigma,
+                                compliance_status, event_marker
+                            ]
                         else:
-                            from .calculations import calculate_four_point_probe
-                            result = calculate_four_point_probe(
-                                voltage=v, current=i, **fpp_kwargs,
+                            # Legacy path: K * alpha * t * (V/I).
+                            if compliance_status != 'OK':
+                                from .calculations import calculate_four_point_probe_bound
+                                result = calculate_four_point_probe_bound(
+                                    v_compliance=float(measurement_settings.get('fpp_voltage_compliance') or 5.0),
+                                    measured_current=i,
+                                    source_current=float(measurement_settings.get('fpp_current') or 1e-3),
+                                    **fpp_kwargs,
+                                )
+                            else:
+                                from .calculations import calculate_four_point_probe
+                                result = calculate_four_point_probe(
+                                    voltage=v, current=i, **fpp_kwargs,
+                                )
+                            row_data = [
+                                elapsed_time, v, i,
+                                result.ratio, result.sheet_resistance,
+                                result.resistivity, result.conductivity,
+                                compliance_status, event_marker
+                            ]
+
+                        # Splice per-polarity columns when delta mode produced
+                        # the reading. Position: just before compliance/event,
+                        # mirroring get_column_config()'s splice.
+                        if use_delta and getattr(self, '_last_delta', None):
+                            ld = self._last_delta
+                            insert_at = len(row_data) - 2  # before compliance, event
+                            row_data = (
+                                row_data[:insert_at]
+                                + [ld['v_plus'], ld['v_minus'], ld['r_f'], ld['r_r']]
+                                + row_data[insert_at:]
                             )
-                        row_data = [
-                            elapsed_time, v, i,
-                            result.ratio, result.sheet_resistance,
-                            result.resistivity, result.conductivity,
-                            compliance_status, event_marker
-                        ]
                     else:
                         # source_v or source_i
                         v = data_dict.get('voltage', float('nan'))
@@ -1004,6 +1086,10 @@ class MeasurementWorker(QThread):
         Takes two readings at +I and -I, computes V_delta = (V+ - V-) / 2
         to cancel thermoelectric EMF. Returns a synthetic reading string
         in the same format as a normal :READ? response (VOLT,CURR,STAT).
+
+        Side effect: stashes the raw V+, V- and the derived R_f, R_r on
+        self._last_delta so the main loop can log per-polarity values per
+        F84 §13.1 (forward/reverse resistances kept separate).
         """
         i_mag = abs(self._fpp_source_current)
         settling = self._fpp_delta_settling
@@ -1029,6 +1115,19 @@ class MeasurementWorker(QThread):
 
         # Delta calculation: V_delta = (V+ - V-) / 2
         v_delta = (v_plus - v_minus) / 2.0
+        # Per-polarity resistances per F84 §13.1. R_r negates I and V_minus
+        # so a symmetric DUT gives R_f ≈ R_r > 0; thermal offset shows up
+        # as a difference between them.
+        try:
+            r_f = v_plus / i_mag if i_mag != 0 else float('nan')
+            r_r = (-v_minus) / i_mag if i_mag != 0 else float('nan')
+        except Exception:
+            r_f = float('nan')
+            r_r = float('nan')
+        self._last_delta = {
+            'v_plus': v_plus, 'v_minus': v_minus,
+            'r_f': r_f, 'r_r': r_r,
+        }
         # Compliance: OR of both readings
         stat_combined = stat_plus | stat_minus
 

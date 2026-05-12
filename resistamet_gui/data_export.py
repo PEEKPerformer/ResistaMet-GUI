@@ -308,11 +308,14 @@ class DualExporter:
         return list(directory.glob('**/*.json.tmp'))
 
 
-def get_column_config(mode: str) -> tuple:
+def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] = None) -> tuple:
     """Get column names and units for a measurement mode.
 
     Args:
         mode: Measurement mode ('resistance', 'source_v', 'source_i', 'four_point')
+        measurement_settings: Optional settings dict. When provided and 4PP
+            delta mode is enabled, the column list expands to include the
+            per-polarity values V+, V-, R_f, R_r (F84 §11.2.2.2 diagnostic).
 
     Returns:
         Tuple of (columns, units)
@@ -339,7 +342,21 @@ def get_column_config(mode: str) -> tuple:
             ['', 'V', 'A', '']
         ),
     }
-    return configs.get(mode, (['elapsed_s', 'value'], ['s', '']))
+    cols, units = configs.get(mode, (['elapsed_s', 'value'], ['s', '']))
+
+    # In 4PP delta mode, splice per-polarity columns before compliance/event.
+    # The data points themselves are V_delta in the V column; V+ and V-
+    # are the raw forward/reverse readings, and R_f, R_r are the per-polarity
+    # resistances that F84 §13.1 wants kept separate.
+    if mode == 'four_point' and measurement_settings is not None:
+        if measurement_settings.get('fpp_delta_mode'):
+            cols = list(cols)
+            units = list(units)
+            insert_at = cols.index('compliance')
+            cols[insert_at:insert_at] = ['V_plus', 'V_minus', 'R_f', 'R_r']
+            units[insert_at:insert_at] = ['V', 'V', 'Ω', 'Ω']
+
+    return (cols, units)
 
 
 def build_metadata(

@@ -597,3 +597,228 @@ class TestOutputIntegrity:
         assert len(data_lines) >= len(spies.data_point), (
             f"CSV ({len(data_lines)} rows) lost data vs signals ({len(spies.data_point)})"
         )
+
+
+# ============================================================================
+# SCPI-contract tests
+# ----------------------------------------------------------------------------
+# These pin down the SCPI commands each mode MUST send to the instrument during
+# setup. They are paranoid by design: silent inversions (RSEN OFF when ON is
+# required, source/measure swapped, compliance never set, etc.) are exactly
+# the kind of bug that produces plausible-looking-but-wrong data.
+#
+# The fake Keithley records every write() in command_log. We capture the
+# sequence between start-of-setup and first :READ?, and assert membership of
+# critical commands by exact-match — not by substring, since SCPI argument
+# values change between runs.
+# ============================================================================
+
+def _setup_writes(fake) -> list[str]:
+    """All write()s issued before the first :READ?, in order."""
+    out = []
+    for op, cmd in fake.command_log:
+        if op == "query" and cmd.strip().endswith(":READ?"):
+            break
+        if op == "write":
+            out.append(cmd)
+    return out
+
+
+class TestSCPIContract:
+    """Each mode's setup SCPI sequence must match the documented contract.
+
+    Why this class exists: in 2026-05 we discovered four_point mode shipped
+    `:SYST:RSEN OFF` for over a year, silently converting every 4-point probe
+    measurement into a 2-wire measurement across the outer (current-carrying)
+    pair. The test infrastructure to catch this already existed — only the
+    assertion was missing. Don't let it happen again.
+    """
+
+    def test_resistance_2wire_sends_rsen_off(self, qapp, fake_rm, tmp_path):
+        settings = _resistance_settings(tmp_path)
+        settings["measurement"]["res_measurement_type"] = "2-wire"
+        worker = MeasurementWorker("resistance", "sample", "alice", settings)
+        _drive_worker(qapp, worker, stop_after_n_points=1)
+        cmds = _setup_writes(fake_rm.opened[0])
+        assert ":SYST:RSEN OFF" in cmds
+        assert ":SYST:RSEN ON" not in cmds
+
+    def test_resistance_4wire_sends_rsen_on(self, qapp, fake_rm, tmp_path):
+        settings = _resistance_settings(tmp_path)
+        settings["measurement"]["res_measurement_type"] = "4-wire"
+        worker = MeasurementWorker("resistance", "sample", "alice", settings)
+        _drive_worker(qapp, worker, stop_after_n_points=1)
+        cmds = _setup_writes(fake_rm.opened[0])
+        assert ":SYST:RSEN ON" in cmds
+        assert ":SYST:RSEN OFF" not in cmds
+
+    def test_source_v_sends_rsen_off(self, qapp, fake_rm, tmp_path):
+        # Source-V on a 2-wire DUT must not leave Sense floating.
+        settings = _source_v_settings(tmp_path)
+        worker = MeasurementWorker("source_v", "sample", "alice", settings)
+        _drive_worker(qapp, worker, stop_after_n_points=1)
+        cmds = _setup_writes(fake_rm.opened[0])
+        assert ":SYST:RSEN OFF" in cmds
+
+    def test_source_i_sends_rsen_off(self, qapp, fake_rm, tmp_path):
+        # See project_keithley_scpi_bugs note: source_i had RSEN hard-coded
+        # ON in v1.3 and earlier, causing floating sense leads on 2-wire DUTs.
+        settings = _source_i_settings(tmp_path)
+        worker = MeasurementWorker("source_i", "sample", "alice", settings)
+        _drive_worker(qapp, worker, stop_after_n_points=1)
+        cmds = _setup_writes(fake_rm.opened[0])
+        assert ":SYST:RSEN OFF" in cmds
+
+    def test_four_point_sends_rsen_on(self, qapp, fake_rm, tmp_path):
+        """4PP REQUIRES 4-wire mode. The S-302 probe head wires outer tips to
+        Force HI/LO and inner tips to Sense HI/LO; RSEN OFF would route V to
+        the Force terminals and silently produce a 2-wire reading across the
+        current-carrying pair. This is the regression that prompted the
+        SCPIContract test class — see Signatone S-302 manual page 6.
+        """
+        settings = _four_point_settings(tmp_path, samples=1)
+        worker = MeasurementWorker("four_point", "sample", "alice", settings)
+        _drive_worker(qapp, worker, timeout_s=10.0)
+        cmds = _setup_writes(fake_rm.opened[0])
+        assert ":SYST:RSEN ON" in cmds, (
+            "4PP setup MUST send :SYST:RSEN ON to enable 4-wire sensing. "
+            f"Setup writes were: {cmds}"
+        )
+        assert ":SYST:RSEN OFF" not in cmds, (
+            "4PP must not turn remote sense off. "
+            f"Setup writes were: {cmds}"
+        )
+
+    def test_four_point_sources_current_measures_voltage(self, qapp, fake_rm, tmp_path):
+        # Inverting source/measure functions is another silent failure mode.
+        settings = _four_point_settings(tmp_path, samples=1)
+        worker = MeasurementWorker("four_point", "sample", "alice", settings)
+        _drive_worker(qapp, worker, timeout_s=10.0)
+        cmds = _setup_writes(fake_rm.opened[0])
+        assert ":SOUR:FUNC CURR" in cmds
+        assert ":SENS:FUNC 'VOLT:DC'" in cmds
+        # Must not source voltage in 4PP mode.
+        assert ":SOUR:FUNC VOLT" not in cmds
+
+    def test_four_point_sets_voltage_compliance(self, qapp, fake_rm, tmp_path):
+        # Compliance must be programmed; missing :SENS:VOLT:PROT would leave
+        # the previous run's compliance in effect.
+        settings = _four_point_settings(tmp_path, samples=1)
+        worker = MeasurementWorker("four_point", "sample", "alice", settings)
+        _drive_worker(qapp, worker, timeout_s=10.0)
+        cmds = _setup_writes(fake_rm.opened[0])
+        assert any(c.startswith(":SENS:VOLT:PROT") for c in cmds), (
+            f"4PP setup must set voltage compliance. Writes: {cmds}"
+        )
+
+    def test_four_point_form_elem_includes_status(self, qapp, fake_rm, tmp_path):
+        # Compliance detection (STAT bit 3) requires STAT in FORM:ELEM.
+        # Dropping it would silently disable hardware compliance detection.
+        settings = _four_point_settings(tmp_path, samples=1)
+        worker = MeasurementWorker("four_point", "sample", "alice", settings)
+        _drive_worker(qapp, worker, timeout_s=10.0)
+        cmds = _setup_writes(fake_rm.opened[0])
+        form_elem = [c for c in cmds if c.startswith(":FORM:ELEM")]
+        assert form_elem, f"no :FORM:ELEM write in 4PP setup: {cmds}"
+        assert "STAT" in form_elem[-1], (
+            f":FORM:ELEM in 4PP must include STAT: {form_elem[-1]}"
+        )
+
+
+class TestFourPointF84Path:
+    """Exercise the F84 calculation branch end-to-end through the worker."""
+
+    def test_legacy_path_when_defaults(self, qapp, fake_rm, tmp_path):
+        # All F84-only inputs at defaults → legacy path. Should produce
+        # the same numbers as before this refactor.
+        settings = _four_point_settings(tmp_path, samples=2)
+        worker = MeasurementWorker("four_point", "legacy", "alice", settings)
+        spies = _drive_worker(qapp, worker, timeout_s=10.0)
+        assert spies.error_occurred == []
+        assert len(spies.data_point) == 2
+
+    def test_f84_path_with_diameter(self, qapp, fake_rm, tmp_path):
+        # Setting a finite diameter should trigger F84 path and produce a
+        # smaller geometric factor (F2 < 4.5324 at finite D).
+        settings = _four_point_settings(tmp_path, samples=2)
+        settings["measurement"]["fpp_diameter_cm"] = 1.0  # D=1cm, S/D=0.1016
+        settings["measurement"]["fpp_thickness_um"] = 100.0  # 100 um film
+        worker = MeasurementWorker("four_point", "f84_d", "alice", settings)
+        spies = _drive_worker(qapp, worker, timeout_s=10.0)
+        assert spies.error_occurred == []
+        assert len(spies.data_point) == 2
+
+    def test_f84_path_with_geometry_square(self, qapp, fake_rm, tmp_path):
+        settings = _four_point_settings(tmp_path, samples=2)
+        settings["measurement"]["fpp_geometry"] = "square"
+        settings["measurement"]["fpp_diameter_cm"] = 2.0
+        settings["measurement"]["fpp_thickness_um"] = 100.0
+        worker = MeasurementWorker("four_point", "f84_sq", "alice", settings)
+        spies = _drive_worker(qapp, worker, timeout_s=10.0)
+        assert spies.error_occurred == []
+        assert len(spies.data_point) == 2
+
+    def test_f84_path_with_temperature_correction(self, qapp, fake_rm, tmp_path):
+        # T + dopant should activate F_T branch and produce finite numbers.
+        settings = _four_point_settings(tmp_path, samples=2)
+        settings["measurement"]["fpp_diameter_cm"] = 1.0
+        settings["measurement"]["fpp_thickness_um"] = 100.0
+        settings["measurement"]["fpp_temperature_c"] = 25.0
+        settings["measurement"]["fpp_dopant_type"] = "n"
+        worker = MeasurementWorker("four_point", "f84_t", "alice", settings)
+        spies = _drive_worker(qapp, worker, timeout_s=10.0)
+        assert spies.error_occurred == []
+        assert len(spies.data_point) == 2
+
+
+class TestFourPointDeltaPerPolarity:
+    """Verify V+, V-, R_f, R_r columns appear in delta-mode output."""
+
+    def test_csv_header_includes_per_polarity_when_delta(self, qapp, fake_rm, tmp_path):
+        settings = _four_point_settings(tmp_path, samples=2, delta_mode=True)
+        worker = MeasurementWorker("four_point", "delta", "alice", settings)
+        _drive_worker(qapp, worker, timeout_s=10.0)
+        csv_files = list((tmp_path / "data").rglob("*.csv"))
+        assert csv_files
+        header = next(
+            (l for l in csv_files[0].read_text().splitlines()
+             if not l.startswith("#") and l.strip()),
+            "",
+        )
+        assert "V_plus" in header
+        assert "V_minus" in header
+        assert "R_f" in header
+        assert "R_r" in header
+
+    def test_csv_header_excludes_per_polarity_when_no_delta(self, qapp, fake_rm, tmp_path):
+        settings = _four_point_settings(tmp_path, samples=2, delta_mode=False)
+        worker = MeasurementWorker("four_point", "nodelta", "alice", settings)
+        _drive_worker(qapp, worker, timeout_s=10.0)
+        csv_files = list((tmp_path / "data").rglob("*.csv"))
+        assert csv_files
+        header = next(
+            (l for l in csv_files[0].read_text().splitlines()
+             if not l.startswith("#") and l.strip()),
+            "",
+        )
+        # No per-polarity pollution in non-delta runs
+        assert "V_plus" not in header
+        assert "R_f" not in header
+
+    def test_csv_row_width_matches_delta_header(self, qapp, fake_rm, tmp_path):
+        settings = _four_point_settings(tmp_path, samples=2, delta_mode=True)
+        worker = MeasurementWorker("four_point", "delta_row", "alice", settings)
+        _drive_worker(qapp, worker, timeout_s=10.0)
+        csv_files = list((tmp_path / "data").rglob("*.csv"))
+        assert csv_files
+        non_comment_lines = [
+            l for l in csv_files[0].read_text().splitlines()
+            if not l.startswith("#") and l.strip()
+        ]
+        # Header + at least one data row, all same column count
+        assert len(non_comment_lines) >= 2
+        header_cols = non_comment_lines[0].count(',') + 1
+        for row in non_comment_lines[1:]:
+            assert row.count(',') + 1 == header_cols, (
+                f"row width mismatch: header={header_cols}, row={row!r}"
+            )

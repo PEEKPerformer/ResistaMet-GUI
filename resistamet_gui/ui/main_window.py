@@ -504,6 +504,30 @@ class ResistanceMeterApp(QMainWindow):
             "Thickness t", main_container.fpp_thickness_um,
         ))
 
+        # Sample geometry and lateral size — drive the F84 / Smits geometry
+        # correction factor. Leaving Diameter D = 0 treats the sample as
+        # effectively infinite (the legacy default).
+        main_container.fpp_diameter_cm = QDoubleSpinBox(decimals=4, minimum=0.0, maximum=100.0, singleStep=0.1, suffix=" cm")
+        main_container.fpp_diameter_cm.setToolTip(
+            "Sample lateral size D (diameter for circles, width for rectangles).\n"
+            "Set to 0 to treat as infinite (no finite-size correction).\n"
+            "Used with Geometry to look up F2 from ASTM F84 Table 3 (circles)\n"
+            "or the Smits 1958 table (squares / rectangles)."
+        )
+        main_container.fpp_geometry = QComboBox()
+        main_container.fpp_geometry.addItems(["circle", "square", "rectangle_2", "rectangle_3", "rectangle_4"])
+        main_container.fpp_geometry.setToolTip(
+            "Sample shape for the geometric correction factor.\n"
+            "• circle: wafers / discs — F84 Table 3\n"
+            "• square: square cuts\n"
+            "• rectangle_2/3/4: rectangles with L/W = 2, 3, 4\n"
+            "For rectangles, enter the WIDTH as Diameter D."
+        )
+        layout.addRow(*self._form_pair(
+            "Diameter D (0=∞)", main_container.fpp_diameter_cm,
+            "Geometry", main_container.fpp_geometry,
+        ))
+
         main_container.fpp_alpha = QDoubleSpinBox(decimals=4, minimum=0.0, maximum=10.0, singleStep=0.01)
         main_container.fpp_alpha.setToolTip("Finite sample size correction factor.\nAccounts for edge effects when the sample is not much\nlarger than the probe spacing. Default: 1.0 (no correction).")
         main_container.fpp_k_factor = QDoubleSpinBox(decimals=4, minimum=0.1, maximum=50.0, singleStep=0.001)
@@ -541,6 +565,28 @@ class ResistanceMeterApp(QMainWindow):
         adv_form.addRow("Auto Range Voltage:", main_container.fpp_voltage_range_auto)
         adv_form.addRow("Correction Factor α:", main_container.fpp_alpha)
         adv_form.addRow("K Factor:", main_container.fpp_k_factor)
+
+        # Temperature correction (F84 §13.6–13.8, Table 5 / Appendix X2).
+        # Only applied if dopant_type is 'n' or 'p'. NaN temperature also
+        # short-circuits the correction. Silicon-specific; keep off for
+        # non-Si materials.
+        main_container.fpp_temperature_c = QDoubleSpinBox(decimals=2, minimum=-50.0, maximum=200.0, singleStep=0.5, suffix=" °C")
+        main_container.fpp_temperature_c.setSpecialValueText("not measured")
+        main_container.fpp_temperature_c.setValue(-50.0)  # special-value sentinel
+        main_container.fpp_temperature_c.setToolTip(
+            "Measurement temperature (°C). Leave at 'not measured' to skip\n"
+            "the temperature correction. When set with a dopant, the reported\n"
+            "ρ is corrected to 23 °C per F84 §13.6–13.8."
+        )
+        main_container.fpp_dopant_type = QComboBox()
+        main_container.fpp_dopant_type.addItems(["none", "n", "p"])
+        main_container.fpp_dopant_type.setToolTip(
+            "Silicon dopant type for the temperature coefficient C_T\n"
+            "lookup (F84 Table 5). Use 'none' for non-Si materials —\n"
+            "no temperature correction will be applied."
+        )
+        adv_form.addRow("Temperature T:", main_container.fpp_temperature_c)
+        adv_form.addRow("Dopant Type:", main_container.fpp_dopant_type)
         main_container.nplc = NoScrollSpinBox(decimals=2, minimum=0.01, maximum=10.0, singleStep=0.1)
         main_container.nplc.setToolTip("Number of Power Line Cycles for integration.\nHigher = slower but less noise. 1 PLC = 16.7 ms at 60 Hz.\n0.01: fastest, noisy | 1: balanced | 10: highest precision")
         adv_form.addRow("NPLC:", main_container.nplc)
@@ -1180,6 +1226,16 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_four_point.fpp_model.setCurrentText(m_cfg.get('fpp_model', 'thin_film'))
         self.tab_four_point.fpp_k_factor.setValue(m_cfg.get('fpp_k_factor', 4.532))
         self.tab_four_point.fpp_samples.setValue(int(m_cfg.get('fpp_samples', 0)))
+        # F84 correction-factor inputs (added 2026-05). Defaults preserve
+        # legacy behavior: D=0 (infinite), geometry=circle, no T correction.
+        self.tab_four_point.fpp_diameter_cm.setValue(float(m_cfg.get('fpp_diameter_cm', 0.0)))
+        self.tab_four_point.fpp_geometry.setCurrentText(m_cfg.get('fpp_geometry', 'circle'))
+        t_c = m_cfg.get('fpp_temperature_c', float('nan'))
+        if t_c is None or not (isinstance(t_c, (int, float)) and t_c == t_c):  # NaN check
+            self.tab_four_point.fpp_temperature_c.setValue(-50.0)  # "not measured"
+        else:
+            self.tab_four_point.fpp_temperature_c.setValue(float(t_c))
+        self.tab_four_point.fpp_dopant_type.setCurrentText(m_cfg.get('fpp_dopant_type', 'none'))
         if hasattr(self.tab_four_point, 'fpp_power_warn_w'):
             self.tab_four_point.fpp_power_warn_w.setValue(float(m_cfg.get('fpp_power_warn_w', 1.0e-2)))
         if hasattr(self.tab_four_point, 'fpp_power_stop_w'):
@@ -1269,6 +1325,18 @@ class ResistanceMeterApp(QMainWindow):
                 m_cfg['fpp_model'] = widget.fpp_model.currentText()
                 m_cfg['fpp_k_factor'] = widget.fpp_k_factor.value()
                 m_cfg['fpp_samples'] = int(widget.fpp_samples.value())
+                # F84 correction-factor inputs. The temperature SpinBox uses
+                # its specialValueText ('not measured') at the minimum value
+                # (-50 C) as a sentinel; we map that to NaN downstream.
+                if hasattr(widget, 'fpp_diameter_cm'):
+                    m_cfg['fpp_diameter_cm'] = float(widget.fpp_diameter_cm.value())
+                if hasattr(widget, 'fpp_geometry'):
+                    m_cfg['fpp_geometry'] = widget.fpp_geometry.currentText()
+                if hasattr(widget, 'fpp_temperature_c'):
+                    t_val = widget.fpp_temperature_c.value()
+                    m_cfg['fpp_temperature_c'] = float('nan') if t_val <= -49.999 else float(t_val)
+                if hasattr(widget, 'fpp_dopant_type'):
+                    m_cfg['fpp_dopant_type'] = widget.fpp_dopant_type.currentText()
                 if hasattr(widget, 'fpp_delta_mode'):
                     m_cfg['fpp_delta_mode'] = widget.fpp_delta_mode.isChecked()
                 if hasattr(widget, 'fpp_delta_settling'):
