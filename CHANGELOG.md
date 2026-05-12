@@ -5,6 +5,15 @@ All notable changes to ResistaMet-GUI are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-05-12
+
+### Added
+- **Van der Pauw measurement mode** per ASTM F76-08 Method A. New 6th tab in the main window. The user wires 4 alligator clips to the corners of a uniform sample (numbered 1–4 counter-clockwise), then the UI walks them through F76's 4 cabling geometries one at a time, automating current reversal at each geometry (+I then −I cancels thermal-EMF offsets per F76 sec. 11.1). After 4 geometries (8 voltage readings) the worker computes ρ_A, ρ_B, ρ_avg, R_s, the asymmetry ratios Q_A/Q_B, the geometric factors f_A/f_B by solving F76 Fig. 5's implicit equation `(Q-1)/(Q+1) = (f/ln2)·arccosh{(1/2)·exp(ln2/f)}` via hand-rolled bisection, and the F76 sec. 11.1 homogeneity gate (rejects samples with |ρ_A−ρ_B|/ρ_avg > 10%).
+- **`resistamet_gui/calculations_vdp.py`** — pure functions: `vdp_geometric_factor(Q)`, `vdp_resistivity_pair`, `calculate_van_der_pauw`, `f76_geometries()` (4 physical cabling configs), `f76_configurations()` (the 8 F76 voltage labels), `VdpResult` / `VdpConfiguration` / `VdpGeometry` NamedTuples. 37 unit tests pin values directly to F76 Section 11.
+- **`VdpMeasurementWorker`** QThread state machine in `workers.py` — emits `geometry_ready` and waits for the UI's `proceed()` slot between geometries so the user can safely reconnect leads; sources +I, settles, reads V, sources −I, reads V at each geometry; output OFF between geometries for safe lead handling. SCPI-contract regression tests guard the wiring (RSEN ON, FORM:ELEM includes VOLT+STAT, ≥4 polarity flips, OUTP OFF between geometries).
+- **CLI bench-test driver** at `tests/hardware/vdp_bench.py` — stdin- and SSH-driveable wrapper around the worker's SCPI sequence with `--geometry N` / `--state-file` / `--finalize` flags for the multi-call workflow. Mirrors the `rsen_diagnostic.py` pattern.
+- **Bench-verified** on a Keithley 2420 with a 100 µm conductive foil and 4 alligator-clip contacts: ρ_A and ρ_B agree to 1.4%, R_s = 5.65 mΩ/sq, F76 sec. 11.1 homogeneity gate passes with 7× headroom.
+
 ## [1.7.0] - 2026-05-12
 
 ### Fixed

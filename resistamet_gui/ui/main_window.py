@@ -18,7 +18,7 @@ from ..config import ConfigManager
 from ..constants import __version__
 from ..workers import MeasurementWorker, VdpMeasurementWorker
 from .canvas import MplCanvas, HistogramCanvas, IVCanvas
-from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, format_engineering
+from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, VdpSampleDiagram, VdpProtocolFilmstrip, VdpPerGeometryBarChart, format_engineering
 from .dialogs import SettingsDialog, UserSelectionDialog
 
 
@@ -996,11 +996,18 @@ class ResistanceMeterApp(QMainWindow):
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Instruction panel
+        # Instruction panel: diagram (left) + text label (right) side-by-side
         instr_group = QGroupBox("Current Configuration")
         instr_layout = QVBoxLayout(instr_group)
-        widget.vdp_step_label = QLabel("Idle. Wire 4 contacts (numbered 1-4 counter-clockwise around the sample periphery) and press Start.")
+        instr_top = QHBoxLayout()
+        widget.vdp_diagram = VdpSampleDiagram()
+        instr_top.addWidget(widget.vdp_diagram, 0)
+        widget.vdp_step_label = QLabel(
+            "Idle. Wire 4 contacts (numbered 1-4 counter-clockwise around the "
+            "sample periphery) and press Start."
+        )
         widget.vdp_step_label.setWordWrap(True)
+        widget.vdp_step_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         f = QFont(); f.setPointSize(11); f.setBold(True)
         widget.vdp_step_label.setFont(f)
         widget.vdp_step_label.setStyleSheet(
@@ -1008,7 +1015,12 @@ class ResistanceMeterApp(QMainWindow):
             "border-radius: 4px; padding: 8px;"
         )
         widget.vdp_step_label.setMinimumHeight(80)
-        instr_layout.addWidget(widget.vdp_step_label)
+        instr_top.addWidget(widget.vdp_step_label, 1)
+        instr_layout.addLayout(instr_top)
+
+        # Protocol filmstrip: all 4 geometries at a glance, current highlighted.
+        widget.vdp_filmstrip = VdpProtocolFilmstrip()
+        instr_layout.addWidget(widget.vdp_filmstrip)
 
         widget.vdp_proceed_button = QPushButton("Measure This Configuration")
         widget.vdp_proceed_button.setEnabled(False)
@@ -1042,21 +1054,53 @@ class ResistanceMeterApp(QMainWindow):
         table_layout.addWidget(widget.vdp_readings_table)
         right_layout.addWidget(table_group, 1)
 
-        # Result panel
-        result_group = QGroupBox("Result (F76 sec. 11.1)")
+        # Result panel: hidden visually until a measurement completes; then
+        # the instruction panel collapses and this expands to fill the
+        # space with the headline numbers + per-geometry bar chart.
+        result_group = QGroupBox("Result (F76 Method A)")
+        widget.vdp_result_group = result_group
         result_layout = QVBoxLayout(result_group)
-        widget.vdp_result_label = QLabel("Run a measurement to see results.")
-        widget.vdp_result_label.setTextFormat(Qt.RichText)
-        widget.vdp_result_label.setStyleSheet("font-family: monospace;")
-        widget.vdp_result_label.setWordWrap(True)
-        result_layout.addWidget(widget.vdp_result_label)
+
+        # Headline numbers (large) -- Rs and rho side-by-side.
+        headline = QHBoxLayout()
+        widget.vdp_rs_label = QLabel("Rs: —")
+        widget.vdp_rho_label = QLabel("ρ: —")
+        big = QFont(); big.setPointSize(16); big.setBold(True)
+        widget.vdp_rs_label.setFont(big)
+        widget.vdp_rho_label.setFont(big)
+        widget.vdp_rs_label.setAlignment(Qt.AlignCenter)
+        widget.vdp_rho_label.setAlignment(Qt.AlignCenter)
+        widget.vdp_rs_label.setTextFormat(Qt.RichText)
+        widget.vdp_rho_label.setTextFormat(Qt.RichText)
+        headline.addWidget(widget.vdp_rs_label, 1)
+        headline.addWidget(widget.vdp_rho_label, 1)
+        result_layout.addLayout(headline)
+
+        # Per-geometry bar chart -- visual homogeneity check.
+        widget.vdp_bar_chart = VdpPerGeometryBarChart()
+        result_layout.addWidget(widget.vdp_bar_chart)
+
+        # Secondary stats (Q, f, asymmetry %).
+        widget.vdp_stats_label = QLabel("")
+        widget.vdp_stats_label.setAlignment(Qt.AlignCenter)
+        widget.vdp_stats_label.setTextFormat(Qt.RichText)
+        sf = QFont(); sf.setPointSize(10)
+        widget.vdp_stats_label.setFont(sf)
+        result_layout.addWidget(widget.vdp_stats_label)
+
+        # Homogeneity verdict banner -- big, color-coded.
         widget.vdp_homogeneity_banner = QLabel("")
         widget.vdp_homogeneity_banner.setAlignment(Qt.AlignCenter)
         bf = QFont(); bf.setPointSize(12); bf.setBold(True)
         widget.vdp_homogeneity_banner.setFont(bf)
-        widget.vdp_homogeneity_banner.setMinimumHeight(32)
+        widget.vdp_homogeneity_banner.setMinimumHeight(36)
         result_layout.addWidget(widget.vdp_homogeneity_banner)
         right_layout.addWidget(result_group)
+        widget.vdp_instr_group = instr_group
+        # Only one of (instructions, result) is ever on screen at a time.
+        # Initial idle state shows the instructions; the result panel
+        # appears only after a measurement completes.
+        result_group.setVisible(False)
 
         # Control row (Start / Stop / Status)
         control_group, start_button, stop_button, _, status_label = (
@@ -1129,10 +1173,20 @@ class ResistanceMeterApp(QMainWindow):
         for r in range(widget.vdp_readings_table.rowCount()):
             widget.vdp_readings_table.item(r, 2).setText("--")
             widget.vdp_readings_table.item(r, 2).setBackground(QBrush(QColor("white")))
-        widget.vdp_result_label.setText("Measuring...")
+        # Reset result panel; instruction panel is brought back into view.
+        widget.vdp_rs_label.setText("Rs: —")
+        widget.vdp_rho_label.setText("ρ: —")
+        widget.vdp_stats_label.setText("")
+        widget.vdp_bar_chart.clear()
         widget.vdp_homogeneity_banner.setText("")
         widget.vdp_homogeneity_banner.setStyleSheet("")
         widget.vdp_step_label.setText("Connecting to instrument...")
+        widget.vdp_diagram.set_configuration(None)
+        widget.vdp_filmstrip.reset()
+        # Swap panels: instructions in, result out. Keeps the right pane
+        # at a single content height so neither panel gets squeezed.
+        widget.vdp_instr_group.setVisible(True)
+        widget.vdp_result_group.setVisible(False)
 
         self.log_status(f"Starting van der Pauw measurement for sample: {sample_name}...")
         self.statusBar().showMessage("Measurement running (vdp)...")
@@ -1183,6 +1237,8 @@ class ResistanceMeterApp(QMainWindow):
             f"Will produce: {geom['label_pos']} (at +I) and {geom['label_neg']} (at &minus;I)."
         )
         widget.vdp_step_label.setTextFormat(Qt.RichText)
+        widget.vdp_diagram.set_configuration(geom)
+        widget.vdp_filmstrip.set_current(idx)
         widget.vdp_proceed_button.setEnabled(True)
         widget.vdp_proceed_button.setText(f"Measure {geom['name']}")
 
@@ -1193,38 +1249,64 @@ class ResistanceMeterApp(QMainWindow):
         widget.vdp_readings_table.item(2 * idx, 2).setBackground(QBrush(QColor("#e8f5e9")))
         widget.vdp_readings_table.item(2 * idx + 1, 2).setText(f"{readings['v_neg']:.6e}")
         widget.vdp_readings_table.item(2 * idx + 1, 2).setBackground(QBrush(QColor("#e8f5e9")))
+        widget.vdp_filmstrip.mark_completed(idx)
 
     def _vdp_on_complete(self, result: Dict):
         widget = self.tab_vdp
-        widget.vdp_step_label.setText(
-            "All 4 geometries measured. Result below."
+
+        # Measurement is done -- swap panels: instructions out, result in.
+        # Only one of the two is ever visible so neither gets squeezed
+        # below its minimum size.
+        widget.vdp_instr_group.setVisible(False)
+        widget.vdp_result_group.setVisible(True)
+
+        # Headline numbers in engineering notation.
+        rs = float(result['sheet_resistance'])
+        rho = float(result['rho_avg'])
+        widget.vdp_rs_label.setText(
+            f"R<sub>s</sub> = {format_engineering(rs, 'Ω/sq', precision=4)}"
         )
-        widget.vdp_step_label.setTextFormat(Qt.PlainText)
-        widget.vdp_result_label.setText(
-            f"<pre>"
-            f"rho_A       = {result['rho_a']:.6g} Ohm.cm\n"
-            f"rho_B       = {result['rho_b']:.6g} Ohm.cm\n"
-            f"rho_avg     = {result['rho_avg']:.6g} Ohm.cm\n"
-            f"R_sheet     = {result['sheet_resistance']:.6g} Ohm/sq\n"
-            f"Q_A / Q_B   = {result['q_a']:.4f}  /  {result['q_b']:.4f}\n"
-            f"f_A / f_B   = {result['f_a']:.4f}  /  {result['f_b']:.4f}\n"
-            f"asymmetry   = {result['asymmetry_pct']:.3f} %"
-            f"</pre>"
+        widget.vdp_rho_label.setText(
+            f"ρ = {format_engineering(rho, 'Ω·cm', precision=4)}"
         )
-        widget.vdp_result_label.setTextFormat(Qt.RichText)
+
+        # Per-geometry resistance bars: each is the current-reversal-derived
+        # R for one F76 geometry. On a uniform sample they should agree.
+        voltages = result['voltages']
+        current = float(result['current_a'])
+        pairs = [
+            ("V_21,34", "V_12,34"),
+            ("V_32,41", "V_23,41"),
+            ("V_43,12", "V_34,12"),
+            ("V_14,23", "V_41,23"),
+        ]
+        r_values = [
+            (voltages[p] - voltages[n]) / (2.0 * current) for p, n in pairs
+        ]
+        widget.vdp_bar_chart.set_data(r_values, ["G1", "G2", "G3", "G4"])
+
+        widget.vdp_stats_label.setText(
+            f"Q<sub>A</sub> = {result['q_a']:.4f}"
+            f" &nbsp;&nbsp; Q<sub>B</sub> = {result['q_b']:.4f}"
+            f" &nbsp;&nbsp;|&nbsp;&nbsp; "
+            f"f<sub>A</sub> = {result['f_a']:.4f}"
+            f" &nbsp;&nbsp; f<sub>B</sub> = {result['f_b']:.4f}"
+            f"<br>asymmetry = {result['asymmetry_pct']:.3f} %"
+        )
+
         if result['homogeneous']:
             widget.vdp_homogeneity_banner.setText(
-                f"HOMOGENEOUS (asymmetry {result['asymmetry_pct']:.2f}% <= 10% gate)"
+                f"HOMOGENEOUS  (asymmetry {result['asymmetry_pct']:.2f}% ≤ 10% F76 gate)"
             )
             widget.vdp_homogeneity_banner.setStyleSheet(
-                "color: white; background: #2e7d32; border-radius: 4px; padding: 4px;"
+                "color: white; background: #2e7d32; border-radius: 4px; padding: 6px;"
             )
         else:
             widget.vdp_homogeneity_banner.setText(
-                f"NON-HOMOGENEOUS (asymmetry {result['asymmetry_pct']:.2f}% > 10% gate)"
+                f"NON-HOMOGENEOUS  (asymmetry {result['asymmetry_pct']:.2f}% > 10% F76 gate)"
             )
             widget.vdp_homogeneity_banner.setStyleSheet(
-                "color: white; background: #c62828; border-radius: 4px; padding: 4px;"
+                "color: white; background: #c62828; border-radius: 4px; padding: 6px;"
             )
 
     def _vdp_on_worker_finished(self):

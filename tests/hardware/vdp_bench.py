@@ -33,7 +33,9 @@ verification kept alongside rsen_diagnostic.py.
 from __future__ import annotations
 
 import argparse
+import json
 import math
+import os
 import sys
 import time
 
@@ -132,9 +134,51 @@ def main() -> int:
                    help="Readings to average per polarity (default: 3).")
     p.add_argument("--auto", action="store_true",
                    help="Skip all 'press Enter' prompts (for non-interactive tests).")
+    p.add_argument("--geometry", type=int, default=None, choices=[1, 2, 3, 4],
+                   help="Run ONLY this geometry index (1..4). Use with "
+                        "--state-file for SSH-driven multi-call workflow.")
+    p.add_argument("--finalize", action="store_true",
+                   help="Skip measurement; read --state-file and print final result.")
+    p.add_argument("--state-file", default=None,
+                   help="JSON path to persist voltages between --geometry calls.")
     args = p.parse_args()
 
     i_mag = abs(args.current)
+
+    # --finalize: read accumulated voltages and just print the result.
+    if args.finalize:
+        if not args.state_file or not os.path.exists(args.state_file):
+            print("ERROR: --finalize requires an existing --state-file", file=sys.stderr)
+            return 2
+        with open(args.state_file, "r", encoding="utf-8") as fh:
+            state = json.load(fh)
+        voltages = state.get("voltages", {})
+        required = ["V_21,34", "V_12,34", "V_32,41", "V_23,41",
+                    "V_43,12", "V_34,12", "V_14,23", "V_41,23"]
+        missing = [k for k in required if k not in voltages]
+        if missing:
+            print(f"ERROR: state file missing geometries for: {missing}", file=sys.stderr)
+            return 2
+        # Prefer explicit CLI values when present so the user can re-finalize
+        # with corrected thickness after measuring the sample with calipers.
+        # argparse defaults are used as fallbacks if the state file has them.
+        cli_set_thickness = "--thickness" in sys.argv
+        cli_set_current = "--current" in sys.argv
+        thickness = args.thickness if cli_set_thickness else state.get("thickness", args.thickness)
+        current = i_mag if cli_set_current else state.get("current", i_mag)
+        result = calculate_van_der_pauw(voltages, current, thickness)
+        print(f"=== Final result (from {args.state_file}) ===")
+        print(f"  rho_A      = {result.rho_a:.6g} Ohm.cm")
+        print(f"  rho_B      = {result.rho_b:.6g} Ohm.cm")
+        print(f"  rho_avg    = {result.rho_avg:.6g} Ohm.cm")
+        print(f"  R_s        = {result.sheet_resistance:.6g} Ohm/sq")
+        print(f"  Q_A / Q_B  = {result.q_a:.4f}  /  {result.q_b:.4f}")
+        print(f"  f_A / f_B  = {result.f_a:.4f}  /  {result.f_b:.4f}")
+        print(f"  asymmetry  = {result.asymmetry_pct:.3f} %")
+        verdict = "HOMOGENEOUS" if result.homogeneous else "NON-HOMOGENEOUS"
+        print(f"  {verdict}  ({F76_HOMOGENEITY_TOLERANCE_PCT}% gate)")
+        return 0
+
     print(f"=== van der Pauw bench test (ASTM F76 Method A) ===")
     print(f"Instrument:  {args.gpib}")
     print(f"Source I:    {i_mag*1e3:.3g} mA")
@@ -163,10 +207,29 @@ def main() -> int:
         print(f"post-config :SYST:ERR? -> {err}")
         print()
 
+        # If --state-file points at an existing file, resume from it; useful
+        # for the SSH-driven one-geometry-per-call workflow.
         voltages: dict = {}
+        if args.state_file and os.path.exists(args.state_file):
+            try:
+                with open(args.state_file, "r", encoding="utf-8") as fh:
+                    state = json.load(fh)
+                voltages = dict(state.get("voltages", {}))
+                if voltages:
+                    print(f"(resumed from {args.state_file}: "
+                          f"{len(voltages)} voltages already captured)")
+                    print()
+            except (OSError, json.JSONDecodeError) as e:
+                print(f"WARNING: could not read state file {args.state_file}: {e}",
+                      file=sys.stderr)
         compliance_seen = False
 
-        for idx, geom in enumerate(f76_geometries()):
+        # If --geometry N is set, run only that one. Otherwise run all 4.
+        geoms_to_run = list(enumerate(f76_geometries()))
+        if args.geometry is not None:
+            geoms_to_run = [(args.geometry - 1, geoms_to_run[args.geometry - 1][1])]
+
+        for idx, geom in geoms_to_run:
             print(f"--- {geom.name}  (group {geom.group}) ---")
             print(f"  Force HI -> Contact {geom.source_high}")
             print(f"  Force LO -> Contact {geom.source_low}")
@@ -188,6 +251,25 @@ def main() -> int:
                   f"{geom.label_neg:>9s} = {v_neg*1e3:+.6f} mV    "
                   f"delta = {(v_pos - v_neg)*1e3:+.6f} mV")
             print()
+
+            # Persist after each geometry so the SSH workflow can resume.
+            if args.state_file:
+                try:
+                    with open(args.state_file, "w", encoding="utf-8") as fh:
+                        json.dump({
+                            "voltages": voltages,
+                            "current": i_mag,
+                            "thickness": args.thickness,
+                        }, fh, indent=2)
+                except OSError as e:
+                    print(f"WARNING: could not write state file: {e}", file=sys.stderr)
+
+        # If --geometry was set, stop here -- don't compute final result yet.
+        if args.geometry is not None:
+            print(f"(geometry {args.geometry} done; rerun with --geometry {args.geometry + 1} "
+                  f"or --finalize when all 4 are captured)" if args.geometry < 4
+                  else "(geometry 4 done; run with --finalize to print the result)")
+            return 0
 
         print("=== Result ===")
         result = calculate_van_der_pauw(voltages, i_mag, args.thickness)

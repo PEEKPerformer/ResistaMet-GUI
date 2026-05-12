@@ -147,8 +147,46 @@ class TestTabCreation:
         assert hasattr(w, 'vdp_step_label')
         assert hasattr(w, 'vdp_proceed_button')
         assert hasattr(w, 'vdp_readings_table')
-        assert hasattr(w, 'vdp_result_label')
         assert hasattr(w, 'vdp_homogeneity_banner')
+        # Restructured result panel: headline labels + bar chart + stats.
+        assert hasattr(w, 'vdp_rs_label')
+        assert hasattr(w, 'vdp_rho_label')
+        assert hasattr(w, 'vdp_bar_chart')
+        assert hasattr(w, 'vdp_stats_label')
+        # Bar chart accepts data + clear without crashing.
+        w.vdp_bar_chart.resize(420, 130)
+        w.vdp_bar_chart.set_data([1.27e-3, 1.21e-3, 1.26e-3, 1.25e-3], ["G1", "G2", "G3", "G4"])
+        w.vdp_bar_chart.grab()
+        w.vdp_bar_chart.clear()
+        w.vdp_bar_chart.grab()
+        # Collapse / restore of the instruction panel.
+        assert hasattr(w, 'vdp_instr_group')
+        w.vdp_instr_group.setVisible(False)
+        w.vdp_instr_group.setVisible(True)
+        # Geometry diagram is a custom QWidget; smoke check that it
+        # accepts a configuration dict without crashing.
+        assert hasattr(w, 'vdp_diagram')
+        w.vdp_diagram.set_configuration({
+            'source_high': 2, 'source_low': 1,
+            'sense_high': 3, 'sense_low': 4,
+        })
+        # Trigger a real paint cycle so any int/float coord regression in
+        # paintEvent is caught here.
+        w.vdp_diagram.resize(260, 260)
+        w.vdp_diagram.grab()
+        w.vdp_diagram.set_configuration(None)  # back to idle
+        w.vdp_diagram.grab()
+
+        # Protocol filmstrip: 4-cell progress display
+        assert hasattr(w, 'vdp_filmstrip')
+        w.vdp_filmstrip.resize(520, 120)
+        w.vdp_filmstrip.set_current(0)
+        w.vdp_filmstrip.grab()
+        w.vdp_filmstrip.mark_completed(0)
+        w.vdp_filmstrip.set_current(1)
+        w.vdp_filmstrip.grab()
+        w.vdp_filmstrip.reset()
+        w.vdp_filmstrip.grab()
         # Readings table is 8 rows (4 geometries x 2 polarities) prepopulated
         # with F76 labels.
         assert w.vdp_readings_table.rowCount() == 8

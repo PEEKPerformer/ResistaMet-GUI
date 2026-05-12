@@ -5,7 +5,7 @@
 
 Open-source graphical interface for electrical characterization using Keithley 2400-family sourcemeters, with ASTM F84-aligned four-point-probe analysis.
 
-**Version:** 1.7.0
+**Version:** 1.8.0
 **Author:** Brenden Ferland
 
 ![ResistaMet GUI — I-V Sweep tab](docs/screenshots/05_iv_sweep.png)
@@ -59,6 +59,7 @@ Researchers today either commit to a scripting framework (`pymeasure`, `QCoDeS`)
 | **Current Source** | Current (-3 to +3A) | Voltage | Material characterization |
 | **Four-Point Probe** | Current | Voltage | Sheet resistance, resistivity, conductivity |
 | **I-V Sweep** | Voltage or Current | Current or Voltage | Diode/device curves, hysteresis, breakdown |
+| **Van der Pauw** | Current | Voltage | Sheet resistance + resistivity on arbitrary-shape samples (ASTM F76) |
 
 ### Four-Point Probe
 
@@ -71,6 +72,16 @@ Researchers today either commit to a scripting framework (`pymeasure`, `QCoDeS`)
 - **Probe safety envelope** — configurable warn / hard-stop power thresholds (default 10 mW / 100 mW). A pre-flight check refuses to start if the configured worst-case `I_source × V_compliance` exceeds the hard stop; a runtime check aborts the run and disables output if measured `V × I` exceeds it. Sized for tungsten-carbide tips (Signatone SP4 family) and conservative for thin-film / conductive-polymer samples where local Joule heating can damage the sample before the probe
 - Legacy K · α · (V/I) path retained for non-Si materials and custom calibration factors (e.g. NIST-traceable reference standards)
 - Inter-spot uniformity statistics in export
+
+### Van der Pauw
+
+- **ASTM F76-08 Method A** sheet-resistance and resistivity for arbitrary-shape, hole-free samples with four periphery contacts (numbered 1–4 counter-clockwise)
+- Walks the user through F76's 4 cabling geometries one at a time; current reversal (+I then −I) is automated at each geometry so thermal-EMF offsets cancel cleanly
+- Solves F76 Fig. 5's implicit `f(Q)` equation `(Q-1)/(Q+1) = (f/ln 2)·arccosh{(1/2)·exp(ln 2 / f)}` numerically (hand-rolled bisection; no scipy dep)
+- **F76 §11.1 homogeneity gate** — automatically flags samples where ρ_A and ρ_B disagree by more than 10%
+- Per-geometry resistance bar chart visualizes uniformity; bars are color-coded by deviation from the mean (green/orange/red)
+- Schematic diagram of the sample + lead routing updates as the user advances through the protocol; filmstrip preview of all 4 geometries makes the cyclic CCW rotation pattern obvious
+- 37 unit tests pin values directly to F76 Section 11; bench-verified on a Keithley 2420 against a 100 µm conductive foil (1.4% asymmetry, F76 gate passes 7× over)
 
 ### I-V Sweep
 
