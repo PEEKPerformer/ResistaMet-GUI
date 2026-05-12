@@ -5,7 +5,7 @@
 
 Open-source graphical interface for electrical characterization using Keithley 2400/2450 sourcemeters, with advanced four-point probe analysis.
 
-**Version:** 1.6.1
+**Version:** 1.7.0
 **Author:** Brenden Ferland
 
 ![ResistaMet GUI — I-V Sweep tab](docs/screenshots/05_iv_sweep.png)
@@ -265,6 +265,18 @@ instrument. See [`docs/sim_fidelity.md`](docs/sim_fidelity.md) for the
 full validation methodology.
 
 ## Version History
+
+### v1.7.0 (2026-05-12)
+- **Fix (4PP, critical):** `:SYST:RSEN OFF` in the 4-Point Probe setup silently routed the voltmeter to the Force terminals instead of the Sense terminals. On the Signatone S-302 (and any probe head wired Force=outer, Sense=inner) this meant every 4PP measurement since the mode shipped was a 2-wire reading across the current-carrying outer pair — R_sample + 2·R_contact, not the intended sheet resistance. Bench-verified on a Keithley 2420: V(OFF)=3199 mV vs V(ON)=−3 µV on a copper plate with a 100 Ω perturbation resistor on the I/O HI lead. Prior 4PP data should be considered invalid; rerun against samples of record after upgrading.
+- **Feature: ASTM F84-98 correction-factor decomposition** in `calculations.py`:
+  - `f2_finite_diameter(s, d, geometry)` — Table 3 for circles, plus Smits 1958 tables for square + rectangle L/W ∈ {2, 3, 4}.
+  - `f_thickness_correction(w, s)` — Appendix X1.1 closed form, valid out to w/S = 2.0.
+  - `f_temperature_correction(rho, T, dopant)` — Table 5 C_T lookup, n- and p-type silicon.
+  - `calculate_resistivity_f84()` and `calculate_four_point_probe_f84()` glue everything into ρ(T) = R·F₂·w·F(w/S)·F_sp [·F_T]. 60 unit tests pin values directly to F84 Tables 3/4/5 and the extended Smits geometry table.
+- **Feature: F84 UI fields** in the 4PP tab — Diameter D and Geometry (circle / square / rectangle L/W = 2, 3, 4) next to Thickness; Temperature and Dopant in the Advanced collapsible. The legacy K/α/Model path remains the default so existing `config.json` files produce identical numbers; the F84 path activates only when the user supplies a finite D, non-circle geometry, or T+dopant.
+- **Feature: per-polarity delta logging** — when current-reversal (delta) mode is on, CSV exports now include V_plus, V_minus, R_f, R_r columns alongside the V_delta-derived row, preserving the F84 §13.1 diagnostic that opposite-polarity readings should be kept separate.
+- **Test infra: `TestSCPIContract`** class in `tests/test_workers.py` — for each mode, asserts the critical SCPI commands sent during setup (RSEN state, source/measure function, FORM:ELEM contents, compliance programming). This is the regression-prevention pattern that would have caught the original RSEN bug; the harness already existed (`fake_rm.opened[0].command_log`), only the assertions were missing.
+- **Bench-verification artifact** committed at `tests/hardware/rsen_diagnostic.py` — runs in ~10 s against the live instrument, sets up the 4PP path with RSEN OFF then RSEN ON back-to-back, and prints the diagnostic delta.
 
 ### v1.6.1 (2026-05-08)
 - Fix: pressing **Start** on the 4-Point Probe tab in v1.6.0 raised `AttributeError` because the layout refactor removed the (hidden) MplCanvas but the start path still tried to clear it. 4PP now correctly routes through the histogram path.
