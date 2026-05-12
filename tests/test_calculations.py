@@ -21,7 +21,12 @@ from resistamet_gui.calculations import (
     calculate_four_point_probe,
     calculate_four_point_probe_bound,
     estimate_current_floor,
+    f2_finite_diameter,
+    f_thickness_correction,
+    f_temperature_correction,
+    calculate_resistivity_f84,
     FourPointProbeResult,
+    F84ResistivityResult,
     DEFAULT_K_FACTOR,
 )
 
@@ -367,3 +372,245 @@ class TestCalculateFourPointProbeBound:
             source_current=1e-3, spacing_cm=0.1, thickness_um=100,
         )
         assert isinstance(result, FourPointProbeResult)
+
+
+# ============================================================================
+# ASTM F84-98 correction-factor tests
+# ----------------------------------------------------------------------------
+# These verify the F84 primitives against the standard's own tabulated values.
+# Tolerances are tight (1e-3 absolute) because the reference values are the
+# tables the standard requires implementations to reproduce.
+# ============================================================================
+
+class TestF2FiniteDiameter:
+    """F84 Table 3: F2 as a function of S/D."""
+
+    def test_infinite_diameter_returns_smits_value(self):
+        # S/D = 0 -> F2 = pi/ln(2) = 4.5324, tabulated as 4.532.
+        assert f2_finite_diameter(spacing_cm=0.1, diameter_cm=None) == pytest.approx(4.532)
+        assert f2_finite_diameter(spacing_cm=0.1, diameter_cm=0) == pytest.approx(4.532)
+
+    @pytest.mark.parametrize("s_over_d,expected", [
+        (0.000, 4.532),
+        (0.020, 4.517),
+        (0.050, 4.436),
+        (0.070, 4.348),
+        (0.100, 4.171),
+    ])
+    def test_against_table_3(self, s_over_d, expected):
+        # Pick any S and back out D so S/D matches.
+        s = 0.1
+        d = s / s_over_d if s_over_d > 0 else 1e9
+        assert f2_finite_diameter(s, d) == pytest.approx(expected, abs=1e-3)
+
+    def test_interpolates_between_rows(self):
+        # S/D = 0.0125 should be between 0.010 (4.528) and 0.015 (4.524).
+        s, d = 0.1, 0.1 / 0.0125
+        result = f2_finite_diameter(s, d)
+        assert 4.524 < result < 4.528
+
+    def test_clamps_above_tabulated_range(self):
+        # F84 Table 3 stops at S/D = 0.10; clamp rather than extrapolate.
+        s, d = 0.1, 0.1 / 0.15  # S/D = 0.15
+        assert f2_finite_diameter(s, d) == pytest.approx(4.171, abs=1e-3)
+
+
+class TestGeometryCorrectionNonCircular:
+    """Smits 1958 / Adamson lab table: square + rectangular geometries.
+
+    F84 only tabulates circular wafers. Most non-Si materials labs measure
+    on cut squares or rectangles, so the broader Smits table matters. These
+    tests pin values directly from the Adamson group 4PP manual.
+    """
+
+    @pytest.mark.parametrize("d_over_s,expected", [
+        (3.0, 2.4575), (4.0, 3.1127), (5.0, 3.5098), (7.5, 4.0095),
+        (10.0, 4.2209), (15.0, 4.3882), (20.0, 4.4516),
+        (32.0, 4.4878), (40.0, 4.5120),
+    ])
+    def test_square_against_table(self, d_over_s, expected):
+        s = 0.1
+        d = d_over_s * s
+        assert f2_finite_diameter(s, d, geometry='square') == \
+               pytest.approx(expected, abs=5e-4)
+
+    @pytest.mark.parametrize("d_over_s,expected", [
+        (1.5, 1.4788), (2.0, 1.9475), (3.0, 2.7000),
+        (5.0, 3.5749), (10.0, 4.2357), (40.0, 4.5129),
+    ])
+    def test_rectangle_2_against_table(self, d_over_s, expected):
+        s = 0.1
+        d = d_over_s * s
+        assert f2_finite_diameter(s, d, geometry='rectangle_2') == \
+               pytest.approx(expected, abs=5e-4)
+
+    @pytest.mark.parametrize("d_over_s,expected", [
+        (1.0, 0.9988), (1.5, 1.4893), (3.0, 2.7005),
+        (10.0, 4.2357), (40.0, 4.5129),
+    ])
+    def test_rectangle_3_against_table(self, d_over_s, expected):
+        s = 0.1
+        d = d_over_s * s
+        assert f2_finite_diameter(s, d, geometry='rectangle_3') == \
+               pytest.approx(expected, abs=5e-4)
+
+    @pytest.mark.parametrize("d_over_s,expected", [
+        (1.0, 0.9994), (1.5, 1.4893), (3.0, 2.7005),
+        (10.0, 4.2357), (40.0, 4.5129),
+    ])
+    def test_rectangle_4_against_table(self, d_over_s, expected):
+        s = 0.1
+        d = d_over_s * s
+        assert f2_finite_diameter(s, d, geometry='rectangle_4') == \
+               pytest.approx(expected, abs=5e-4)
+
+    def test_infinite_sample_all_geometries_agree(self):
+        # In the infinite-sample limit every geometry → 4.5324 (= pi/ln(2)).
+        # F84 Table 3 rounds this to 4.532; we accept either rounding.
+        for geom in ('circle', 'square', 'rectangle_2',
+                     'rectangle_3', 'rectangle_4'):
+            assert f2_finite_diameter(0.1, None, geom) == \
+                   pytest.approx(4.5324, abs=5e-4)
+
+    def test_default_geometry_is_circle(self):
+        # Backward compat: no geometry kwarg must match circle.
+        s, d = 0.1, 0.1 / 0.05  # S/D = 0.05
+        assert f2_finite_diameter(s, d) == \
+               f2_finite_diameter(s, d, geometry='circle')
+
+    def test_unknown_geometry_returns_nan(self):
+        assert math.isnan(f2_finite_diameter(0.1, 1.0, geometry='hexagon'))
+
+    def test_square_below_lowest_clamps(self):
+        # Square table starts at D/s = 3. Below that, clamp not extrapolate.
+        s = 0.1
+        result = f2_finite_diameter(s, s * 2.0, geometry='square')
+        assert result == pytest.approx(2.4575, abs=5e-4)  # value at D/s=3
+
+    def test_geometry_matters_at_finite_size(self):
+        # At D/s = 10 a square sample's CF (4.2209) should differ from
+        # circle (4.1716) — this is the whole reason geometry parameter exists.
+        s = 0.1
+        d = 10 * s
+        cf_circle = f2_finite_diameter(s, d, geometry='circle')
+        cf_square = f2_finite_diameter(s, d, geometry='square')
+        assert cf_square > cf_circle
+        assert cf_square - cf_circle == pytest.approx(0.0493, abs=5e-3)
+
+
+class TestThicknessCorrection:
+    """F84 Table 4 / Appendix X1: F(w/S)."""
+
+    def test_thin_sample_is_unity(self):
+        # F84 §X1.3: for w/S < 0.4, F(w/S) = 1.000.
+        assert f_thickness_correction(thickness_cm=0.01, spacing_cm=0.1016) == 1.000
+        # w/S = 0.39
+        assert f_thickness_correction(thickness_cm=0.039, spacing_cm=0.1) == 1.000
+
+    @pytest.mark.parametrize("w_over_s,expected", [
+        (0.5, 0.997),
+        (0.6, 0.992),
+        (0.7, 0.982),
+        (0.8, 0.966),
+        (0.9, 0.944),
+        (1.0, 0.921),
+    ])
+    def test_against_table_4(self, w_over_s, expected):
+        s = 0.1
+        w = w_over_s * s
+        # 5e-3 tolerance: Appendix X1 notes the table itself is interpolated
+        # between Smits 1958 values to <= 2 parts in 1e4, and the X1.1 closed
+        # form agrees with the table to 6 parts in 1e4 except at w/S = 0.9
+        # and 1.0 where the table is +2e-4 off the closed form.
+        assert f_thickness_correction(w, s) == pytest.approx(expected, abs=5e-3)
+
+    def test_invalid_inputs_return_nan(self):
+        import math
+        assert math.isnan(f_thickness_correction(0, 0.1))
+        assert math.isnan(f_thickness_correction(-0.01, 0.1))
+        assert math.isnan(f_thickness_correction(0.01, 0))
+        assert math.isnan(f_thickness_correction(float('nan'), 0.1))
+
+
+class TestTemperatureCorrection:
+    """F84 Table 5: F_T = 1 - C_T(T - 23) for silicon."""
+
+    def test_at_23c_returns_unity(self):
+        # No correction at the reference temperature, regardless of rho/dopant.
+        assert f_temperature_correction(1.0, 23.0, 'n') == pytest.approx(1.0)
+        assert f_temperature_correction(100.0, 23.0, 'p') == pytest.approx(1.0)
+
+    @pytest.mark.parametrize("rho,dopant,expected_ct", [
+        # Table 5 spot checks (rho, dopant, expected C_T)
+        (0.030, 'n', 0.00139),
+        (0.030, 'p', 0.00102),
+        (1.0, 'n', 0.00736),
+        (1.0, 'p', 0.00707),
+        (10.0, 'n', 0.00813),
+        (10.0, 'p', 0.00825),
+        (100.0, 'p', 0.00876),
+    ])
+    def test_ct_lookup_against_table_5(self, rho, dopant, expected_ct):
+        # F_T = 1 - C_T(T - 23). At T = 24, F_T - 1 = -C_T.
+        f_t = f_temperature_correction(rho, 24.0, dopant)
+        assert (1.0 - f_t) == pytest.approx(expected_ct, abs=1e-5)
+
+    def test_dopant_case_insensitive(self):
+        assert f_temperature_correction(1.0, 25.0, 'N') == \
+               f_temperature_correction(1.0, 25.0, 'n')
+        assert f_temperature_correction(1.0, 25.0, 'P-Type') == \
+               f_temperature_correction(1.0, 25.0, 'p')
+
+    def test_invalid_dopant_returns_nan(self):
+        import math
+        assert math.isnan(f_temperature_correction(1.0, 25.0, 'germanium'))
+
+
+class TestResistivityF84:
+    """Integration: ρ(T) = R · F2 · w · F(w/S) · F_sp, ρ(23) = ρ(T) · F_T."""
+
+    def test_thin_sample_matches_smits_formula(self):
+        # w/S << 0.4: F(w/S) = 1, F2 ~ 4.532, so rho(T) = 4.532 * w * R.
+        R = 50.0  # Ohms
+        s = 0.1016  # cm (40 mil)
+        w = 100e-4  # 100 um = 0.01 cm; w/S = 0.0984 << 0.4
+        result = calculate_resistivity_f84(R, s, w)
+        expected = 4.532 * w * R
+        assert result.rho_T == pytest.approx(expected, rel=1e-3)
+        assert result.rho_23 is None  # no T or dopant supplied
+        assert result.f_w_s == 1.000
+
+    def test_f_sp_is_applied(self):
+        baseline = calculate_resistivity_f84(50.0, 0.1, 0.001)
+        with_fsp = calculate_resistivity_f84(50.0, 0.1, 0.001, f_sp=1.05)
+        assert with_fsp.rho_T == pytest.approx(baseline.rho_T * 1.05)
+
+    def test_diameter_applies_f2(self):
+        # S/D = 0.05 -> F2 = 4.436 instead of 4.532.
+        s, w = 0.1, 0.001  # cm; w/S = 0.01 < 0.4 so F(w/S) = 1
+        result = calculate_resistivity_f84(50.0, s, w, diameter_cm=s / 0.05)
+        expected = 4.436 * w * 50.0
+        assert result.rho_T == pytest.approx(expected, rel=1e-3)
+        assert result.f2 == pytest.approx(4.436, abs=1e-3)
+
+    def test_temperature_correction_applied(self):
+        # rho ~ 1 Ω·cm n-type at 25 C: C_T = 0.00736.
+        # F_T = 1 - 0.00736 * (25 - 23) = 0.98528.
+        R = 1.0 / (4.532 * 0.001)  # makes rho(T) ~ 1
+        result = calculate_resistivity_f84(
+            R, spacing_cm=0.1, thickness_cm=0.001,
+            temperature_c=25.0, dopant_type='n',
+        )
+        assert result.rho_23 is not None
+        assert result.f_T == pytest.approx(0.98528, abs=1e-4)
+        assert result.rho_23 == pytest.approx(result.rho_T * 0.98528, rel=1e-3)
+
+    def test_invalid_inputs_propagate_nan(self):
+        result = calculate_resistivity_f84(float('nan'), 0.1, 0.001)
+        assert math.isnan(result.rho_T)
+        assert math.isnan(result.f2)
+        assert result.rho_23 is None
+
+    def test_returns_named_tuple(self):
+        result = calculate_resistivity_f84(50.0, 0.1, 0.001)
+        assert isinstance(result, F84ResistivityResult)

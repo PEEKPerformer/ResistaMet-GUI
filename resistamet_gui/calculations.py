@@ -285,6 +285,425 @@ def calculate_four_point_probe(
     )
 
 
+def calculate_four_point_probe_f84(
+    voltage: float,
+    current: float,
+    spacing_cm: float,
+    thickness_um: float,
+    diameter_cm: Optional[float] = None,
+    geometry: str = 'circle',
+    f_sp: float = 1.0,
+    temperature_c: Optional[float] = None,
+    dopant_type: Optional[str] = None,
+) -> 'F84ResistivityResult':
+    """F84-aligned 4PP calculation from raw V and I.
+
+    Convenience wrapper that converts thickness um → cm and computes V/I,
+    then delegates to `calculate_resistivity_f84`. The legacy
+    `calculate_four_point_probe` path collapses corrections into K and
+    alpha; this one applies the explicit F84 F2 · F(w/S) · F_sp · F_T
+    decomposition.
+
+    Returns:
+        F84ResistivityResult. Use `result.rho_T` as the measured resistivity
+        and `result.rho_23` for the temperature-corrected value if T and
+        dopant were supplied.
+    """
+    thickness_cm = thickness_um * 1e-4
+    ratio = calculate_ratio(voltage, current)
+    return calculate_resistivity_f84(
+        resistance=ratio,
+        spacing_cm=spacing_cm,
+        thickness_cm=thickness_cm,
+        diameter_cm=diameter_cm,
+        f_sp=f_sp,
+        temperature_c=temperature_c,
+        dopant_type=dopant_type,
+        geometry=geometry,
+    )
+
+
+# ============================================================================
+# ASTM F84-98 correction factors
+# ----------------------------------------------------------------------------
+# Reference: ASTM F84-98 "Standard Test Method for Measuring Resistivity of
+# Silicon Wafers With an In-Line Four-Point Probe".
+#
+# F84 §13.5–13.6 expresses resistivity as:
+#     rho(T) = R_m * F2 * w * F(w/S) * F_sp
+# where
+#     R_m   = mean of forward/reverse resistance, Ohms
+#     F2    = finite-slice diameter correction (Table 3), function of S/D
+#     w     = specimen thickness, cm
+#     F(w/S)= thickness correction (Table 4 / Appendix X1), function of w/S
+#     F_sp  = probe-tip spacing correction (Eq. 5), passed in by caller
+#
+# F_sp is left to the caller because it requires the microscope-qualification
+# protocol of F84 §11.1.2 (measured S1, S2, S3); software cannot compute it
+# from a single nominal spacing.
+#
+# Temperature correction (§13.6–13.8):
+#     rho(23) = rho(T) * (1 - C_T * (T - 23))
+# with C_T interpolated from Table 5 by resistivity and dopant type.
+# ============================================================================
+
+# Table 3 — F2 as a function of S/D (finite slice diameter correction).
+# Pairs of (S/D, F2). F2 at S/D=0 is 4.5324 = pi/ln(2), the Smits infinite-slice
+# value. The table is monotonic in S/D and we linearly interpolate between
+# tabulated points; for S/D > 0.10 we clamp to the last tabulated value.
+_F84_TABLE3_F2 = (
+    (0.000, 4.532), (0.005, 4.531), (0.010, 4.528), (0.015, 4.524),
+    (0.020, 4.517), (0.025, 4.508), (0.030, 4.497), (0.035, 4.485),
+    (0.040, 4.470), (0.045, 4.454), (0.050, 4.436), (0.055, 4.417),
+    (0.060, 4.395), (0.065, 4.372), (0.070, 4.348), (0.075, 4.322),
+    (0.080, 4.294), (0.085, 4.265), (0.090, 4.235), (0.095, 4.204),
+    (0.100, 4.171),
+)
+
+# Table 5 — C_T (temperature coefficient of resistivity) for Si at 18–28 C.
+# Tuples of (rho [Ohm*cm], C_T n-type, C_T p-type). Linear interpolation in
+# log-rho is used per the standard's spirit (Table 5 spans ~6 decades).
+_F84_TABLE5_CT = (
+    (0.0006, 0.00200, 0.00160), (0.0008, 0.00200, 0.00160),
+    (0.0010, 0.00200, 0.00158), (0.0012, 0.00184, 0.00151),
+    (0.0014, 0.00169, 0.00149), (0.0016, 0.00161, 0.00148),
+    (0.0020, 0.00158, 0.00148), (0.0025, 0.00159, 0.00145),
+    (0.0030, 0.00156, 0.00137), (0.0035, 0.00146, 0.00127),
+    (0.0040, 0.00131, 0.00116), (0.0050, 0.00096, 0.00094),
+    (0.0060, 0.00060, 0.00074), (0.0080, 0.00006, 0.00046),
+    (0.010, -0.00022, 0.00031), (0.012, -0.00031, 0.00025),
+    (0.014, -0.00026, 0.00025), (0.016, -0.00013, 0.00029),
+    (0.020, 0.00025, 0.00045), (0.025, 0.00083, 0.00073),
+    (0.030, 0.00139, 0.00102), (0.035, 0.00190, 0.00131),
+    (0.040, 0.00235, 0.00158), (0.050, 0.00309, 0.00208),
+    (0.060, 0.00364, 0.00251), (0.080, 0.00439, 0.00320),
+    (0.10, 0.00486, 0.00372), (0.12, 0.00517, 0.00412),
+    (0.14, 0.00540, 0.00444), (0.16, 0.00558, 0.00471),
+    (0.20, 0.00585, 0.00512), (0.25, 0.00609, 0.00548),
+    (0.30, 0.00627, 0.00575), (0.35, 0.00643, 0.00596),
+    (0.40, 0.00656, 0.00613), (0.50, 0.00678, 0.00639),
+    (0.60, 0.00696, 0.00659), (0.80, 0.00720, 0.00687),
+    (1.0, 0.00736, 0.00707), (1.2, 0.00747, 0.00722),
+    (1.4, 0.00755, 0.00734), (1.6, 0.00761, 0.00744),
+    (2.0, 0.00768, 0.00759), (2.5, 0.00774, 0.00773),
+    (3.0, 0.00778, 0.00783), (3.5, 0.00782, 0.00791),
+    (4.0, 0.00785, 0.00797), (5.0, 0.00791, 0.00805),
+    (6.0, 0.00797, 0.00811), (8.0, 0.00806, 0.00819),
+    (10.0, 0.00813, 0.00825), (12.0, 0.00818, 0.00829),
+    (14.0, 0.00822, 0.00832), (16.0, 0.00824, 0.00835),
+    (20.0, 0.00826, 0.00840), (25.0, 0.00827, 0.00845),
+    (30.0, 0.00829, 0.00849), (35.0, 0.00829, 0.00853),
+    (40.0, 0.00830, 0.00857), (50.0, 0.00830, 0.00862),
+    (60.0, 0.00830, 0.00867), (80.0, 0.00830, 0.00872),
+    (100.0, 0.00830, 0.00876), (200.0, 0.00830, 0.00882),
+    (500.0, 0.00830, 0.00897), (1000.0, 0.00830, 0.00900),
+)
+
+
+def _linear_interp(x: float, table: tuple, col: int) -> float:
+    """Linear interpolation in a sorted (x, y0, y1, ...) table. Clamps at ends."""
+    xs = [row[0] for row in table]
+    if x <= xs[0]:
+        return table[0][col]
+    if x >= xs[-1]:
+        return table[-1][col]
+    for i in range(len(xs) - 1):
+        if xs[i] <= x <= xs[i + 1]:
+            x0, x1 = xs[i], xs[i + 1]
+            y0, y1 = table[i][col], table[i + 1][col]
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return table[-1][col]  # unreachable, but mypy-safe
+
+
+# Smits 1958 / commonly-tabulated geometry correction factors for non-circular
+# samples. Indexed by D/s (sample lateral dimension / probe spacing). For
+# rectangles, D is the WIDTH (the dimension perpendicular to the probe array)
+# and L/W is the aspect ratio.
+#
+# The Circle column reproduces F84 Table 3 in inverted form: S/D = 0.10 ↔
+# D/s = 10. We keep the dense F84 table (_F84_TABLE3_F2) for the circle case
+# and use this table only for non-circular geometries.
+#
+# Rows are sparse near D/s = 1–2: the standard tabulation doesn't define some
+# geometries below D/s = 3 (Circle, Square) or D/s = 1.5 (Rect L/W=2). Below
+# those points _linear_interp will clamp to the lowest tabulated value.
+_SMITS_GEOMETRY_CF: tuple = (
+    # (D/s, Square, Rect L/W=2, Rect L/W=3, Rect L/W=4)
+    (3.0,    2.4575, 2.7000, 2.7005, 2.7005),
+    (4.0,    3.1127, 3.2246, 3.2248, 3.2248),
+    (5.0,    3.5098, 3.5749, 3.5750, 3.5750),
+    (7.5,    4.0095, 4.0361, 4.0362, 4.0362),
+    (10.0,   4.2209, 4.2357, 4.2357, 4.2357),
+    (15.0,   4.3882, 4.3947, 4.3947, 4.3947),
+    (20.0,   4.4516, 4.4553, 4.4553, 4.4553),
+    (32.0,   4.4878, 4.4899, 4.4899, 4.4899),
+    (40.0,   4.5120, 4.5129, 4.5129, 4.5129),
+    (1e9,    4.5324, 4.5324, 4.5324, 4.5324),
+)
+
+# Lower-D/s extension for rectangles only (L/W >= 3 is defined down to D/s = 1;
+# L/W = 2 only to D/s = 1.5). These rows feed _linear_interp via a separate
+# lookup path so the Square column isn't extrapolated below D/s = 3.
+_SMITS_RECT_LOW_DS: tuple = (
+    # (D/s, Rect L/W=2, Rect L/W=3, Rect L/W=4)
+    (1.0,    float('nan'), 0.9988, 0.9994),
+    (1.25,   float('nan'), 1.2467, 1.2248),
+    (1.5,    1.4788, 1.4893, 1.4893),
+    (1.75,   1.7196, 1.7238, 1.7238),
+    (2.0,    1.9475, 1.9475, 1.9475),
+    (2.5,    2.3532, 2.3541, 2.3541),
+    (3.0,    2.7000, 2.7005, 2.7005),
+)
+
+_GEOMETRIES = ('circle', 'square', 'rectangle_2', 'rectangle_3', 'rectangle_4')
+
+
+def f2_finite_diameter(
+    spacing_cm: float,
+    diameter_cm: Optional[float] = None,
+    geometry: str = 'circle',
+) -> float:
+    """Geometry correction factor for a finite-size specimen.
+
+    For `geometry='circle'` this is F2 from ASTM F84-98 Table 3, a function of
+    S/D (probe spacing / wafer diameter). Returns 4.5324 = pi/ln(2) at the
+    infinite-diameter limit and decreases for finite slices (~4.171 at S/D=0.10).
+
+    For `geometry in ('square', 'rectangle_2', 'rectangle_3', 'rectangle_4')`
+    this returns the Smits 1958 correction factor for a square or rectangular
+    sample of aspect ratio L/W ∈ {2, 3, 4}, indexed by D/s where D = sample
+    width (dimension perpendicular to the probe array). Sources are the
+    commonly-tabulated Smits values reproduced in lab references including
+    the Adamson group's 4PP manual.
+
+    Args:
+        spacing_cm: Probe-tip spacing S, cm.
+        diameter_cm: Specimen lateral dimension D, cm. For circles this is the
+            diameter; for rectangles it is the width. Pass None or a
+            non-positive value to treat the sample as effectively infinite
+            (returns 4.5324).
+        geometry: One of 'circle', 'square', 'rectangle_2', 'rectangle_3',
+            'rectangle_4'. Default 'circle' preserves prior behavior.
+
+    Returns:
+        Correction factor (dimensionless). NaN if `geometry` is unrecognized
+        or if `spacing_cm` is non-finite/non-positive.
+    """
+    if diameter_cm is None or diameter_cm <= 0 or not np.isfinite(diameter_cm):
+        return _F84_TABLE3_F2[0][1]
+    if not np.isfinite(spacing_cm) or spacing_cm <= 0:
+        return float('nan')
+
+    geom = geometry.lower().strip()
+    if geom == 'circle':
+        return _linear_interp(spacing_cm / diameter_cm, _F84_TABLE3_F2, 1)
+
+    if geom not in _GEOMETRIES:
+        return float('nan')
+
+    d_over_s = diameter_cm / spacing_cm
+    col_idx = {'square': 1, 'rectangle_2': 2,
+               'rectangle_3': 3, 'rectangle_4': 4}[geom]
+
+    # Square uses only the main Smits table (D/s >= 3). Rectangles can dip
+    # below D/s = 3 via the low-D/s extension; pick which table applies.
+    if d_over_s < 3.0 and geom != 'square':
+        low_col = {'rectangle_2': 1, 'rectangle_3': 2, 'rectangle_4': 3}[geom]
+        val = _linear_interp(d_over_s, _SMITS_RECT_LOW_DS, low_col)
+        # rectangle_2 is undefined below D/s = 1.5; NaN propagates.
+        if np.isfinite(val):
+            return val
+        # Below the L/W=2 floor: clamp to the lowest defined value.
+        return _SMITS_RECT_LOW_DS[2][low_col]  # row at D/s = 1.5
+
+    return _linear_interp(d_over_s, _SMITS_GEOMETRY_CF, col_idx)
+
+
+def f_thickness_correction(thickness_cm: float, spacing_cm: float) -> float:
+    """F(w/S) thickness correction per ASTM F84-98 Appendix X1, Eq. X1.1.
+
+    Implements the closed-form series:
+        F(w/S) = 1.3863 * S / (w * D)
+    where D is the series defined in X1.1 — exact terms for n = 1..M and an
+    asymptotic expansion for n > M, summed until the increment falls below
+    1e-5 (per the standard's convergence criterion).
+
+    Per F84 §X1.3, for w/S < 0.4 the correction is unity to four decimals
+    and no computation is necessary.
+
+    Args:
+        thickness_cm: Specimen thickness w, cm.
+        spacing_cm:   Probe-tip spacing S, cm.
+
+    Returns:
+        F(w/S) (dimensionless), ~1 for thin samples, monotonically decreasing
+        toward ~0.35 as w/S increases. NaN if inputs are non-finite or
+        non-positive.
+    """
+    if not (np.isfinite(thickness_cm) and np.isfinite(spacing_cm)):
+        return float('nan')
+    if thickness_cm <= 0 or spacing_cm <= 0:
+        return float('nan')
+
+    w_over_s = thickness_cm / spacing_cm
+    if w_over_s < 0.4:
+        return 1.000  # F84 §X1.3
+
+    # M = int(2 S/w) + 1; first sum uses exact terms, second the asymptotic form.
+    s_over_w = 1.0 / w_over_s
+    M = int(2 * s_over_w) + 1
+
+    sum1 = 0.0
+    for n in range(1, M + 1):
+        x = (n * w_over_s) ** 2
+        sum1 += (0.25 + x) ** -0.5 - (1.0 + x) ** -0.5
+
+    sum2 = 0.0
+    n = M + 1
+    while True:
+        u = s_over_w / n
+        u3 = u ** 3
+        term = 0.75 * u3 - (45.0 / 64.0) * (u ** 5) + (315.0 / 512.0) * (u ** 7)
+        sum2 += term
+        if abs(term) < 1e-5:
+            break
+        n += 1
+        if n > 100_000:  # defensive guard; never triggers for w/S in [0.4, 5]
+            break
+
+    big_d = 1.0 + 2.0 * sum1 + sum2
+    return 1.3863 * s_over_w / big_d
+
+
+def f_temperature_correction(
+    rho_at_temperature: float,
+    temperature_c: float,
+    dopant_type: str = 'p',
+) -> float:
+    """F_T such that rho(23) = rho(T) * F_T, per F84 §13.6–13.8 and Table 5.
+
+    F_T = 1 - C_T * (T - 23), where C_T is the silicon temperature coefficient
+    of resistivity (interpolated from F84 Table 5 by rho and dopant type).
+
+    Args:
+        rho_at_temperature: Measured resistivity at temperature T, Ohm*cm.
+            Used solely to look up C_T from Table 5.
+        temperature_c: Measurement temperature T, degrees Celsius. Per F84
+            §6.1.6, the correction is valid for 18 <= T <= 28.
+        dopant_type: 'n' or 'p'. Only silicon is tabulated by the standard.
+
+    Returns:
+        F_T (dimensionless multiplier near unity). NaN if inputs are invalid.
+    """
+    if not (np.isfinite(rho_at_temperature) and np.isfinite(temperature_c)):
+        return float('nan')
+    if rho_at_temperature <= 0:
+        return float('nan')
+
+    dtype = dopant_type.lower().strip()
+    if dtype in ('n', 'n-type', 'ntype'):
+        col = 1
+    elif dtype in ('p', 'p-type', 'ptype'):
+        col = 2
+    else:
+        return float('nan')
+
+    c_t = _linear_interp(rho_at_temperature, _F84_TABLE5_CT, col)
+    return 1.0 - c_t * (temperature_c - 23.0)
+
+
+class F84ResistivityResult(NamedTuple):
+    """F84-aligned resistivity calculation result.
+
+    Attributes:
+        rho_T: Resistivity at measurement temperature T, Ohm*cm.
+        rho_23: Resistivity corrected to 23 C, Ohm*cm. None if no temperature
+            / dopant information was supplied.
+        f2: F2 from Table 3 (finite-diameter correction).
+        f_w_s: F(w/S) from Appendix X1 (thickness correction).
+        f_T: Temperature correction F_T = 1 - C_T(T-23), or None.
+        geometric_factor: F = F2 * w * F(w/S) * F_sp, in cm. ρ(T) = R * F.
+    """
+    rho_T: float
+    rho_23: Optional[float]
+    f2: float
+    f_w_s: float
+    f_T: Optional[float]
+    geometric_factor: float
+
+
+def calculate_resistivity_f84(
+    resistance: float,
+    spacing_cm: float,
+    thickness_cm: float,
+    diameter_cm: Optional[float] = None,
+    f_sp: float = 1.0,
+    temperature_c: Optional[float] = None,
+    dopant_type: Optional[str] = None,
+    geometry: str = 'circle',
+) -> F84ResistivityResult:
+    """Compute resistivity per ASTM F84-98 §13.5–13.8.
+
+        rho(T)  = R * F2 * w * F(w/S) * F_sp
+        rho(23) = rho(T) * (1 - C_T * (T - 23))    [if T, dopant supplied]
+
+    Unlike `calculate_resistivity`, this function applies the full F84
+    correction-factor decomposition rather than collapsing it into a single
+    K factor. Use this for any F84-aligned reporting. The legacy function
+    remains for the simple Smits thin-film and semi-infinite shortcuts.
+
+    F_sp must be supplied by the caller (defaults to 1.0). F84 §11.1.2
+    specifies its measurement via toolmaker's microscope and is outside the
+    scope of this software.
+
+    Args:
+        resistance: V/I ratio R_m, Ohms. Use the forward/reverse mean per
+            F84 §13.2 when delta mode is available.
+        spacing_cm: Probe-tip spacing S, cm.
+        thickness_cm: Specimen thickness w, cm.
+        diameter_cm: Specimen diameter (or rectangle width) D, cm. None or
+            non-positive treats the specimen as infinite (F2 = 4.5324).
+        f_sp: Probe-tip spacing correction factor (default 1.0).
+        temperature_c: Measurement temperature, deg C (optional).
+        dopant_type: 'n' or 'p' for silicon (optional). Required together
+            with temperature_c to populate rho_23.
+        geometry: Sample shape, one of 'circle' (default), 'square',
+            'rectangle_2', 'rectangle_3', 'rectangle_4'.
+
+    Returns:
+        F84ResistivityResult. rho_23 is None unless both temperature_c and
+        dopant_type are supplied.
+    """
+    if not (np.isfinite(resistance) and np.isfinite(spacing_cm)
+            and np.isfinite(thickness_cm)):
+        nan = float('nan')
+        return F84ResistivityResult(nan, None, nan, nan, None, nan)
+    if spacing_cm <= 0 or thickness_cm <= 0:
+        nan = float('nan')
+        return F84ResistivityResult(nan, None, nan, nan, None, nan)
+
+    f2 = f2_finite_diameter(spacing_cm, diameter_cm, geometry=geometry)
+    f_w_s = f_thickness_correction(thickness_cm, spacing_cm)
+    geometric_factor = f2 * thickness_cm * f_w_s * f_sp
+    rho_T = resistance * geometric_factor
+
+    rho_23: Optional[float] = None
+    f_T: Optional[float] = None
+    if temperature_c is not None and dopant_type is not None:
+        f_T = f_temperature_correction(rho_T, temperature_c, dopant_type)
+        if np.isfinite(f_T):
+            rho_23 = rho_T * f_T
+
+    return F84ResistivityResult(
+        rho_T=rho_T,
+        rho_23=rho_23,
+        f2=f2,
+        f_w_s=f_w_s,
+        f_T=f_T,
+        geometric_factor=geometric_factor,
+    )
+
+
 def format_resistivity_formula(
     spacing_cm: float,
     model: str,
