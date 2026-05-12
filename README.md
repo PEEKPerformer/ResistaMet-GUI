@@ -3,7 +3,7 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19919751.svg)](https://doi.org/10.5281/zenodo.19919751)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Open-source graphical interface for electrical characterization using Keithley 2400/2450 sourcemeters, with advanced four-point probe analysis.
+Open-source graphical interface for electrical characterization using Keithley 2400-family sourcemeters, with ASTM F84-aligned four-point-probe analysis.
 
 **Version:** 1.7.0
 **Author:** Brenden Ferland
@@ -40,7 +40,13 @@ Optional: `--sim-resistance 1000` (1 kΩ DUT) or `--sim-model 2410` (advertise a
 
 ## Overview
 
-ResistaMet GUI is a PyQt5-based desktop application for controlling Keithley sourcemeters and performing electrical measurements. It supports five measurement modes (including hardware-driven I-V sweeps), real-time data visualization, multi-spot four-point probe analysis with delta mode, and dual-format data export.
+ResistaMet GUI is a PyQt5 desktop application for controlling Keithley sourcemeters and performing electrical measurements. It supports five measurement modes (including hardware-driven I-V sweeps), real-time data visualization, multi-spot four-point-probe analysis with delta mode and ASTM F84-aligned correction factors, and dual-format data export.
+
+## Statement of need
+
+The Keithley 2400/2450 family is standard equipment in materials, sensor, and device-physics labs. A typical day on one of these instruments combines long-duration fixed-bias logging with event annotations, periodic four-point-probe surveys, and routine 2-/4-wire resistance measurements — usually on the same instrument and the same sample. No single open application covers that combined workflow.
+
+Researchers today either commit to a scripting framework (`pymeasure`, `QCoDeS`) and write `Procedure` subclasses, buy per-seat vendor software (`KickStart`, Windows-only, no four-point-probe analysis), or assemble narrow single-mode tools. ResistaMet GUI is for researchers who own a Keithley sourcemeter, do not write instrument-control code, and need every mode of that bench workflow in one point-and-click application.
 
 ## Features
 
@@ -57,11 +63,13 @@ ResistaMet GUI is a PyQt5-based desktop application for controlling Keithley sou
 ### Four-Point Probe
 
 - Sheet resistance (Rs), resistivity, and conductivity calculated in real time
-- **Multi-spot tracking** -- save measurements at multiple probe positions, compare uniformity
-- **Live histogram** of Rs distribution (replaces flat-line plot)
-- **Current reversal (delta mode)** -- alternates +I/-I to cancel thermoelectric EMF
-- **Probe safety envelope** -- configurable warn / hard-stop power thresholds (default 10 mW / 100 mW). A pre-flight check refuses to start if the configured worst-case `I_source × V_compliance` exceeds the hard stop; a runtime check aborts the run and disables output if measured `V × I` exceeds it. Sized for tungsten-carbide tips (Signatone SP4 family) and conservative for thin-film / conductive-polymer samples where local Joule heating can damage the sample before the probe.
-- Models: thin film, semi-infinite, finite thin, with configurable K factor and alpha correction
+- **True 4-wire sense path** — outer probes carry current, inner probes measure voltage via the Keithley's Sense terminals (`:SYST:RSEN ON`). Bench-verified against a Signatone S-302 probe head; see [`tests/hardware/rsen_diagnostic.py`](tests/hardware/rsen_diagnostic.py)
+- **ASTM F84-98 correction factors** — geometry-aware F₂ from Table 3 (circles) and the Smits 1958 table (squares, rectangles L/W ∈ {2, 3, 4}), thickness correction F(w/S) from Appendix X1.1 (valid out to w/S = 2.0), optional temperature correction F_T from Table 5 for n-/p-type silicon. Activated automatically when the user supplies a finite diameter D, non-circle geometry, or temperature + dopant
+- **Multi-spot tracking** — save measurements at multiple probe positions, compare uniformity
+- **Live histogram** of Rs distribution
+- **Current reversal (delta mode)** — alternates +I/−I to cancel thermoelectric EMF; CSV exports include per-polarity V₊, V₋, R_f, R_r columns (F84 §13.1 diagnostic)
+- **Probe safety envelope** — configurable warn / hard-stop power thresholds (default 10 mW / 100 mW). A pre-flight check refuses to start if the configured worst-case `I_source × V_compliance` exceeds the hard stop; a runtime check aborts the run and disables output if measured `V × I` exceeds it. Sized for tungsten-carbide tips (Signatone SP4 family) and conservative for thin-film / conductive-polymer samples where local Joule heating can damage the sample before the probe
+- Legacy K · α · (V/I) path retained for non-Si materials and custom calibration factors (e.g. NIST-traceable reference standards)
 - Inter-spot uniformity statistics in export
 
 ### I-V Sweep
@@ -72,7 +80,7 @@ ResistaMet GUI is a PyQt5-based desktop application for controlling Keithley sou
 - Live X-Y I-V plot (separate canvas, not time-series)
 - Per-point NPLC and compliance limits
 
-### Instrument Optimizations (v1.4.0)
+### Instrument Optimizations
 
 - **Hardware averaging filter** -- repeat or moving average, 1-100 readings, runs on the Keithley itself (`:SENS:AVER`)
 - **Auto zero control** -- `on` (accurate), `once` (fast), or `off` (fastest, drifts); ~3x speed boost in fast mode
@@ -159,7 +167,7 @@ sudo apt-get install -y \
     libxcb-sync1 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1
 ```
 
-(This is the same list our CI uses — see [`.github/workflows/tests.yml`](.github/workflows/tests.yml).)
+(This is the same list our CI uses — see [`.github/workflows/test.yml`](.github/workflows/test.yml).)
 
 ## Quick Start
 
@@ -187,39 +195,15 @@ sudo apt-get install -y \
 
 ## Project Structure
 
-```
-ResistaMet-GUI/
-├── resistamet-gui.py              # Entry point
-├── resistamet_gui/
-│   ├── constants.py               # Version, defaults
-│   ├── config.py                  # User profiles, JSON persistence
-│   ├── buffers.py                 # Circular buffer with statistics
-│   ├── calculations.py            # 4PP formulas (pure functions)
-│   ├── instrument.py              # Keithley VISA wrapper
-│   ├── workers.py                 # Measurement thread (QThread)
-│   ├── data_export.py             # Dual JSON+CSV export with checkpoints
-│   ├── system_utils.py            # Sleep prevention, platform detection
-│   ├── logging_config.py          # Python logging setup
-│   └── ui/
-│       ├── main_window.py         # Main application window
-│       ├── dialogs.py             # Settings dialog
-│       ├── canvas.py              # Matplotlib + histogram canvas
-│       └── widgets.py             # EngineeringSpinBox, NoScrollSpinBox
-├── tests/
-│   ├── test_buffers.py
-│   ├── test_calculations.py
-│   ├── test_config.py
-│   ├── test_data_export.py
-│   ├── test_system_utils.py
-│   ├── test_gui_smoke.py          # Qt widget lifecycle tests
-│   └── test_widgets.py            # Engineering notation parsing tests
-└── requirements.txt
-```
+- `resistamet_gui/` — application package. Core modules: `calculations.py` (pure F84 / Smits formulas), `instrument.py` (Keithley VISA wrapper), `workers.py` (QThread measurement loop), `data_export.py` (dual JSON+CSV with crash recovery), `_simulator.py` (in-package Keithley simulator), and `ui/` (main window, dialogs, canvas, widgets).
+- `tests/` — pytest suite. Unit/integration tests for every module, `test_gui_smoke.py` for Qt widget lifecycle, `test_e2e_simulator.py` for end-to-end UI-to-CSV pipeline, `test_workers.py::TestSCPIContract` for per-mode SCPI command assertions, `tests/fakes/` (the fake instrument), `tests/fixtures/scpi_traces*/` (captured hardware traces), `tests/hardware/` (real-instrument tests gated by `RESISTAMET_HARDWARE_ADDR`).
+- `docs/sim_fidelity.md` — simulator validation methodology and intentional gaps.
+- `scripts/community_capture.py` — self-contained tool for contributors to capture SCPI traces from other 2400-family models.
 
 ## Testing
 
 ```bash
-# Unit + integration suite (250 tests; pytest.ini ignores the e2e file by default)
+# Unit + integration suite (pytest.ini ignores the e2e file by default)
 QT_QPA_PLATFORM=offscreen pytest tests/ -v
 
 # End-to-end suite (drives every tab through the in-package simulator,
@@ -238,11 +222,7 @@ Hardware-validated (29 SCPI fixtures + 6 documented quirks, three DUT decades):
 - **Keithley 2420** (3 A model, firmware C30) — primary capture source
 - **Keithley 2400** (1 A model, firmware C30) — cross-model validation, 29/29 pass
 
-Should work with any Keithley 2400/2450 series via GPIB or USB. The
-production code identifies the connected model from `*IDN?` and surfaces
-its source/measure caps at connect time; if your model isn't in the
-known table, ResistaMet still proceeds — see "Help validate cross-model
-fidelity" below to contribute a trace.
+The production code identifies the connected model from `*IDN?` against a static specification table covering the 2400 / 2401 / 2410 / 2420 / 2425 / 2430 / 2440 / 2450 family and surfaces the matching source/measure envelope at connect time. The 2400-family SCPI surface is largely uniform, so the other models in that table should work in principle, but **only the 2400 and 2420 are hardware-validated in-house**. If your model isn't yet captured, see "Help validate cross-model fidelity" below — that's how the table gets filled in honestly.
 
 ### Help validate cross-model fidelity
 
@@ -274,19 +254,21 @@ If you use ResistaMet GUI in your research, please cite:
 
 ```
 Ferland, B. (2026). ResistaMet GUI: An Open-Source Electrical Measurement Suite
-for Keithley Sourcemeters (Version 1.4.1) [Software].
-Zenodo. https://doi.org/10.5281/zenodo.19919751
+for Keithley Sourcemeters [Software]. Zenodo. https://doi.org/10.5281/zenodo.19919751
 ```
 
-The DOI above is the *concept DOI* and always resolves to the latest archived version.
-Zenodo also provides a per-version DOI for citing a specific release.
-
-A `CITATION.cff` is included in the repository for machine-readable citation metadata.
+The DOI above is the *concept DOI* and always resolves to the latest archived version. Zenodo also provides a per-version DOI for citing a specific release. A `CITATION.cff` is included in the repository for machine-readable citation metadata.
 
 ## Contributing
 
-Contributions welcome -- open an issue or submit a pull request.
+Contributions are welcome. Please see:
+
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — bug reports, feature requests, development setup, and the cross-model trace contribution path.
+- [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) — community guidelines.
+- [Issue templates](.github/ISSUE_TEMPLATE) — bug report, feature request, and cross-model SCPI-trace submission.
+
+The fastest way to help right now is to run [`scripts/community_capture.py`](scripts/community_capture.py) on any Keithley 2400-family instrument other than the 2400 and 2420 already validated in-house — see the "Help validate cross-model fidelity" section above.
 
 ## License
 
-MIT License with Academic Citation Clause.
+MIT License with Academic Citation Clause — see [`LICENSE.md`](LICENSE.md).
