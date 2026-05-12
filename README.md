@@ -143,7 +143,7 @@ resistamet-gui --simulate   # in-package simulator, no hardware
 If you launch without `--simulate` you need a VISA backend so PyVISA can reach the instrument:
 
 - **NI-VISA** ([download](https://www.ni.com/en/support/downloads/drivers/download.ni-visa.html)) — needed for NI GPIB adapters; **Windows and Linux only**. NI dropped macOS support after NI-VISA 18.5 (2020); on Apple Silicon the legacy installer will not run at all.
-- **`pyvisa-py`** (`pip install pyvisa-py`) — pure-Python backend, suitable for Prologix USB-GPIB adapters and serial sourcemeters. This is the recommended path on macOS.
+- **`pyvisa-py`** (`pip install pyvisa-py`) — pure-Python backend; the recommended path on macOS. Reportedly works with Prologix USB-GPIB adapters and serial sourcemeters, but I haven't tested either configuration here — only NI-VISA + a Keithley 2420 on Windows. Reports welcome.
 
 If neither is installed and you're not using `--simulate`, **Test Connection** will fail with `ValueError: Could not locate a VISA implementation`.
 
