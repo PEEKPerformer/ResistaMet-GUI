@@ -65,11 +65,14 @@ def test_readme_hero_version_matches():
 
 
 def test_changelog_has_entry_for_current_version():
-    """The Version History section of README must include an entry for the
-    current __version__. Forces release-flow discipline.
+    """CHANGELOG.md must include an entry for the current __version__.
+    Forces release-flow discipline.
     """
     from resistamet_gui.constants import __version__ as code_version
-    readme = _read("README.md")
-    assert f"### v{code_version}" in readme, (
-        f"README Version History missing '### v{code_version}' entry"
+    changelog = _read("CHANGELOG.md")
+    # Keep-a-Changelog uses `## [X.Y.Z] - DATE`; accept either the bracketed
+    # form or a plain heading so a temporary unreleased entry is also valid.
+    pattern = rf"^##\s+\[?{re.escape(code_version)}\]?"
+    assert re.search(pattern, changelog, re.MULTILINE), (
+        f"CHANGELOG.md missing entry for {code_version}"
     )
