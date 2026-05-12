@@ -11,7 +11,7 @@ This Code of Conduct applies within all project spaces, including the GitHub rep
 
 ## Reporting
 
-To report an incident, contact the project maintainer at: **dhadamsonlab@gmail.com**
+To report an incident, contact the project maintainer at: **brendenferland@gmail.com**
 
 All reports will be reviewed and investigated promptly and fairly. The maintainer is obligated to respect the privacy of anyone reporting an incident.
 
