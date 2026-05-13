@@ -431,6 +431,7 @@ class MeasurementWorker(QThread):
                     units=units,
                     output_settings=self.settings.get('output'),
                     on_compress=self._emit_compress_status,
+                    on_large_file=self._emit_large_file_status,
                 )
                 # Primary filename for downstream UI/log references.
                 primary_paths = self.exporter.output_paths
@@ -984,6 +985,13 @@ class MeasurementWorker(QThread):
             f"({orig_mb:.1f} MB -> {gz_mb:.1f} MB)"
         )
 
+    def _emit_large_file_status(self, path: Path, size_mb: float) -> None:
+        """Status callback fired by CsvExporter when an uncompressed run is large."""
+        self.status_update.emit(
+            f"Run wrote {size_mb:.1f} MB to {path.name}. "
+            f"Compression is off — enable in Settings -> Output to gzip future runs."
+        )
+
     def _create_base_path(self, source_value_str: str) -> Path:
         """Create a safe base path for measurement data (without extension).
 
@@ -1229,6 +1237,13 @@ class VdpMeasurementWorker(QThread):
             f"({orig_mb:.1f} MB -> {gz_mb:.1f} MB)"
         )
 
+    def _emit_large_file_status(self, path: Path, size_mb: float) -> None:
+        """Status callback fired by CsvExporter when an uncompressed run is large."""
+        self.status_update.emit(
+            f"Run wrote {size_mb:.1f} MB to {path.name}. "
+            f"Compression is off — enable in Settings -> Output to gzip future runs."
+        )
+
     def run(self) -> None:
         self.running = True
         try:
@@ -1330,6 +1345,7 @@ class VdpMeasurementWorker(QThread):
             units=units,
             output_settings=self.settings.get('output'),
             on_compress=self._emit_compress_status,
+            on_large_file=self._emit_large_file_status,
         )
         primary_paths = self.exporter.output_paths
         self.filename = str(primary_paths[0]) if primary_paths else str(base_path)

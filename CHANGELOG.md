@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Compression fires at finalize and emits a status-bar line (e.g. `Compressed run.csv -> run.csv.gz (38.2 MB -> 4.1 MB)`).
 - **HDF5 backend** writes a single `.h5` with chunked, gzip-compressed dataset and metadata in `.attrs`. `h5py` is lazy-imported and listed as an optional dependency; the Output tab disables the HDF5 row when it isn't installed.
 - **`open_result_csv`** in the Results Viewer now opens both `.csv` and `.csv.gz`, tolerates legacy column names (`Elapsed Time (s)` as well as `elapsed_s`), and pulls run metadata from the `#` header into the status log. This also fixes a silent breakage where the v1.x viewer searched for `'Elapsed Time'` but exporters had been emitting `elapsed_s`.
+- **Large-file status nudge.** When a run finalizes to an uncompressed `.csv` above ~20 MB (`LARGE_FILE_NOTIFY_MB`), the status bar surfaces the size and points users at Settings → Output to enable compression. Passive — no dialog, no blocking, no prompt on small runs. Stays quiet when the file was already compressed.
 
 ### Migration
 - Existing pipelines that parse the per-run `.json` will not see new files after upgrade. Either update them to read the CSV header (`resistamet_gui.data_export.parse_metadata()` is a 1-call helper, supports `.csv.gz` too), or open Settings → Output and switch the format to `Legacy: CSV + JSON (pre-2.0)`.

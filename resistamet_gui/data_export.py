@@ -38,6 +38,12 @@ LEGACY_FORMAT_VERSION = "1.0"
 
 _CSV_END_MARKER = "# --- run completed ---"
 
+# Threshold above which CsvExporter fires the large-file notification when
+# the final artifact landed uncompressed. Aggressive on purpose — most
+# overnight runs cross 20 MB, so users discover the compression setting
+# without it ever blocking them.
+LARGE_FILE_NOTIFY_MB = 20.0
+
 
 # -------------------------- Metadata serialization --------------------------
 
@@ -369,6 +375,8 @@ class CsvExporter(_BaseExporter):
         compression: str = "never",
         threshold_mb: float = 5.0,
         on_compress: Optional[Callable[[Path, Path, float, float], None]] = None,
+        on_large_file: Optional[Callable[[Path, float], None]] = None,
+        large_file_notify_mb: float = LARGE_FILE_NOTIFY_MB,
     ):
         self.base_path = Path(base_path)
         self.csv_path = self.base_path.with_suffix('.csv')
@@ -378,6 +386,8 @@ class CsvExporter(_BaseExporter):
         self.compression = compression
         self.threshold_mb = float(threshold_mb)
         self.on_compress = on_compress
+        self.on_large_file = on_large_file
+        self.large_file_notify_mb = float(large_file_notify_mb)
 
         self._row_count = 0
         self._csv_file = None
@@ -439,6 +449,22 @@ class CsvExporter(_BaseExporter):
         self._final_path = self._maybe_compress()
         self._finalized = True
         logger.info(f"Export finalized: {self._row_count} rows -> {self._final_path}")
+        # Passive nudge: if the final artifact is an uncompressed .csv that's
+        # crossed the notification threshold, tell the user. Compressed runs
+        # already surface through on_compress, so we skip them here.
+        if (
+            self.on_large_file is not None
+            and self._final_path.suffix == '.csv'
+        ):
+            try:
+                size_mb = self._final_path.stat().st_size / (1024 * 1024)
+            except OSError:
+                size_mb = 0.0
+            if size_mb >= self.large_file_notify_mb:
+                try:
+                    self.on_large_file(self._final_path, size_mb)
+                except Exception as e:
+                    logger.debug(f"on_large_file callback raised (ignored): {e}")
 
     def _maybe_compress(self) -> Path:
         if self.compression == "never":
@@ -758,6 +784,7 @@ def make_exporter(
     units: Optional[List[str]] = None,
     output_settings: Optional[Dict[str, Any]] = None,
     on_compress: Optional[Callable[[Path, Path, float, float], None]] = None,
+    on_large_file: Optional[Callable[[Path, float], None]] = None,
 ) -> _BaseExporter:
     """Construct the exporter chosen by ``output_settings['format']``.
 
@@ -793,4 +820,5 @@ def make_exporter(
         compression=output_settings.get('compression', 'never'),
         threshold_mb=float(output_settings.get('compression_threshold_mb', 5.0)),
         on_compress=on_compress,
+        on_large_file=on_large_file,
     )

@@ -140,6 +140,50 @@ class TestCompressionPolicy:
         assert calls[0][1].endswith('.csv.gz')
 
 
+class TestLargeFileNotification:
+    """The passive nudge that fires when a finalized run leaves a big uncompressed .csv."""
+
+    def test_fires_when_csv_exceeds_threshold(self, base_path, basic_meta):
+        calls = []
+        exp = CsvExporter(
+            base_path, basic_meta, ['elapsed_s', 'R_ohm'],
+            compression='never',
+            on_large_file=lambda p, mb: calls.append((p.name, mb)),
+            large_file_notify_mb=0.0,  # any non-empty file counts as "large"
+        )
+        exp.write_row([0.0, 1.05])
+        exp.finalize()
+        assert len(calls) == 1
+        assert calls[0][0].endswith('.csv')
+        assert calls[0][1] > 0
+
+    def test_silent_below_threshold(self, base_path, basic_meta):
+        calls = []
+        exp = CsvExporter(
+            base_path, basic_meta, ['elapsed_s', 'R_ohm'],
+            compression='never',
+            on_large_file=lambda p, mb: calls.append((p.name, mb)),
+            large_file_notify_mb=100.0,  # well above anything this test writes
+        )
+        exp.write_row([0.0, 1.05])
+        exp.finalize()
+        assert calls == []
+
+    def test_silent_when_compressed(self, base_path, basic_meta):
+        # Compressed final artifacts already surface via on_compress — the
+        # large-file nudge must stay quiet to avoid double-pinging the user.
+        calls = []
+        exp = CsvExporter(
+            base_path, basic_meta, ['elapsed_s', 'R_ohm'],
+            compression='always',
+            on_large_file=lambda p, mb: calls.append((p.name, mb)),
+            large_file_notify_mb=0.0,
+        )
+        exp.write_row([0.0, 1.05])
+        exp.finalize()
+        assert calls == []
+
+
 # --------------------------------- parse_metadata ---------------------------
 
 
