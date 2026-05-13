@@ -1,324 +1,175 @@
 """
 Data Export Module
 
-Provides dual-format export for measurement data:
-- JSON: Complete record with metadata, LLM-readable, programmatic access
-- CSV: Clean data only, Excel-friendly for quick viewing
+Pluggable backends for measurement-data export. A single ``make_exporter()``
+factory selects the implementation from the ``output`` config section:
+
+- ``csv`` (default)        single ``.csv`` with ``#``-prefixed metadata header
+- ``hdf5``                 single ``.h5``, gzip-compressed, metadata in attrs
+- ``csv+legacy_json``      pre-2.0 dual ``.csv`` + ``.json`` emit (back-compat)
+
+Compression is orthogonal to format: the CSV path can optionally be gzipped at
+finalize per ``output.compression``. HDF5 is always internally compressed.
 
 Usage:
-    exporter = DualExporter(base_path, metadata, columns)
+
+    exporter = make_exporter(base_path, metadata, columns, units, output_settings)
     exporter.write_row([0.0, 0.00105, 0.001, 1.05])
-    exporter.write_row([1.0, 0.00104, 0.001, 1.04])
-    exporter.finalize()
+    exporter.flush()
+    exporter.finalize({'ended_at': ..., 'total_samples': 1})
 """
 
+import ast
 import csv
+import gzip
 import json
 import logging
+import math
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
+FORMAT_VERSION = "2.0"
+LEGACY_FORMAT_VERSION = "1.0"
 
-class DualExporter:
-    """Exports measurement data to both JSON and CSV formats simultaneously.
+_CSV_END_MARKER = "# --- run completed ---"
 
-    The JSON file contains:
-    - Complete metadata (instrument, parameters, user, sample, etc.)
-    - Column definitions with units
-    - All data rows in compact array format
 
-    The CSV file contains:
-    - Header row with column names
-    - Data rows only (no metadata clutter)
-    - Opens cleanly in Excel
+# -------------------------- Metadata serialization --------------------------
 
-    Example JSON output:
-    {
-        "format_version": "1.0",
-        "meta": {
-            "user": "brenden",
-            "sample": "Si_wafer_001",
-            "mode": "four_point",
-            ...
-        },
-        "columns": ["t_s", "V", "I", "R"],
-        "units": ["s", "V", "A", "Ω"],
-        "data": [
-            [0.0, 0.00105, 0.001, 1.05],
-            [1.0, 0.00104, 0.001, 1.04]
-        ]
-    }
 
-    Example CSV output:
-    t_s,V,I,R
-    0.0,0.00105,0.001,1.05
-    1.0,0.00104,0.001,1.04
-    """
+def _flatten_metadata(meta: Dict[str, Any], prefix: str = "") -> List[Tuple[str, Any]]:
+    items: List[Tuple[str, Any]] = []
+    for key, value in meta.items():
+        full = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            items.extend(_flatten_metadata(value, full))
+        else:
+            items.append((full, value))
+    return items
 
-    FORMAT_VERSION = "1.0"
 
-    def __init__(
-        self,
-        base_path: Union[str, Path],
-        metadata: Dict[str, Any],
-        columns: List[str],
-        units: Optional[List[str]] = None
-    ):
-        """Initialize the dual exporter.
+def _format_scalar(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        if math.isnan(value):
+            return "NaN"
+        if math.isinf(value):
+            return "Infinity" if value > 0 else "-Infinity"
+    return repr(value)
 
-        Args:
-            base_path: Base file path without extension (e.g., "/data/measurement_001")
-            metadata: Dictionary of metadata (user, sample, mode, parameters, etc.)
-            columns: List of column names (e.g., ["t_s", "V", "I", "R"])
-            units: Optional list of units for each column (e.g., ["s", "V", "A", "Ω"])
-        """
-        self.base_path = Path(base_path)
-        self.json_path = self.base_path.with_suffix('.json')
-        self.csv_path = self.base_path.with_suffix('.csv')
 
-        self.metadata = metadata
-        self.columns = columns
-        self.units = units or []
-
-        self._data_rows: List[List[Any]] = []
-        self._csv_file = None
-        self._csv_writer = None
-        self._finalized = False
-        self._last_checkpoint_count = 0
-
-        self._init_csv()
-
-    def _init_csv(self) -> None:
-        """Initialize the CSV file with headers."""
-        try:
-            # Ensure directory exists
-            self.csv_path.parent.mkdir(parents=True, exist_ok=True)
-
-            self._csv_file = open(self.csv_path, 'w', newline='', encoding='utf-8')
-            self._csv_writer = csv.writer(self._csv_file)
-            self._csv_writer.writerow(self.columns)
-            self._csv_file.flush()
-
-            logger.debug(f"Initialized CSV export: {self.csv_path}")
-        except Exception as e:
-            logger.error(f"Failed to initialize CSV export: {e}")
-            raise
-
-    def write_row(self, row: List[Any]) -> None:
-        """Write a data row to both formats.
-
-        Args:
-            row: List of values matching the column order
-        """
-        if self._finalized:
-            raise RuntimeError("Cannot write to finalized exporter")
-
-        # Store for JSON (written at end)
-        self._data_rows.append(row)
-
-        # Write to CSV immediately (streaming)
-        if self._csv_writer:
-            # Format floats nicely for CSV
-            formatted_row = [
-                f"{v:.6g}" if isinstance(v, float) else str(v)
-                for v in row
-            ]
-            self._csv_writer.writerow(formatted_row)
-
-    def flush(self, checkpoint: bool = True) -> None:
-        """Flush CSV to disk and optionally write JSON checkpoint.
-
-        Args:
-            checkpoint: If True, also write a checkpoint JSON file for recovery.
-                       The checkpoint is written as .json.tmp and renamed on finalize.
-        """
-        # Flush CSV
-        if self._csv_file:
-            try:
-                self._csv_file.flush()
-                os.fsync(self._csv_file.fileno())
-            except Exception as e:
-                logger.warning(f"Failed to flush CSV: {e}")
-
-        # Write JSON checkpoint if we have new data
-        if checkpoint and len(self._data_rows) > self._last_checkpoint_count:
-            self._write_checkpoint()
-
-    def _write_checkpoint(self) -> None:
-        """Write a checkpoint JSON file for crash recovery.
-
-        The checkpoint file is written as .json.tmp and contains all data
-        collected so far. On successful finalize(), this is replaced with
-        the final .json file.
-        """
-        checkpoint_path = self.base_path.with_suffix('.json.tmp')
-        try:
-            checkpoint_data = {
-                "format_version": self.FORMAT_VERSION,
-                "meta": {
-                    **self.metadata,
-                    "_checkpoint": True,
-                    "_checkpoint_time": datetime.now().isoformat(),
-                },
-                "columns": self.columns,
-                "units": self.units,
-                "row_count": len(self._data_rows),
-                "data": self._data_rows
-            }
-            # Write to temp file first, then rename for atomicity
-            temp_path = self.base_path.with_suffix('.json.tmp.writing')
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
-            # Atomic rename
-            temp_path.replace(checkpoint_path)
-            self._last_checkpoint_count = len(self._data_rows)
-            logger.debug(f"Checkpoint saved: {len(self._data_rows)} rows")
-        except Exception as e:
-            logger.warning(f"Failed to write checkpoint: {e}")
-
-    def finalize(self, end_metadata: Optional[Dict[str, Any]] = None) -> None:
-        """Finalize export and write JSON file.
-
-        Args:
-            end_metadata: Optional additional metadata to add at end
-                         (e.g., end_time, total_samples)
-        """
-        if self._finalized:
-            return
-
-        # Close CSV
-        if self._csv_file:
-            try:
-                self._csv_file.flush()
-                self._csv_file.close()
-            except Exception as e:
-                logger.warning(f"Error closing CSV: {e}")
-            finally:
-                self._csv_file = None
-                self._csv_writer = None
-
-        # Build final metadata
-        final_meta = dict(self.metadata)
-        if end_metadata:
-            final_meta.update(end_metadata)
-
-        # Write JSON
-        json_data = {
-            "format_version": self.FORMAT_VERSION,
-            "meta": final_meta,
-            "columns": self.columns,
-            "units": self.units,
-            "row_count": len(self._data_rows),
-            "data": self._data_rows
-        }
-
-        try:
-            with open(self.json_path, 'w', encoding='utf-8') as f:
-                json.dump(json_data, f, indent=2, ensure_ascii=False)
-            logger.info(f"Saved JSON export: {self.json_path}")
-
-            # Clean up checkpoint file after successful finalization
-            checkpoint_path = self.base_path.with_suffix('.json.tmp')
-            if checkpoint_path.exists():
-                try:
-                    checkpoint_path.unlink()
-                    logger.debug("Removed checkpoint file after successful finalization")
-                except Exception as e:
-                    logger.warning(f"Failed to remove checkpoint file: {e}")
-
-        except Exception as e:
-            logger.error(f"Failed to write JSON: {e}")
-            raise
-
-        self._finalized = True
-        logger.info(f"Export finalized: {len(self._data_rows)} rows")
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if not self._finalized:
-            self.finalize()
+def _parse_scalar(value: str) -> Any:
+    if value == "":
+        return None
+    if value == "true":
+        return True
+    if value == "false":
         return False
+    if value == "NaN":
+        return float('nan')
+    if value == "Infinity":
+        return float('inf')
+    if value == "-Infinity":
+        return float('-inf')
+    try:
+        return ast.literal_eval(value)
+    except (ValueError, SyntaxError):
+        return value
 
-    @property
-    def row_count(self) -> int:
-        """Number of data rows written."""
-        return len(self._data_rows)
 
-    @staticmethod
-    def recover_from_checkpoint(checkpoint_path: Union[str, Path]) -> Optional[Dict[str, Any]]:
-        """Recover data from a checkpoint file after a crash.
+def _write_metadata_block(f, meta: Dict[str, Any], units: Optional[List[str]] = None) -> None:
+    f.write(f"# resistamet_format_version: {FORMAT_VERSION}\n")
+    for key, value in _flatten_metadata(meta):
+        f.write(f"# {key}: {_format_scalar(value)}\n")
+    if units:
+        f.write(f"# units: {','.join(units)}\n")
 
-        Args:
-            checkpoint_path: Path to the .json.tmp checkpoint file
 
-        Returns:
-            Dictionary with recovered data, or None if recovery failed.
-            The returned dict has the same structure as a finalized JSON file,
-            with an additional '_recovered' flag in metadata.
+def parse_metadata(path: Union[str, Path]) -> Dict[str, Any]:
+    """Parse the ``#`` metadata header (and trailing end block, if present) from a CSV.
 
-        Example:
-            data = DualExporter.recover_from_checkpoint('/path/to/measurement.json.tmp')
-            if data:
-                # Save as final JSON
-                with open('/path/to/measurement_recovered.json', 'w') as f:
-                    json.dump(data, f, indent=2)
-        """
-        checkpoint_path = Path(checkpoint_path)
-        if not checkpoint_path.exists():
-            logger.warning(f"Checkpoint file not found: {checkpoint_path}")
-            return None
+    Supports plain ``.csv`` and ``.csv.gz``. Returns a flat dict of key/value
+    pairs with values coerced back to native Python types. The ``units`` line
+    is exposed as a list. End-metadata fields (``ended_at``, ``total_samples``,
+    ``duration_s``) merge into the same dict with no special prefix.
+    """
+    path = Path(path)
+    is_gz = path.suffix == '.gz'
+    opener = gzip.open if is_gz else open
+    meta: Dict[str, Any] = {}
 
-        try:
-            with open(checkpoint_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+    def absorb(line: str) -> None:
+        body = line[1:].strip()
+        if not body or body.startswith('---'):
+            return
+        if ':' not in body:
+            return
+        key, _, value = body.partition(':')
+        key = key.strip()
+        value = value.strip()
+        if key == 'units':
+            meta['units'] = value.split(',')
+        else:
+            meta.setdefault(key, _parse_scalar(value))
 
-            # Mark as recovered and remove checkpoint markers
-            if 'meta' in data:
-                data['meta']['_recovered'] = True
-                data['meta']['_recovered_from'] = str(checkpoint_path)
-                data['meta'].pop('_checkpoint', None)
-                data['meta'].pop('_checkpoint_time', None)
+    # Head pass: read leading # lines until the column-header row.
+    with opener(path, 'rt', encoding='utf-8') as f:
+        for line in f:
+            line = line.rstrip('\n')
+            if not line:
+                continue
+            if not line.startswith('#'):
+                break
+            absorb(line)
 
-            logger.info(f"Recovered {data.get('row_count', 0)} rows from checkpoint")
-            return data
+    # Tail pass: pick up any trailing # lines written at finalize.
+    # For plain CSVs we seek the last 8 KiB so this is cheap on large files.
+    # For .gz we fall back to a full streaming read since gzip can't seek.
+    try:
+        if is_gz:
+            with opener(path, 'rt', encoding='utf-8') as f:
+                tail_lines = f.readlines()[-64:]
+        else:
+            size = path.stat().st_size
+            with open(path, 'rb') as fb:
+                fb.seek(max(0, size - 8192))
+                tail_text = fb.read().decode('utf-8', errors='replace')
+            tail_lines = tail_text.splitlines()
+        for line in reversed(tail_lines):
+            line = line.rstrip()
+            if not line:
+                continue
+            if not line.startswith('#'):
+                break
+            absorb(line)
+    except Exception as e:
+        logger.debug(f"parse_metadata tail pass failed (non-fatal): {e}")
 
-        except Exception as e:
-            logger.error(f"Failed to recover from checkpoint: {e}")
-            return None
+    return meta
 
-    @staticmethod
-    def find_checkpoints(directory: Union[str, Path]) -> List[Path]:
-        """Find all checkpoint files in a directory.
 
-        Args:
-            directory: Directory to search for .json.tmp files
-
-        Returns:
-            List of checkpoint file paths
-        """
-        directory = Path(directory)
-        if not directory.is_dir():
-            return []
-        return list(directory.glob('**/*.json.tmp'))
+# --------------------------- Column config helpers --------------------------
 
 
 def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] = None) -> tuple:
     """Get column names and units for a measurement mode.
 
     Args:
-        mode: Measurement mode ('resistance', 'source_v', 'source_i', 'four_point')
+        mode: Measurement mode ('resistance', 'source_v', 'source_i', 'four_point',
+            'sweep', 'vdp').
         measurement_settings: Optional settings dict. When provided and 4PP
             delta mode is enabled, the column list expands to include the
             per-polarity values V+, V-, R_f, R_r (F84 §11.2.2.2 diagnostic).
-
-    Returns:
-        Tuple of (columns, units)
     """
     configs = {
         'resistance': (
@@ -356,9 +207,6 @@ def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] 
     cols, units = configs.get(mode, (['elapsed_s', 'value'], ['s', '']))
 
     # In 4PP delta mode, splice per-polarity columns before compliance/event.
-    # The data points themselves are V_delta in the V column; V+ and V-
-    # are the raw forward/reverse readings, and R_f, R_r are the per-polarity
-    # resistances that F84 §13.1 wants kept separate.
     if mode == 'four_point' and measurement_settings is not None:
         if measurement_settings.get('fpp_delta_mode'):
             cols = list(cols)
@@ -378,19 +226,7 @@ def build_metadata(
     instrument_idn: str = "",
     start_time: Optional[datetime] = None
 ) -> Dict[str, Any]:
-    """Build metadata dictionary for export.
-
-    Args:
-        user: Username
-        sample_name: Sample identifier
-        mode: Measurement mode
-        settings: Full settings dictionary
-        instrument_idn: Instrument identification string
-        start_time: Measurement start time (defaults to now)
-
-    Returns:
-        Metadata dictionary
-    """
+    """Build metadata dictionary for export. Shared schema across all backends."""
     from .constants import __version__
 
     start_time = start_time or datetime.now()
@@ -409,7 +245,6 @@ def build_metadata(
         'settling_time_s': measurement_settings.get('settling_time', 0.2),
     }
 
-    # Add mode-specific parameters
     if mode == 'resistance':
         meta['params'] = {
             'test_current_A': measurement_settings.get('res_test_current'),
@@ -461,3 +296,501 @@ def build_metadata(
         }
 
     return meta
+
+
+# --------------------------------- Backends ---------------------------------
+
+
+class _BaseExporter:
+    """Minimal interface every backend implements."""
+
+    def write_row(self, row: List[Any]) -> None:
+        raise NotImplementedError
+
+    def flush(self, checkpoint: bool = True) -> None:
+        pass
+
+    def finalize(self, end_metadata: Optional[Dict[str, Any]] = None) -> None:
+        raise NotImplementedError
+
+    @property
+    def output_paths(self) -> List[Path]:
+        return []
+
+    @property
+    def row_count(self) -> int:
+        return 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            self.finalize()
+        except Exception:
+            pass
+        return False
+
+
+class CsvExporter(_BaseExporter):
+    """Single CSV with #-prefixed metadata header.
+
+    Layout::
+
+        # resistamet_format_version: 2.0
+        # user: brenden
+        # sample: ...
+        # mode: ...
+        # ... (flattened metadata, nested via dots)
+        # units: s,V,A,Ω,Ω/□,...
+        elapsed_s,V,I,...        ← column header row
+        0.1,0.00105,0.001,...    ← streamed data rows
+        # --- run completed ---
+        # ended_at: ...
+        # total_samples: ...
+
+    Crash safety: rows are written and fsync'd as they arrive; the partial
+    CSV is itself the recovery artifact, so no checkpoint sidecar is needed.
+
+    Compression: if ``compression == 'always'`` the file is gzipped on
+    finalize. ``auto`` only gzips if the file is larger than
+    ``threshold_mb``. ``never`` leaves the .csv alone. ``on_compress`` (if
+    set) is invoked with ``(original_path, compressed_path,
+    original_size_mb, compressed_size_mb)`` so the UI can surface a status-
+    bar message.
+    """
+
+    def __init__(
+        self,
+        base_path: Union[str, Path],
+        metadata: Dict[str, Any],
+        columns: List[str],
+        units: Optional[List[str]] = None,
+        compression: str = "never",
+        threshold_mb: float = 5.0,
+        on_compress: Optional[Callable[[Path, Path, float, float], None]] = None,
+    ):
+        self.base_path = Path(base_path)
+        self.csv_path = self.base_path.with_suffix('.csv')
+        self.metadata = metadata
+        self.columns = list(columns)
+        self.units = list(units or [])
+        self.compression = compression
+        self.threshold_mb = float(threshold_mb)
+        self.on_compress = on_compress
+
+        self._row_count = 0
+        self._csv_file = None
+        self._csv_writer = None
+        self._finalized = False
+        self._final_path = self.csv_path
+
+        self._init_csv()
+
+    def _init_csv(self) -> None:
+        try:
+            self.csv_path.parent.mkdir(parents=True, exist_ok=True)
+            self._csv_file = open(self.csv_path, 'w', newline='', encoding='utf-8')
+            _write_metadata_block(self._csv_file, self.metadata, self.units)
+            self._csv_writer = csv.writer(self._csv_file)
+            self._csv_writer.writerow(self.columns)
+            self._csv_file.flush()
+            logger.debug(f"Initialized CSV export: {self.csv_path}")
+        except Exception as e:
+            logger.error(f"Failed to initialize CSV export: {e}")
+            raise
+
+    def write_row(self, row: List[Any]) -> None:
+        if self._finalized:
+            raise RuntimeError("Cannot write to finalized exporter")
+        if self._csv_writer:
+            formatted = [
+                f"{v:.6g}" if isinstance(v, float) else str(v)
+                for v in row
+            ]
+            self._csv_writer.writerow(formatted)
+            self._row_count += 1
+
+    def flush(self, checkpoint: bool = True) -> None:
+        if self._csv_file:
+            try:
+                self._csv_file.flush()
+                os.fsync(self._csv_file.fileno())
+            except Exception as e:
+                logger.warning(f"Failed to flush CSV: {e}")
+
+    def finalize(self, end_metadata: Optional[Dict[str, Any]] = None) -> None:
+        if self._finalized:
+            return
+        if self._csv_file:
+            try:
+                if end_metadata:
+                    self._csv_file.write(f"{_CSV_END_MARKER}\n")
+                    for key, value in _flatten_metadata(end_metadata):
+                        self._csv_file.write(f"# {key}: {_format_scalar(value)}\n")
+                self._csv_file.flush()
+                self._csv_file.close()
+            except Exception as e:
+                logger.warning(f"Error closing CSV: {e}")
+            finally:
+                self._csv_file = None
+                self._csv_writer = None
+
+        self._final_path = self._maybe_compress()
+        self._finalized = True
+        logger.info(f"Export finalized: {self._row_count} rows -> {self._final_path}")
+
+    def _maybe_compress(self) -> Path:
+        if self.compression == "never":
+            return self.csv_path
+        try:
+            size_mb = self.csv_path.stat().st_size / (1024 * 1024)
+        except OSError:
+            return self.csv_path
+        if self.compression == "auto" and size_mb < self.threshold_mb:
+            return self.csv_path
+        gz_path = self.csv_path.with_suffix('.csv.gz')
+        try:
+            with open(self.csv_path, 'rb') as src, gzip.open(gz_path, 'wb', compresslevel=6) as dst:
+                shutil.copyfileobj(src, dst)
+            self.csv_path.unlink()
+            gz_size_mb = gz_path.stat().st_size / (1024 * 1024)
+            if self.on_compress:
+                try:
+                    self.on_compress(self.csv_path, gz_path, size_mb, gz_size_mb)
+                except Exception as e:
+                    logger.debug(f"on_compress callback raised (ignored): {e}")
+            return gz_path
+        except Exception as e:
+            logger.warning(f"Failed to compress CSV (keeping uncompressed): {e}")
+            return self.csv_path
+
+    @property
+    def output_paths(self) -> List[Path]:
+        return [self._final_path]
+
+    @property
+    def row_count(self) -> int:
+        return self._row_count
+
+
+class Hdf5Exporter(_BaseExporter):
+    """Single ``.h5`` with chunked gzip-compressed dataset and metadata in attrs.
+
+    Lazy-imports ``h5py``; raises a clear ``ImportError`` if not installed.
+    All columns are stored as variable-length UTF-8 strings in a compound
+    dtype, so mixed-type modes (vdP labels, compliance flags) work without
+    a separate schema per mode. Numeric callers can re-cast on read.
+    """
+
+    DATASET_NAME = "data"
+    CHUNK_ROWS = 1024
+
+    def __init__(
+        self,
+        base_path: Union[str, Path],
+        metadata: Dict[str, Any],
+        columns: List[str],
+        units: Optional[List[str]] = None,
+    ):
+        try:
+            import h5py
+        except ImportError as e:
+            raise ImportError(
+                "HDF5 export requires the optional 'h5py' package. "
+                "Install with: pip install h5py"
+            ) from e
+        self._h5py = h5py
+
+        self.base_path = Path(base_path)
+        self.h5_path = self.base_path.with_suffix('.h5')
+        self.metadata = metadata
+        self.columns = list(columns)
+        self.units = list(units or [])
+
+        self._row_count = 0
+        self._finalized = False
+
+        self._init_h5()
+
+    def _init_h5(self) -> None:
+        self.h5_path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = self._h5py.File(self.h5_path, 'w')
+        vlen_str = self._h5py.string_dtype(encoding='utf-8')
+        dtype = [(c, vlen_str) for c in self.columns]
+        self._dataset = self._file.create_dataset(
+            self.DATASET_NAME,
+            shape=(0,),
+            maxshape=(None,),
+            chunks=(self.CHUNK_ROWS,),
+            dtype=dtype,
+            compression='gzip',
+            compression_opts=6,
+        )
+        self._set_attrs(self.metadata)
+        if self.units:
+            self._file.attrs['units'] = self.units
+        self._file.attrs['columns'] = self.columns
+        self._file.attrs['resistamet_format_version'] = FORMAT_VERSION
+
+    def _set_attrs(self, meta: Dict[str, Any]) -> None:
+        for key, value in _flatten_metadata(meta):
+            try:
+                if value is None:
+                    self._file.attrs[key] = ""
+                elif isinstance(value, (str, bool, int, float)):
+                    self._file.attrs[key] = value
+                elif isinstance(value, (list, tuple)):
+                    self._file.attrs[key] = list(value)
+                else:
+                    self._file.attrs[key] = repr(value)
+            except (TypeError, ValueError):
+                self._file.attrs[key] = repr(value)
+
+    def write_row(self, row: List[Any]) -> None:
+        if self._finalized:
+            raise RuntimeError("Cannot write to finalized exporter")
+        new_size = self._row_count + 1
+        self._dataset.resize((new_size,))
+        record = tuple(
+            ("" if v is None else (f"{v:.10g}" if isinstance(v, float) else str(v)))
+            for v in row
+        )
+        self._dataset[self._row_count] = record
+        self._row_count = new_size
+
+    def flush(self, checkpoint: bool = True) -> None:
+        try:
+            self._file.flush()
+        except Exception as e:
+            logger.warning(f"Failed to flush HDF5: {e}")
+
+    def finalize(self, end_metadata: Optional[Dict[str, Any]] = None) -> None:
+        if self._finalized:
+            return
+        if end_metadata:
+            self._set_attrs(end_metadata)
+        try:
+            self._file.flush()
+            self._file.close()
+        except Exception as e:
+            logger.warning(f"Error closing HDF5: {e}")
+        self._finalized = True
+        logger.info(f"HDF5 export finalized: {self._row_count} rows -> {self.h5_path}")
+
+    @property
+    def output_paths(self) -> List[Path]:
+        return [self.h5_path]
+
+    @property
+    def row_count(self) -> int:
+        return self._row_count
+
+
+class LegacyDualExporter(_BaseExporter):
+    """Pre-2.0 dual JSON+CSV exporter. Selectable via output.format = csv+legacy_json.
+
+    Identical behavior to the original ``DualExporter`` so anyone with pipelines
+    parsing the ``.json`` file keeps working through one or two more releases.
+    """
+
+    FORMAT_VERSION = LEGACY_FORMAT_VERSION
+
+    def __init__(
+        self,
+        base_path: Union[str, Path],
+        metadata: Dict[str, Any],
+        columns: List[str],
+        units: Optional[List[str]] = None,
+    ):
+        self.base_path = Path(base_path)
+        self.json_path = self.base_path.with_suffix('.json')
+        self.csv_path = self.base_path.with_suffix('.csv')
+        self.metadata = metadata
+        self.columns = columns
+        self.units = units or []
+        self._data_rows: List[List[Any]] = []
+        self._csv_file = None
+        self._csv_writer = None
+        self._finalized = False
+        self._last_checkpoint_count = 0
+        self._init_csv()
+
+    def _init_csv(self) -> None:
+        try:
+            self.csv_path.parent.mkdir(parents=True, exist_ok=True)
+            self._csv_file = open(self.csv_path, 'w', newline='', encoding='utf-8')
+            self._csv_writer = csv.writer(self._csv_file)
+            self._csv_writer.writerow(self.columns)
+            self._csv_file.flush()
+        except Exception as e:
+            logger.error(f"Failed to initialize CSV export: {e}")
+            raise
+
+    def write_row(self, row: List[Any]) -> None:
+        if self._finalized:
+            raise RuntimeError("Cannot write to finalized exporter")
+        self._data_rows.append(row)
+        if self._csv_writer:
+            formatted = [
+                f"{v:.6g}" if isinstance(v, float) else str(v)
+                for v in row
+            ]
+            self._csv_writer.writerow(formatted)
+
+    def flush(self, checkpoint: bool = True) -> None:
+        if self._csv_file:
+            try:
+                self._csv_file.flush()
+                os.fsync(self._csv_file.fileno())
+            except Exception as e:
+                logger.warning(f"Failed to flush CSV: {e}")
+        if checkpoint and len(self._data_rows) > self._last_checkpoint_count:
+            self._write_checkpoint()
+
+    def _write_checkpoint(self) -> None:
+        checkpoint_path = self.base_path.with_suffix('.json.tmp')
+        try:
+            checkpoint_data = {
+                "format_version": self.FORMAT_VERSION,
+                "meta": {
+                    **self.metadata,
+                    "_checkpoint": True,
+                    "_checkpoint_time": datetime.now().isoformat(),
+                },
+                "columns": self.columns,
+                "units": self.units,
+                "row_count": len(self._data_rows),
+                "data": self._data_rows
+            }
+            temp_path = self.base_path.with_suffix('.json.tmp.writing')
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
+            temp_path.replace(checkpoint_path)
+            self._last_checkpoint_count = len(self._data_rows)
+        except Exception as e:
+            logger.warning(f"Failed to write checkpoint: {e}")
+
+    def finalize(self, end_metadata: Optional[Dict[str, Any]] = None) -> None:
+        if self._finalized:
+            return
+        if self._csv_file:
+            try:
+                self._csv_file.flush()
+                self._csv_file.close()
+            except Exception as e:
+                logger.warning(f"Error closing CSV: {e}")
+            finally:
+                self._csv_file = None
+                self._csv_writer = None
+        final_meta = dict(self.metadata)
+        if end_metadata:
+            final_meta.update(end_metadata)
+        json_data = {
+            "format_version": self.FORMAT_VERSION,
+            "meta": final_meta,
+            "columns": self.columns,
+            "units": self.units,
+            "row_count": len(self._data_rows),
+            "data": self._data_rows
+        }
+        try:
+            with open(self.json_path, 'w', encoding='utf-8') as f:
+                json.dump(json_data, f, indent=2, ensure_ascii=False)
+            checkpoint_path = self.base_path.with_suffix('.json.tmp')
+            if checkpoint_path.exists():
+                try:
+                    checkpoint_path.unlink()
+                except Exception as e:
+                    logger.warning(f"Failed to remove checkpoint file: {e}")
+        except Exception as e:
+            logger.error(f"Failed to write JSON: {e}")
+            raise
+        self._finalized = True
+
+    @property
+    def output_paths(self) -> List[Path]:
+        return [self.csv_path, self.json_path]
+
+    @property
+    def row_count(self) -> int:
+        return len(self._data_rows)
+
+    @staticmethod
+    def recover_from_checkpoint(checkpoint_path: Union[str, Path]) -> Optional[Dict[str, Any]]:
+        checkpoint_path = Path(checkpoint_path)
+        if not checkpoint_path.exists():
+            logger.warning(f"Checkpoint file not found: {checkpoint_path}")
+            return None
+        try:
+            with open(checkpoint_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if 'meta' in data:
+                data['meta']['_recovered'] = True
+                data['meta']['_recovered_from'] = str(checkpoint_path)
+                data['meta'].pop('_checkpoint', None)
+                data['meta'].pop('_checkpoint_time', None)
+            return data
+        except Exception as e:
+            logger.error(f"Failed to recover from checkpoint: {e}")
+            return None
+
+    @staticmethod
+    def find_checkpoints(directory: Union[str, Path]) -> List[Path]:
+        directory = Path(directory)
+        if not directory.is_dir():
+            return []
+        return list(directory.glob('**/*.json.tmp'))
+
+
+# Back-compat alias for code that imports DualExporter directly.
+# New call sites should use make_exporter() instead.
+DualExporter = LegacyDualExporter
+
+
+# --------------------------------- Factory ---------------------------------
+
+
+def make_exporter(
+    base_path: Union[str, Path],
+    metadata: Dict[str, Any],
+    columns: List[str],
+    units: Optional[List[str]] = None,
+    output_settings: Optional[Dict[str, Any]] = None,
+    on_compress: Optional[Callable[[Path, Path, float, float], None]] = None,
+) -> _BaseExporter:
+    """Construct the exporter chosen by ``output_settings['format']``.
+
+    Supported formats:
+
+    - ``csv`` (default) — ``CsvExporter`` with optional gzip on finalize
+    - ``hdf5`` — ``Hdf5Exporter`` (requires optional ``h5py``)
+    - ``csv+legacy_json`` — ``LegacyDualExporter`` (pre-2.0 dual emit)
+
+    ``output_settings`` shape::
+
+        {
+            "format": "csv" | "hdf5" | "csv+legacy_json",
+            "compression": "never" | "always" | "auto",
+            "compression_threshold_mb": 5,
+        }
+
+    Unknown formats fall back to ``csv`` with a logged warning.
+    """
+    output_settings = output_settings or {}
+    fmt = output_settings.get('format', 'csv')
+    if fmt == 'hdf5':
+        return Hdf5Exporter(base_path, metadata, columns, units)
+    if fmt == 'csv+legacy_json':
+        return LegacyDualExporter(base_path, metadata, columns, units)
+    if fmt != 'csv':
+        logger.warning(f"Unknown output format '{fmt}', falling back to 'csv'")
+    return CsvExporter(
+        base_path,
+        metadata,
+        columns,
+        units,
+        compression=output_settings.get('compression', 'never'),
+        threshold_mb=float(output_settings.get('compression_threshold_mb', 5.0)),
+        on_compress=on_compress,
+    )

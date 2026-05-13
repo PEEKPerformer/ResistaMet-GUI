@@ -5,6 +5,21 @@ All notable changes to ResistaMet-GUI are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Measurement output is now a single CSV with a `#`-prefixed metadata header instead of a dual `.json` + `.csv` emit.** The CSV begins with `# resistamet_format_version: 2.0` followed by flattened run metadata (`# user:`, `# mode:`, `# params.*:`, `# units:`), then the column header row and streaming data rows, then a `# --- run completed ---` block with `# ended_at:` / `# total_samples:` / `# duration_s:`. Excel, Origin, and `pandas.read_csv(comment='#')` all handle it transparently. The CSV is also the crash-recovery artifact: streamed and `fsync`'d per row, no separate checkpoint sidecar needed.
+- **New `output` config section** in `config.json` and Settings → Output tab:
+  - `format`: `csv` (default), `hdf5` (requires optional `h5py`), or `csv+legacy_json` for the pre-2.0 dual emit.
+  - `compression`: `never` (default — many lab tools can't open `.gz` directly), `always`, or `auto` (gzip when above `compression_threshold_mb`).
+  - Compression fires at finalize and emits a status-bar line (e.g. `Compressed run.csv -> run.csv.gz (38.2 MB -> 4.1 MB)`).
+- **HDF5 backend** writes a single `.h5` with chunked, gzip-compressed dataset and metadata in `.attrs`. `h5py` is lazy-imported and listed as an optional dependency; the Output tab disables the HDF5 row when it isn't installed.
+- **`open_result_csv`** in the Results Viewer now opens both `.csv` and `.csv.gz`, tolerates legacy column names (`Elapsed Time (s)` as well as `elapsed_s`), and pulls run metadata from the `#` header into the status log. This also fixes a silent breakage where the v1.x viewer searched for `'Elapsed Time'` but exporters had been emitting `elapsed_s`.
+
+### Migration
+- Existing pipelines that parse the per-run `.json` will not see new files after upgrade. Either update them to read the CSV header (`resistamet_gui.data_export.parse_metadata()` is a 1-call helper, supports `.csv.gz` too), or open Settings → Output and switch the format to `Legacy: CSV + JSON (pre-2.0)`.
+- Existing `config.json` files auto-merge the new `output` section with defaults on first load — no manual edit required for the change to take effect.
+
 ## [1.8.2] - 2026-05-12
 
 ### Fixed

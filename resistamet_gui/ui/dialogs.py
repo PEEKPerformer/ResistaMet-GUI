@@ -18,6 +18,8 @@ class SettingsDialog(QDialog):
         self.config_manager = config_manager
         self.username = username
 
+        from ..constants import DEFAULT_SETTINGS
+        default_output = dict(DEFAULT_SETTINGS['output'])
         if username:
             global_settings = config_manager.config
             user_settings_raw = config_manager.get_user_settings(username)
@@ -25,13 +27,16 @@ class SettingsDialog(QDialog):
                 'measurement': {**global_settings['measurement'], **user_settings_raw.get('measurement', {})},
                 'display': {**global_settings['display'], **user_settings_raw.get('display', {})},
                 'file': {**global_settings['file'], **user_settings_raw.get('file', {})},
+                'output': {**default_output, **global_settings.get('output', {}),
+                           **user_settings_raw.get('output', {})},
             }
             self.setWindowTitle(f"Settings for {username}")
         else:
             self.settings = {
                 'measurement': dict(config_manager.config['measurement']),
                 'display': dict(config_manager.config['display']),
-                'file': dict(config_manager.config['file'])
+                'file': dict(config_manager.config['file']),
+                'output': {**default_output, **config_manager.config.get('output', {})},
             }
             self.setWindowTitle("Global Settings")
 
@@ -60,9 +65,11 @@ class SettingsDialog(QDialog):
         self.measurement_tab = self._wrap_scroll(self.create_measurement_tab())
         self.display_tab = self._wrap_scroll(self.create_display_tab())
         self.file_tab = self._wrap_scroll(self.create_file_tab())
+        self.output_tab = self._wrap_scroll(self.create_output_tab())
         self.tabs.addTab(self.measurement_tab, "Measurement")
         self.tabs.addTab(self.display_tab, "Display")
         self.tabs.addTab(self.file_tab, "File")
+        self.tabs.addTab(self.output_tab, "Output")
         self.save_button = QPushButton("Save")
         self.cancel_button = QPushButton("Cancel")
         self.save_button.clicked.connect(self.save_settings)
@@ -242,6 +249,83 @@ class SettingsDialog(QDialog):
         tab.setLayout(layout)
         return tab
 
+    def create_output_tab(self):
+        tab = QWidget()
+        layout = QFormLayout()
+
+        self.output_format = QComboBox()
+        # (data_key, label) pairs. Data key is what we persist to config.json.
+        self._output_format_choices = [
+            ('csv', 'Single CSV with metadata header (default)'),
+            ('hdf5', 'HDF5 (.h5, requires h5py)'),
+            ('csv+legacy_json', 'Legacy: CSV + JSON (pre-2.0)'),
+        ]
+        for _key, label in self._output_format_choices:
+            self.output_format.addItem(label)
+        # Disable the HDF5 option if h5py isn't installed so the user can't
+        # silently pick a backend that will crash at run-time.
+        try:
+            import h5py  # noqa: F401
+            self._h5py_available = True
+        except ImportError:
+            self._h5py_available = False
+            from PyQt5.QtCore import QModelIndex  # noqa: F401
+            model = self.output_format.model()
+            item = model.item(1)
+            item.setEnabled(False)
+            self.output_format.setItemData(1,
+                "HDF5 backend disabled: install the optional 'h5py' package to enable.",
+                Qt.ToolTipRole)
+        self.output_format.setToolTip(
+            "Where measurement runs are written.\n"
+            "  csv             — one .csv with #-prefixed metadata header.\n"
+            "  hdf5            — one .h5 with attrs metadata (compact, needs h5py).\n"
+            "  csv+legacy_json — pre-2.0 dual emit; keep for downstream pipelines."
+        )
+        self.output_format.currentIndexChanged.connect(self._on_output_format_changed)
+        layout.addRow("Output format:", self.output_format)
+
+        self.output_compression = QComboBox()
+        self._output_compression_choices = [
+            ('never', 'Never compress'),
+            ('always', 'Always gzip on save'),
+            ('auto', 'Auto: gzip when size exceeds threshold'),
+        ]
+        for _key, label in self._output_compression_choices:
+            self.output_compression.addItem(label)
+        self.output_compression.setToolTip(
+            "Gzip policy for the csv backend (ignored for hdf5 — HDF5 is "
+            "always internally compressed).\n"
+            "Default 'never' since many lab tools can't open .gz directly."
+        )
+        self.output_compression.currentIndexChanged.connect(self._on_compression_changed)
+        layout.addRow("Compression:", self.output_compression)
+
+        self.output_compression_threshold = QDoubleSpinBox(
+            decimals=1, minimum=0.0, maximum=10240.0, singleStep=1.0, suffix=" MB"
+        )
+        self.output_compression_threshold.setToolTip(
+            "Used only by 'Auto' compression. Files larger than this get gzipped."
+        )
+        layout.addRow("Auto-compression threshold:", self.output_compression_threshold)
+
+        tab.setLayout(layout)
+        return tab
+
+    def _on_output_format_changed(self, idx: int):
+        # Compression controls only apply to the csv backend.
+        is_csv = (idx == 0)
+        self.output_compression.setEnabled(is_csv)
+        self.output_compression_threshold.setEnabled(
+            is_csv and self.output_compression.currentIndex() == 2
+        )
+
+    def _on_compression_changed(self, idx: int):
+        # Threshold spinner only matters in 'auto' mode.
+        is_auto = (idx == 2)
+        is_csv = (self.output_format.currentIndex() == 0)
+        self.output_compression_threshold.setEnabled(is_csv and is_auto)
+
     def load_settings(self):
         m_cfg = self.settings['measurement']
         self.gpib_address.setText(m_cfg['gpib_address'])
@@ -275,6 +359,29 @@ class SettingsDialog(QDialog):
         f_cfg = self.settings['file']
         self.auto_save_interval.setValue(f_cfg['auto_save_interval'])
         self.data_directory.setText(f_cfg['data_directory'])
+        o_cfg = self.settings.get('output', {})
+        fmt = o_cfg.get('format', 'csv')
+        fmt_keys = [k for k, _ in self._output_format_choices]
+        try:
+            fmt_idx = fmt_keys.index(fmt)
+        except ValueError:
+            fmt_idx = 0
+        if fmt_idx == 1 and not self._h5py_available:
+            # Persisted as hdf5 but h5py isn't installed; fall back to csv in
+            # the UI so save_settings() doesn't rewrite a broken value.
+            fmt_idx = 0
+        self.output_format.setCurrentIndex(fmt_idx)
+        comp = o_cfg.get('compression', 'never')
+        comp_keys = [k for k, _ in self._output_compression_choices]
+        try:
+            comp_idx = comp_keys.index(comp)
+        except ValueError:
+            comp_idx = 0
+        self.output_compression.setCurrentIndex(comp_idx)
+        self.output_compression_threshold.setValue(
+            float(o_cfg.get('compression_threshold_mb', 5.0))
+        )
+        self._on_output_format_changed(self.output_format.currentIndex())
 
     def save_settings(self):
         m_cfg = self.settings['measurement']
@@ -308,6 +415,12 @@ class SettingsDialog(QDialog):
         f_cfg = self.settings['file']
         f_cfg['auto_save_interval'] = self.auto_save_interval.value()
         f_cfg['data_directory'] = self.data_directory.text()
+        o_cfg = self.settings.setdefault('output', {})
+        fmt_keys = [k for k, _ in self._output_format_choices]
+        o_cfg['format'] = fmt_keys[self.output_format.currentIndex()]
+        comp_keys = [k for k, _ in self._output_compression_choices]
+        o_cfg['compression'] = comp_keys[self.output_compression.currentIndex()]
+        o_cfg['compression_threshold_mb'] = self.output_compression_threshold.value()
         if self.username:
             self.config_manager.update_user_settings(self.username, self.settings)
         else:

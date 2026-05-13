@@ -22,7 +22,7 @@ from .constants import (
 # Keithley 2400 series STATUS word bit masks (24-bit)
 # Bit 3: Compliance — source is in real compliance
 _STAT_BIT_COMPLIANCE = 1 << 3
-from .data_export import DualExporter, get_column_config, build_metadata
+from .data_export import build_metadata, get_column_config, make_exporter
 from .instrument import Keithley2400
 from .system_utils import SleepInhibitor
 
@@ -55,7 +55,7 @@ class MeasurementWorker(QThread):
         self._max_csv_errors = 3   # Max consecutive errors before escalation
 
         self.keithley = None
-        self.exporter: Optional[DualExporter] = None
+        self.exporter = None
         self.start_time = 0
         self.filename = ""
         self._instrument_idn = ""
@@ -409,16 +409,12 @@ class MeasurementWorker(QThread):
                 self.error_occurred.emit(f"Error configuring instrument: {str(e)}")
                 return
 
-            # File setup with dual export (JSON + CSV)
+            # File setup via the configured exporter (csv / hdf5 / csv+legacy_json).
             self.start_time = time.time()
             try:
                 base_path = self._create_base_path(source_value_str)
-                self.filename = str(base_path.with_suffix('.json'))  # Primary is JSON
 
-                # Get column configuration for this mode
                 columns, units = get_column_config(self.mode, measurement_settings)
-
-                # Build metadata
                 export_metadata = build_metadata(
                     user=self.username,
                     sample_name=self.sample_name,
@@ -428,15 +424,20 @@ class MeasurementWorker(QThread):
                     start_time=datetime.fromtimestamp(self.start_time)
                 )
 
-                # Initialize dual exporter
-                self.exporter = DualExporter(
+                self.exporter = make_exporter(
                     base_path=base_path,
                     metadata=export_metadata,
                     columns=columns,
-                    units=units
+                    units=units,
+                    output_settings=self.settings.get('output'),
+                    on_compress=self._emit_compress_status,
                 )
+                # Primary filename for downstream UI/log references.
+                primary_paths = self.exporter.output_paths
+                self.filename = str(primary_paths[0]) if primary_paths else str(base_path)
                 file_ready = True
-                self.status_update.emit(f"Data files: {base_path.name}.json/.csv")
+                names = ", ".join(p.name for p in primary_paths)
+                self.status_update.emit(f"Data file: {names}")
             except Exception as e:
                 self.error_occurred.emit(f"Error creating output files: {str(e)}")
                 return
@@ -975,14 +976,20 @@ class MeasurementWorker(QThread):
         # Ensure non-empty result
         return sanitized if sanitized else 'unnamed'
 
+    def _emit_compress_status(self, orig_path: Path, gz_path: Path,
+                              orig_mb: float, gz_mb: float) -> None:
+        """Status callback fired by CsvExporter after gzip finalize."""
+        self.status_update.emit(
+            f"Compressed {orig_path.name} -> {gz_path.name} "
+            f"({orig_mb:.1f} MB -> {gz_mb:.1f} MB)"
+        )
+
     def _create_base_path(self, source_value_str: str) -> Path:
         """Create a safe base path for measurement data (without extension).
 
         Sanitizes username and sample name to prevent path traversal attacks
-        and ensure cross-platform compatibility.
-
-        Returns:
-            Path object without extension (DualExporter adds .json and .csv)
+        and ensure cross-platform compatibility. The exporter chosen via the
+        ``output.format`` setting adds the final extension(s).
         """
         base_dir = Path(self.settings['file']['data_directory'])
         base_dir.mkdir(parents=True, exist_ok=True)
@@ -1187,7 +1194,7 @@ class VdpMeasurementWorker(QThread):
         self._proceed_event = threading.Event()
         self._voltages: Dict[str, float] = {}
         self.keithley = None
-        self.exporter: Optional[DualExporter] = None
+        self.exporter = None
         self._instrument_idn = ""
         self._sleep_inhibitor = SleepInhibitor()
         self._start_time = 0.0
@@ -1213,6 +1220,14 @@ class VdpMeasurementWorker(QThread):
         self.running = False
         # Unblock any wait_for_user pause.
         self._proceed_event.set()
+
+    def _emit_compress_status(self, orig_path: Path, gz_path: Path,
+                              orig_mb: float, gz_mb: float) -> None:
+        """Status callback fired by CsvExporter after gzip finalize."""
+        self.status_update.emit(
+            f"Compressed {orig_path.name} -> {gz_path.name} "
+            f"({orig_mb:.1f} MB -> {gz_mb:.1f} MB)"
+        )
 
     def run(self) -> None:
         self.running = True
@@ -1289,7 +1304,7 @@ class VdpMeasurementWorker(QThread):
 
         self._i_mag = i_mag
 
-        # Output data file
+        # Output data file via the configured exporter.
         base_dir = Path(self.settings['file']['data_directory'])
         base_dir.mkdir(parents=True, exist_ok=True)
         user_dir = base_dir / _sanitize_for_path(self.username)
@@ -1298,7 +1313,6 @@ class VdpMeasurementWorker(QThread):
         sample = _sanitize_for_path(self.sample_name)
         base_name = f"{timestamp}_{sample}_vdP_{i_mag*1000:.2f}mA"
         base_path = user_dir / base_name
-        self.filename = str(base_path.with_suffix('.json'))
 
         columns, units = get_column_config(self.MODE, measurement)
         export_metadata = build_metadata(
@@ -1309,11 +1323,18 @@ class VdpMeasurementWorker(QThread):
             instrument_idn=self._instrument_idn,
             start_time=datetime.fromtimestamp(time.time()),
         )
-        self.exporter = DualExporter(
-            base_path=base_path, metadata=export_metadata,
-            columns=columns, units=units,
+        self.exporter = make_exporter(
+            base_path=base_path,
+            metadata=export_metadata,
+            columns=columns,
+            units=units,
+            output_settings=self.settings.get('output'),
+            on_compress=self._emit_compress_status,
         )
-        self.status_update.emit(f"Data files: {base_path.name}.json/.csv")
+        primary_paths = self.exporter.output_paths
+        self.filename = str(primary_paths[0]) if primary_paths else str(base_path)
+        names = ", ".join(p.name for p in primary_paths)
+        self.status_update.emit(f"Data file: {names}")
 
         self._sleep_inhibitor.inhibit(f"ResistaMet: vdP on {self.sample_name}")
         self._start_time = time.time()

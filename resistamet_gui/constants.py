@@ -95,6 +95,19 @@ DEFAULT_SETTINGS = {
         "auto_save_interval": 60,            # Auto-save interval in seconds
         "data_directory": "measurement_data" # Base directory for data storage
     },
+    "output": {
+        # Exporter selection. See resistamet_gui/data_export.py.
+        #   "csv"               single .csv with #-prefixed metadata header (default)
+        #   "hdf5"              single .h5, gzip-compressed, metadata in attrs (needs h5py)
+        #   "csv+legacy_json"   pre-2.0 dual .csv + .json emit (back-compat)
+        "format": "csv",
+        # Gzip policy applied at finalize for the "csv" backend only.
+        #   "never"  no gzip (default; many lab tools can't open .gz directly)
+        #   "always" always gzip the .csv
+        #   "auto"   gzip only when the .csv exceeds compression_threshold_mb
+        "compression": "never",
+        "compression_threshold_mb": 5
+    },
     "users": [],
     "last_user": None
 }

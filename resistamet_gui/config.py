@@ -63,8 +63,9 @@ class ConfigManager:
                 if section in user_settings and isinstance(user_settings[section], dict):
                     user_settings[section].update(settings)
         else:
-            for section in ['measurement', 'display', 'file']:
-                user_settings[section] = dict(self.config[section])
+            for section in ['measurement', 'display', 'file', 'output']:
+                if section in self.config:
+                    user_settings[section] = dict(self.config[section])
         return user_settings
 
     def update_user_settings(self, username: str, settings: Dict) -> None:
@@ -74,7 +75,7 @@ class ConfigManager:
             self.config['user_settings'][username] = {}
 
         for section, section_settings in settings.items():
-            if section in ['measurement', 'display', 'file']:
+            if section in ['measurement', 'display', 'file', 'output']:
                 if section not in self.config['user_settings'][username]:
                     self.config['user_settings'][username][section] = {}
                 self.config['user_settings'][username][section] = dict(section_settings)
@@ -82,7 +83,7 @@ class ConfigManager:
 
     def update_global_settings(self, settings: Dict) -> None:
         for section, section_settings in settings.items():
-            if section in ['measurement', 'display', 'file'] and isinstance(self.config[section], dict):
+            if section in ['measurement', 'display', 'file', 'output'] and isinstance(self.config.get(section), dict):
                 self.config[section].update(section_settings)
         self.save_config()
 

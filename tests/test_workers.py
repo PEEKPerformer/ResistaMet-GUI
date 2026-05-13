@@ -67,6 +67,15 @@ def _base_settings(tmp_path: Path) -> dict:
             "auto_save_interval": 60,
             "data_directory": str(tmp_path / "data"),
         },
+        # Existing worker-integration tests were written against the v1
+        # dual JSON+CSV emit. Pin them to that backend so they continue to
+        # verify the legacy path verbatim; new exporters are exercised by
+        # test_data_export_v2.py.
+        "output": {
+            "format": "csv+legacy_json",
+            "compression": "never",
+            "compression_threshold_mb": 5,
+        },
     }
 
 
@@ -597,6 +606,35 @@ class TestOutputIntegrity:
         assert len(data_lines) >= len(spies.data_point), (
             f"CSV ({len(data_lines)} rows) lost data vs signals ({len(spies.data_point)})"
         )
+
+
+class TestCsvDefaultOutput:
+    """Verify the v2 default (output.format == 'csv') end-to-end through MeasurementWorker."""
+
+    def test_csv_default_produces_csv_with_metadata_header(self, qapp, fake_rm, tmp_path):
+        settings = _resistance_settings(tmp_path)
+        # Drop the test-suite legacy pin so we exercise the production default.
+        settings["output"] = {
+            "format": "csv",
+            "compression": "never",
+            "compression_threshold_mb": 5,
+        }
+        worker = MeasurementWorker("resistance", "v2default", "alice", settings)
+        spies = _drive_worker(qapp, worker, stop_after_n_points=2)
+
+        assert spies.error_occurred == []
+        csv_files = list((tmp_path / "data").rglob("*.csv"))
+        json_files = list((tmp_path / "data").rglob("*.json"))
+        assert csv_files, "csv format should produce a .csv file"
+        assert not json_files, "csv format should not produce a sidecar .json"
+
+        text = csv_files[0].read_text(encoding="utf-8")
+        assert "# resistamet_format_version: 2.0" in text
+        assert "# user: alice" in text
+        assert "# mode: resistance" in text
+        # End-block must have been written at finalize.
+        assert "# --- run completed ---" in text
+        assert "# total_samples:" in text
 
 
 # ============================================================================

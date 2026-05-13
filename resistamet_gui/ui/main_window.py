@@ -1,6 +1,9 @@
+import logging
 import time
 from datetime import datetime
 from typing import Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 from PyQt5.QtCore import Qt, QTimer
@@ -1410,31 +1413,36 @@ class ResistanceMeterApp(QMainWindow):
             if not has_results:
                 self.tab_results = self.create_results_tab()
                 self.main_tabs.addTab(self.tab_results, "Results Viewer")
-        filename, _ = QFileDialog.getOpenFileName(self, "Open Result CSV", self.user_settings['file']['data_directory'] if self.user_settings else ".", "CSV Files (*.csv);;All Files (*)")
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Result CSV",
+            self.user_settings['file']['data_directory'] if self.user_settings else ".",
+            "Measurement Files (*.csv *.csv.gz);;CSV Files (*.csv);;Gzipped CSV (*.csv.gz);;All Files (*)",
+        )
         if not filename:
             return
         try:
             import csv
-            times = []
+            import gzip
             columns = {}
             order = []
-            with open(filename, 'r') as f:
+            opener = gzip.open if filename.endswith('.gz') else open
+            with opener(filename, 'rt', encoding='utf-8', newline='') as f:
                 reader = csv.reader(f)
                 headers = None
                 for row in reader:
                     if not row:
                         continue
+                    # Skip #-prefixed metadata header/footer and the legacy
+                    # "Test Parameters" preamble that older CSVs used.
                     if row[0].startswith('###') or row[0].startswith('#') or row[0] in ('Test Parameters',):
                         continue
                     if headers is None:
                         headers = row
-                        # Build indices of known columns
-                        # Expect at least: 'Elapsed Time (s)'
                         for h in headers:
                             columns[h] = []
                             order.append(h)
                         continue
-                    # Data row length mismatch guard
                     if headers and len(row) == len(headers):
                         for i, h in enumerate(headers):
                             val = row[i]
@@ -1443,15 +1451,34 @@ class ResistanceMeterApp(QMainWindow):
                             except Exception:
                                 valf = float('nan')
                             columns[h].append(valf)
-            # Map elapsed time
+            # Locate the time column. The v2.0 schema uses 'elapsed_s'; older
+            # CSVs used friendly names like 'Elapsed Time (s)'.
             tkey = None
-            for k in columns.keys():
-                if 'Elapsed Time' in k:
-                    tkey = k; break
+            for candidate in ('elapsed_s', 'Elapsed Time (s)', 'Elapsed Time'):
+                if candidate in columns:
+                    tkey = candidate
+                    break
+            if tkey is None:
+                for k in columns.keys():
+                    if 'elapsed' in k.lower() or 'Elapsed Time' in k:
+                        tkey = k
+                        break
             if not tkey:
-                QMessageBox.warning(self, "Open Result", "Could not find 'Elapsed Time' column in CSV.")
+                QMessageBox.warning(self, "Open Result", "Could not find an elapsed-time column in CSV.")
                 return
             self.results_data = {"time": columns[tkey], "columns": columns, "order": order}
+            # Pull metadata header (run parameters) for logging context.
+            try:
+                from resistamet_gui.data_export import parse_metadata
+                meta = parse_metadata(filename)
+                if meta.get('mode'):
+                    self.log_status(
+                        f"Run metadata: mode={meta.get('mode')} "
+                        f"sample={meta.get('sample', '?')} "
+                        f"started={meta.get('started_at', '?')}"
+                    )
+            except Exception as e:
+                logger.debug(f"parse_metadata failed for {filename}: {e}")
             # Populate variable choices (exclude time)
             y_choices = [k for k in order if k != tkey]
             self.results_var.blockSignals(True)

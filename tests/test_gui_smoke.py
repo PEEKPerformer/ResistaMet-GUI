@@ -250,6 +250,39 @@ class TestSettingsDialog:
         assert dialog.data_directory.text() is not None
         dialog.close()
 
+    def test_output_tab_widgets_load_defaults(self, main_window):
+        from resistamet_gui.ui.dialogs import SettingsDialog
+        dialog = SettingsDialog(main_window.config_manager, "test_user", main_window)
+        # Defaults: format=csv (index 0), compression=never (index 0).
+        assert dialog.output_format.currentIndex() == 0
+        assert dialog.output_compression.currentIndex() == 0
+        # Threshold must be the configured default and disabled outside auto mode.
+        assert dialog.output_compression_threshold.value() == 5.0
+        assert not dialog.output_compression_threshold.isEnabled()
+        dialog.close()
+
+    def test_output_tab_auto_enables_threshold(self, main_window):
+        from resistamet_gui.ui.dialogs import SettingsDialog
+        dialog = SettingsDialog(main_window.config_manager, "test_user", main_window)
+        # Switching compression to 'auto' (index 2) must enable the threshold.
+        dialog.output_compression.setCurrentIndex(2)
+        assert dialog.output_compression_threshold.isEnabled()
+        dialog.close()
+
+    def test_output_tab_hdf5_disables_compression_widgets(self, main_window):
+        from resistamet_gui.ui.dialogs import SettingsDialog
+        dialog = SettingsDialog(main_window.config_manager, "test_user", main_window)
+        # Format 'hdf5' is index 1. Whether enabled depends on h5py presence —
+        # only run the disable-flow assertion when the option is selectable.
+        model_item = dialog.output_format.model().item(1)
+        if not model_item.isEnabled():
+            dialog.close()
+            return
+        dialog.output_format.setCurrentIndex(1)
+        assert not dialog.output_compression.isEnabled()
+        assert not dialog.output_compression_threshold.isEnabled()
+        dialog.close()
+
 
 class TestGatherSettings:
     """Verify gather_settings_for_mode returns complete settings for each mode."""
