@@ -114,6 +114,17 @@ def _pump_for(seconds, app):
         time.sleep(0.05)
 
 
+def _read_csv_data(path):
+    """Read a v2.0 CSV: skip #-prefixed metadata header + trailer lines.
+
+    Returns the list of CSV rows (column header first, then data) with all
+    `#` comment lines removed. Matches the behavior pandas gets with
+    `read_csv(comment='#')` but keeps stdlib-only.
+    """
+    with open(path) as f:
+        return list(csv.reader(line for line in f if not line.startswith('#')))
+
+
 def _reset_simulator(ohms: float, model: str = "2420"):
     """Re-call enable_simulation with new DUT params. Tests that need a
     different fake resistance than the fixture default use this."""
@@ -219,8 +230,7 @@ def test_iv_sweep_writes_linear_csv(sim_window, app, tmp_path):
 
     csvs = sorted(glob.glob("measurement_data/**/*.csv", recursive=True))
     assert csvs, "sweep produced no CSV file"
-    with open(csvs[0]) as f:
-        rows = list(csv.reader(f))
+    rows = _read_csv_data(csvs[0])
     header = rows[0]
     # Expected columns: point, V_source, I_meas, compliance
     assert header[:4] == ["point", "V_source", "I_meas", "compliance"], (
@@ -289,8 +299,8 @@ def test_csv_headers_match_documented_schema(sim_window, app):
         if mode is None:
             continue
         expected_cols, _units = get_column_config(mode)
-        with open(path) as f:
-            header = next(csv.reader(f))
+        rows = _read_csv_data(path)
+        header = rows[0] if rows else []
         assert header == expected_cols, (
             f"{path}: header {header} != expected {expected_cols} for {mode}"
         )
@@ -369,8 +379,7 @@ def test_mark_event_lands_in_csv(sim_window, app, monkeypatch):
 
     csvs = sorted(glob.glob("measurement_data/**/*_R_*.csv", recursive=True))
     assert csvs, "no resistance CSV written"
-    with open(csvs[-1]) as f:
-        rows = list(csv.reader(f))
+    rows = _read_csv_data(csvs[-1])
     header, data = rows[0], rows[1:]
     event_col = header.index("event")
     events = [r[event_col] for r in data if r[event_col]]
@@ -481,8 +490,7 @@ def test_iv_sweep_all_directions(sim_window, app, direction):
     csvs = sorted(glob.glob("measurement_data/**/*_sweep_*.csv", recursive=True),
                   key=os.path.getmtime)
     assert csvs, f"{direction}: no sweep CSV"
-    with open(csvs[-1]) as f:
-        data = list(csv.reader(f))[1:]
+    data = _read_csv_data(csvs[-1])[1:]
     v_values = [float(r[1]) for r in data]
     n = len(v_values)
     # 21 single-direction points at 0.1V step from -1 to +1 inclusive.
