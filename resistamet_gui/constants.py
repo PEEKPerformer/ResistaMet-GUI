@@ -1,7 +1,7 @@
 import os
 
 # Script version and metadata
-__version__ = "1.8.2"
+__version__ = "1.9.0"
 __original_version__ = "0.9.2"
 __author__ = "Brenden Ferland"
 
@@ -55,7 +55,7 @@ DEFAULT_SETTINGS = {
         "fpp_thickness_um": 0.0,            # thin-film thickness in micrometers (µm); 0 = unknown
         "fpp_alpha": 1.0,                    # thickness correction factor
         "fpp_k_factor": 4.532,              # geometric coefficient replacing 4.532 when needed
-        "fpp_samples": 50,                 # number of samples per spot before auto-stop (0 = continuous)
+        "fpp_samples": 20,                 # number of samples per spot before auto-stop (0 = continuous)
         "fpp_model": "thin_film",             # one of: thin_film, semi_infinite, finite_thin, finite_alpha
         # F84-aligned correction factor inputs. Defaults reproduce legacy behavior
         # (infinite-diameter circle, no temperature correction) so existing config

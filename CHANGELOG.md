@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-05-20
+
+### Added
+- **Live time-series canvases now use pyqtgraph** (Resistance / V-source / I-source / 4PP results), driven at 60 fps with peak-mode downsampling and clip-to-view so an hour-long run at 9 Hz (~30k samples) stays interactively smooth. Matplotlib remains in charge of the 4PP histogram + I-V sweep where annotation density matters more than refresh.
+- **Live "value pill"** anchored to the top-right of each live plot — `R = 102.4 Ω`, `I = 1.234e-06 A`, etc. — large monospaced HUD-style readout for demo / projector visibility.
+- **Per-machine GPIB address** in the shared `config.json` (`machines.<hostname>.gpib_address`). A NAS-shared config works across lab PCs with different rigs; legacy global `measurement.gpib_address` auto-migrates into the host's slot on first open.
+- **Humanized connection errors** wrap the common pyvisa failure modes (resource not found, timeout, busy, library missing) into one-line messages that name a concrete next action. macOS branch points at the lab Windows PC because NI-VISA isn't available on Darwin. The GPIB selector re-opens automatically after an address-related failure.
+- **Dynamic sampling-rate cap** — the per-tab Sampling Rate spinbox enforces a soft cap computed from the Keithley timing model (NPLC × auto-zero × filter count). When the user types above the cap, a one-line status-bar message names the cheapest single setting change that would actually reach the requested rate (e.g. *"set auto_zero to 'once' (re-zeros are cached during the run)"*). Model is validated against 27 bench points on a real 2400 (`docs/keithley_2400_timing_bench.json`); estimator is conservative within ~5% in the production range.
+- **Per-mode timing overrides** (`MODE_TIMING_OVERRIDES`) — 4PP and vdP force accuracy-tuned `auto_zero=on, filter_count=10` at gather time regardless of shared defaults; sensor modes keep the snappy defaults. Static-spot measurements care about the tightness of Rs / ρ, not how fast the trace updates.
+- **PyInstaller-built Windows .exe** via `.github/workflows/build.yml` — runs on tag pushes, smoke-tests the bundle with `--version`, attaches `ResistaMet.exe` to the GitHub release. Assumes NI-VISA is installed on the target Windows machine.
+- **`resistamet_gui/timing.py`** — `estimate_max_sample_rate_hz()`, `TimingSettings`, `suggest_change_for_rate()`. Used by the dynamic cap and exposed for tests / external tooling.
+
 ### Changed
+- **Sensor-friendly defaults**: `auto_zero` `on → once`, `filter_count` `10 → 5`, `plot_update_interval` `200 ms → 16 ms`. Shared `measurement` block now yields a real 9.6 Hz on the bench instead of an aspirational 10 Hz that the instrument silently delivered at 1.8 Hz. `auto_zero=on` is restored automatically when the 4PP or vdP modes start.
+- **4PP defaults**: `fpp_samples` `0 (continuous) → 20`. Bench data on the lab 2400 shows the underlying V std stops shrinking past N≈20 — beyond that you're sampling drift, not noise. 20 samples × ~560 ms/sample ≈ 11 s per spot, fast enough for live mapping; SE_mean ≈ 0.25%.
+- **vdP defaults**: `vdp_readings_per_polarity` `1 → 5`. Cheap statistical improvement; per-polarity averaging matches the rest of the app's noise budget.
+- **Live canvas aesthetics**: off-white background, refined deep-red / deep-blue palette tuned for projector contrast, 2.5 px cosmetic line width, 8 % auto-range padding so foam-press jumps don't pancake the pre-jump baseline against the axis. Hidden top/right spines on the histogram; min/max/avg row gets vertical separators. Title font 13 pt bold for projection.
 - **Measurement output is now a single CSV with a `#`-prefixed metadata header instead of a dual `.json` + `.csv` emit.** The CSV begins with `# resistamet_format_version: 2.0` followed by flattened run metadata (`# user:`, `# mode:`, `# params.*:`, `# units:`), then the column header row and streaming data rows, then a `# --- run completed ---` block with `# ended_at:` / `# total_samples:` / `# duration_s:`. Excel, Origin, and `pandas.read_csv(comment='#')` all handle it transparently. The CSV is also the crash-recovery artifact: streamed and `fsync`'d per row, no separate checkpoint sidecar needed.
 - **New `output` config section** in `config.json` and Settings → Output tab:
   - `format`: `csv` (default), `hdf5` (requires optional `h5py`), or `csv+legacy_json` for the pre-2.0 dual emit.

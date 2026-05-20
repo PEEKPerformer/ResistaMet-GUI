@@ -1705,7 +1705,7 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_four_point.fpp_alpha.setValue(m_cfg.get('fpp_alpha', 1.0))
         self.tab_four_point.fpp_model.setCurrentText(m_cfg.get('fpp_model', 'thin_film'))
         self.tab_four_point.fpp_k_factor.setValue(m_cfg.get('fpp_k_factor', 4.532))
-        self.tab_four_point.fpp_samples.setValue(int(m_cfg.get('fpp_samples', 50)))
+        self.tab_four_point.fpp_samples.setValue(int(m_cfg.get('fpp_samples', 20)))
         # F84 correction-factor inputs (added 2026-05). Defaults preserve
         # legacy behavior: D=0 (infinite), geometry=circle, no T correction.
         self.tab_four_point.fpp_diameter_cm.setValue(float(m_cfg.get('fpp_diameter_cm', 0.0)))

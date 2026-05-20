@@ -196,10 +196,14 @@ def test_current_source_records_correct_voltage(sim_window, app):
 
 def test_four_point_probe_records_v_i_at_source(sim_window, app):
     # 4PP sources current, measures voltage. With DUT = 100 Ω and the form's
-    # configured source current, V should equal I_src × 100.
+    # configured source current, V should equal I_src × 100. The run is
+    # 3.0 s rather than 1.5 s because 4PP now applies the accuracy-mode
+    # timing override (auto_zero=on, filter_count=10) which caps the
+    # sustainable rate at ~1.7 Hz — so ≥3 points needs at least ~1.8 s
+    # of run time plus the initial settling delay.
     ts, vs, is_, _ = _drive_timed_run(
         sim_window, sim_window.tab_four_point, "4-Point Probe",
-        seconds=1.5, app=app,
+        seconds=3.0, app=app,
     )
     assert len(ts) >= 3, f"too few points: {len(ts)}"
     src_i = sim_window.tab_four_point.fpp_current.value()
@@ -443,7 +447,9 @@ def test_four_point_save_spot_then_clear(sim_window, app):
     for _ in range(2):
         tab.start_button.click()
         app.processEvents()
-        _pump_for(0.8, app)
+        # 4PP now runs in accuracy mode (~0.6 s per sample); 1.5 s leaves
+        # comfortable headroom for ≥1 sample to land before Stop.
+        _pump_for(1.5, app)
         sim_window.stop_current_measurement()
         assert _wait_until(
             lambda: not sim_window.measurement_running, timeout=3.0, app=app

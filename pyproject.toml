@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resistamet-gui"
-version = "1.8.2"
+version = "1.9.0"
 description = "Open-source GUI for electrical characterization with Keithley 2400/2450 sourcemeters and four-point probe analysis"
 readme = "README.md"
 license = { file = "LICENSE.md" }
