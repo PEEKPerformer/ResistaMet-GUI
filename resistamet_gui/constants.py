@@ -32,10 +32,19 @@ DEFAULT_SETTINGS = {
         "settling_time": 0.2,                # Settling time in seconds (shared)
         "gpib_address": "GPIB0::24::INSTR",  # GPIB address of the instrument
         "stop_on_compliance": False,
-        "auto_zero": "on",                   # "on" (accurate), "once" (fast), "off" (fastest, drifts)
+        # auto_zero=once cuts each reading from 3 integrations to 1 (a 3×
+        # speedup) by caching the zero/reference at run start. Acceptable
+        # for sensor work where R/R0 vs t is the signal of interest and
+        # absolute-zero drift over a single run is below the noise floor.
+        # Switch to "on" for absolute-accuracy runs longer than ~30 min.
+        "auto_zero": "once",
         "filter_enabled": True,              # enable built-in Keithley averaging filter
         "filter_type": "repeat",             # "repeat" or "moving"
-        "filter_count": 10,                  # number of readings to average (1-100)
+        # filter_count=5 keeps NPLC=1 line-noise rejection per conversion
+        # while halving the per-reading time vs the old 10. Run-level stats
+        # over many samples are unchanged; the live trace is slightly more
+        # jittery per point but smoother in aggregate.
+        "filter_count": 5,                   # number of readings to average (1-100)
         "res_offset_comp": False,            # offset-compensated ohms (cancels thermoelectric EMF)
         "res_cable_null": 0.0,               # cable null reference value (0 = disabled)         # Stop run when compliance is hit
         # Four-Point Probe (FPP) defaults (SP4-40085TBQ)
