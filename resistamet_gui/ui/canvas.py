@@ -234,6 +234,52 @@ def _resolve_color(color):
     return color
 
 
+# Short variable symbol per y-axis label, used to title the live value pill.
+# Order matters: more specific labels first (e.g. "Sheet Resistance" before
+# "Resistance") so the longest match wins.
+_YLABEL_TO_SYMBOL = (
+    ('sheet resistance', 'Rs'),
+    ('resistivity',      'ρ'),
+    ('conductivity',     'σ'),
+    ('resistance',       'R'),
+    ('current',          'I'),
+    ('voltage',          'V'),
+    ('v/i',              'R'),
+)
+
+
+def _short_symbol_for_ylabel(ylabel: str) -> str:
+    """Map the y-axis label to the short symbol used in the live value pill.
+
+    Returns '' when nothing matches — the pill then drops the prefix and
+    just shows the number, which is still readable.
+    """
+    if not ylabel:
+        return ''
+    low = ylabel.lower()
+    for needle, symbol in _YLABEL_TO_SYMBOL:
+        if needle in low:
+            return symbol
+    return ''
+
+
+def _format_value_pill(symbol: str, value: float, unit: str) -> str:
+    """Render '<symbol> = <value> <unit>' for the live value pill.
+
+    Uses '.4g' so 102.3, 1.234e-7 and 1.235e+8 all render readably. Drops
+    the symbol when we couldn't infer one, drops the unit when the y-axis
+    label didn't carry parentheses.
+    """
+    if not np.isfinite(value):
+        return ''
+    body = f'{value:.4g}'
+    if unit:
+        body = f'{body} {unit}'
+    if symbol:
+        return f' {symbol} = {body} '
+    return f' {body} '
+
+
 class PgLiveCanvas(QWidget):
     """Live-streaming time-series canvas backed by pyqtgraph.
 
@@ -281,6 +327,12 @@ class PgLiveCanvas(QWidget):
         # SI prefix on y axis (k, M, m, µ, n) — matches the way the rest of
         # the lab thinks about resistance/current.
         self.plot_widget.getAxis('left').enableAutoSIPrefix(True)
+        # Long runs (hour-plus at 20 Hz = 70k+ samples) keep their fidelity
+        # while staying interactively smooth: 'peak' downsampling preserves
+        # transient spikes that 'mean' would erase, and clipToView avoids
+        # rendering samples outside the visible range during pan/zoom.
+        self.plot_widget.setDownsampling(auto=True, mode='peak')
+        self.plot_widget.setClipToView(True)
         outer.addWidget(self.plot_widget, 1)
 
         # Stats row below the plot. Kept compact and monospaced so the
@@ -311,7 +363,24 @@ class PgLiveCanvas(QWidget):
         self._title = 'Measurement'
         self._y_label = 'Value'
         self._y_unit = ''
+        self._y_symbol = ''  # e.g. 'R', 'V', 'I' — derived from the title
         self.plot_widget.setTitle(self._title)
+
+        # Big latest-value pill, anchored to the top-right corner of the
+        # viewbox so the audience can read the live number from across the
+        # room. ignoreBounds keeps it from disturbing the auto-range, and
+        # the sigRangeChanged callback re-pins it whenever the view moves.
+        self._value_font = QFont('Monospace', 16, QFont.Bold)
+        self._value_font.setStyleHint(QFont.TypeWriter)
+        self.value_label = pg.TextItem(
+            text='', color=(20, 20, 20), anchor=(1.0, 0.0),
+            fill=(255, 255, 220, 220), border={'color': (120, 120, 120), 'width': 1},
+        )
+        self.value_label.setFont(self._value_font)
+        self.plot_widget.addItem(self.value_label, ignoreBounds=True)
+        self._viewbox = self.plot_widget.getViewBox()
+        self._viewbox.sigRangeChanged.connect(self._reposition_value_label)
+        self._reposition_value_label()
 
     # --- public API ------------------------------------------------------
 
@@ -327,6 +396,7 @@ class PgLiveCanvas(QWidget):
             self._y_unit = ylabel.split('(', 1)[1].split(')', 1)[0]
         else:
             self._y_unit = ''
+        self._y_symbol = _short_symbol_for_ylabel(ylabel)
         self.plot_widget.setTitle(title)
 
     def update_plot(self, timestamps, values, compliance_list, stats, username, sample_name):
@@ -342,8 +412,11 @@ class PgLiveCanvas(QWidget):
         mask = np.isfinite(vals)
         if mask.any():
             self.curve.setData(et[mask], vals[mask])
+            latest = float(vals[mask][-1])
+            self.value_label.setText(_format_value_pill(self._y_symbol, latest, self._y_unit))
         else:
             self.curve.setData([], [])
+            self.value_label.setText('')
 
         unit = self._y_unit
         min_v = stats.get('min', float('inf'))
@@ -366,11 +439,32 @@ class PgLiveCanvas(QWidget):
 
     def clear_plot(self):
         self.curve.setData([], [])
+        self.value_label.setText('')
         self.min_label.setText('Min: --')
         self.max_label.setText('Max: --')
         self.avg_label.setText('Avg: --')
         self.info_label.setText('User: --   Sample: --')
         self.compliance_label.setVisible(False)
+
+    # --- internals -------------------------------------------------------
+
+    def _reposition_value_label(self, *_args, **_kwargs):
+        """Pin the value pill to the top-right of the current view range.
+
+        Called on every viewbox range change (auto-range tick, user pan/
+        zoom, programmatic setRange) so the pill stays glued to the corner
+        regardless of axis scaling.
+        """
+        try:
+            (x0, x1), (y0, y1) = self._viewbox.viewRange()
+            # Inset a few percent so the pill doesn't kiss the right axis.
+            x_pad = (x1 - x0) * 0.02
+            y_pad = (y1 - y0) * 0.02
+            self.value_label.setPos(x1 - x_pad, y1 - y_pad)
+        except Exception:
+            # During very-early init the viewbox may not have a range yet;
+            # the next sigRangeChanged will give us a real one.
+            pass
 
 
 class IVCanvas(FigureCanvas):
