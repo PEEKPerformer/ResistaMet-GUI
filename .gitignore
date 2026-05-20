@@ -31,6 +31,8 @@ MANIFEST
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+# But keep the canonical ResistaMet spec — CI builds the Windows .exe from it.
+!resistamet-gui.spec
 
 # Installer logs
 pip-log.txt

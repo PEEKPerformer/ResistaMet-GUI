@@ -1,0 +1,63 @@
+name: build
+
+# Windows-only by design. NI-VISA — the driver layer ResistaMet uses to
+# talk to Keithley 2400/2450 sourcemeters — is not available on macOS.
+# A Prologix-style GPIB-to-USB adapter with pyvisa-py might work on a
+# Mac in theory, but has not been verified with ResistaMet, so we don't
+# ship a Mac build.
+
+on:
+  # Build on every push to a tag so each release auto-attaches a .exe.
+  push:
+    tags:
+      - 'v*'
+  # Manual trigger for testing without cutting a release.
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build Windows .exe
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build ResistaMet.exe
+        run: pyinstaller resistamet-gui.spec --noconfirm --clean
+
+      - name: Smoke test the .exe (--version exits cleanly)
+        shell: pwsh
+        run: |
+          # --version is a fast-path that doesn't import Qt; if PyInstaller
+          # missed core deps, this fails with ImportError before the GUI
+          # even tries to start.
+          $proc = Start-Process -FilePath "dist\ResistaMet.exe" -ArgumentList "--version" -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "ResistaMet.exe --version exited with code $($proc.ExitCode)"
+            exit 1
+          }
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ResistaMet-windows-x64
+          path: dist/ResistaMet.exe
+          if-no-files-found: error
+
+      - name: Attach to GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ResistaMet.exe
