@@ -43,6 +43,11 @@ class ResistanceMeterApp(QMainWindow):
         self.user_settings = None
         self.measurement_running = False
         self.active_mode = None
+        # Targets for the dynamic sampling-rate cap: each entry is the tab
+        # widget that exposes a .sampling_rate spinbox. Refreshed whenever
+        # user_settings changes (Settings dialog save, profile switch) and
+        # when a per-tab NPLC widget changes.
+        self._rate_cap_tabs: list = []
         self.setWindowTitle(f"ResistaMet GUI v{__version__}")
         # 720×560 fits comfortably on 1366×768 laptops after taskbar/title-bar
         # chrome. The horizontal-splitter layout makes this floor reachable;
@@ -81,6 +86,14 @@ class ResistanceMeterApp(QMainWindow):
         self.main_tabs.addTab(self.tab_four_point, "4-Point Probe")
         self.main_tabs.addTab(self.tab_sweep, "I-V Sweep")
         self.main_tabs.addTab(self.tab_vdp, "Van der Pauw")
+
+        # Register tabs whose sampling_rate spinbox should be dynamically
+        # capped by the Keithley timing model. Sweep is excluded — its
+        # rate field is disabled (per-step delay drives sweep timing, not
+        # sampling_rate).
+        for tab in (self.tab_resistance, self.tab_voltage_source,
+                    self.tab_current_source, self.tab_four_point):
+            self._register_rate_cap(tab)
 
         # Status log
         self.status_group = QGroupBox("Status Log"); status_layout = QVBoxLayout()
@@ -1730,6 +1743,10 @@ class ResistanceMeterApp(QMainWindow):
             if buffer.size != new_size:
                 self.data_buffers[mode] = EnhancedDataBuffer(size=new_size)
         self.clear_all_plots(); self.log_status("User settings loaded into UI.")
+        # Recompute the per-tab sampling-rate caps now that any NPLC /
+        # auto_zero / filter_count changes from the Settings dialog have
+        # landed in self.user_settings.
+        self._refresh_all_rate_caps()
 
     def open_user_settings(self):
         if not self.current_user:
@@ -2504,6 +2521,69 @@ class ResistanceMeterApp(QMainWindow):
             self.log_status(f"Summary saved: {filename}")
         except Exception as e:
             QMessageBox.critical(self, "Save Summary", f"Failed to save summary: {e}")
+
+    # --- dynamic sampling-rate cap ---------------------------------------
+
+    def _register_rate_cap(self, tab) -> None:
+        """Register a tab whose sampling_rate spinbox should be capped by
+        the Keithley timing model. Hooks the per-tab NPLC if present so
+        the cap updates live as the user edits it."""
+        if not hasattr(tab, 'sampling_rate'):
+            return
+        self._rate_cap_tabs.append(tab)
+        if hasattr(tab, 'nplc'):
+            # The lambda captures `tab` by reference; valueChanged passes the
+            # new value which we discard (we re-read everything from the
+            # widgets inside the recompute).
+            tab.nplc.valueChanged.connect(lambda _v, t=tab: self._refresh_rate_cap_for(t))
+
+    def _refresh_all_rate_caps(self) -> None:
+        for tab in self._rate_cap_tabs:
+            self._refresh_rate_cap_for(tab)
+
+    def _refresh_rate_cap_for(self, tab) -> None:
+        """Compute max sustainable rate from current settings, clamp the
+        spinbox's maximum, and write a tooltip that explains the cap and
+        suggests the cheapest single change to lift it."""
+        import math
+        from ..timing import TimingSettings, suggest_change_for_rate
+
+        if not self.user_settings or not hasattr(tab, 'sampling_rate'):
+            return
+        m = dict(self.user_settings['measurement'])
+        # Tab-local NPLC wins over the global default (the 4PP tab carries
+        # its own NPLC spinbox; the other live tabs inherit from Settings).
+        if hasattr(tab, 'nplc'):
+            m['nplc'] = float(tab.nplc.value())
+
+        s = TimingSettings.from_dict(m)
+        max_hz = s.max_rate_hz()
+        # Floor to one decimal so the displayed cap is never higher than
+        # what the instrument actually sustains.
+        cap = math.floor(max_hz * 10) / 10
+        cap = max(0.1, cap)
+
+        sb = tab.sampling_rate
+        # Block signals while we adjust max/value so we don't trigger our
+        # own valueChanged handler with a transient value.
+        sb.blockSignals(True)
+        sb.setMaximum(cap)
+        if sb.value() > cap:
+            sb.setValue(cap)
+        sb.blockSignals(False)
+
+        # Tooltip explains the cap and offers one concrete escape hatch
+        # if the user wants more. Picks a 10× headroom suggestion because
+        # that's roughly what gets them out of the next sampling decade.
+        target_for_suggestion = max(10.0, cap * 5)
+        suggestion = suggest_change_for_rate(target_for_suggestion, s)
+        lines = [
+            f"Max sustainable rate at current settings: {cap:.1f} Hz",
+            f"  NPLC={s.nplc:g}  auto_zero={s.auto_zero}  filter_count={s.filter_count if s.filter_enabled else 1}",
+        ]
+        if suggestion:
+            lines.append(f"To go faster: {suggestion}.")
+        sb.setToolTip("\n".join(lines))
 
     def log_status(self, message: str, color: str = "black"):
         timestamp = datetime.now().strftime("%H:%M:%S")
