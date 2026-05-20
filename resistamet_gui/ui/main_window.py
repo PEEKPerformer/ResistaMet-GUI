@@ -2268,11 +2268,31 @@ class ResistanceMeterApp(QMainWindow):
         self.log_status(f"ERROR: {error_message}", color="red")
         self.statusBar().showMessage(f"Measurement Error ({self.active_mode})", 5000)
         self.plot_timer.stop()
-        # If instrument not detected, prompt for quick selection
-        if ("not found" in error_message.lower()) or ("no visa instruments" in error_message.lower()):
-            self.prompt_gpib_selection(self.user_settings['measurement']['gpib_address'] if self.user_settings else "")
-        else:
-            QMessageBox.critical(self, "Measurement Error", error_message)
+        # Always show the friendly error first — the user needs context for
+        # what's about to pop up next. If the message looks like an address
+        # problem, follow up with the GPIB selector so they can fix it in
+        # one click instead of digging through Settings.
+        QMessageBox.critical(self, "Measurement Error", error_message)
+        if self._is_address_error(error_message):
+            self.prompt_gpib_selection(
+                self.user_settings['measurement']['gpib_address']
+                if self.user_settings else ""
+            )
+
+    @staticmethod
+    def _is_address_error(error_message: str) -> bool:
+        """True when the error text from humanize_connection_error reads
+        like the user picked the wrong GPIB address or the instrument isn't
+        responding at the configured one. The check is substring-based on
+        purpose: keeping it loose means new humanize phrasings still light
+        up the selector without an extra wiring change."""
+        low = error_message.lower()
+        return any(needle in low for needle in (
+            "not found",
+            "not detected",
+            "no instrument responded",
+            "no visa instruments",
+        ))
 
     def on_compliance_hit(self, compliance_type: str):
         mode = self.active_mode; widget = self.get_widget_for_mode(mode)

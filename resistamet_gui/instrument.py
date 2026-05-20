@@ -70,7 +70,7 @@ def humanize_connection_error(exc: BaseException, address: str = "") -> str:
             f"Instrument at {address or 'the configured address'} was not "
             f"detected. Check that it's powered on, the GPIB/USB cable is "
             f"firmly seated, and the address matches the front-panel setting. "
-            f"You can re-select the address from the dialog that just opened."
+            f"Click OK to pick a different address from the detected instruments."
         )
 
     if isinstance(exc, pyvisa.errors.LibraryError) or 'no visa library' in msg_lower:
