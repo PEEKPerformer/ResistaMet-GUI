@@ -2536,7 +2536,9 @@ class ResistanceMeterApp(QMainWindow):
     def _register_rate_cap(self, tab) -> None:
         """Register a tab whose sampling_rate spinbox should be capped by
         the Keithley timing model. Hooks the per-tab NPLC if present so
-        the cap updates live as the user edits it."""
+        the cap updates live as the user edits it, and the spinbox's
+        editingFinished signal so the user gets a smart-options message
+        when they try to exceed the cap."""
         if not hasattr(tab, 'sampling_rate'):
             return
         self._rate_cap_tabs.append(tab)
@@ -2545,53 +2547,66 @@ class ResistanceMeterApp(QMainWindow):
             # new value which we discard (we re-read everything from the
             # widgets inside the recompute).
             tab.nplc.valueChanged.connect(lambda _v, t=tab: self._refresh_rate_cap_for(t))
+        # editingFinished only fires on a real user commit (Enter or focus
+        # loss) — programmatic setValue() from _refresh_rate_cap_for does
+        # NOT trigger it, so we won't get false alerts during settings sync.
+        tab.sampling_rate.editingFinished.connect(
+            lambda t=tab: self._enforce_rate_soft_cap(t)
+        )
 
     def _refresh_all_rate_caps(self) -> None:
         for tab in self._rate_cap_tabs:
             self._refresh_rate_cap_for(tab)
 
-    def _refresh_rate_cap_for(self, tab) -> None:
-        """Compute max sustainable rate from current settings, clamp the
-        spinbox's maximum, and write a tooltip that explains the cap and
-        suggests the cheapest single change to lift it."""
-        import math
+    def _timing_settings_for(self, tab):
+        """Build the TimingSettings for a tab from current widget state +
+        user_settings + any mode override. Returns None when settings
+        aren't loaded yet."""
         from ..constants import MODE_TIMING_OVERRIDES
-        from ..timing import TimingSettings, suggest_change_for_rate
-
-        if not self.user_settings or not hasattr(tab, 'sampling_rate'):
-            return
+        from ..timing import TimingSettings
+        if not self.user_settings:
+            return None
         m = dict(self.user_settings['measurement'])
-        # Tab-local NPLC wins over the global default (the 4PP tab carries
-        # its own NPLC spinbox; the other live tabs inherit from Settings).
         if hasattr(tab, 'nplc'):
             m['nplc'] = float(tab.nplc.value())
-        # Mode-level timing overrides (4PP / vdP force accuracy-tuned AZ
-        # and filter_count) win last — the cap shown to the user should
-        # match what the worker will actually run with.
         mode = getattr(tab, 'mode', None)
         if mode in MODE_TIMING_OVERRIDES:
             for k, v in MODE_TIMING_OVERRIDES[mode].items():
                 m[k] = v
+        return TimingSettings.from_dict(m)
 
-        s = TimingSettings.from_dict(m)
+    def _refresh_rate_cap_for(self, tab) -> None:
+        """Compute max sustainable rate from current settings, stash it on
+        the tab as a soft cap, clamp the spinbox if its current value is
+        already above the new cap, and write a tooltip explaining the cap.
+        The spinbox's *maximum* is left at the original wide range — the
+        user can type a higher value, get a popup explaining the cap, and
+        only then see the value clamped (see _enforce_rate_soft_cap)."""
+        import math
+        from ..timing import suggest_change_for_rate
+
+        if not hasattr(tab, 'sampling_rate'):
+            return
+        s = self._timing_settings_for(tab)
+        if s is None:
+            return
         max_hz = s.max_rate_hz()
         # Floor to one decimal so the displayed cap is never higher than
         # what the instrument actually sustains.
         cap = math.floor(max_hz * 10) / 10
         cap = max(0.1, cap)
+        tab._sampling_rate_cap = cap
 
         sb = tab.sampling_rate
-        # Block signals while we adjust max/value so we don't trigger our
-        # own valueChanged handler with a transient value.
-        sb.blockSignals(True)
-        sb.setMaximum(cap)
+        # Only clamp if we're already over — don't fight the user during
+        # active edits (editingFinished handles the user-driven case).
         if sb.value() > cap:
+            sb.blockSignals(True)
             sb.setValue(cap)
-        sb.blockSignals(False)
+            sb.blockSignals(False)
 
         # Tooltip explains the cap and offers one concrete escape hatch
-        # if the user wants more. Picks a 10× headroom suggestion because
-        # that's roughly what gets them out of the next sampling decade.
+        # if the user wants more.
         target_for_suggestion = max(10.0, cap * 5)
         suggestion = suggest_change_for_rate(target_for_suggestion, s)
         lines = [
@@ -2601,6 +2616,40 @@ class ResistanceMeterApp(QMainWindow):
         if suggestion:
             lines.append(f"To go faster: {suggestion}.")
         sb.setToolTip("\n".join(lines))
+
+    def _enforce_rate_soft_cap(self, tab) -> None:
+        """User just committed a value via Enter or focus loss. If they
+        asked for more than the physical cap, show a one-line status-bar
+        message with the cheapest single setting change that would
+        actually deliver the requested rate, then clamp the spinbox."""
+        from ..timing import suggest_change_for_rate
+        if not hasattr(tab, 'sampling_rate'):
+            return
+        cap = getattr(tab, '_sampling_rate_cap', None)
+        if cap is None:
+            return
+        sb = tab.sampling_rate
+        requested = sb.value()
+        # Tolerance for float-display rounding (spinbox decimals=1).
+        if requested <= cap + 0.05:
+            return
+
+        s = self._timing_settings_for(tab)
+        if s is None:
+            return
+        suggestion = suggest_change_for_rate(requested, s)
+        if suggestion:
+            msg = f"{requested:.1f} Hz is above what the instrument sustains right now ({cap:.1f} Hz). To get there: {suggestion}."
+        else:
+            msg = f"{requested:.1f} Hz isn't reachable with one setting change from here — max at current configuration is {cap:.1f} Hz."
+        # 15 s in the status bar is long enough to read, short enough not
+        # to linger. Also log it so the audit trail captures the attempt.
+        self.statusBar().showMessage(msg, 15000)
+        self.log_status(msg, color="darkOrange")
+
+        sb.blockSignals(True)
+        sb.setValue(cap)
+        sb.blockSignals(False)
 
     def log_status(self, message: str, color: str = "black"):
         timestamp = datetime.now().strftime("%H:%M:%S")
