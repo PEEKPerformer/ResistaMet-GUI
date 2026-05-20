@@ -1933,7 +1933,12 @@ class ResistanceMeterApp(QMainWindow):
         self.measurement_worker.sweep_complete.connect(self.on_sweep_complete)
         self.measurement_worker.finished.connect(self.on_worker_finished)
         self.measurement_worker.start()
-        update_interval = current_settings['display']['plot_update_interval']
+        # The stored default (200 ms / 5 fps) was tuned for matplotlib's
+        # redraw cost. pyqtgraph happily renders at display refresh rate,
+        # so cap at 16 ms (~60 fps, synced to a typical 60 Hz monitor)
+        # for a snappy live trace while still honoring anyone who
+        # explicitly configured a faster interval.
+        update_interval = min(current_settings['display']['plot_update_interval'], 16)
         if current_settings['display']['enable_plot']:
             self.plot_timer.start(update_interval)
         else:

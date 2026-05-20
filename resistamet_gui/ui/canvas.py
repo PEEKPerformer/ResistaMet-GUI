@@ -4,7 +4,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 # pyqtgraph global config — set once, applies to every PlotWidget created
 # afterwards. White background + black foreground matches the matplotlib
@@ -234,6 +234,15 @@ def _resolve_color(color):
     return color
 
 
+def _vertical_separator() -> QFrame:
+    """A thin vertical rule used between stats labels (Min | Max | Avg)."""
+    sep = QFrame()
+    sep.setFrameShape(QFrame.VLine)
+    sep.setFrameShadow(QFrame.Sunken)
+    sep.setStyleSheet("color: #c0c0c0;")
+    return sep
+
+
 # Short variable symbol per y-axis label, used to title the live value pill.
 # Order matters: more specific labels first (e.g. "Sheet Resistance" before
 # "Resistance") so the longest match wins.
@@ -336,11 +345,15 @@ class PgLiveCanvas(QWidget):
         outer.addWidget(self.plot_widget, 1)
 
         # Stats row below the plot. Kept compact and monospaced so the
-        # numbers don't jitter as digits change.
+        # numbers don't jitter as digits change. A vertical separator
+        # between each stat gives the eye a clear visual break so the
+        # three values don't read as one long ribbon when the numbers
+        # have similar widths.
         stat_font = QFont('Monospace')
         stat_font.setStyleHint(QFont.TypeWriter)
         stats_row = QHBoxLayout()
-        stats_row.setContentsMargins(4, 0, 4, 0)
+        stats_row.setContentsMargins(8, 0, 8, 0)
+        stats_row.setSpacing(16)
         self.min_label = QLabel('Min: --')
         self.max_label = QLabel('Max: --')
         self.avg_label = QLabel('Avg: --')
@@ -348,7 +361,9 @@ class PgLiveCanvas(QWidget):
         for w in (self.min_label, self.max_label, self.avg_label, self.info_label):
             w.setFont(stat_font)
         stats_row.addWidget(self.min_label)
+        stats_row.addWidget(_vertical_separator())
         stats_row.addWidget(self.max_label)
+        stats_row.addWidget(_vertical_separator())
         stats_row.addWidget(self.avg_label)
         stats_row.addStretch(1)
         stats_row.addWidget(self.info_label)
