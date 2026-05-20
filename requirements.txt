@@ -11,6 +11,10 @@ pyvisa-py>=0.5.0
 # Data processing and visualization
 numpy>=1.19.0
 matplotlib>=3.3.0
+# Live time-series tabs (Resistance, V-source, I-source, 4PP results) use
+# pyqtgraph for smooth high-rate updates; matplotlib stays for the 4PP
+# histogram and I-V sweep canvases.
+pyqtgraph>=0.13.0
 
 # Testing (development)
 pytest>=7.0.0

@@ -20,7 +20,7 @@ from ..buffers import EnhancedDataBuffer
 from ..config import ConfigManager
 from ..constants import __version__
 from ..workers import MeasurementWorker, VdpMeasurementWorker
-from .canvas import MplCanvas, HistogramCanvas, IVCanvas
+from .canvas import MplCanvas, HistogramCanvas, IVCanvas, PgLiveCanvas
 from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, VdpSampleDiagram, VdpProtocolFilmstrip, VdpPerGeometryBarChart, format_engineering
 from .dialogs import SettingsDialog, UserSelectionDialog
 
@@ -201,9 +201,10 @@ class ResistanceMeterApp(QMainWindow):
         # Plot (right column)
         plot_group = QGroupBox("Real-time Data")
         plot_layout = QVBoxLayout(plot_group)
-        canvas = MplCanvas(self, width=8, height=5, dpi=90)
-        toolbar = NavigationToolbar(canvas, self)
-        plot_layout.addWidget(toolbar)
+        # Live tab uses pyqtgraph for smooth high-rate updates. Right-click
+        # the plot for the auto-range / view-all menu (replaces the old
+        # matplotlib toolbar).
+        canvas = PgLiveCanvas(self, width=8, height=5, dpi=90)
         plot_layout.addWidget(canvas)
 
         # Live readout + Control row (full-width, beneath the splitter)
@@ -1394,8 +1395,7 @@ class ResistanceMeterApp(QMainWindow):
         form.addRow("Y Variable:", self.results_var)
         layout.addLayout(form)
         # Plot canvas
-        self.results_canvas = MplCanvas(self, width=8, height=5, dpi=90)
-        layout.addWidget(NavigationToolbar(self.results_canvas, self))
+        self.results_canvas = PgLiveCanvas(self, width=8, height=5, dpi=90)
         layout.addWidget(self.results_canvas)
         # Storage
         self.results_data = {"time": [], "columns": {}, "order": []}

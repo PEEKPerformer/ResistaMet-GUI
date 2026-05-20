@@ -1,6 +1,16 @@
 import numpy as np
+import pyqtgraph as pg
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont
+from PyQt5.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+
+# pyqtgraph global config — set once, applies to every PlotWidget created
+# afterwards. White background + black foreground matches the matplotlib
+# look the rest of the app uses; antialiasing makes the live trace render
+# cleanly at speed.
+pg.setConfigOptions(antialias=True, background='w', foreground='k', useOpenGL=False)
 
 
 class HistogramCanvas(FigureCanvas):
@@ -206,6 +216,161 @@ class MplCanvas(FigureCanvas):
         self.axes.relim()
         self.axes.autoscale_view(True, True, True)
         self.draw_idle()
+
+
+_COLOR_MAP = {
+    'red': '#d62728',
+    'blue': '#1f77b4',
+    'green': '#2ca02c',
+    'orange': '#ff7f0e',
+    'purple': '#9467bd',
+    'black': '#000000',
+}
+
+
+def _resolve_color(color):
+    if isinstance(color, str):
+        return _COLOR_MAP.get(color.lower(), color)
+    return color
+
+
+class PgLiveCanvas(QWidget):
+    """Live-streaming time-series canvas backed by pyqtgraph.
+
+    Drop-in replacement for ``MplCanvas`` on the high-update-rate tabs.
+    matplotlib redraws cost tens of milliseconds per frame and visibly
+    stutter at >5 Hz sampling; pyqtgraph stays under a couple of ms even at
+    20–50 Hz, which is what a research demo actually wants to look like.
+
+    Public API mirrors ``MplCanvas``:
+        ``set_plot_properties(xlabel, ylabel, title, color)``
+        ``update_plot(timestamps, values, compliance_list, stats,
+                       username, sample_name)``
+        ``clear_plot()``
+    """
+
+    def __init__(self, parent=None, width=8, height=5, dpi=100):
+        super().__init__(parent)
+        # Match the rough on-screen footprint of the matplotlib canvas so
+        # tab layouts don't visibly shift.
+        self.setMinimumSize(int(width * dpi * 0.6), int(height * dpi * 0.6))
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+
+        # Compliance banner — hidden when no compliance event.
+        self.compliance_label = QLabel('')
+        self.compliance_label.setAlignment(Qt.AlignCenter)
+        self.compliance_label.setStyleSheet(
+            "background-color: #ffe5e5; color: #b00020; border: 1px solid #b00020;"
+            " border-radius: 3px; padding: 2px; font-weight: bold;"
+        )
+        self.compliance_label.setVisible(False)
+        outer.addWidget(self.compliance_label)
+
+        # The plot itself.
+        self.plot_widget = pg.PlotWidget()
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        self.plot_widget.setLabel('bottom', 'Time (s)')
+        self.plot_widget.setLabel('left', 'Value')
+        # Auto-range follows new points as they stream in — this is the
+        # behavior matplotlib gave us with relim()+autoscale_view().
+        self.plot_widget.enableAutoRange(axis='xy', enable=True)
+        # SI prefix on y axis (k, M, m, µ, n) — matches the way the rest of
+        # the lab thinks about resistance/current.
+        self.plot_widget.getAxis('left').enableAutoSIPrefix(True)
+        outer.addWidget(self.plot_widget, 1)
+
+        # Stats row below the plot. Kept compact and monospaced so the
+        # numbers don't jitter as digits change.
+        stat_font = QFont('Monospace')
+        stat_font.setStyleHint(QFont.TypeWriter)
+        stats_row = QHBoxLayout()
+        stats_row.setContentsMargins(4, 0, 4, 0)
+        self.min_label = QLabel('Min: --')
+        self.max_label = QLabel('Max: --')
+        self.avg_label = QLabel('Avg: --')
+        self.info_label = QLabel('User: --   Sample: --')
+        for w in (self.min_label, self.max_label, self.avg_label, self.info_label):
+            w.setFont(stat_font)
+        stats_row.addWidget(self.min_label)
+        stats_row.addWidget(self.max_label)
+        stats_row.addWidget(self.avg_label)
+        stats_row.addStretch(1)
+        stats_row.addWidget(self.info_label)
+        outer.addLayout(stats_row)
+
+        # Curve — created once and updated in place via setData(). This is
+        # the whole performance story: no axes.clear()/replot() per frame.
+        self._pen_color = _resolve_color('red')
+        self.curve = self.plot_widget.plot(
+            [], [], pen=pg.mkPen(self._pen_color, width=2), name='Measurement'
+        )
+        self._title = 'Measurement'
+        self._y_label = 'Value'
+        self._y_unit = ''
+        self.plot_widget.setTitle(self._title)
+
+    # --- public API ------------------------------------------------------
+
+    def set_plot_properties(self, xlabel, ylabel, title, color='blue'):
+        self._pen_color = _resolve_color(color)
+        self.curve.setPen(pg.mkPen(self._pen_color, width=2))
+        self.plot_widget.setLabel('bottom', xlabel)
+        self.plot_widget.setLabel('left', ylabel)
+        self._title = title
+        self._y_label = ylabel
+        # Extract unit from "Foo (Ω)" → "Ω" so stats labels can carry it.
+        if '(' in ylabel and ')' in ylabel:
+            self._y_unit = ylabel.split('(', 1)[1].split(')', 1)[0]
+        else:
+            self._y_unit = ''
+        self.plot_widget.setTitle(title)
+
+    def update_plot(self, timestamps, values, compliance_list, stats, username, sample_name):
+        if not timestamps:
+            self.clear_plot()
+            return
+        start_time = timestamps[0]
+        # numpy conversion keeps the masking + setData fast even at large
+        # buffer sizes; lists would force per-element Python iteration in
+        # the C extension.
+        et = np.asarray([t - start_time for t in timestamps], dtype=float)
+        vals = np.asarray(values, dtype=float)
+        mask = np.isfinite(vals)
+        if mask.any():
+            self.curve.setData(et[mask], vals[mask])
+        else:
+            self.curve.setData([], [])
+
+        unit = self._y_unit
+        min_v = stats.get('min', float('inf'))
+        max_v = stats.get('max', float('-inf'))
+        avg_v = stats.get('avg', 0)
+        self.min_label.setText(f'Min: {min_v:.4g} {unit}' if np.isfinite(min_v) else 'Min: --')
+        self.max_label.setText(f'Max: {max_v:.4g} {unit}' if np.isfinite(max_v) else 'Max: --')
+        self.avg_label.setText(f'Avg: {avg_v:.4g} {unit}' if np.isfinite(avg_v) else 'Avg: --')
+        self.info_label.setText(f'User: {username}   Sample: {sample_name}')
+
+        last_compliance = compliance_list[-1] if compliance_list else 'OK'
+        if last_compliance == 'V_COMP':
+            self.compliance_label.setText('VOLTAGE COMPLIANCE HIT')
+            self.compliance_label.setVisible(True)
+        elif last_compliance == 'I_COMP':
+            self.compliance_label.setText('CURRENT COMPLIANCE HIT')
+            self.compliance_label.setVisible(True)
+        else:
+            self.compliance_label.setVisible(False)
+
+    def clear_plot(self):
+        self.curve.setData([], [])
+        self.min_label.setText('Min: --')
+        self.max_label.setText('Max: --')
+        self.avg_label.setText('Avg: --')
+        self.info_label.setText('User: --   Sample: --')
+        self.compliance_label.setVisible(False)
 
 
 class IVCanvas(FigureCanvas):
