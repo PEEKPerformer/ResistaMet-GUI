@@ -92,6 +92,8 @@ class TestUserManagement:
         """Test getting and setting last user."""
         assert config_manager.get_last_user() is None
 
+        # set_last_user requires the user to exist in the users list
+        config_manager.add_user("test_user")
         config_manager.set_last_user("test_user")
         assert config_manager.get_last_user() == "test_user"
 
@@ -183,10 +185,110 @@ class TestDefaultMerging:
         with open(temp_config_file, 'w') as f:
             json.dump(partial_config, f)
 
-        manager = ConfigManager(config_file=temp_config_file)
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
 
-        # Custom value preserved
-        assert manager.config['measurement']['gpib_address'] == 'GPIB0::25::INSTR'
+        # Legacy resolves through machine-local fallback
+        assert manager.get_gpib_address() == 'GPIB0::25::INSTR'
 
         # Default values filled in
         assert 'res_test_current' in manager.config['measurement']
+
+
+class TestMachineLocalGpib:
+    """The instrument address is per-machine, not per-user or per-config."""
+
+    def test_get_falls_back_to_default(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        assert manager.get_gpib_address() == DEFAULT_SETTINGS['measurement']['gpib_address']
+
+    def test_set_writes_to_machine_slot(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        manager.set_gpib_address('GPIB0::25::INSTR')
+
+        with open(temp_config_file) as f:
+            saved = json.load(f)
+        assert saved['machines']['HOST-A']['gpib_address'] == 'GPIB0::25::INSTR'
+
+    def test_different_hosts_resolve_independently(self, temp_config_file):
+        host_a = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        host_a.set_gpib_address('GPIB0::25::INSTR')
+
+        host_b = ConfigManager(config_file=temp_config_file, hostname='HOST-B')
+        host_b.set_gpib_address('TCPIP0::192.168.1.10::inst0::INSTR')
+
+        # Each host sees only its own address
+        host_a_reload = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        host_b_reload = ConfigManager(config_file=temp_config_file, hostname='HOST-B')
+        assert host_a_reload.get_gpib_address() == 'GPIB0::25::INSTR'
+        assert host_b_reload.get_gpib_address() == 'TCPIP0::192.168.1.10::inst0::INSTR'
+
+    def test_legacy_address_migrates_on_first_open(self, temp_config_file):
+        legacy_config = {
+            'measurement': {'gpib_address': 'GPIB0::24::INSTR'},
+            'users': [],
+        }
+        with open(temp_config_file, 'w') as f:
+            json.dump(legacy_config, f)
+
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+
+        # Resolves and persists into the machine slot
+        assert manager.get_gpib_address() == 'GPIB0::24::INSTR'
+        with open(temp_config_file) as f:
+            saved = json.load(f)
+        assert saved['machines']['HOST-A']['gpib_address'] == 'GPIB0::24::INSTR'
+
+    def test_set_clears_legacy_and_user_copies(self, temp_config_file):
+        polluted = {
+            'measurement': {'gpib_address': 'GPIB0::99::INSTR'},
+            'user_settings': {
+                'alice': {'measurement': {'gpib_address': 'GPIB0::77::INSTR', 'sampling_rate': 50.0}}
+            },
+            'users': ['alice'],
+        }
+        with open(temp_config_file, 'w') as f:
+            json.dump(polluted, f)
+
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        manager.set_gpib_address('GPIB0::25::INSTR')
+
+        with open(temp_config_file) as f:
+            saved = json.load(f)
+        assert 'gpib_address' not in saved.get('measurement', {})
+        assert 'gpib_address' not in saved['user_settings']['alice']['measurement']
+        # Unrelated user fields are preserved
+        assert saved['user_settings']['alice']['measurement']['sampling_rate'] == 50.0
+
+    def test_get_user_settings_injects_machine_address(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        manager.add_user('alice')
+        manager.set_gpib_address('GPIB0::25::INSTR')
+
+        settings = manager.get_user_settings('alice')
+        assert settings['measurement']['gpib_address'] == 'GPIB0::25::INSTR'
+
+    def test_update_user_settings_routes_address(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        manager.add_user('alice')
+
+        manager.update_user_settings('alice', {
+            'measurement': {'gpib_address': 'GPIB0::25::INSTR', 'sampling_rate': 42.0},
+            'display': {},
+            'file': {},
+        })
+
+        # Address landed in machine slot, not in the user profile
+        assert manager.get_gpib_address() == 'GPIB0::25::INSTR'
+        stored = manager.config['user_settings']['alice']['measurement']
+        assert 'gpib_address' not in stored
+        assert stored['sampling_rate'] == 42.0
+
+    def test_update_global_settings_routes_address(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        manager.update_global_settings({
+            'measurement': {'gpib_address': 'GPIB0::25::INSTR', 'sampling_rate': 42.0},
+        })
+        assert manager.get_gpib_address() == 'GPIB0::25::INSTR'
+        # Address didn't leak back into the shared measurement block
+        assert 'gpib_address' not in manager.config['measurement']
+        assert manager.config['measurement']['sampling_rate'] == 42.0

@@ -2536,10 +2536,12 @@ class ResistanceMeterApp(QMainWindow):
         v.addWidget(use_btn)
         if dialog.exec_():
             addr = combo.currentText()
-            # Save to global settings
-            cfg = dict(self.config_manager.config)
-            cfg['measurement']['gpib_address'] = addr
-            self.config_manager.update_global_settings({'measurement': {'gpib_address': addr}})
+            self.config_manager.set_gpib_address(addr)
+            # Refresh the in-memory cache so the next measurement reads the
+            # new address. Without this, the address only takes effect after
+            # bouncing through Settings → Save.
+            if self.current_user:
+                self.user_settings = self.config_manager.get_user_settings(self.current_user)
             self.log_status(f"GPIB address set to: {addr}")
             QMessageBox.information(self, "GPIB Updated", f"GPIB address updated to {addr}. Start the measurement again.")
 
