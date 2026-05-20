@@ -46,7 +46,7 @@ DEFAULT_SETTINGS = {
         "fpp_thickness_um": 0.0,            # thin-film thickness in micrometers (µm); 0 = unknown
         "fpp_alpha": 1.0,                    # thickness correction factor
         "fpp_k_factor": 4.532,              # geometric coefficient replacing 4.532 when needed
-        "fpp_samples": 0,                  # number of samples to take (0 = continuous)
+        "fpp_samples": 50,                 # number of samples per spot before auto-stop (0 = continuous)
         "fpp_model": "thin_film",             # one of: thin_film, semi_infinite, finite_thin, finite_alpha
         # F84-aligned correction factor inputs. Defaults reproduce legacy behavior
         # (infinite-diameter circle, no temperature correction) so existing config
@@ -72,7 +72,7 @@ DEFAULT_SETTINGS = {
         "vdp_voltage_range_auto": True,       # auto-range voltage measurement
         "vdp_thickness_cm": 1.0e-4,           # sample thickness, cm (1 µm default)
         "vdp_settling_s": 0.2,                # delay after polarity flip before READ?
-        "vdp_readings_per_polarity": 1,       # average N hardware readings per +I and -I
+        "vdp_readings_per_polarity": 5,       # average N hardware readings per +I and -I
         # I-V Sweep defaults
         "sweep_source": "voltage",           # "voltage" or "current"
         "sweep_start": 0.0,                  # sweep start value (V or A)
@@ -84,7 +84,11 @@ DEFAULT_SETTINGS = {
     },
     "display": {
         "enable_plot": True,
-        "plot_update_interval": 200,         # Plot update interval in milliseconds
+        # 16 ms ≈ 60 fps, synced to a typical 60 Hz monitor. Used to be
+        # 200 ms when the live canvas was matplotlib; pyqtgraph renders
+        # for free at this cadence. The main_window timer also caps at
+        # 16 ms so older saved configs still get the snappy feel.
+        "plot_update_interval": 16,          # Plot update interval in milliseconds
         "plot_color_r": "red",               # Plot line color for Resistance
         "plot_color_v": "blue",              # Plot line color for Voltage Source (Current)
         "plot_color_i": "green",             # Plot line color for Current Source (Voltage)
