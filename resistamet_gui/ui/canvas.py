@@ -7,10 +7,11 @@ from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 # pyqtgraph global config — set once, applies to every PlotWidget created
-# afterwards. White background + black foreground matches the matplotlib
-# look the rest of the app uses; antialiasing makes the live trace render
-# cleanly at speed.
-pg.setConfigOptions(antialias=True, background='w', foreground='k', useOpenGL=False)
+# afterwards. Cool off-white plot background (gentler than pure white at
+# projector brightness) and a soft-black foreground tuned for a Nature-
+# materials-paper aesthetic; antialiasing keeps the live trace crisp.
+pg.setConfigOptions(antialias=True, background=(250, 250, 252),
+                    foreground=(26, 26, 26), useOpenGL=False)
 
 
 class HistogramCanvas(FigureCanvas):
@@ -218,13 +219,16 @@ class MplCanvas(FigureCanvas):
         self.draw_idle()
 
 
+# Refined palette: deeper, slightly desaturated versions of the matplotlib
+# tab10 defaults that read better at projector brightness and look closer
+# to a materials-journal figure than the bright primaries we used to ship.
 _COLOR_MAP = {
-    'red': '#d62728',
-    'blue': '#1f77b4',
-    'green': '#2ca02c',
-    'orange': '#ff7f0e',
-    'purple': '#9467bd',
-    'black': '#000000',
+    'red':    '#c0392b',
+    'blue':   '#2c5f8f',
+    'green':  '#27ae60',
+    'orange': '#d97706',
+    'purple': '#6d28d9',
+    'black':  '#1a1a1a',
 }
 
 
@@ -327,12 +331,19 @@ class PgLiveCanvas(QWidget):
 
         # The plot itself.
         self.plot_widget = pg.PlotWidget()
-        self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        # Light dotted grid — present enough to read off values, restrained
+        # enough that it doesn't compete with the trace.
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.15)
         self.plot_widget.setLabel('bottom', 'Time (s)')
         self.plot_widget.setLabel('left', 'Value')
         # Auto-range follows new points as they stream in — this is the
-        # behavior matplotlib gave us with relim()+autoscale_view().
+        # behavior matplotlib gave us with relim()+autoscale_view(). The
+        # extra padding (default is 0.02) gives sudden transitions room
+        # to breathe: when a foam-composite press makes resistance drop
+        # 10x in 200 ms, the rescaled view shows the jump in context
+        # instead of pancaking the pre-jump baseline against the axis.
         self.plot_widget.enableAutoRange(axis='xy', enable=True)
+        self.plot_widget.getViewBox().setDefaultPadding(0.08)
         # SI prefix on y axis (k, M, m, µ, n) — matches the way the rest of
         # the lab thinks about resistance/current.
         self.plot_widget.getAxis('left').enableAutoSIPrefix(True)
@@ -342,7 +353,32 @@ class PgLiveCanvas(QWidget):
         # rendering samples outside the visible range during pan/zoom.
         self.plot_widget.setDownsampling(auto=True, mode='peak')
         self.plot_widget.setClipToView(True)
+
+        # Restrained scaffolding: medium-grey axes + tick labels in a clean
+        # sans-serif. Looks closer to a published figure than pyqtgraph's
+        # default heavy-black axes.
+        axis_pen = pg.mkPen(color=(102, 102, 102), width=1)
+        tick_font = QFont()
+        tick_font.setStyleHint(QFont.SansSerif)
+        tick_font.setPointSize(10)
+        label_font = QFont()
+        label_font.setStyleHint(QFont.SansSerif)
+        label_font.setPointSize(11)
+        for axis_name in ('bottom', 'left'):
+            ax = self.plot_widget.getAxis(axis_name)
+            ax.setPen(axis_pen)
+            ax.setTextPen(pg.mkPen(color=(60, 60, 60)))
+            ax.setStyle(tickFont=tick_font)
+            ax.label.setFont(label_font)
         outer.addWidget(self.plot_widget, 1)
+
+        # Hairline separator between the plot and the stats row. Tiny visual
+        # break so the numbers don't blend into the axis.
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color: #e0e0e0;")
+        sep.setMaximumHeight(1)
+        outer.addWidget(sep)
 
         # Stats row below the plot. Kept compact and monospaced so the
         # numbers don't jitter as digits change. A vertical separator
@@ -371,25 +407,38 @@ class PgLiveCanvas(QWidget):
 
         # Curve — created once and updated in place via setData(). This is
         # the whole performance story: no axes.clear()/replot() per frame.
+        # cosmetic=True locks the line width to screen pixels (it stays
+        # crisp under zoom instead of scaling with the data range).
         self._pen_color = _resolve_color('red')
         self.curve = self.plot_widget.plot(
-            [], [], pen=pg.mkPen(self._pen_color, width=2), name='Measurement'
+            [], [], pen=pg.mkPen(self._pen_color, width=2.5, cosmetic=True),
+            name='Measurement',
         )
         self._title = 'Measurement'
         self._y_label = 'Value'
         self._y_unit = ''
         self._y_symbol = ''  # e.g. 'R', 'V', 'I' — derived from the title
-        self.plot_widget.setTitle(self._title)
+        # Bold sans-serif title at presentation size — readable from across
+        # the room when projected.
+        self.plot_widget.setTitle(
+            self._title, color=(40, 40, 40), size='13pt', bold=True,
+        )
 
         # Big latest-value pill, anchored to the top-right corner of the
         # viewbox so the audience can read the live number from across the
         # room. ignoreBounds keeps it from disturbing the auto-range, and
         # the sigRangeChanged callback re-pins it whenever the view moves.
-        self._value_font = QFont('Monospace', 16, QFont.Bold)
+        # Card-like styling: near-opaque white with a thin grey border —
+        # reads as a HUD badge rather than a sticky-note overlay.
+        self._value_font = QFont()
         self._value_font.setStyleHint(QFont.TypeWriter)
+        self._value_font.setFamily('Menlo')  # falls back to system mono
+        self._value_font.setPointSize(18)
+        self._value_font.setBold(True)
         self.value_label = pg.TextItem(
-            text='', color=(20, 20, 20), anchor=(1.0, 0.0),
-            fill=(255, 255, 220, 220), border={'color': (120, 120, 120), 'width': 1},
+            text='', color=(26, 26, 26), anchor=(1.0, 0.0),
+            fill=(255, 255, 255, 235),
+            border={'color': (200, 200, 200), 'width': 1},
         )
         self.value_label.setFont(self._value_font)
         self.plot_widget.addItem(self.value_label, ignoreBounds=True)
