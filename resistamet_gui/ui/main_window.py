@@ -2729,8 +2729,14 @@ class ResistanceMeterApp(QMainWindow):
             resources = rm.list_resources()
             if addr not in resources:
                 rm.close()
-                QMessageBox.warning(self, "Connection Failed",
-                                    f"Instrument at '{addr}' not found.\n\nAvailable: {', '.join(resources) if resources else 'none'}")
+                available = ', '.join(resources) if resources else 'none'
+                QMessageBox.warning(
+                    self, "Connection Failed",
+                    f"No instrument responded at {addr}.\n\n"
+                    f"Check that the Keithley is powered on, the GPIB/USB "
+                    f"cable is firmly seated, and the address matches the "
+                    f"instrument's front-panel setting.\n\nDetected addresses: {available}"
+                )
                 self.statusBar().showMessage("Connection failed", 5000)
                 return
             dev = rm.open_resource(addr)
@@ -2747,7 +2753,8 @@ class ResistanceMeterApp(QMainWindow):
             self.log_status(f"Connection test OK: {idn}", color="darkGreen")
             self.statusBar().showMessage(f"Connected: {idn}", 5000)
         except Exception as e:
-            QMessageBox.critical(self, "Connection Failed", f"Error connecting to {addr}:\n{str(e)}")
+            from ..instrument import humanize_connection_error
+            QMessageBox.critical(self, "Connection Failed", humanize_connection_error(e, addr))
             self.statusBar().showMessage("Connection failed", 5000)
 
     def closeEvent(self, event):

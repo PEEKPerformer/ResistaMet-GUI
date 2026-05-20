@@ -1,3 +1,4 @@
+import platform
 import re
 import time
 from dataclasses import dataclass
@@ -42,6 +43,93 @@ _MODELS: dict[str, ModelSpec] = {
 }
 
 _IDN_MODEL_RE = re.compile(r"MODEL\s+(\d{4})", re.IGNORECASE)
+
+
+def humanize_connection_error(exc: BaseException, address: str = "") -> str:
+    """Translate a raw pyvisa exception into a user-facing one-liner.
+
+    The lab uses ResistaMet without staff hand-holding; raw pyvisa
+    messages ("VI_ERROR_RSRC_NFOUND (0xBFFF0011): Insufficient location
+    information…") cause panic. We map the common cases by VI error code
+    when available, by message substring otherwise, and always preserve
+    the address in the returned text so it stays searchable.
+
+    Returns a single line ending in advice ("turn the instrument on",
+    "check the cable", etc.). Callers should still keep the original
+    traceback in logs for diagnostics.
+    """
+    code = getattr(exc, 'error_code', None)
+    msg = str(exc)
+    msg_lower = msg.lower()
+    addr_hint = f" ({address})" if address else ""
+
+    # Pure address-mismatch: our own list_resources() check raised
+    # RuntimeError before pyvisa ever opened a session.
+    if isinstance(exc, RuntimeError) and 'not found' in msg_lower:
+        return (
+            f"Instrument at {address or 'the configured address'} was not "
+            f"detected. Check that it's powered on, the GPIB/USB cable is "
+            f"firmly seated, and the address matches the front-panel setting. "
+            f"You can re-select the address from the dialog that just opened."
+        )
+
+    if isinstance(exc, pyvisa.errors.LibraryError) or 'no visa library' in msg_lower:
+        if platform.system() == 'Darwin':
+            return (
+                "NI-VISA is not supported on macOS — the Keithley 2400 family "
+                "needs a Windows host running NI-VISA, or a Prologix-style "
+                "GPIB-to-USB adapter with pyvisa-py. Prologix has not been "
+                "verified with ResistaMet. For routine use, run on the lab "
+                "Windows PC instead."
+            )
+        return (
+            "NI-VISA isn't installed on this PC. Download it from "
+            "ni.com/visa, install, reboot, then try again."
+        )
+
+    # Timeouts and resource-not-found come through as VisaIOError with
+    # specific codes. Map the codes we actually see on the bench.
+    if code is not None:
+        if code == pyvisa.constants.StatusCode.error_resource_not_found:
+            return (
+                f"No instrument responded at {address or 'the configured address'}. "
+                f"Power on the Keithley, check the cable, or pick a different "
+                f"address from the GPIB dialog."
+            )
+        if code == pyvisa.constants.StatusCode.error_timeout:
+            return (
+                f"Timeout while talking to the instrument{addr_hint}. It may "
+                f"be hung — try power-cycling it. If this is the first "
+                f"connection attempt, the GPIB address may also be wrong."
+            )
+        if code == pyvisa.constants.StatusCode.error_resource_busy:
+            return (
+                f"The instrument{addr_hint} is busy. Another program "
+                f"(Kickstart, LabVIEW, an older ResistaMet window) probably "
+                f"has it open. Close that program and try again."
+            )
+
+    # Fallback substring matches for older pyvisa builds where error_code
+    # isn't populated.
+    if 'timeout' in msg_lower:
+        return (
+            f"Timeout while talking to the instrument{addr_hint}. Power-cycle "
+            f"the Keithley or verify the GPIB address."
+        )
+    if 'rsrc_nfound' in msg_lower or 'insufficient location' in msg_lower:
+        return (
+            f"No instrument responded at {address or 'the configured address'}. "
+            f"Power on the Keithley, check the cable, or pick a different "
+            f"address from the GPIB dialog."
+        )
+
+    # Last resort: surface the raw message but framed so the user knows
+    # what to try.
+    return (
+        f"Could not connect to the instrument{addr_hint}. {msg}. "
+        f"Check power, cabling, and address; if it persists, share this "
+        f"message with whoever set the rig up."
+    )
 
 
 def parse_model_from_idn(idn: str) -> Optional[ModelSpec]:

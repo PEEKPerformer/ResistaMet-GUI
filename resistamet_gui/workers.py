@@ -23,7 +23,7 @@ from .constants import (
 # Bit 3: Compliance — source is in real compliance
 _STAT_BIT_COMPLIANCE = 1 << 3
 from .data_export import build_metadata, get_column_config, make_exporter
-from .instrument import Keithley2400
+from .instrument import Keithley2400, humanize_connection_error
 from .system_utils import SleepInhibitor
 
 
@@ -166,7 +166,7 @@ class MeasurementWorker(QThread):
                 self.keithley.write(":OUTP:SMOD HIMP")
                 instrument_ready = True
             except Exception as e:
-                self.error_occurred.emit(f"Error connecting to instrument: {str(e)}")
+                self.error_occurred.emit(humanize_connection_error(e, gpib_address))
                 return
 
             # Configure instrument
@@ -1266,7 +1266,12 @@ class VdpMeasurementWorker(QThread):
         measurement = self.settings['measurement']
         gpib = measurement['gpib_address']
         self.status_update.emit(f"Connecting to instrument at {gpib}...")
-        self.keithley = Keithley2400(gpib).connect()
+        try:
+            self.keithley = Keithley2400(gpib).connect()
+        except Exception as e:
+            # Re-raise so the run() catch still fires, but with a message
+            # the user can actually act on.
+            raise RuntimeError(humanize_connection_error(e, gpib)) from e
         self._instrument_idn = self.keithley.query("*IDN?").strip()
         self.status_update.emit(f"Connected to: {self._instrument_idn}")
 
