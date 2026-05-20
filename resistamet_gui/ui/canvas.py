@@ -14,6 +14,36 @@ pg.setConfigOptions(antialias=True, background=(250, 250, 252),
                     foreground=(26, 26, 26), useOpenGL=False)
 
 
+# Aesthetic constants shared with the live canvas — same palette + bg so
+# the 4PP tab reads as a single instrument rather than two separate plots.
+_HIST_BG       = '#fafafc'
+_HIST_BAR      = '#2c5f8f'   # deep blue, matches PgLiveCanvas 'blue'
+_HIST_MEAN     = '#c0392b'   # deep red, matches PgLiveCanvas 'red'
+_HIST_AXIS     = '#666666'
+_HIST_GRID     = '#e6e6e6'
+_HIST_BBOX     = dict(boxstyle='round,pad=0.4', fc='white', ec='#cccccc', alpha=0.95)
+
+
+def _style_histogram_axes(ax):
+    """Apply the Nature-figure scaffolding used by both histogram + bar
+    modes: medium-grey spines, no top/right frame, light dotted grid,
+    sans-serif tick labels at presentation-readable size."""
+    fig = ax.figure
+    fig.patch.set_facecolor(_HIST_BG)
+    ax.set_facecolor(_HIST_BG)
+    for side in ('top', 'right'):
+        ax.spines[side].set_visible(False)
+    for side in ('left', 'bottom'):
+        ax.spines[side].set_color(_HIST_AXIS)
+        ax.spines[side].set_linewidth(0.8)
+    ax.tick_params(axis='both', colors=_HIST_AXIS, labelsize=9, length=4, width=0.8)
+    ax.xaxis.label.set_color('#333333'); ax.xaxis.label.set_size(10)
+    ax.yaxis.label.set_color('#333333'); ax.yaxis.label.set_size(10)
+    ax.title.set_size(12); ax.title.set_color('#222222'); ax.title.set_weight('bold')
+    ax.grid(True, linestyle=':', linewidth=0.6, color=_HIST_GRID, zorder=0)
+    ax.set_axisbelow(True)
+
+
 class HistogramCanvas(FigureCanvas):
     """Histogram display for 4-Point Probe measurement distribution.
 
@@ -23,7 +53,8 @@ class HistogramCanvas(FigureCanvas):
     """
 
     def __init__(self, parent=None, width=5, height=3, dpi=90):
-        self.fig = Figure(figsize=(width, height), dpi=dpi, constrained_layout=True)
+        self.fig = Figure(figsize=(width, height), dpi=dpi, constrained_layout=True,
+                          facecolor=_HIST_BG)
         self.axes = self.fig.add_subplot(111)
         super().__init__(self.fig)
         if parent is not None:
@@ -41,8 +72,9 @@ class HistogramCanvas(FigureCanvas):
 
         valid = [v for v in values if np.isfinite(v)]
         if not valid:
+            _style_histogram_axes(self.axes)
             self.axes.text(0.5, 0.5, 'No data', transform=self.axes.transAxes,
-                           ha='center', va='center', fontsize=12, color='grey')
+                           ha='center', va='center', fontsize=12, color='#888888')
             self.axes.set_xlabel(label)
             self.axes.set_ylabel('Count')
             self.axes.set_title('Distribution')
@@ -58,21 +90,22 @@ class HistogramCanvas(FigureCanvas):
         if bins == 'auto':
             bins = max(5, min(30, n // 3))
 
-        self.axes.hist(valid, bins=bins, color='steelblue', edgecolor='white',
-                       alpha=0.85, zorder=2)
+        self.axes.hist(valid, bins=bins, color=_HIST_BAR, edgecolor='white',
+                       linewidth=0.6, alpha=0.92, zorder=2)
         # Mean line
-        self.axes.axvline(mean, color='red', linewidth=1.5, linestyle='--',
+        self.axes.axvline(mean, color=_HIST_MEAN, linewidth=1.8, linestyle='--',
                           label=f'Mean: {mean:.5g}', zorder=3)
-        # Stats annotation
+        # Stats annotation — top-right, card-styled to match the live canvas pill
         stats_text = f'N = {n}\nMean = {mean:.5g}\nStd = {std:.3g}\nRSD = {rsd:.2f}%'
         self.axes.text(0.97, 0.95, stats_text, transform=self.axes.transAxes,
-                       ha='right', va='top', fontsize=8,
-                       bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='grey', alpha=0.8))
+                       ha='right', va='top', fontsize=9, family='monospace',
+                       bbox=_HIST_BBOX, zorder=4)
 
         self.axes.set_xlabel(label)
         self.axes.set_ylabel('Count')
         self.axes.set_title('Measurement Distribution')
-        self.axes.legend(loc='upper left', fontsize=8)
+        self.axes.legend(loc='upper left', fontsize=8, frameon=False)
+        _style_histogram_axes(self.axes)
         self.draw_idle()
 
     def update_bar_chart(self, spot_names, means, stds):
@@ -86,11 +119,13 @@ class HistogramCanvas(FigureCanvas):
 
         x = np.arange(len(spot_names))
         bars = self.axes.bar(x, means, yerr=stds, capsize=4,
-                             color='steelblue', edgecolor='white', alpha=0.85,
-                             error_kw=dict(elinewidth=1.5, capthick=1.5))
+                             color=_HIST_BAR, edgecolor='white', linewidth=0.6,
+                             alpha=0.92,
+                             error_kw=dict(elinewidth=1.4, capthick=1.4,
+                                           ecolor='#3a3a3a'))
 
         self.axes.set_xticks(x)
-        self.axes.set_xticklabels(spot_names, rotation=30, ha='right', fontsize=8)
+        self.axes.set_xticklabels(spot_names, rotation=30, ha='right', fontsize=9)
         self.axes.set_ylabel('Rs (Ω/□)')
         self.axes.set_title('Spot-to-Spot Uniformity')
 
@@ -107,18 +142,21 @@ class HistogramCanvas(FigureCanvas):
             overall_mean = np.mean(means)
             overall_std = np.std(means, ddof=1)
             rsd = (overall_std / overall_mean * 100) if overall_mean != 0 else 0
-            self.axes.axhline(overall_mean, color='red', linewidth=1, linestyle='--', alpha=0.7)
+            self.axes.axhline(overall_mean, color=_HIST_MEAN, linewidth=1.2,
+                              linestyle='--', alpha=0.75)
             self.axes.text(0.02, 0.97, f'Inter-spot RSD: {rsd:.1f}%',
                            transform=self.axes.transAxes, ha='left', va='top', fontsize=9,
-                           bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='grey', alpha=0.8))
+                           family='monospace', bbox=_HIST_BBOX)
 
+        _style_histogram_axes(self.axes)
         self.draw_idle()
 
     def clear_histogram(self):
         """Reset to blank state."""
         self.axes.clear()
+        _style_histogram_axes(self.axes)
         self.axes.text(0.5, 0.5, 'Waiting for data...', transform=self.axes.transAxes,
-                       ha='center', va='center', fontsize=11, color='grey')
+                       ha='center', va='center', fontsize=11, color='#888888')
         self.axes.set_xlabel('')
         self.axes.set_ylabel('')
         self.draw_idle()

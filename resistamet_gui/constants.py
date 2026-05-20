@@ -125,6 +125,21 @@ DEFAULT_SETTINGS = {
     "last_user": None
 }
 
+
+# Some modes optimize for the tightest possible number rather than fast
+# real-time visibility. 4PP and vdP are static spot measurements — the
+# sample isn't evolving during a single spot, so the right defaults are
+# the slow ones (full auto-zero, maximum hardware averaging) regardless
+# of what the shared 'measurement' block says. gather_settings_for_mode
+# applies these on top of the loaded settings right before the worker
+# starts. Sensor modes (resistance, source_v, source_i) are intentionally
+# absent: they want the snappy shared defaults so live R-vs-t looks
+# alive on screen.
+MODE_TIMING_OVERRIDES = {
+    'four_point': {'auto_zero': 'on', 'filter_count': 10},
+    'vdp':        {'auto_zero': 'on', 'filter_count': 10},
+}
+
 # Keithley compliance heuristics
 KEITHLEY_COMPLIANCE_MAGIC_NUMBER = 9.9e37
 COMPLIANCE_THRESHOLD_FACTOR = 1.0

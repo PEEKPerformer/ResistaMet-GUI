@@ -1877,6 +1877,15 @@ class ResistanceMeterApp(QMainWindow):
             m_cfg['isource_duration_hours'] = 0.0
         m_cfg['settling_time'] = self.user_settings['measurement']['settling_time']
         m_cfg['gpib_address'] = self.user_settings['measurement']['gpib_address']
+        # Accuracy-critical modes (4PP, vdP) force the slow, low-noise
+        # timing knobs regardless of the shared defaults. Static-spot
+        # measurements care about the tightness of Rs / ρ / R_s, not how
+        # fast the trace updates — so we override here at the last moment
+        # before the worker reads the config.
+        from ..constants import MODE_TIMING_OVERRIDES
+        overrides = MODE_TIMING_OVERRIDES.get(mode, {})
+        for k, v in overrides.items():
+            m_cfg[k] = v
         return effective_settings
 
     def _require_sample_name(self) -> Optional[str]:
@@ -2546,6 +2555,7 @@ class ResistanceMeterApp(QMainWindow):
         spinbox's maximum, and write a tooltip that explains the cap and
         suggests the cheapest single change to lift it."""
         import math
+        from ..constants import MODE_TIMING_OVERRIDES
         from ..timing import TimingSettings, suggest_change_for_rate
 
         if not self.user_settings or not hasattr(tab, 'sampling_rate'):
@@ -2555,6 +2565,13 @@ class ResistanceMeterApp(QMainWindow):
         # its own NPLC spinbox; the other live tabs inherit from Settings).
         if hasattr(tab, 'nplc'):
             m['nplc'] = float(tab.nplc.value())
+        # Mode-level timing overrides (4PP / vdP force accuracy-tuned AZ
+        # and filter_count) win last — the cap shown to the user should
+        # match what the worker will actually run with.
+        mode = getattr(tab, 'mode', None)
+        if mode in MODE_TIMING_OVERRIDES:
+            for k, v in MODE_TIMING_OVERRIDES[mode].items():
+                m[k] = v
 
         s = TimingSettings.from_dict(m)
         max_hz = s.max_rate_hz()
