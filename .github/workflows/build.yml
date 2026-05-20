@@ -18,6 +18,12 @@ jobs:
   build-windows:
     name: Build Windows .exe
     runs-on: windows-latest
+    # softprops/action-gh-release needs contents:write to update the
+    # release the tag push created. Without this the build succeeds but
+    # the .exe never lands on the release page — observed once on v1.9.0
+    # ("Resource not accessible by integration"), patched here.
+    permissions:
+      contents: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
