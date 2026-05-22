@@ -222,7 +222,10 @@ class TestSettingsDialog:
         assert dialog.isource_current is not None
         assert dialog.isource_voltage_compliance.value() > 0
         assert dialog.stop_on_compliance is not None
-        assert dialog.auto_zero is not None
+        # auto_zero moved to per-tab UI (resistance / source_v / source_i)
+        # in v1.9.x — no longer lives on the settings dialog.
+        assert not hasattr(dialog, 'auto_zero')
+        assert main_window.tab_resistance.auto_zero.currentText() in ('on', 'once', 'off')
         assert dialog.filter_enabled is not None
         assert dialog.filter_type is not None
         assert dialog.filter_count.value() > 0

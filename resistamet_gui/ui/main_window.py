@@ -252,6 +252,25 @@ class ResistanceMeterApp(QMainWindow):
         tab_widget.splitter = splitter
         return tab_widget
 
+    def _make_auto_zero_combo(self) -> QComboBox:
+        """Shared 'Auto Zero' dropdown used by the sensor-mode tabs.
+
+        Lives on the tab (not the Settings dialog) so it's adjustable per
+        run alongside the other timing knobs (NPLC, sampling rate). 4PP and
+        vdP intentionally don't expose this — MODE_TIMING_OVERRIDES forces
+        their auto_zero to 'on' regardless of what the user picks.
+        """
+        cb = QComboBox()
+        cb.addItems(["on", "once", "off"])
+        cb.setToolTip(
+            "Auto-zero policy for this run:\n"
+            "• on: re-zeros every reading (most accurate, ~3× slower)\n"
+            "• once: cache zero at run start (snappy live trace; absolute R\n"
+            "  may drift on multi-hour runs — fine for ΔR/R₀ analysis)\n"
+            "• off: no zeroing (fastest, will drift; short/high-Hz only)"
+        )
+        return cb
+
     def create_resistance_tab(self):
         widget = self.create_tab_widget('resistance'); layout = widget.param_layout
         widget.res_test_current = EngineeringSpinBox(unit='A', minimum=1e-7, maximum=3.0, default=1e-3)
@@ -271,6 +290,8 @@ class ResistanceMeterApp(QMainWindow):
             "Measurement Type", widget.res_measurement_type,
             "Sampling Rate", widget.sampling_rate,
         ))
+        widget.auto_zero = self._make_auto_zero_combo()
+        layout.addRow("Auto Zero:", widget.auto_zero)
 
         widget.res_auto_range = QCheckBox("Auto Range Resistance")
         widget.res_auto_range.setToolTip("When checked, the instrument automatically selects the best\nmeasurement range for the DUT resistance. Disable for faster\nmeasurements at a fixed range.")
@@ -336,6 +357,8 @@ class ResistanceMeterApp(QMainWindow):
             "Duration", widget.vsource_duration,
             "Sampling Rate", widget.sampling_rate,
         ))
+        widget.auto_zero = self._make_auto_zero_combo()
+        layout.addRow("Auto Zero:", widget.auto_zero)
 
         widget.vsource_current_range_auto = QCheckBox("Auto Range Current")
         widget.vsource_current_range_auto.setToolTip("Automatically select the best current measurement range.\nDisable for faster measurements when you know the expected range.")
@@ -392,6 +415,8 @@ class ResistanceMeterApp(QMainWindow):
             "Duration", widget.isource_duration,
             "Sampling Rate", widget.sampling_rate,
         ))
+        widget.auto_zero = self._make_auto_zero_combo()
+        layout.addRow("Auto Zero:", widget.auto_zero)
 
         widget.isource_voltage_range_auto = QCheckBox("Auto Range Voltage")
         widget.isource_voltage_range_auto.setToolTip("Automatically select the best voltage measurement range.\nDisable for faster measurements at a fixed range.")
@@ -946,13 +971,14 @@ class ResistanceMeterApp(QMainWindow):
         ))
 
         widget.vdp_thickness_cm = NoScrollSpinBox(
-            decimals=6, minimum=1e-7, maximum=10.0, singleStep=1e-4, suffix=" cm"
+            decimals=6, minimum=0.0, maximum=10.0, singleStep=1e-4, suffix=" cm"
         )
-        widget.vdp_thickness_cm.setValue(1.0e-4)
+        widget.vdp_thickness_cm.setValue(0.0)
         widget.vdp_thickness_cm.setToolTip(
             "Sample thickness t in cm (F76 sec. 9.3 wants t/L_p <= 1/15).\n"
             "rho = (pi/(4*ln2)) * f * t * (V/I) per F76 eq. (1).\n"
-            "Sheet resistance Rs = rho / t is reported separately."
+            "Sheet resistance Rs = rho / t is reported separately.\n"
+            "0 = unset; you will be prompted when you press Start."
         )
         widget.vdp_settling_s = NoScrollSpinBox(
             decimals=3, minimum=0.0, maximum=10.0, singleStep=0.05, suffix=" s"
@@ -1165,6 +1191,8 @@ class ResistanceMeterApp(QMainWindow):
             return
         sample_name = self._require_sample_name()
         if not sample_name:
+            return
+        if self._require_vdp_thickness() is None:
             return
 
         try:
@@ -1673,6 +1701,7 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_resistance.res_auto_range.setChecked(m_cfg['res_auto_range'])
         self.tab_resistance.res_offset_comp.setChecked(m_cfg.get('res_offset_comp', False))
         self.tab_resistance.sampling_rate.setValue(m_cfg['sampling_rate'])
+        self.tab_resistance.auto_zero.setCurrentText(str(m_cfg.get('auto_zero', 'once')))
         self.tab_resistance.canvas.set_plot_properties('Elapsed Time (s)', 'Resistance (Ohms)', 'Resistance Measurement', d_cfg['plot_color_r'])
         self.tab_voltage_source.vsource_voltage.setValue(m_cfg['vsource_voltage'])
         self.tab_voltage_source.vsource_current_compliance.setValue(m_cfg['vsource_current_compliance'])
@@ -1681,6 +1710,7 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_voltage_source.vsource_duration.setValue(dur_v)
         self.tab_voltage_source.vsource_run_continuous.setChecked(dur_v == 0.0)
         self.tab_voltage_source.sampling_rate.setValue(m_cfg['sampling_rate'])
+        self.tab_voltage_source.auto_zero.setCurrentText(str(m_cfg.get('auto_zero', 'once')))
         self.tab_voltage_source.v_plot_var.setCurrentText('current')
         self.tab_voltage_source.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Current (A)', 'Voltage Source Output', d_cfg['plot_color_v'])
         self.tab_current_source.isource_current.setValue(m_cfg['isource_current'])
@@ -1690,6 +1720,7 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_current_source.isource_duration.setValue(dur_i)
         self.tab_current_source.isource_run_continuous.setChecked(dur_i == 0.0)
         self.tab_current_source.sampling_rate.setValue(m_cfg['sampling_rate'])
+        self.tab_current_source.auto_zero.setCurrentText(str(m_cfg.get('auto_zero', 'once')))
         self.tab_current_source.i_plot_var.setCurrentText('voltage')
         self.tab_current_source.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Voltage (V)', 'Current Source Output', d_cfg['plot_color_i'])
         # Four-Point Probe
@@ -1732,7 +1763,7 @@ class ResistanceMeterApp(QMainWindow):
             self.tab_vdp.vdp_current.setValue(float(m_cfg.get('vdp_current', 1.0e-3)))
             self.tab_vdp.vdp_voltage_compliance.setValue(float(m_cfg.get('vdp_voltage_compliance', 5.0)))
             self.tab_vdp.vdp_voltage_range_auto.setChecked(bool(m_cfg.get('vdp_voltage_range_auto', True)))
-            self.tab_vdp.vdp_thickness_cm.setValue(float(m_cfg.get('vdp_thickness_cm', 1.0e-4)))
+            self.tab_vdp.vdp_thickness_cm.setValue(float(m_cfg.get('vdp_thickness_cm', 0.0)))
             self.tab_vdp.vdp_settling_s.setValue(float(m_cfg.get('vdp_settling_s', 0.2)))
             self.tab_vdp.vdp_readings_per_polarity.setValue(int(m_cfg.get('vdp_readings_per_polarity', 1)))
             self.tab_vdp.nplc.setValue(float(m_cfg.get('nplc', 1.0)))
@@ -1870,6 +1901,14 @@ class ResistanceMeterApp(QMainWindow):
             m_cfg['sampling_rate'] = widget.sampling_rate.value()
         else:
             m_cfg['sampling_rate'] = self.user_settings['measurement']['sampling_rate']
+        # auto_zero now lives on the sensor tabs (resistance / source_v /
+        # source_i). 4PP and vdP don't expose it because MODE_TIMING_OVERRIDES
+        # below force their auto_zero to 'on' anyway. Falls back to the saved
+        # user setting for any mode without the widget.
+        if hasattr(widget, 'auto_zero'):
+            m_cfg['auto_zero'] = widget.auto_zero.currentText()
+        else:
+            m_cfg['auto_zero'] = self.user_settings['measurement'].get('auto_zero', 'once')
         # Handle run-until-stopped checkboxes (duration=0 means infinite)
         if mode == 'source_v' and hasattr(widget, 'vsource_run_continuous') and widget.vsource_run_continuous.isChecked():
             m_cfg['vsource_duration_hours'] = 0.0
@@ -1913,6 +1952,32 @@ class ResistanceMeterApp(QMainWindow):
             return None
         self.sample_input.setText(name)
         return name
+
+    def _require_vdp_thickness(self) -> Optional[float]:
+        """Return vdP sample thickness in cm, prompting if unset (0).
+
+        Mirrors _require_sample_name: a 0 value means "user never entered a
+        thickness" — silently reporting ρ = R_s × 1 µm is worse than asking.
+        Returns the thickness on success, or None if the user cancelled.
+        """
+        widget = self.tab_vdp
+        t_cm = float(widget.vdp_thickness_cm.value())
+        if t_cm > 0.0:
+            return t_cm
+        widget.vdp_thickness_cm.setFocus()
+        t_um, ok = QInputDialog.getDouble(
+            self,
+            "Sample Thickness Required",
+            "Enter sample thickness for resistivity calculation.\n"
+            "(Sheet resistance Rs is reported regardless of thickness.)\n\n"
+            "Thickness (µm):",
+            value=1.0, min=1e-3, max=1.0e5, decimals=3,
+        )
+        if not ok:
+            return None
+        t_cm = float(t_um) * 1e-4
+        widget.vdp_thickness_cm.setValue(t_cm)
+        return t_cm
 
     def start_measurement(self, mode: str):
         if self.measurement_running:

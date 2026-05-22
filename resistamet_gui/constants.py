@@ -20,12 +20,12 @@ DEFAULT_SETTINGS = {
         "vsource_voltage": 1.0,              # Source voltage in Volts
         "vsource_current_compliance": 0.1,   # Current compliance in Amperes for V source mode
         "vsource_current_range_auto": True,  # Auto range for current measurement
-        "vsource_duration_hours": 1.0,       # Duration to apply voltage in hours
+        "vsource_duration_hours": 0.0,       # Duration to apply voltage in hours (0 = run until stopped)
         # Current Source Mode (Source I, Measure V)
         "isource_current": 1.0e-3,           # Source current in Amperes
         "isource_voltage_compliance": 5.0,   # Voltage compliance in Volts for I source mode
         "isource_voltage_range_auto": True,  # Auto range for voltage measurement
-        "isource_duration_hours": 1.0,       # Duration to apply current in hours
+        "isource_duration_hours": 0.0,       # Duration to apply current in hours (0 = run until stopped)
         # General
         "sampling_rate": 10.0,               # Sampling rate in Hz (shared for now)
         "nplc": 1,                           # Number of power line cycles (shared)
@@ -79,7 +79,9 @@ DEFAULT_SETTINGS = {
         "vdp_current": 1.0e-3,                # source current magnitude (A)
         "vdp_voltage_compliance": 5.0,        # V compliance for the source
         "vdp_voltage_range_auto": True,       # auto-range voltage measurement
-        "vdp_thickness_cm": 1.0e-4,           # sample thickness, cm (1 µm default)
+        # 0 = unset; vdP Start prompts the user. Avoids silently reporting
+        # ρ = R_s × 1 µm when the user never actually entered a thickness.
+        "vdp_thickness_cm": 0.0,              # sample thickness, cm (0 = unset, prompt on Start)
         "vdp_settling_s": 0.2,                # delay after polarity flip before READ?
         "vdp_readings_per_polarity": 5,       # average N hardware readings per +I and -I
         # I-V Sweep defaults
@@ -102,7 +104,10 @@ DEFAULT_SETTINGS = {
         "plot_color_v": "blue",              # Plot line color for Voltage Source (Current)
         "plot_color_i": "green",             # Plot line color for Current Source (Voltage)
         "plot_figsize": [8, 5],              # Plot figure size [width, height]
-        "buffer_size": 1000                  # Data buffer size (points, 0 or None = unlimited)
+        # Unlimited by default — pyqtgraph downsamples on render (peak mode +
+        # clipToView), so a 17-hr / 270k-sample run is ~13 MB and stays smooth.
+        # A bounded buffer silently truncated the live trace on overnight runs.
+        "buffer_size": 0                     # Data buffer size (points, 0 or None = unlimited)
     },
     "file": {
         "auto_save_interval": 60,            # Auto-save interval in seconds

@@ -154,16 +154,12 @@ class SettingsDialog(QDialog):
         main_layout.addLayout(isrc_layout)
         main_layout.addWidget(self.stop_on_compliance)
 
-        # Advanced instrument settings
+        # Advanced instrument settings. Auto-Zero used to live here, but it
+        # belongs next to the other per-run timing knobs — it now lives on
+        # each sensor tab (resistance / source_v / source_i). 4PP and vdP
+        # force auto_zero='on' via MODE_TIMING_OVERRIDES, so neither needs a
+        # widget.
         adv_layout = QFormLayout()
-        self.auto_zero = QComboBox()
-        self.auto_zero.addItems(["on", "once", "off"])
-        self.auto_zero.setToolTip(
-            "Controls auto-zero calibration:\n"
-            "• ON: Most accurate — takes 3 measurements per reading (signal + reference + zero)\n"
-            "• ONCE: Fast mode — calibrates once at start, then disables. ~3x faster, slight drift over time\n"
-            "• OFF: Fastest — no zero calibration. Will drift. Use only for short, high-speed measurements")
-        adv_layout.addRow("Auto Zero:", self.auto_zero)
 
         self.filter_enabled = QCheckBox("Enable Hardware Filter")
         self.filter_enabled.setToolTip(
@@ -229,7 +225,7 @@ class SettingsDialog(QDialog):
 
         self.buffer_size = QSpinBox(minimum=0, maximum=1000000, singleStep=100)
         self.buffer_size.setSpecialValueText("Unlimited")
-        self.buffer_size.setToolTip("Max data points to keep in memory for plotting.\n0 = unlimited (may use a lot of RAM for long runs).\n1000 is a good default for most measurements.")
+        self.buffer_size.setToolTip("Max data points to keep in memory for plotting.\n0 = unlimited (recommended; ~50 MB per million samples).\nSet a finite cap only if RAM is tight or runs are multi-day at >100 Hz.")
         layout.addRow("Data Buffer Size (points):", self.buffer_size)
         tab.setLayout(layout)
         return tab
@@ -342,7 +338,6 @@ class SettingsDialog(QDialog):
         self.isource_voltage_compliance.setValue(m_cfg['isource_voltage_compliance'])
         self.isource_duration_hours.setValue(m_cfg.get('isource_duration_hours', 0.0))
         self.stop_on_compliance.setChecked(bool(m_cfg.get('stop_on_compliance', False)))
-        self.auto_zero.setCurrentText(str(m_cfg.get('auto_zero', 'on')))
         self.filter_enabled.setChecked(bool(m_cfg.get('filter_enabled', False)))
         self.filter_type.setCurrentText(str(m_cfg.get('filter_type', 'repeat')))
         self.filter_count.setValue(int(m_cfg.get('filter_count', 10)))
@@ -399,7 +394,6 @@ class SettingsDialog(QDialog):
         m_cfg['isource_voltage_compliance'] = self.isource_voltage_compliance.value()
         m_cfg['isource_duration_hours'] = self.isource_duration_hours.value()
         m_cfg['stop_on_compliance'] = self.stop_on_compliance.isChecked()
-        m_cfg['auto_zero'] = self.auto_zero.currentText()
         m_cfg['filter_enabled'] = self.filter_enabled.isChecked()
         m_cfg['filter_type'] = self.filter_type.currentText()
         m_cfg['filter_count'] = self.filter_count.value()
