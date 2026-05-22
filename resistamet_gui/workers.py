@@ -39,6 +39,10 @@ class MeasurementWorker(QThread):
     compliance_hit = pyqtSignal(str)  # 'Voltage' or 'Current'
     overpower_hit = pyqtSignal(float, float)  # measured_power_w, hard_stop_w (4PP only)
     sweep_complete = pyqtSignal(list, list, list)  # voltages, currents, compliance_list
+    # Short model name ("2400", "2410", ...) once IDN has been parsed. The
+    # GUI caches this for accuracy.py uncertainty lookups after the worker
+    # thread tears down, since per-spot stats are computed post-measurement.
+    instrument_identified = pyqtSignal(str)
 
     def __init__(self, mode, sample_name, username, settings, parent=None):
         super().__init__(parent)
@@ -144,6 +148,10 @@ class MeasurementWorker(QThread):
                 # lookups. Falls back to "2400" if IDN parsing failed; that's
                 # the most conservative baseline.
                 self._model_name = self._model_spec.model if self._model_spec else "2400"
+                try:
+                    self.instrument_identified.emit(self._model_name)
+                except Exception:
+                    pass
                 if self._model_spec is not None:
                     spec = self._model_spec
                     self.status_update.emit(
@@ -1227,6 +1235,7 @@ class VdpMeasurementWorker(QThread):
     status_update = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     compliance_hit = pyqtSignal(str)
+    instrument_identified = pyqtSignal(str)  # see MeasurementWorker
 
     MODE = 'vdp'
 
@@ -1312,6 +1321,12 @@ class VdpMeasurementWorker(QThread):
             raise RuntimeError(humanize_connection_error(e, gpib)) from e
         self._instrument_idn = self.keithley.query("*IDN?").strip()
         self.status_update.emit(f"Connected to: {self._instrument_idn}")
+        spec = self.keithley.detect_model()
+        self._model_name = spec.model if spec else "2400"
+        try:
+            self.instrument_identified.emit(self._model_name)
+        except Exception:
+            pass
 
         i_mag = abs(float(measurement['vdp_current']))
         v_comp = float(measurement['vdp_voltage_compliance'])
