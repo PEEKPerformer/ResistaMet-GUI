@@ -4,6 +4,7 @@ import pytest
 
 from resistamet_gui.ui.widgets import (
     format_engineering, format_with_uncertainty, parse_engineering,
+    precision_for_nplc,
 )
 
 
@@ -146,3 +147,38 @@ class TestFormatWithUncertainty:
         # σ rounded to 1 sf instead of 2.
         result = format_with_uncertainty(1487.0, 1.3, 'Ω', unc_sig_figs=1)
         assert result == "1.487 ± 0.001 kΩ"
+
+
+class TestPrecisionForNplc:
+    """Map NPLC → Keithley 2400 resolution → sig figs."""
+
+    def test_normal_speed_is_six_figs(self):
+        # NPLC=1 → 6½-digit mode. The headline "6½-digit precision" claim
+        # in the datasheet binds to Speed = Normal.
+        assert precision_for_nplc(1.0) == 6
+
+    def test_high_nplc_still_six(self):
+        # Above 1 PLC doesn't unlock more digits — the hardware caps at 6½.
+        assert precision_for_nplc(10.0) == 6
+
+    def test_medium_speed_is_five_figs(self):
+        # NPLC=0.1 → 5½-digit mode.
+        assert precision_for_nplc(0.1) == 5
+
+    def test_fast_speed_is_four_figs(self):
+        # NPLC=0.01 → 4½-digit mode.
+        assert precision_for_nplc(0.01) == 4
+
+    def test_boundary_low(self):
+        # Step-function transitions at 0.05 and 0.5, matching the
+        # accuracy.py NPLC bucketing for the offset modifier.
+        assert precision_for_nplc(0.04) == 4
+        assert precision_for_nplc(0.05) == 5
+        assert precision_for_nplc(0.49) == 5
+        assert precision_for_nplc(0.5) == 6
+
+    def test_nonfinite_falls_back(self):
+        # Garbage in, conservative-out — both NaN and infinity return the
+        # narrowest precision rather than promoting to 6.
+        assert precision_for_nplc(float('nan')) == 4
+        assert precision_for_nplc(float('inf')) == 4

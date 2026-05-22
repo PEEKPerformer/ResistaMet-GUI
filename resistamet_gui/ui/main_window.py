@@ -21,7 +21,7 @@ from ..config import ConfigManager
 from ..constants import __version__
 from ..workers import MeasurementWorker, VdpMeasurementWorker
 from .canvas import HistogramCanvas, IVCanvas, PgLiveCanvas
-from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, VdpSampleDiagram, VdpProtocolFilmstrip, VdpPerGeometryBarChart, format_engineering, format_with_uncertainty
+from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, VdpSampleDiagram, VdpProtocolFilmstrip, VdpPerGeometryBarChart, format_engineering, format_with_uncertainty, precision_for_nplc
 from .dialogs import SettingsDialog, UserSelectionDialog
 
 
@@ -1303,14 +1303,17 @@ class ResistanceMeterApp(QMainWindow):
         widget.vdp_instr_group.setVisible(False)
         widget.vdp_result_group.setVisible(True)
 
-        # Headline numbers in engineering notation.
+        # Headline numbers in engineering notation. Sig-fig count tracks
+        # the Keithley's resolution at the configured NPLC — at NPLC=10
+        # we display 6 figs (6½-digit mode); at NPLC=0.01 we display 4.
         rs = float(result['sheet_resistance'])
         rho = float(result['rho_avg'])
+        precision = precision_for_nplc(float(widget.nplc.value()))
         widget.vdp_rs_label.setText(
-            f"R<sub>s</sub> = {format_engineering(rs, 'Ω/sq', precision=4)}"
+            f"R<sub>s</sub> = {format_engineering(rs, 'Ω/sq', precision=precision)}"
         )
         widget.vdp_rho_label.setText(
-            f"ρ = {format_engineering(rho, 'Ω·cm', precision=4)}"
+            f"ρ = {format_engineering(rho, 'Ω·cm', precision=precision)}"
         )
 
         # Per-geometry resistance bars: each is the current-reversal-derived
@@ -2100,25 +2103,33 @@ class ResistanceMeterApp(QMainWindow):
         widget = self.get_widget_for_mode(self.active_mode)
         is_bd = (compliance_status != 'OK')
         if widget and hasattr(widget, 'live_readout'):
+            # NPLC for sig-fig fallback (when \u03c3 isn't available). The three
+            # sensor-mode tabs share the global NPLC from user_settings \u2014
+            # they don't have a per-tab spinbox like 4PP/vdP do.
+            try:
+                fallback_nplc = float(self.user_settings['measurement'].get('nplc', 1.0))
+            except (TypeError, KeyError):
+                fallback_nplc = 1.0
+            fallback_precision = precision_for_nplc(fallback_nplc)
+
             if self.active_mode == 'resistance':
                 r = value.get('resistance', float('nan'))
                 r_unc = value.get('resistance_unc', float('nan'))
                 if np.isfinite(r):
                     # Show R with \u00b1 when we have a finite uncertainty from
-                    # the worker (accuracy.py). Falls back to plain
-                    # format_engineering for very-low-R cases where \u03c3
-                    # blows up beyond meaningful display.
+                    # the worker (accuracy.py). Falls back to NPLC-aware
+                    # plain format for very-low-R cases where \u03c3 blows up.
                     if np.isfinite(r_unc) and r_unc > 0:
                         parts = [format_with_uncertainty(r, r_unc, '\u03a9')]
                     else:
-                        parts = [format_engineering(r, '\u03a9')]
+                        parts = [format_engineering(r, '\u03a9', precision=fallback_precision)]
                     # Power from the configured test current, P = I\u00b2 * R.
                     try:
                         i_test = float(widget.res_test_current.value())
                     except Exception:
                         i_test = float('nan')
                     if np.isfinite(i_test) and i_test != 0:
-                        parts.append(f"P: {format_engineering(abs(i_test * i_test * r), 'W')}")
+                        parts.append(f"P: {format_engineering(abs(i_test * i_test * r), 'W', precision=fallback_precision)}")
                     widget.live_readout.setText("   ".join(parts))
                 else:
                     widget.live_readout.setText("-- \u03a9")
@@ -2132,15 +2143,15 @@ class ResistanceMeterApp(QMainWindow):
                     if np.isfinite(v_unc) and v_unc > 0:
                         parts.append(f"V: {format_with_uncertainty(v, v_unc, 'V')}")
                     else:
-                        parts.append(f"V: {format_engineering(v, 'V')}")
+                        parts.append(f"V: {format_engineering(v, 'V', precision=fallback_precision)}")
                 if np.isfinite(i):
                     if np.isfinite(i_unc) and i_unc > 0:
                         parts.append(f"I: {format_with_uncertainty(i, i_unc, 'A')}")
                     else:
-                        parts.append(f"I: {format_engineering(i, 'A')}")
+                        parts.append(f"I: {format_engineering(i, 'A', precision=fallback_precision)}")
                 if np.isfinite(v) and np.isfinite(i) and i != 0:
                     ohm = '\u03a9'
-                    parts.append(f"R: {format_engineering(v/i, ohm)}")
+                    parts.append(f"R: {format_engineering(v/i, ohm, precision=fallback_precision)}")
                 if np.isfinite(v) and np.isfinite(i):
                     parts.append(f"P: {format_engineering(abs(v * i), 'W')}")
                 widget.live_readout.setText("   ".join(parts) if parts else "--")
@@ -2313,8 +2324,12 @@ class ResistanceMeterApp(QMainWindow):
             rsd = (std/mean*100.0) if mean != 0 else 0.0
             return mean, std, rsd
         rs_s = stats(4); rho_s = stats(5); sig_s = stats(6)
+        # Sig figs track the Keithley's resolution at the active NPLC.
+        # mean/std share the same precision so digit counts line up.
+        precision = precision_for_nplc(float(w.nplc.value()))
         def fmt(s):
-            return f"{s[0]:.6g} ± {s[1]:.6g}  ({s[2]:.2f}%)" if s else "--"
+            return (f"{s[0]:.{precision}g} ± {s[1]:.{precision}g}  ({s[2]:.2f}%)"
+                    if s else "--")
         w.fpp_rs_label.setText(fmt(rs_s))
         w.fpp_rho_label.setText(fmt(rho_s))
         w.fpp_sigma_label.setText(fmt(sig_s))

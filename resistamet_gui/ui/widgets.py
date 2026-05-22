@@ -79,6 +79,26 @@ def format_engineering(value: float, unit: str, precision: int = 4) -> str:
     return f"{scaled:.{precision-1}f} {prefix}{unit}"
 
 
+def precision_for_nplc(nplc: float) -> int:
+    """Return a sensible sig-fig count for the Keithley's resolution at NPLC.
+
+    The 2400 SCPI runs at 6½-digit resolution at NPLC=1 (Speed = Normal),
+    drops to 5½ at 0.1 PLC, and 4½ at 0.01 PLC (datasheet p. 8, System
+    Speeds → Single Reading rates). Displaying more sig figs than the
+    instrument's resolution implies precision we don't have; fewer
+    throws away digits the user paid integration time for.
+
+    Boundaries are continuous (matches accuracy._nplc_modifier's bucketing).
+    """
+    if not math.isfinite(nplc):
+        return 4
+    if nplc >= 0.5:
+        return 6
+    if nplc >= 0.05:
+        return 5
+    return 4
+
+
 def format_with_uncertainty(
     value: float, uncertainty: float, unit: str, unc_sig_figs: int = 2
 ) -> str:
