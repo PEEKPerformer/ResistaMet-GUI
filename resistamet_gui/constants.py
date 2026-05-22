@@ -91,7 +91,14 @@ DEFAULT_SETTINGS = {
         "sweep_step": 0.05,                  # sweep step size (V or A)
         "sweep_compliance": 0.1,             # compliance limit (A or V)
         "sweep_delay": 0.01,                 # source delay per step (s)
-        "sweep_direction": "up"              # "up", "down", or "up_down"
+        "sweep_direction": "up",             # "up", "down", or "up_down"
+        # Human-touch-safety voltage warning. See resistamet_gui/safety.py
+        # for the rationale (IEC 61010-1 SELV at 30 V DC). Set to 0 to
+        # disable; the silenced flag flips when a user clicks "don't show
+        # again" on the warning dialog and stays per-profile until they
+        # re-enable in Settings.
+        "safety_voltage_warn_v": 30.0,       # threshold in V; 0 disables
+        "safety_voltage_warn_silenced": False
     },
     "display": {
         "enable_plot": True,

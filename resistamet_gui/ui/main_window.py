@@ -1199,6 +1199,8 @@ class ResistanceMeterApp(QMainWindow):
             return
         if self._require_vdp_thickness() is None:
             return
+        if not self._confirm_voltage_safety('vdp'):
+            return
 
         try:
             current_settings = self.gather_settings_for_mode('vdp')
@@ -1237,7 +1239,7 @@ class ResistanceMeterApp(QMainWindow):
         widget.vdp_result_group.setVisible(False)
 
         self.log_status(f"Starting van der Pauw measurement for sample: {sample_name}...")
-        self.statusBar().showMessage("Measurement running (vdp)...")
+        self.statusBar().showMessage(self._running_status_message('vdp'))
 
         self.measurement_worker = VdpMeasurementWorker(
             sample_name=sample_name, username=self.current_user,
@@ -1966,6 +1968,60 @@ class ResistanceMeterApp(QMainWindow):
         """
         self._active_model_name = model_name or "2400"
 
+    def _running_status_message(self, mode: str) -> str:
+        """Build the status-bar 'Measurement running' string, with the
+        hazard tag appended when configured voltage exceeds the
+        touch-safety threshold. Threshold respects per-user override and
+        falls back to safety.DEFAULT_THRESHOLD_V; ``0`` disables.
+        """
+        from ..safety import is_potentially_hazardous
+        base = f"Measurement running ({mode})..."
+        if not self.user_settings:
+            return base
+        check = is_potentially_hazardous(self.user_settings, mode)
+        if check.hazardous:
+            return f"{base}   ⚡ {check.voltage_v:g} V live (> {check.threshold_v:g} V)"
+        return base
+
+    def _confirm_voltage_safety(self, mode: str) -> bool:
+        """Warn-then-proceed on configurations that put >30 V on the leads.
+
+        Per the 1.9.1 design (resistamet_gui/safety.py): runs the pure
+        hazard check; returns True immediately when the run is safe or
+        when the user has previously checked "don't show again." On
+        hazard + not-silenced, shows a modal with a sticky checkbox
+        that flips ``safety_voltage_warn_silenced`` and persists the
+        user profile. Always returns True after the dialog — warn-then-
+        proceed per the design memo, "users are domain experts."
+        """
+        from ..safety import is_potentially_hazardous, warning_message
+        if not self.user_settings:
+            return True
+        m = self.user_settings.get('measurement', {})
+        if bool(m.get('safety_voltage_warn_silenced', False)):
+            return True
+        check = is_potentially_hazardous(self.user_settings, mode)
+        if not check.hazardous:
+            return True
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Touch-safety voltage warning")
+        box.setText(warning_message(check))
+        box.setStandardButtons(QMessageBox.Ok)
+        dont_show = QCheckBox("Don't show this again for this profile")
+        box.setCheckBox(dont_show)
+        box.exec_()
+        if dont_show.isChecked():
+            m['safety_voltage_warn_silenced'] = True
+            try:
+                self.config_manager.set_user_settings(self.current_user, self.user_settings)
+            except Exception:
+                # Persistence is best-effort; in-memory flag is already set
+                # so the rest of this session is silenced.
+                pass
+        return True
+
     def _require_sample_name(self) -> Optional[str]:
         """Return the trimmed sample name, prompting inline if empty.
 
@@ -2028,6 +2084,8 @@ class ResistanceMeterApp(QMainWindow):
         sample_name = self._require_sample_name()
         if not sample_name:
             return
+        if not self._confirm_voltage_safety(mode):
+            return
         widget = self.get_widget_for_mode(mode)
         if not widget:
             self.log_status(f"Error: Could not find UI for mode {mode}"); return
@@ -2053,7 +2111,7 @@ class ResistanceMeterApp(QMainWindow):
         widget.status_label.setText("Status: Sweeping..." if mode == 'sweep' else "Status: Running")
         widget.status_label.setStyleSheet("font-weight: bold; color: green;")
         if getattr(widget, 'mark_event_button', None): widget.mark_event_button.setEnabled(True)
-        self.log_status(f"Starting {mode} measurement for sample: {sample_name}..."); self.statusBar().showMessage(f"Measurement running ({mode})...")
+        self.log_status(f"Starting {mode} measurement for sample: {sample_name}..."); self.statusBar().showMessage(self._running_status_message(mode))
         self.measurement_worker = MeasurementWorker(mode=mode, sample_name=sample_name, username=self.current_user, settings=current_settings)
         self.measurement_worker.instrument_identified.connect(self._on_instrument_identified)
         self.measurement_worker.data_point.connect(self.update_data)

@@ -186,6 +186,26 @@ class SettingsDialog(QDialog):
             "Only applies to Resistance mode.")
         adv_layout.addRow(self.res_offset_comp)
 
+        # Human-touch-safety voltage warning (resistamet_gui/safety.py).
+        # threshold=0 disables; "silenced" flips off-then-on if a user
+        # checked "don't show again" and later wants the modal back.
+        self.safety_voltage_warn_v = QDoubleSpinBox(
+            decimals=0, minimum=0.0, maximum=1100.0, singleStep=10.0, suffix=" V",
+        )
+        self.safety_voltage_warn_v.setSpecialValueText("Disabled")
+        self.safety_voltage_warn_v.setToolTip(
+            "Warn before a run when compliance or sourced voltage reaches\n"
+            "this threshold. 30 V matches the IEC 61010-1 SELV upper bound\n"
+            "(safe to touch under any skin condition). 0 disables.")
+        adv_layout.addRow("Touch-safety warn threshold:", self.safety_voltage_warn_v)
+        self.safety_voltage_warn_silenced = QCheckBox(
+            "Suppress touch-safety warning for this profile"
+        )
+        self.safety_voltage_warn_silenced.setToolTip(
+            "Equivalent to clicking 'Don't show again' on the warning modal.\n"
+            "Uncheck to re-enable the warning dialog at the start of every run.")
+        adv_layout.addRow(self.safety_voltage_warn_silenced)
+
         main_layout.addLayout(adv_layout)
 
         main_layout.addStretch()
@@ -334,6 +354,10 @@ class SettingsDialog(QDialog):
         self.filter_type.setCurrentText(str(m_cfg.get('filter_type', 'repeat')))
         self.filter_count.setValue(int(m_cfg.get('filter_count', 10)))
         self.res_offset_comp.setChecked(bool(m_cfg.get('res_offset_comp', False)))
+        self.safety_voltage_warn_v.setValue(float(m_cfg.get('safety_voltage_warn_v', 30.0)))
+        self.safety_voltage_warn_silenced.setChecked(
+            bool(m_cfg.get('safety_voltage_warn_silenced', False))
+        )
         d_cfg = self.settings['display']
         self.enable_plot.setCurrentText("True" if d_cfg['enable_plot'] else "False")
         self.plot_color_r.setCurrentText(d_cfg['plot_color_r'])
@@ -387,6 +411,8 @@ class SettingsDialog(QDialog):
         m_cfg['filter_type'] = self.filter_type.currentText()
         m_cfg['filter_count'] = self.filter_count.value()
         m_cfg['res_offset_comp'] = self.res_offset_comp.isChecked()
+        m_cfg['safety_voltage_warn_v'] = float(self.safety_voltage_warn_v.value())
+        m_cfg['safety_voltage_warn_silenced'] = self.safety_voltage_warn_silenced.isChecked()
         d_cfg = self.settings['display']
         d_cfg['enable_plot'] = (self.enable_plot.currentText() == "True")
         d_cfg['plot_color_r'] = self.plot_color_r.currentText()

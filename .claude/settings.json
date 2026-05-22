@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path' | grep -qE '(tests/fixtures/scpi_traces|/_archive/|\\.h5$|\\.hdf5$|measurement.*\\.csv$|/data/.*\\.csv$)' && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Refusing to modify measurement or captured-trace data. Bench traces and measurement output are immutable artifacts — copy to a new file if you need to compare or evolve them.\"}}' || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path' | grep -qE 'resistamet_gui/.*\\.py$' && pytest tests/test_calculations.py tests/test_buffers.py tests/test_config.py tests/test_accuracy.py tests/test_combined_uncertainty.py -x --tb=line -q 2>&1 | tail -3 || true",
+            "statusMessage": "Running fast unit tests..."
+          }
+        ]
+      }
+    ]
+  }
+}

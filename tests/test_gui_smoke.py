@@ -230,6 +230,8 @@ class TestSettingsDialog:
         assert dialog.filter_type is not None
         assert dialog.filter_count.value() > 0
         assert dialog.res_offset_comp is not None
+        assert dialog.safety_voltage_warn_v is not None
+        assert dialog.safety_voltage_warn_silenced is not None
         dialog.close()
 
     def test_global_settings_dialog_opens(self, main_window):
