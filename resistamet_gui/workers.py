@@ -23,7 +23,8 @@ from .constants import (
 # Bit 3: Compliance — source is in real compliance
 _STAT_BIT_COMPLIANCE = 1 << 3
 from .accuracy import (
-    current_uncertainty, resistance_uncertainty, voltage_uncertainty,
+    current_source_uncertainty, current_uncertainty,
+    resistance_uncertainty, voltage_source_uncertainty, voltage_uncertainty,
 )
 from .data_export import build_metadata, get_column_config, make_exporter
 from .instrument import Keithley2400, humanize_connection_error
@@ -693,7 +694,9 @@ class MeasurementWorker(QThread):
                         }
                     elif self.mode == 'source_v':
                         # Keithley 2400 series returns elements in fixed order:
-                        # VOLT, CURR, STAT
+                        # VOLT, CURR, STAT. In source_v mode the VOLT
+                        # element echoes the source setpoint (V_set), so
+                        # it's the right input for the source-accuracy spec.
                         try:
                             voltage = float(parts[0])
                             current = float(parts[1]) if len(parts) > 1 else float('nan')
@@ -703,15 +706,26 @@ class MeasurementWorker(QThread):
                         comp_limit_i = measurement_settings.get('vsource_current_compliance')
                         if hw_compliance or (np.isfinite(current) and abs(current) >= comp_limit_i * 0.99):
                             compliance_status = 'I_COMP'
-                        # We source V (known to source-accuracy spec, which
-                        # we don't track yet) and measure I — so the
-                        # measurement uncertainty we report is σ_I.
-                        sigma_i = current_uncertainty(current, model=self._model_name, nplc=nplc)
+                        sigma_v_src = voltage_source_uncertainty(voltage, model=self._model_name)
+                        sigma_i_meas = current_uncertainty(current, model=self._model_name, nplc=nplc)
+                        # σ on R = V_set / I_meas: RSS of relative uncertainties.
+                        # NaN-safe — current_unc inherits NaN when current is 0
+                        # and we already gate that below.
+                        if np.isfinite(voltage) and np.isfinite(current) and current != 0 and voltage != 0:
+                            r_calc = voltage / current
+                            rel = (sigma_v_src / voltage) ** 2 + (sigma_i_meas / current) ** 2
+                            sigma_r = abs(r_calc) * np.sqrt(rel)
+                        else:
+                            sigma_r = float('nan')
                         data_dict = {
                             'current': current, 'voltage': voltage,
-                            'current_unc': sigma_i,
+                            'voltage_unc': sigma_v_src,
+                            'current_unc': sigma_i_meas,
+                            'resistance_unc': sigma_r,
                         }
                     elif self.mode == 'source_i':
+                        # CURR element echoes I_set in source_i mode; VOLT
+                        # is the sense reading.
                         try:
                             voltage = float(parts[0])
                             current = float(parts[1]) if len(parts) > 1 else float('nan')
@@ -721,10 +735,19 @@ class MeasurementWorker(QThread):
                         comp_limit_v = measurement_settings.get('isource_voltage_compliance')
                         if hw_compliance or (np.isfinite(voltage) and abs(voltage) >= comp_limit_v * 0.99):
                             compliance_status = 'V_COMP'
-                        sigma_v = voltage_uncertainty(voltage, model=self._model_name, nplc=nplc)
+                        sigma_v_meas = voltage_uncertainty(voltage, model=self._model_name, nplc=nplc)
+                        sigma_i_src = current_source_uncertainty(current, model=self._model_name)
+                        if np.isfinite(voltage) and np.isfinite(current) and current != 0 and voltage != 0:
+                            r_calc = voltage / current
+                            rel = (sigma_v_meas / voltage) ** 2 + (sigma_i_src / current) ** 2
+                            sigma_r = abs(r_calc) * np.sqrt(rel)
+                        else:
+                            sigma_r = float('nan')
                         data_dict = {
                             'voltage': voltage, 'current': current,
-                            'voltage_unc': sigma_v,
+                            'voltage_unc': sigma_v_meas,
+                            'current_unc': sigma_i_src,
+                            'resistance_unc': sigma_r,
                         }
                     elif self.mode == 'four_point':
                         try:
@@ -914,12 +937,13 @@ class MeasurementWorker(QThread):
                         v = data_dict.get('voltage', float('nan'))
                         i = data_dict.get('current', float('nan'))
                         r = (v / i) if (np.isfinite(v) and np.isfinite(i) and i != 0) else float('nan')
+                        r_unc = data_dict.get('resistance_unc', float('nan'))
                         if self.mode == 'source_v':
                             i_unc = data_dict.get('current_unc', float('nan'))
-                            row_data = [elapsed_time, v, i, r, i_unc, compliance_status, event_marker]
+                            row_data = [elapsed_time, v, i, r, i_unc, r_unc, compliance_status, event_marker]
                         else:
                             v_unc = data_dict.get('voltage_unc', float('nan'))
-                            row_data = [elapsed_time, v, i, r, v_unc, compliance_status, event_marker]
+                            row_data = [elapsed_time, v, i, r, v_unc, r_unc, compliance_status, event_marker]
 
                     # Write to exporter (handles both JSON and CSV)
                     try:

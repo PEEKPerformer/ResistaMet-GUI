@@ -222,3 +222,42 @@ class TestSourceUncertainty:
         a = voltage_source_uncertainty(1.0, model="9999")
         b = voltage_source_uncertainty(1.0, model="2400")
         assert a == b
+
+
+class TestDerivedRForSourceModes:
+    """σ_R for R = V_set / I_meas (source_v) or V_meas / I_set (source_i).
+
+    The worker computes these inline rather than via a helper, so this
+    pins the algebra to a hand-calculated reference and acts as a
+    regression check on the source-mode wiring in workers.py.
+    """
+
+    def test_source_v_typical_case(self):
+        # source_v: source 1 V on 2 V range → σ_V_src = 0.02% × 1 + 600 µV = 800 µV.
+        # Measure 1 mA on 1 mA range → σ_I_meas = 0.027% × 1 mA + 60 nA = 330 nA.
+        # R = 1000 Ω.  σ_R/R = √((800e-6)² + (330e-9 / 1e-3)²)
+        #             = √(6.4e-7 + 1.089e-7) = √(7.489e-7) = 8.654e-4
+        # → σ_R ≈ 0.865 Ω.
+        v_set = 1.0
+        i_meas = 1e-3
+        sigma_v_src = voltage_source_uncertainty(v_set, model="2400")
+        sigma_i_meas = current_uncertainty(i_meas, model="2400", nplc=1.0)
+        r = v_set / i_meas
+        rel = (sigma_v_src / v_set) ** 2 + (sigma_i_meas / i_meas) ** 2
+        sigma_r = abs(r) * math.sqrt(rel)
+        assert math.isclose(sigma_r, 0.865, rel_tol=0.005), f"σ_R = {sigma_r}"
+
+    def test_source_i_typical_case(self):
+        # source_i: source 1 mA → σ_I_src = 0.034% × 1 mA + 200 nA = 540 nA.
+        # Measure 1 V on 2 V range → σ_V_meas = 0.012% × 1 + 300 µV = 420 µV.
+        # R = 1000 Ω.  σ_R/R = √((420e-6)² + (540e-9 / 1e-3)²)
+        #             = √(1.764e-7 + 2.916e-7) = √(4.68e-7) = 6.84e-4
+        # → σ_R ≈ 0.684 Ω.
+        v_meas = 1.0
+        i_set = 1e-3
+        sigma_v_meas = voltage_uncertainty(v_meas, model="2400", nplc=1.0)
+        sigma_i_src = current_source_uncertainty(i_set, model="2400")
+        r = v_meas / i_set
+        rel = (sigma_v_meas / v_meas) ** 2 + (sigma_i_src / i_set) ** 2
+        sigma_r = abs(r) * math.sqrt(rel)
+        assert math.isclose(sigma_r, 0.684, rel_tol=0.005), f"σ_R = {sigma_r}"

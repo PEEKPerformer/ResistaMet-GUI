@@ -189,17 +189,18 @@ def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] 
             ['elapsed_s', 'V_meas', 'I_meas', 'R_ohm', 'R_unc_ohm', 'compliance', 'event'],
             ['s', 'V', 'A', 'Ω', 'Ω', '', '']
         ),
-        # I_unc is the 1-year measurement accuracy on the I reading; the
-        # sourced V is taken as known (source accuracy spec not yet tracked).
+        # I_unc and R_calc_unc are 1-year accuracies. I_unc is the
+        # measure-side spec on I; R_calc_unc combines I_unc and the V-source
+        # spec via RSS of relative uncertainties through R = V_set/I_meas.
         'source_v': (
-            ['elapsed_s', 'V_set', 'I_meas', 'R_calc', 'I_unc_A', 'compliance', 'event'],
-            ['s', 'V', 'A', 'Ω', 'A', '', '']
+            ['elapsed_s', 'V_set', 'I_meas', 'R_calc', 'I_unc_A', 'R_calc_unc_ohm', 'compliance', 'event'],
+            ['s', 'V', 'A', 'Ω', 'A', 'Ω', '', '']
         ),
-        # V_unc is the 1-year measurement accuracy on the V reading; the
-        # sourced I is taken as known.
+        # V_unc is measure-side on V; R_calc_unc combines V_unc and the
+        # I-source spec via RSS through R = V_meas/I_set.
         'source_i': (
-            ['elapsed_s', 'V_meas', 'I_set', 'R_calc', 'V_unc_V', 'compliance', 'event'],
-            ['s', 'V', 'A', 'Ω', 'V', '', '']
+            ['elapsed_s', 'V_meas', 'I_set', 'R_calc', 'V_unc_V', 'R_calc_unc_ohm', 'compliance', 'event'],
+            ['s', 'V', 'A', 'Ω', 'V', 'Ω', '', '']
         ),
         # V_unc and I_unc are 1-year measurement accuracies on the raw V
         # and I (accuracy.voltage_uncertainty / current_uncertainty). Each

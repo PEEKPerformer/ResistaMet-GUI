@@ -2175,6 +2175,7 @@ class ResistanceMeterApp(QMainWindow):
                 i = value.get('current', float('nan'))
                 v_unc = value.get('voltage_unc', float('nan'))
                 i_unc = value.get('current_unc', float('nan'))
+                r_unc = value.get('resistance_unc', float('nan'))
                 parts = []
                 if np.isfinite(v):
                     if np.isfinite(v_unc) and v_unc > 0:
@@ -2188,7 +2189,11 @@ class ResistanceMeterApp(QMainWindow):
                         parts.append(f"I: {format_engineering(i, 'A', precision=fallback_precision)}")
                 if np.isfinite(v) and np.isfinite(i) and i != 0:
                     ohm = '\u03a9'
-                    parts.append(f"R: {format_engineering(v/i, ohm, precision=fallback_precision)}")
+                    r_val = v / i
+                    if np.isfinite(r_unc) and r_unc > 0:
+                        parts.append(f"R: {format_with_uncertainty(r_val, r_unc, ohm)}")
+                    else:
+                        parts.append(f"R: {format_engineering(r_val, ohm, precision=fallback_precision)}")
                 if np.isfinite(v) and np.isfinite(i):
                     parts.append(f"P: {format_engineering(abs(v * i), 'W')}")
                 widget.live_readout.setText("   ".join(parts) if parts else "--")
