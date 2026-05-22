@@ -1340,38 +1340,23 @@ class ResistanceMeterApp(QMainWindow):
         #     current as exact (source-accuracy not tracked yet).
         # σ_Rs/Rs = σ_R/R because the F76 prefactor (π/ln2)·f and the
         # thickness t are treated as exact for this calculation.
-        from ..accuracy import voltage_uncertainty
+        # Single source of truth: the same helper the worker calls at
+        # finalize() so the panel and the CSV metadata cannot drift.
+        from ..calculations_vdp import vdp_combined_uncertainty
         nplc_now = float(widget.nplc.value())
-        per_geom_sigma_r = []
-        for p_label, n_label in pairs:
-            v_p = float(voltages[p_label]); v_n = float(voltages[n_label])
-            sig_p = voltage_uncertainty(v_p, model=self._active_model_name, nplc=nplc_now)
-            sig_n = voltage_uncertainty(v_n, model=self._active_model_name, nplc=nplc_now)
-            # σ on (V_p − V_n)/2 from independent V measurements:
-            #   σ = √(σ_p² + σ_n²) / 2; then divide by I to get σ_R.
-            import math as _m
-            sigma_R_geom = _m.sqrt(sig_p ** 2 + sig_n ** 2) / (2.0 * abs(current))
-            per_geom_sigma_r.append(sigma_R_geom)
-
-        import numpy as _np
-        r_avg_meas = float(_np.mean(r_values))
-        u_inst_R = float(_np.mean(per_geom_sigma_r))  # systematic per-reading floor
-        u_stat_R = (float(_np.std(r_values, ddof=1)) / _np.sqrt(len(r_values))
-                    if len(r_values) > 1 else 0.0)
-        rel_unc_R = (
-            _m.sqrt(u_inst_R ** 2 + u_stat_R ** 2) / abs(r_avg_meas)
-            if r_avg_meas != 0 else float('nan')
+        u = vdp_combined_uncertainty(
+            voltages=voltages, current=current,
+            sheet_resistance=rs, rho_avg=rho,
+            model=self._active_model_name, nplc=nplc_now,
         )
-        u_rs = abs(rs) * rel_unc_R if _m.isfinite(rel_unc_R) else float('nan')
-        u_rho = abs(rho) * rel_unc_R if _m.isfinite(rel_unc_R) else float('nan')
 
         widget.vdp_rs_label.setText(
             f"R<sub>s</sub> = {format_engineering(rs, 'Ω/sq', precision=precision)}"
-            f"  ± {format_engineering(u_rs, 'Ω/sq', precision=2)}"
+            f"  ± {format_engineering(u.u_rs, 'Ω/sq', precision=2)}"
         )
         widget.vdp_rho_label.setText(
             f"ρ = {format_engineering(rho, 'Ω·cm', precision=precision)}"
-            f"  ± {format_engineering(u_rho, 'Ω·cm', precision=2)}"
+            f"  ± {format_engineering(u.u_rho, 'Ω·cm', precision=2)}"
         )
         widget.vdp_bar_chart.set_data(r_values, ["G1", "G2", "G3", "G4"])
 
@@ -2365,61 +2350,36 @@ class ResistanceMeterApp(QMainWindow):
         else:
             w.fpp_n_label.setText(str(n))
             w.fpp_n_label.setStyleSheet("")
-        import math
-        def stats(idx):
-            arr = [r[idx] for r in valid_rows]
-            arr = [a for a in arr if isinstance(a, (int, float)) and not math.isnan(a)]
-            if not arr:
-                return None
-            import numpy as np
-            mean = float(np.mean(arr)); std = float(np.std(arr, ddof=1)) if len(arr)>1 else 0.0
-            rsd = (std/mean*100.0) if mean != 0 else 0.0
-            return mean, std, rsd
-        rs_s = stats(4); rho_s = stats(5); sig_s = stats(6)
         # Sig figs track the Keithley's resolution at the active NPLC.
         # mean/std share the same precision so digit counts line up.
         precision = precision_for_nplc(float(w.nplc.value()))
-
-        # Combined uncertainty (GUM-style): u_total = √(u_stat² + u_inst²)
-        # where
-        #   u_stat (of the mean) = std / √N — random noise reduces with N
-        #   u_inst  = mean per-reading σ from accuracy.py — treated as a
-        #             systematic contribution that does NOT reduce with N
-        # Per-row σ_R is computed from V (col 1) and I (col 2); σ_Rs/Rs,
-        # σ_ρ/ρ, and σ_σ/σ are all approximately equal to σ_R/R because
-        # the geometry / thickness factors are treated as exact.
-        from ..accuracy import resistance_uncertainty
         nplc_now = float(w.nplc.value())
-        rel_unc_samples = []
-        for r in valid_rows:
-            try:
-                v = float(r[1]); i = float(r[2]); r_meas = float(r[3])  # r[3] = V/I
-            except (TypeError, ValueError, IndexError):
-                continue
-            if not (math.isfinite(v) and math.isfinite(i) and math.isfinite(r_meas)) or r_meas == 0:
-                continue
-            sigma_r = resistance_uncertainty(
-                v, i, model=self._active_model_name, nplc=nplc_now,
-            )
-            if math.isfinite(sigma_r) and sigma_r > 0:
-                rel_unc_samples.append(sigma_r / abs(r_meas))
-        mean_rel_inst = (sum(rel_unc_samples) / len(rel_unc_samples)) if rel_unc_samples else 0.0
 
-        def fmt(s):
-            if not s:
+        # Combined uncertainty via the shared pure helper in calculations.py
+        # — same call shape the tests target so the displayed numbers and
+        # the unit-tested numbers cannot diverge. Each call iterates the
+        # same V/I list (cheap, N is bounded by 4PP samples-per-spot).
+        from ..calculations import four_point_combined_uncertainty
+        v_readings = [r[1] for r in valid_rows]
+        i_readings = [r[2] for r in valid_rows]
+
+        def fmt(stat_idx: int) -> str:
+            values = [r[stat_idx] for r in valid_rows]
+            u = four_point_combined_uncertainty(
+                values, v_readings, i_readings,
+                model=self._active_model_name, nplc=nplc_now,
+            )
+            if u is None:
                 return "--"
-            mean, std, rsd = s
-            n_valid = len(valid_rows)
-            u_stat = (std / math.sqrt(n_valid)) if n_valid > 1 else 0.0
-            u_inst = abs(mean) * mean_rel_inst
-            u_total = math.sqrt(u_stat ** 2 + u_inst ** 2)
             # Mean shown at NPLC-driven precision; uncertainties at 2 sf
             # (GUM §7.2.6) so the breakdown stays scannable.
-            return (f"{mean:.{precision}g} ± {u_total:.2g}  "
-                    f"(RSD {rsd:.2f}%; stat {u_stat:.2g} / inst {u_inst:.2g})")
-        w.fpp_rs_label.setText(fmt(rs_s))
-        w.fpp_rho_label.setText(fmt(rho_s))
-        w.fpp_sigma_label.setText(fmt(sig_s))
+            return (
+                f"{u.mean:.{precision}g} ± {u.u_total:.2g}  "
+                f"(RSD {u.rsd_pct:.2f}%; stat {u.u_stat:.2g} / inst {u.u_inst:.2g})"
+            )
+        w.fpp_rs_label.setText(fmt(4))
+        w.fpp_rho_label.setText(fmt(5))
+        w.fpp_sigma_label.setText(fmt(6))
 
         # Update histogram (throttle: every 5th point after 200), valid points only
         if hasattr(w, 'fpp_histogram') and (n <= 200 or n % 5 == 0):

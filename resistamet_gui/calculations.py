@@ -739,3 +739,90 @@ def format_resistivity_formula(
     else:
         coeff = alpha * 2 * np.pi * spacing_cm
         return f"rho = alpha*2*pi*s*(V/I) = {coeff:.4g}*(V/I) Ohm*cm"
+
+
+# ---------------------------------------------------------------------------
+# Combined uncertainty for 4PP per-spot statistics
+# ---------------------------------------------------------------------------
+
+
+class FourPointCombinedUncertainty(NamedTuple):
+    """Combined (statistical + instrument) uncertainty for a 4PP statistic.
+
+    All quantities share the same units as the input statistic — typically
+    Ω/sq, Ω·cm, or S/cm. The instrument floor is a relative number
+    (mean per-reading σ_R / R), so the same factor scales to Rs, ρ, σ.
+    """
+    mean: float
+    rsd_pct: float          # dispersion of the data (std / mean × 100)
+    u_stat: float           # std(values) / √N — random component of σ_mean
+    u_inst: float           # |mean| × mean(σ_R/R) — systematic instrument floor
+    u_total: float          # √(u_stat² + u_inst²)
+
+
+def four_point_combined_uncertainty(
+    values,
+    v_readings,
+    i_readings,
+    model: str = "2400",
+    nplc: float = 1.0,
+) -> Optional[FourPointCombinedUncertainty]:
+    """Combine statistical and instrument uncertainty for a 4PP statistic.
+
+    ``values`` is the list of per-reading derived quantities (Rs, ρ, or σ).
+    ``v_readings`` / ``i_readings`` are the parallel raw V and I per row,
+    used to compute the relative instrument floor σ_R/R via
+    ``accuracy.resistance_uncertainty``. Lists must have matching length.
+
+    The instrument contribution is treated as a *systematic* per-reading
+    floor (mean of σ_R/R across readings) that does NOT reduce with N —
+    matching how the Keithley datasheet specifies accuracy. The
+    statistical contribution is the standard uncertainty of the mean
+    (std/√N), which DOES reduce with N. Combined in quadrature per
+    GUM §5.1.2 Eq. 10 (uncorrelated sources).
+
+    Returns ``None`` if no finite values are provided. NaN-safe on inputs.
+    """
+    from .accuracy import resistance_uncertainty
+    if not values:
+        return None
+    finite_values = [v for v in values if isinstance(v, (int, float)) and math.isfinite(v)]
+    if not finite_values:
+        return None
+    n = len(finite_values)
+    mean_val = sum(finite_values) / n
+    if n > 1:
+        # Sample std with Bessel correction.
+        var = sum((x - mean_val) ** 2 for x in finite_values) / (n - 1)
+        std = math.sqrt(var)
+    else:
+        std = 0.0
+    rsd = (std / mean_val * 100.0) if mean_val != 0 else 0.0
+    u_stat = std / math.sqrt(n) if n > 1 else 0.0
+
+    # Per-row relative instrument floor σ_R / R. Skip rows with bad V/I/R.
+    rel_floors = []
+    for v, i in zip(v_readings, i_readings):
+        try:
+            v = float(v); i = float(i)
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(v) and math.isfinite(i)) or i == 0:
+            continue
+        r = v / i
+        if r == 0 or not math.isfinite(r):
+            continue
+        sigma_r = resistance_uncertainty(v, i, model=model, nplc=nplc)
+        if math.isfinite(sigma_r) and sigma_r > 0:
+            rel_floors.append(sigma_r / abs(r))
+    mean_rel_inst = sum(rel_floors) / len(rel_floors) if rel_floors else 0.0
+    u_inst = abs(mean_val) * mean_rel_inst
+    u_total = math.sqrt(u_stat ** 2 + u_inst ** 2)
+
+    return FourPointCombinedUncertainty(
+        mean=mean_val,
+        rsd_pct=rsd,
+        u_stat=u_stat,
+        u_inst=u_inst,
+        u_total=u_total,
+    )

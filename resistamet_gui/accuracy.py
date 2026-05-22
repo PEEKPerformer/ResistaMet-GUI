@@ -108,6 +108,58 @@ _I_MEAS_2440 = _I_MEAS_2400[1:] + (
 
 
 # ---------------------------------------------------------------------------
+# Voltage SOURCE accuracy — 2400/2401 family
+# Source: datasheet p. 5, "Source Accuracy (1 Year)" column. Same range
+# structure as the measure table; only the spec numbers differ.
+# ---------------------------------------------------------------------------
+
+_V_SRC_2400 = (
+    AccuracySpec(range_max=0.2,   pct_reading=0.0002, offset=600e-6),    # 200 mV
+    AccuracySpec(range_max=2.0,   pct_reading=0.0002, offset=600e-6),    # 2 V
+    AccuracySpec(range_max=20.0,  pct_reading=0.0002, offset=2.4e-3),    # 20 V
+    AccuracySpec(range_max=200.0, pct_reading=0.0002, offset=24e-3),     # 200 V
+)
+_V_SRC_2410 = _V_SRC_2400[:3] + (
+    AccuracySpec(range_max=1000.0, pct_reading=0.0002, offset=100e-3),
+)
+_V_SRC_2420 = _V_SRC_2400[:3] + (
+    AccuracySpec(range_max=60.0, pct_reading=0.0002, offset=7.2e-3),
+)
+_V_SRC_2440 = (
+    AccuracySpec(range_max=0.2,  pct_reading=0.0002, offset=600e-6),
+    AccuracySpec(range_max=2.0,  pct_reading=0.0002, offset=600e-6),
+    AccuracySpec(range_max=10.0, pct_reading=0.0002, offset=1.2e-3),
+    AccuracySpec(range_max=40.0, pct_reading=0.0002, offset=4.8e-3),
+)
+
+
+# ---------------------------------------------------------------------------
+# Current SOURCE accuracy — 2400/2401 family
+# Source: datasheet p. 6, "Source Accuracy (1 Year)" column.
+# ---------------------------------------------------------------------------
+
+_I_SRC_2400 = (
+    AccuracySpec(range_max=1e-6,   pct_reading=0.00035, offset=600e-12),  # 1 µA
+    AccuracySpec(range_max=10e-6,  pct_reading=0.00033, offset=2e-9),     # 10 µA
+    AccuracySpec(range_max=100e-6, pct_reading=0.00031, offset=20e-9),    # 100 µA
+    AccuracySpec(range_max=1e-3,   pct_reading=0.00034, offset=200e-9),   # 1 mA
+    AccuracySpec(range_max=10e-3,  pct_reading=0.00045, offset=2e-6),     # 10 mA
+    AccuracySpec(range_max=100e-3, pct_reading=0.00066, offset=20e-6),    # 100 mA
+    AccuracySpec(range_max=1.0,    pct_reading=0.0027,  offset=900e-6),   # 1 A
+)
+_I_SRC_2410 = _I_SRC_2400[:4] + (
+    AccuracySpec(range_max=20e-3,  pct_reading=0.00045, offset=4e-6),     # 20 mA
+) + _I_SRC_2400[5:]
+_I_SRC_2420 = _I_SRC_2400[1:] + (
+    AccuracySpec(range_max=3.0,    pct_reading=0.00059, offset=2.7e-3),
+)
+_I_SRC_2440 = _I_SRC_2400[1:] + (
+    AccuracySpec(range_max=1.0,    pct_reading=0.00067, offset=900e-6),
+    AccuracySpec(range_max=5.0,    pct_reading=0.0010,  offset=5.4e-3),
+)
+
+
+# ---------------------------------------------------------------------------
 # Per-model lookup. Mirrors instrument._MODELS so callers can pass the
 # model string straight from IDN parsing.
 # ---------------------------------------------------------------------------
@@ -130,6 +182,26 @@ _I_MEASURE: dict[str, Sequence[AccuracySpec]] = {
     "2425": _I_MEAS_2420,
     "2430": _I_MEAS_2420,
     "2440": _I_MEAS_2440,
+}
+
+_V_SOURCE: dict[str, Sequence[AccuracySpec]] = {
+    "2400": _V_SRC_2400,
+    "2401": _V_SRC_2400[:3],
+    "2410": _V_SRC_2410,
+    "2420": _V_SRC_2420,
+    "2425": _V_SRC_2420,
+    "2430": _V_SRC_2420,
+    "2440": _V_SRC_2440,
+}
+
+_I_SOURCE: dict[str, Sequence[AccuracySpec]] = {
+    "2400": _I_SRC_2400,
+    "2401": _I_SRC_2400,
+    "2410": _I_SRC_2410,
+    "2420": _I_SRC_2420,
+    "2425": _I_SRC_2420,
+    "2430": _I_SRC_2420,
+    "2440": _I_SRC_2440,
 }
 
 # Default fallback when the model isn't in the tables yet — use the base
@@ -286,6 +358,43 @@ def resistance_uncertainty(
     return abs(r) * math.sqrt(rel_v ** 2 + rel_i ** 2)
 
 
+def voltage_source_uncertainty(
+    voltage: float, model: str = _DEFAULT_MODEL, nplc: float = 1.0,
+) -> float:
+    """±σ_V on the *sourced* output voltage (base unit V).
+
+    For source_v mode, V_set on the front panel differs from the actual
+    output by the source-accuracy spec. When you derive R = V_set / I_meas
+    downstream, this is the uncertainty contribution on the V side.
+
+    Note: source accuracy is technically not modified by NPLC (NPLC is a
+    measurement parameter). The argument is accepted for call-site
+    symmetry and currently ignored; we may add other modifiers (e.g.
+    Compliance Accuracy from datasheet p. 5) here later.
+    """
+    del nplc  # unused; see note above
+    if not math.isfinite(voltage):
+        return float("nan")
+    specs = _V_SOURCE.get(model, _V_SOURCE[_DEFAULT_MODEL])
+    spec = _pick_range(voltage, specs)
+    return spec.uncertainty(voltage)
+
+
+def current_source_uncertainty(
+    current: float, model: str = _DEFAULT_MODEL, nplc: float = 1.0,
+) -> float:
+    """±σ_I on the *sourced* output current (base unit A). See
+    voltage_source_uncertainty for caveats."""
+    del nplc
+    if not math.isfinite(current):
+        return float("nan")
+    specs = _I_SOURCE.get(model, _I_SOURCE[_DEFAULT_MODEL])
+    spec = _pick_range(current, specs)
+    return spec.uncertainty(current)
+
+
 def known_models() -> tuple[str, ...]:
     """Models with explicit V and I accuracy tables in this module."""
-    return tuple(sorted(set(_V_MEASURE) & set(_I_MEASURE)))
+    return tuple(sorted(
+        set(_V_MEASURE) & set(_I_MEASURE) & set(_V_SOURCE) & set(_I_SOURCE)
+    ))

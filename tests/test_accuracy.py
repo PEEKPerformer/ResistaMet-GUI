@@ -13,9 +13,11 @@ import pytest
 
 from resistamet_gui.accuracy import (
     AccuracySpec,
+    current_source_uncertainty,
     current_uncertainty,
     known_models,
     resistance_uncertainty,
+    voltage_source_uncertainty,
     voltage_uncertainty,
 )
 
@@ -181,3 +183,42 @@ def test_every_model_gives_finite_uncertainty(model):
     assert voltage_uncertainty(1.0, model=model) > 0
     assert current_uncertainty(1e-3, model=model) > 0
     assert resistance_uncertainty(1.0, 1e-3, model=model) > 0
+    assert voltage_source_uncertainty(1.0, model=model) > 0
+    assert current_source_uncertainty(1e-3, model=model) > 0
+
+
+# ---------------------------------------------------------------------------
+# Source-side accuracy — datasheet p. 5/6 "Source Accuracy" columns
+# ---------------------------------------------------------------------------
+
+
+class TestSourceUncertainty:
+    def test_manual_appendix_a_isource_example(self):
+        # Manual Appendix A, p. A-2 worked example: source 0.7 mA on the
+        # 1 mA range → ±(0.034% × 0.7 mA + 200 nA) = ±(238 nA + 200 nA)
+        # = ±438 nA. Range 0.69956 mA to 0.70044 mA.
+        sigma = current_source_uncertainty(0.7e-3, model="2400")
+        assert math.isclose(sigma, 438e-9, rel_tol=1e-6)
+
+    def test_voltage_source_2v_range(self):
+        # 2 V range: 0.02% × 1.0 + 600 µV = 200 µV + 600 µV = 800 µV.
+        sigma = voltage_source_uncertainty(1.0, model="2400")
+        assert math.isclose(sigma, 800e-6, rel_tol=1e-6)
+
+    def test_current_source_100ma_range(self):
+        # 100 mA range: 0.066% × 50 mA + 20 µA = 33 µA + 20 µA = 53 µA.
+        sigma = current_source_uncertainty(50e-3, model="2400")
+        assert math.isclose(sigma, 53e-6, rel_tol=1e-6)
+
+    def test_source_accuracy_ignores_nplc(self):
+        # NPLC is a measurement parameter; source accuracy is independent.
+        # We accept nplc for call-site symmetry but it must not change the
+        # returned value.
+        a = voltage_source_uncertainty(1.0, model="2400", nplc=1.0)
+        b = voltage_source_uncertainty(1.0, model="2400", nplc=0.01)
+        assert a == b
+
+    def test_unknown_model_falls_back_to_2400(self):
+        a = voltage_source_uncertainty(1.0, model="9999")
+        b = voltage_source_uncertainty(1.0, model="2400")
+        assert a == b

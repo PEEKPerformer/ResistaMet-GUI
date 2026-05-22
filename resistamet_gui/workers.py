@@ -864,10 +864,13 @@ class MeasurementWorker(QThread):
                             # Use rho_23 when available; otherwise rho_T.
                             rho_report = f84.rho_23 if f84.rho_23 is not None else f84.rho_T
                             sigma = calculate_conductivity(rho_report)
+                            v_sigma = voltage_uncertainty(v, model=self._model_name, nplc=nplc)
+                            i_sigma = current_uncertainty(i, model=self._model_name, nplc=nplc)
                             row_data = [
                                 elapsed_time, v, i,
                                 ratio_for_calc, rs_val,
                                 rho_report, sigma,
+                                v_sigma, i_sigma,
                                 compliance_status, event_marker
                             ]
                         else:
@@ -885,10 +888,13 @@ class MeasurementWorker(QThread):
                                 result = calculate_four_point_probe(
                                     voltage=v, current=i, **fpp_kwargs,
                                 )
+                            v_sigma = voltage_uncertainty(v, model=self._model_name, nplc=nplc)
+                            i_sigma = current_uncertainty(i, model=self._model_name, nplc=nplc)
                             row_data = [
                                 elapsed_time, v, i,
                                 result.ratio, result.sheet_resistance,
                                 result.resistivity, result.conductivity,
+                                v_sigma, i_sigma,
                                 compliance_status, event_marker
                             ]
 
@@ -1487,6 +1493,25 @@ class VdpMeasurementWorker(QThread):
                 'group': geom.group,
             })
 
+    def _compute_vdp_combined_uncertainty(self, result):
+        """Thin wrapper around calculations_vdp.vdp_combined_uncertainty.
+
+        Kept on the worker so finalize() metadata can carry the same
+        u_rs / u_rho the GUI shows in the result panel — both paths call
+        the same pure helper, so they cannot drift out of sync.
+        """
+        from .calculations_vdp import vdp_combined_uncertainty
+        nplc = float(self.settings['measurement'].get('nplc', 1.0))
+        u = vdp_combined_uncertainty(
+            voltages=dict(self._voltages),
+            current=float(self._i_mag),
+            sheet_resistance=float(result.sheet_resistance),
+            rho_avg=float(result.rho_avg),
+            model=self._model_name,
+            nplc=nplc,
+        )
+        return u.u_rs, u.u_rho
+
     def _read_averaged(self, n: int):
         """Issue N :READ? queries and return (mean V, OR of STAT bits)."""
         v_sum = 0.0
@@ -1504,6 +1529,11 @@ class VdpMeasurementWorker(QThread):
         thickness = float(self.settings['measurement']['vdp_thickness_cm'])
         result = calculate_van_der_pauw(self._voltages, self._i_mag, thickness)
 
+        # Combined uncertainty on Rs and ρ. Mirrors the GUI computation in
+        # _vdp_on_complete (kept in sync intentionally so the CSV finalize
+        # metadata carries the same numbers the result panel shows).
+        u_rs, u_rho = self._compute_vdp_combined_uncertainty(result)
+
         result_dict = {
             'rho_a': result.rho_a,
             'rho_b': result.rho_b,
@@ -1518,6 +1548,8 @@ class VdpMeasurementWorker(QThread):
             'voltages': dict(self._voltages),
             'current_a': self._i_mag,
             'thickness_cm': thickness,
+            'sheet_resistance_uncertainty': u_rs,
+            'rho_avg_uncertainty': u_rho,
         }
         self.vdp_complete.emit(result_dict)
         self.status_update.emit(

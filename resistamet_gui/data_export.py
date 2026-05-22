@@ -201,9 +201,14 @@ def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] 
             ['elapsed_s', 'V_meas', 'I_set', 'R_calc', 'V_unc_V', 'compliance', 'event'],
             ['s', 'V', 'A', 'Ω', 'V', '', '']
         ),
+        # V_unc and I_unc are 1-year measurement accuracies on the raw V
+        # and I (accuracy.voltage_uncertainty / current_uncertainty). Each
+        # row's Rs/ρ/σ uncertainty is recoverable downstream as σ_X/X =
+        # √((V_unc/V)² + (I_unc/I)²); matches the per-spot u_inst term
+        # shown in the live results panel.
         'four_point': (
-            ['elapsed_s', 'V', 'I', 'V_over_I', 'Rs_ohm_sq', 'rho_ohm_cm', 'sigma_S_cm', 'compliance', 'event'],
-            ['s', 'V', 'A', 'Ω', 'Ω/□', 'Ω·cm', 'S/cm', '', '']
+            ['elapsed_s', 'V', 'I', 'V_over_I', 'Rs_ohm_sq', 'rho_ohm_cm', 'sigma_S_cm', 'V_unc_V', 'I_unc_A', 'compliance', 'event'],
+            ['s', 'V', 'A', 'Ω', 'Ω/□', 'Ω·cm', 'S/cm', 'V', 'A', '', '']
         ),
         'sweep': (
             ['point', 'V_source', 'I_meas', 'compliance'],
@@ -262,43 +267,58 @@ def build_metadata(
         'settling_time_s': measurement_settings.get('settling_time', 0.2),
     }
 
+    # Range / auto-range modes are recorded here so downstream analysis can
+    # recover which accuracy-spec row the inference used. accuracy.py picks
+    # the range via the Keithley's 105% overrange rule, so the raw V and I
+    # in the CSV are sufficient for forensic recomputation — but capturing
+    # the configured mode makes the audit trail explicit instead of
+    # reverse-engineered.
     if mode == 'resistance':
         meta['params'] = {
             'test_current_A': measurement_settings.get('res_test_current'),
             'voltage_compliance_V': measurement_settings.get('res_voltage_compliance'),
             'measurement_type': measurement_settings.get('res_measurement_type'),
             'auto_range': measurement_settings.get('res_auto_range'),
+            'auto_zero': measurement_settings.get('auto_zero'),
         }
     elif mode == 'source_v':
         meta['params'] = {
             'source_voltage_V': measurement_settings.get('vsource_voltage'),
             'current_compliance_A': measurement_settings.get('vsource_current_compliance'),
+            'current_auto_range': measurement_settings.get('vsource_current_range_auto'),
             'duration_hours': measurement_settings.get('vsource_duration_hours'),
+            'auto_zero': measurement_settings.get('auto_zero'),
         }
     elif mode == 'source_i':
         meta['params'] = {
             'source_current_A': measurement_settings.get('isource_current'),
             'voltage_compliance_V': measurement_settings.get('isource_voltage_compliance'),
+            'voltage_auto_range': measurement_settings.get('isource_voltage_range_auto'),
             'duration_hours': measurement_settings.get('isource_duration_hours'),
+            'auto_zero': measurement_settings.get('auto_zero'),
         }
     elif mode == 'four_point':
         meta['params'] = {
             'source_current_A': measurement_settings.get('fpp_current'),
             'voltage_compliance_V': measurement_settings.get('fpp_voltage_compliance'),
+            'voltage_auto_range': measurement_settings.get('fpp_voltage_range_auto'),
             'probe_spacing_cm': measurement_settings.get('fpp_spacing_cm'),
             'thickness_um': measurement_settings.get('fpp_thickness_um'),
             'k_factor': measurement_settings.get('fpp_k_factor'),
             'alpha': measurement_settings.get('fpp_alpha'),
             'model': measurement_settings.get('fpp_model'),
             'target_samples': measurement_settings.get('fpp_samples'),
+            'auto_zero': measurement_settings.get('auto_zero'),
         }
     elif mode == 'vdp':
         meta['params'] = {
             'source_current_A': measurement_settings.get('vdp_current'),
             'voltage_compliance_V': measurement_settings.get('vdp_voltage_compliance'),
+            'voltage_auto_range': measurement_settings.get('vdp_voltage_range_auto'),
             'thickness_cm': measurement_settings.get('vdp_thickness_cm'),
             'settling_s': measurement_settings.get('vdp_settling_s'),
             'readings_per_polarity': measurement_settings.get('vdp_readings_per_polarity'),
+            'auto_zero': measurement_settings.get('auto_zero'),
             'standard': 'ASTM F76-08 Method A',
         }
     elif mode == 'sweep':

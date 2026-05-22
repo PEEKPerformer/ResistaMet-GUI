@@ -351,3 +351,96 @@ def calculate_van_der_pauw(
     )
 
 
+
+
+# ---------------------------------------------------------------------------
+# Combined uncertainty on vdP sheet resistance and resistivity
+# ---------------------------------------------------------------------------
+
+
+class VdpCombinedUncertainty(NamedTuple):
+    """Combined uncertainty for a vdP result.
+
+    ``u_inst_R`` and ``u_stat_R`` are intermediate (uncertainty on the
+    averaged R that the F76 chain operates on); ``u_rs`` and ``u_rho``
+    are the final per-Rs / per-ρ uncertainties propagated through
+    σ_X/X = σ_R/R (treating the F76 prefactor and thickness as exact).
+    """
+    u_inst_R: float
+    u_stat_R: float
+    u_total_R: float
+    u_rs: float
+    u_rho: float
+
+
+def vdp_combined_uncertainty(
+    voltages,
+    current,
+    sheet_resistance,
+    rho_avg,
+    model: str = "2400",
+    nplc: float = 1.0,
+) -> VdpCombinedUncertainty:
+    """Combine statistical and instrument uncertainty for a vdP result.
+
+    Inputs mirror the worker's ``_compute_and_emit_result`` arguments:
+    ``voltages`` is the 8-key F76 dict (V_21,34 etc.); ``current`` is
+    |I| in amps. The propagation:
+
+      - For each of the 4 F76 geometries, σ_R = √(σ_V_p² + σ_V_n²) / (2|I|)
+        with σ_V_p and σ_V_n from accuracy.voltage_uncertainty on the
+        respective +I and −I readings. Treats sourced current as exact.
+      - u_inst_R = mean across the 4 per-geometry σ_R (systematic floor).
+      - u_stat_R = std(R values) / √4 (statistical uncertainty of mean).
+      - u_total_R combined in quadrature.
+      - Relative uncertainty propagates equally to Rs and ρ:
+            σ_Rs / Rs = σ_ρ / ρ = u_total_R / |R_avg|
+        Treating the F76 prefactor (π / ln2) · f and t as exact.
+
+    Returns NaN-filled tuple on missing keys / non-finite inputs.
+    """
+    from .accuracy import voltage_uncertainty
+    pairs = (
+        ("V_21,34", "V_12,34"),
+        ("V_32,41", "V_23,41"),
+        ("V_43,12", "V_34,12"),
+        ("V_14,23", "V_41,23"),
+    )
+    try:
+        r_values: list[float] = []
+        per_geom_sigma_r: list[float] = []
+        for p_label, n_label in pairs:
+            v_p = float(voltages[p_label]); v_n = float(voltages[n_label])
+            sig_p = voltage_uncertainty(v_p, model=model, nplc=nplc)
+            sig_n = voltage_uncertainty(v_n, model=model, nplc=nplc)
+            per_geom_sigma_r.append(
+                math.sqrt(sig_p ** 2 + sig_n ** 2) / (2.0 * abs(current))
+            )
+            r_values.append((v_p - v_n) / (2.0 * current))
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        nan = float("nan")
+        return VdpCombinedUncertainty(nan, nan, nan, nan, nan)
+
+    r_avg = sum(r_values) / len(r_values)
+    u_inst_R = sum(per_geom_sigma_r) / len(per_geom_sigma_r)
+    if len(r_values) > 1:
+        var = sum((x - r_avg) ** 2 for x in r_values) / (len(r_values) - 1)
+        u_stat_R = math.sqrt(var) / math.sqrt(len(r_values))
+    else:
+        u_stat_R = 0.0
+    u_total_R = math.sqrt(u_inst_R ** 2 + u_stat_R ** 2)
+
+    if r_avg == 0 or not math.isfinite(r_avg):
+        rel = float("nan")
+    else:
+        rel = u_total_R / abs(r_avg)
+    u_rs = abs(sheet_resistance) * rel if math.isfinite(rel) else float("nan")
+    u_rho = abs(rho_avg) * rel if math.isfinite(rel) else float("nan")
+
+    return VdpCombinedUncertainty(
+        u_inst_R=u_inst_R,
+        u_stat_R=u_stat_R,
+        u_total_R=u_total_R,
+        u_rs=u_rs,
+        u_rho=u_rho,
+    )
