@@ -13,8 +13,8 @@ authors:
     given-names: Brenden
     orcid: "https://orcid.org/0009-0008-6566-6088"
     affiliation: "Institute of Materials Science, University of Connecticut"
-version: 1.9.0
-date-released: "2026-05-20"
+version: 1.10.0
+date-released: "2026-05-22"
 license: MIT
 repository-code: "https://github.com/PEEKPerformer/ResistaMet-GUI"
 url: "https://github.com/PEEKPerformer/ResistaMet-GUI"

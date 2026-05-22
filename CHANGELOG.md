@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-05-22
+
+### Added
+- **Per-range uncertainty propagation.** New `resistamet_gui/accuracy.py` carries the 2400-series datasheet's V/I/R measurement and source accuracy tables (1KW-2798-3, April 2021) for 2400/2401/2410/2420/2425/2430/2440. Active range is inferred from the reading via the Keithley's 105% overrange rule (no per-reading SCPI query). NPLC modifiers track the Speed buckets per datasheet footnotes. RSS propagation per GUM §5.1.6 Eq. 12. Five public functions: `voltage_uncertainty`, `current_uncertainty`, `resistance_uncertainty`, `voltage_source_uncertainty`, `current_source_uncertainty`.
+- **Live readout shows ±σ.** Resistance and source modes render `R = 1.4690 ± 0.00068 kΩ` via a new `format_with_uncertainty(value, σ, unit)` helper — shared engineering prefix from the value, σ rounded to 2 sig figs (GUM §7.2.6), value rounded to the same decimal place so digits never imply more precision than σ justifies. Falls back to plain engineering format when σ isn't available.
+- **CSV uncertainty columns** on every mode that derives R: `R_unc_ohm` on resistance, `I_unc_A` + `R_calc_unc_ohm` on source_v, `V_unc_V` + `R_calc_unc_ohm` on source_i, `V_unc_V` + `I_unc_A` on 4PP per-reading. vdP finalize metadata gains `sheet_resistance_uncertainty` and `rho_avg_uncertainty`.
+- **Combined statistical + instrument uncertainty** on 4PP per-spot stats and the vdP result panel: `u_total = √(u_stat² + u_inst²)` where `u_stat = std/√N` (random component reduces with N) and `u_inst` is the per-reading instrument floor (treated as systematic). 4PP labels read `mean ± u_total (RSD x%; stat y / inst z)`. Shared pure helpers in `calculations.four_point_combined_uncertainty` / `calculations_vdp.vdp_combined_uncertainty` — GUI and worker call into the same code so the result panel and CSV metadata cannot drift.
+- **Enhanced R mode** ties to the existing `res_offset_comp` checkbox (renamed "Enhanced accuracy (slower)" with an honest tooltip about the moderate-R regime). When active, σ_R comes from the datasheet's Enhanced R-accuracy column directly; otherwise V/I propagation. Falls back to propagation outside the table's 20 Ω–200 MΩ coverage. Bench-confirmed >20× tighter σ_R at R=20 Ω. CSV records `offset_compensated_ohms: true/false` for audit. **Default is now ON** because a precision-measurement tool should ship the accurate-by-default setting; fast scans opt out.
+- **Human-touch-safety voltage warning** (gh #1). New `resistamet_gui/safety.py` runs a pure check; if a configured run could put >30 V (IEC 61010-1 SELV) on the leads, a modal warns at Start with a sticky "Don't show again" checkbox that flips `safety_voltage_warn_silenced` on the profile. Settings dialog has a re-enable toggle. Status bar appends "⚡ N V live" while a hazardous run is active. Warn-then-proceed — never blocks.
+- **NPLC-aware sig figs** in vdP and 4PP result labels and live-readout fallback paths. NPLC ≥ 0.5 → 6 figs (6½-digit hardware), 0.05–0.5 → 5 figs, <0.05 → 4 figs.
+- **Resistance-mode `FORM:ELEM`** upgraded to `VOLT,CURR,RES,STAT` so V and I are captured alongside the instrument-reported R. Enables the uncertainty propagation above with no measurable throughput cost.
+- **Reproducibility metadata.** CSV metadata header now records `auto_zero`, `voltage_auto_range` / `current_auto_range` per mode, and `offset_compensated_ohms` for resistance — sufficient to recover which accuracy-spec row inference is operating against without reverse-engineering from the raw V/I.
+
+### Changed
+- **`auto_zero` moved from Settings dialog to per-tab UI control** on Resistance / Voltage Source / Current Source tabs. Re-tuning the speed/accuracy trade-off no longer requires opening Settings.
+- **vdP thickness guard.** The `vdp_thickness_cm` default changed from `1.0e-4` (silently used 1 µm) to `0.0` (sentinel). vdP Start now prompts via `QInputDialog.getDouble` for thickness if unset, mirroring `_require_sample_name`. Prevents the silent `ρ = R_s × 1 µm` failure mode.
+- **Source-mode duration defaults.** `vsource_duration_hours` and `isource_duration_hours` default `1.0 → 0.0` so unattended runs no longer auto-stop after one hour without warning.
+- **Display buffer is now unlimited by default.** `display.buffer_size` default `1000 → 0`. pyqtgraph's `setDownsampling(auto=True, mode='peak')` + `setClipToView(True)` keeps long traces smooth; a 17-hour run at 9 Hz is ~13 MB and stays interactive. Bounded buffer silently truncated the live trace on overnight runs.
+- **Sampling-rate cap accounts for offset-comp 2× slowdown.** When Enhanced accuracy is enabled in resistance mode, the rate-cap predictor halves the achievable rate accordingly. Toggle on the checkbox refreshes the cap immediately.
+
+### Fixed
+- **`save_active_plot` was broken on every PgLiveCanvas live tab.** It called `canvas.fig.savefig(...)` but PgLiveCanvas has no `.fig`. New `_get_active_canvas_for_save` resolves the right canvas per tab; PgLiveCanvas routes through pyqtgraph's `ImageExporter` (`SVGExporter` for `.svg`); HistogramCanvas + IVCanvas keep matplotlib `savefig`. PDF dropped from the filter list for pyqtgraph canvases (it can't write one).
+- **Cable null bypass** introduced by the resistance-mode FORM:ELEM upgrade: `update_data` was routing the new V+I data dict through `add_voltage_current`, which recomputes R = V/I and skipped the cable-null-corrected R. Now routes by mode rather than dict shape so resistance keeps using `add_resistance`.
+
+### Removed
+- **`MplCanvas` class** (`~92 lines` in `ui/canvas.py`). Dead code — every live tab uses `PgLiveCanvas` since 1.9.0. `HistogramCanvas` (4PP) and `IVCanvas` (sweep) are the only matplotlib canvases that remain.
+- **`plot_update_interval` and `plot_figsize` Settings dialog controls.** Theatrical — refresh rate was always capped at 16 ms in the timer setup and figsize never reached the canvas constructors. Underlying config keys preserved for back-compat.
+
 ## [1.9.0] - 2026-05-20
 
 ### Added
