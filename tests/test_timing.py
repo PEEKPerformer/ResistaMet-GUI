@@ -12,6 +12,7 @@ floor exists because the low-NPLC / high-filter corner is the worst-fit
 region and the manual doesn't give per-conversion overhead numbers.
 """
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -100,3 +101,29 @@ def test_disabling_filter_is_equivalent_to_count_one():
     a = estimate_max_sample_rate_hz(filter_enabled=False, filter_count=10)
     b = estimate_max_sample_rate_hz(filter_enabled=True,  filter_count=1)
     assert a == b
+
+
+def test_offset_comp_halves_max_rate():
+    # Offset-compensated ohms doubles per-reading time (paired I-on / I-off
+    # sample). The rate cap must shrink accordingly so the UI doesn't
+    # silently let users pick a sampling rate the instrument can't deliver
+    # when Enhanced accuracy is active.
+    base = estimate_max_sample_rate_hz(nplc=1.0, auto_zero='on', filter_count=10)
+    enhanced = estimate_max_sample_rate_hz(
+        nplc=1.0, auto_zero='on', filter_count=10, offset_comp=True,
+    )
+    ratio = base / enhanced
+    assert math.isclose(ratio, 2.0, rel_tol=1e-9), (
+        f"offset_comp should halve the rate; got {ratio:.3f}× speedup"
+    )
+
+
+def test_timing_settings_from_dict_pulls_offset_comp():
+    # TimingSettings.from_dict reads res_offset_comp out of the
+    # measurement settings — the resistance-mode wiring depends on this.
+    from resistamet_gui.timing import TimingSettings
+    s_on = TimingSettings.from_dict({'res_offset_comp': True})
+    s_off = TimingSettings.from_dict({'res_offset_comp': False})
+    assert s_on.offset_comp is True
+    assert s_off.offset_comp is False
+    assert s_on.max_rate_hz() < s_off.max_rate_hz()

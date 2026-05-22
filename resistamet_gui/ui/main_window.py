@@ -300,8 +300,28 @@ class ResistanceMeterApp(QMainWindow):
 
         widget.res_auto_range = QCheckBox("Auto Range Resistance")
         widget.res_auto_range.setToolTip("When checked, the instrument automatically selects the best\nmeasurement range for the DUT resistance. Disable for faster\nmeasurements at a fixed range.")
-        widget.res_offset_comp = QCheckBox("Offset Compensated Ohms")
-        widget.res_offset_comp.setToolTip("Cancels thermoelectric EMF by automatically measuring with\ncurrent ON and OFF, then subtracting. Halves measurement\nspeed but improves accuracy for low-resistance DUTs.")
+        widget.res_offset_comp = QCheckBox("Enhanced accuracy (slower)")
+        widget.res_offset_comp.setToolTip(
+            "Uses the datasheet's Enhanced R-accuracy column. Cancels\n"
+            "thermoelectric offset by sampling once with the test current\n"
+            "on and once with it off — each reading takes roughly twice\n"
+            "as long; the live sampling-rate cap adjusts automatically.\n\n"
+            "Reported σ_R at LOW R (V near the bottom of its range) is\n"
+            "dramatically tighter — Enhanced cancels offset EMF that V/I\n"
+            "propagation can't see. At MODERATE R the reported σ_R may\n"
+            "be slightly larger, because Enhanced honestly accounts for\n"
+            "thermoelectric EMF that propagation idealizes to zero.\n\n"
+            "Either way, the CSV metadata records which model was used\n"
+            "(offset_compensated_ohms field) for audit. Uncheck for\n"
+            "fast scans."
+        )
+        # Toggling Enhanced accuracy changes per-reading time → recompute
+        # the achievable sampling-rate cap so the user sees the new ceiling
+        # immediately instead of getting a soft-cap popup when they hit
+        # Start.
+        widget.res_offset_comp.toggled.connect(
+            lambda _checked, t=widget: self._refresh_rate_cap_for(t)
+        )
         cb_row = QWidget(); cb_h = QHBoxLayout(cb_row)
         cb_h.setContentsMargins(0, 0, 0, 0)
         cb_h.addWidget(widget.res_auto_range)
@@ -2782,6 +2802,14 @@ class ResistanceMeterApp(QMainWindow):
         if mode in MODE_TIMING_OVERRIDES:
             for k, v in MODE_TIMING_OVERRIDES[mode].items():
                 m[k] = v
+        # Offset-compensated ohms is a resistance-mode-only SCPI feature
+        # (:SENS:RES:OCOM). Pull the live widget state when we're on the
+        # resistance tab; for every other mode force it off so the rate
+        # cap doesn't shrink based on a setting the instrument won't apply.
+        if mode == 'resistance' and hasattr(tab, 'res_offset_comp'):
+            m['res_offset_comp'] = bool(tab.res_offset_comp.isChecked())
+        else:
+            m['res_offset_comp'] = False
         return TimingSettings.from_dict(m)
 
     def _refresh_rate_cap_for(self, tab) -> None:

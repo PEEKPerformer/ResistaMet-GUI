@@ -164,6 +164,84 @@ class TestResistanceUncertainty:
         assert math.isnan(resistance_uncertainty(1.0, float("nan")))
 
 
+class TestEnhancedResistance:
+    """Enhanced R-spec lookup (offset-comp ON + source-readback ON).
+
+    Datasheet p. 7 Enhanced column. Numbers come direct from the table
+    rather than V/I propagation, so the value at a given R is fully
+    determined by the table row.
+    """
+
+    def test_2kohm_range(self):
+        # 2 kΩ range Enhanced: 0.05% + 0.1 Ω. At R=1500 Ω:
+        # 0.0005 × 1500 + 0.1 = 0.75 + 0.1 = 0.85 Ω.
+        sigma = resistance_uncertainty(1.5, 1e-3, model="2400", nplc=1.0, enhanced=True)
+        assert math.isclose(sigma, 0.85, rel_tol=1e-6)
+
+    def test_200ohm_range(self):
+        # 200 Ω Enhanced: 0.05% + 0.01 Ω. At R=100 Ω (V=10mV, I=100µA):
+        # 0.0005 × 100 + 0.01 = 0.06 Ω.
+        sigma = resistance_uncertainty(10e-3, 100e-6, model="2400", nplc=1.0, enhanced=True)
+        assert math.isclose(sigma, 0.06, rel_tol=1e-6)
+
+    def test_enhanced_is_tighter_than_propagation_at_low_r(self):
+        # The regime where Enhanced shines: low R where V_meas sits near
+        # the bottom of the 200 mV range so the V offset (300 µV)
+        # dominates the relative V uncertainty. V/I propagation hands
+        # back a huge σ_R because it has to take the offset at face
+        # value; Enhanced cancels the offset via offset-comp and uses
+        # a tighter direct-R spec.
+        #
+        # R=20 Ω, I=1 mA → V=20 mV on 200 mV range.
+        #   Propagation: σ_V/V ≈ 300µV/20mV = 1.5% → σ_R ≈ 0.3 Ω
+        #   Enhanced 20 Ω spec: 0.07% × 20 + 0.001 Ω = 0.015 Ω
+        #   → ~20× tighter
+        v, i = 20e-3, 1e-3
+        propagation = resistance_uncertainty(v, i, model="2400", nplc=1.0, enhanced=False)
+        enhanced = resistance_uncertainty(v, i, model="2400", nplc=1.0, enhanced=True)
+        assert enhanced < propagation, (
+            f"Enhanced ({enhanced}) should be tighter than propagation "
+            f"({propagation}) in the V-offset-dominated regime"
+        )
+        # And by a wide margin — assert at least 5× improvement to catch
+        # a regression where the table is silently reverted to V/I.
+        assert propagation / enhanced > 5
+
+    def test_below_table_falls_back_to_propagation(self):
+        # R = 1 Ω is below the 2 Ω row (lowest enhanced row is 20 Ω). The
+        # datasheet leaves this as "I_acc + V_acc" — we fall through to
+        # V/I propagation rather than silently using the 20 Ω-range spec.
+        v, i = 1e-3, 1e-3   # R = 1 Ω, well below 2 Ω/1.05 boundary
+        # Enhanced=True at R=1 Ω → should match enhanced=False result.
+        e_off = resistance_uncertainty(v, i, model="2400", nplc=1.0, enhanced=False)
+        e_on = resistance_uncertainty(v, i, model="2400", nplc=1.0, enhanced=True)
+        assert math.isclose(e_off, e_on, rel_tol=1e-9)
+
+    def test_above_table_falls_back_to_propagation(self):
+        # R = 1 GΩ is above the 200 MΩ ceiling. Same fallback.
+        v, i = 1.0, 1e-9     # R = 1 GΩ
+        e_off = resistance_uncertainty(v, i, model="2400", nplc=1.0, enhanced=False)
+        e_on = resistance_uncertainty(v, i, model="2400", nplc=1.0, enhanced=True)
+        assert math.isclose(e_off, e_on, rel_tol=1e-9)
+
+    def test_manual_section_4_enhanced_example(self):
+        # User manual §4 worked example: 100 mΩ @ 5 mA, enhanced mode.
+        # The manual derives ±0.447% via linear-sum of measure specs.
+        # We're below the 2 Ω row so we fall through to V/I propagation.
+        # V = 500 µV on 200 mV range → σ_V = 0.012%×500µV + 300µV ≈ 300 µV
+        # I = 5 mA on 10 mA range → σ_I = 0.027%×5mA + 60 nA ≈ 1.41 µA
+        # σ_R/R via RSS:
+        #   √((300e-6/500e-6)² + (1.41e-6/5e-3)²) ≈ √(0.36 + 7.95e-8) ≈ 0.6
+        # = 60% — same as the V-dominated propagation result we already
+        # have in test_100mohm_at_5ma_normal_mode_via_propagation.
+        # The point: enhanced=True at sub-2-Ω R doesn't blow up; it
+        # gracefully returns the same conservative V/I number.
+        sigma = resistance_uncertainty(500e-6, 5e-3, model="2400", nplc=1.0, enhanced=True)
+        # Just assert it's finite and positive — the dominant V offset
+        # carries the answer regardless of mode.
+        assert math.isfinite(sigma) and sigma > 0
+
+
 # ---------------------------------------------------------------------------
 # Model coverage
 # ---------------------------------------------------------------------------

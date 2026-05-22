@@ -178,11 +178,15 @@ class SettingsDialog(QDialog):
         self.filter_count.setToolTip("Number of readings to average (1-100).\nHigher = cleaner but slower. 10 is a good starting point.")
         adv_layout.addRow("Filter Count:", self.filter_count)
 
-        self.res_offset_comp = QCheckBox("Offset Compensated Ohms (Resistance mode)")
+        self.res_offset_comp = QCheckBox("Enhanced accuracy in Resistance mode")
         self.res_offset_comp.setToolTip(
-            "Cancels thermoelectric EMF by automatically measuring with\n"
-            "current ON and OFF, then subtracting. Halves measurement\n"
-            "speed but improves accuracy for low-resistance DUTs.\n"
+            "Use the datasheet's Enhanced R-accuracy column. Cancels\n"
+            "thermoelectric offset; each reading takes roughly twice as\n"
+            "long and the sampling-rate cap adjusts automatically.\n\n"
+            "σ_R is dramatically tighter at low R (V offset dominated);\n"
+            "may be slightly larger at moderate R because Enhanced\n"
+            "honestly accounts for EMF that V/I propagation ignores.\n"
+            "Recorded in CSV metadata as offset_compensated_ohms.\n"
             "Only applies to Resistance mode.")
         adv_layout.addRow(self.res_offset_comp)
 

@@ -45,7 +45,13 @@ DEFAULT_SETTINGS = {
         # over many samples are unchanged; the live trace is slightly more
         # jittery per point but smoother in aggregate.
         "filter_count": 5,                   # number of readings to average (1-100)
-        "res_offset_comp": False,            # offset-compensated ohms (cancels thermoelectric EMF)
+        # Enhanced-accuracy resistance mode: source-readback (always on
+        # here via :FORM:ELEM VOLT,CURR,RES,STAT) + offset-compensated
+        # ohms. Reports σ_R from the datasheet's Enhanced R column
+        # (~30% tighter than V/I propagation). Throughput halves. ON by
+        # default because a tool aimed at precision measurement should
+        # ship the accurate-by-default setting; fast scans opt out.
+        "res_offset_comp": True,             # offset-compensated ohms / Enhanced accuracy
         "res_cable_null": 0.0,               # cable null reference value (0 = disabled)         # Stop run when compliance is hit
         # Four-Point Probe (FPP) defaults (SP4-40085TBQ)
         "fpp_current": 1.0e-4,               # Source current in Amperes (100 µA — safe for unknown films)

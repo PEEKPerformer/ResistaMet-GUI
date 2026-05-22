@@ -687,6 +687,7 @@ class MeasurementWorker(QThread):
                             value -= cable_null
                         sigma_r = resistance_uncertainty(
                             voltage, current, model=self._model_name, nplc=nplc,
+                            enhanced=bool(measurement_settings.get('res_offset_comp', False)),
                         )
                         data_dict = {
                             'voltage': voltage, 'current': current, 'resistance': value,

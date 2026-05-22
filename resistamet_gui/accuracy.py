@@ -160,6 +160,32 @@ _I_SRC_2440 = _I_SRC_2400[1:] + (
 
 
 # ---------------------------------------------------------------------------
+# Enhanced resistance accuracy — 2400/2401 family
+# Source: datasheet p. 7, "Enhanced Accuracy" column. Active when
+# source-readback is ON *and* offset-compensated ohms is ON. The 2400's
+# ohms function gives this column when :SENS:RES:OCOM ON is set and the
+# FORM:ELEM response carries V and I alongside R (the latter is implicit
+# in our setup; we always request VOLT,CURR,RES,STAT for resistance mode).
+#
+# Below the 2 Ω range the datasheet falls back to "I_acc + V_acc" — i.e.
+# you compute it from V and I uncertainties yourself. We omit those rows
+# from the table and let the call site fall through to the V/I propagation
+# path for ultra-low-R measurements.
+# ---------------------------------------------------------------------------
+
+_R_ENH_2400 = (
+    AccuracySpec(range_max=20.0,    pct_reading=0.0007, offset=0.001),    # 20 Ω
+    AccuracySpec(range_max=200.0,   pct_reading=0.0005, offset=0.01),     # 200 Ω
+    AccuracySpec(range_max=2.0e3,   pct_reading=0.0005, offset=0.1),      # 2 kΩ
+    AccuracySpec(range_max=20.0e3,  pct_reading=0.0004, offset=1.0),      # 20 kΩ
+    AccuracySpec(range_max=200.0e3, pct_reading=0.0005, offset=10.0),     # 200 kΩ
+    AccuracySpec(range_max=2.0e6,   pct_reading=0.0005, offset=100.0),    # 2 MΩ
+    AccuracySpec(range_max=20.0e6,  pct_reading=0.0005, offset=500.0),    # 20 MΩ
+    AccuracySpec(range_max=200.0e6, pct_reading=0.0035, offset=5.0e3),    # 200 MΩ
+)
+
+
+# ---------------------------------------------------------------------------
 # Per-model lookup. Mirrors instrument._MODELS so callers can pass the
 # model string straight from IDN parsing.
 # ---------------------------------------------------------------------------
@@ -202,6 +228,21 @@ _I_SOURCE: dict[str, Sequence[AccuracySpec]] = {
     "2425": _I_SRC_2420,
     "2430": _I_SRC_2420,
     "2440": _I_SRC_2440,
+}
+
+# Datasheet footnote: "Also available on 2410, 2420, and 2440 with
+# similar accuracy enhancement." We use the 2400/2401 numbers for the
+# whole family — the datasheet doesn't print a model-specific Enhanced
+# column for them, so reusing the canonical table is the most defensible
+# choice. If a model needs its own numbers later, add an entry here.
+_R_ENHANCED: dict[str, Sequence[AccuracySpec]] = {
+    "2400": _R_ENH_2400,
+    "2401": _R_ENH_2400,
+    "2410": _R_ENH_2400,
+    "2420": _R_ENH_2400,
+    "2425": _R_ENH_2400,
+    "2430": _R_ENH_2400,
+    "2440": _R_ENH_2400,
 }
 
 # Default fallback when the model isn't in the tables yet — use the base
@@ -318,8 +359,22 @@ def resistance_uncertainty(
     current: float,
     model: str = _DEFAULT_MODEL,
     nplc: float = 1.0,
+    enhanced: bool = False,
 ) -> float:
     """±σ_R from V and I via RSS propagation of σ_V and σ_I.
+
+    When ``enhanced=True``, the result comes from the datasheet's
+    Enhanced R-accuracy column (active hardware-side when source-readback
+    is ON and offset-compensated ohms is ON; see the 2400 user manual
+    §3-10). Falls through to V/I propagation when ``enhanced=False``
+    (which is roughly equivalent to the Normal column but slightly more
+    conservative — see the divergence note below).
+
+    Enhanced lookup picks the R-range via the same 105%-overrange rule
+    used for V and I (range inference from |R|). Out of the table
+    (below 2 Ω or above 200 MΩ) it falls back to V/I propagation so the
+    function never silently returns garbage for ultra-low or ultra-high
+    resistances.
 
     σ_R = R × √((σ_V/V)² + (σ_I/I)²), where R = V/I. The V and I
     uncertainties come from the per-range accuracy tables. Returns NaN
@@ -351,6 +406,19 @@ def resistance_uncertainty(
     if not (math.isfinite(voltage) and math.isfinite(current)) or current == 0.0:
         return float("nan")
     r = voltage / current
+    if enhanced:
+        specs = _R_ENHANCED.get(model, _R_ENHANCED[_DEFAULT_MODEL])
+        # Only use the Enhanced table when |R| falls inside its covered
+        # range. The 2400's 0.2 Ω and 2 Ω hardware ranges are intentionally
+        # omitted (datasheet says "Source I_acc + Meas V_acc" for those —
+        # i.e. compute from V and I, which is exactly the propagation path
+        # below). Above 200 MΩ × 1.05 we also fall back. The boundary
+        # below comes from the omitted 2 Ω range — anything that would
+        # land on a hardware range we don't tabulate gets V/I propagation.
+        OMITTED_R_RANGE_MAX = 2.0   # the 2 Ω range; everything below uses V/I
+        if specs and OMITTED_R_RANGE_MAX < abs(r) <= specs[-1].range_max * 1.05:
+            spec = _pick_range(r, specs)
+            return spec.uncertainty(r)
     sigma_v = voltage_uncertainty(voltage, model, nplc)
     sigma_i = current_uncertainty(current, model, nplc)
     rel_v = sigma_v / voltage if voltage != 0.0 else float("inf")

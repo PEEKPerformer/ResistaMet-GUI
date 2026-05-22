@@ -49,12 +49,22 @@ def estimate_max_sample_rate_hz(
     filter_type: str = 'repeat',
     filter_count: int = 10,
     line_frequency_hz: float = 60.0,
+    offset_comp: bool = False,
 ) -> float:
     """Predict the maximum sustainable :READ? rate at the given settings.
 
     Conservative — measured rates are typically 0–14% higher than the
     estimate, never lower, so a UI cap based on this value will not
     over-promise.
+
+    ``offset_comp`` doubles the per-reading time when True: the
+    Keithley's offset-compensated ohms function samples once with
+    current applied and once with current off, then subtracts the
+    paired readings. Documented in 2400 User's Manual §3-10 ("Offset
+    Compensated Ohms — measurement speed is halved"). The rate cap
+    must reflect this so the UI doesn't quietly let users pick a
+    sampling rate that the instrument cannot deliver when Enhanced
+    accuracy is active.
     """
     plc_s = 1.0 / line_frequency_hz
     az = auto_zero.lower()
@@ -65,6 +75,8 @@ def estimate_max_sample_rate_hz(
     else:
         fc = 1
     per_reading_s = (az_factor * nplc * plc_s + per_conv) * fc + _PER_READING_OVERHEAD_S
+    if offset_comp:
+        per_reading_s *= 2.0
     return 1.0 / per_reading_s
 
 
@@ -78,15 +90,21 @@ class TimingSettings:
     filter_enabled: bool
     filter_type: str
     filter_count: int
+    offset_comp: bool = False
 
     @classmethod
     def from_dict(cls, m: dict) -> 'TimingSettings':
+        # Offset-compensated ohms is a resistance-mode toggle (the SCPI
+        # command :SENS:RES:OCOM only applies when SENS:FUNC='RES'). It
+        # halves throughput because each reading is a paired I-on / I-off
+        # sample. Other modes ignore this flag.
         return cls(
             nplc=float(m.get('nplc', 1.0)),
             auto_zero=str(m.get('auto_zero', 'on')),
             filter_enabled=bool(m.get('filter_enabled', True)),
             filter_type=str(m.get('filter_type', 'repeat')),
             filter_count=int(m.get('filter_count', 10)),
+            offset_comp=bool(m.get('res_offset_comp', False)),
         )
 
     def max_rate_hz(self, line_frequency_hz: float = 60.0) -> float:
@@ -94,6 +112,7 @@ class TimingSettings:
             nplc=self.nplc, auto_zero=self.auto_zero,
             filter_enabled=self.filter_enabled, filter_type=self.filter_type,
             filter_count=self.filter_count, line_frequency_hz=line_frequency_hz,
+            offset_comp=self.offset_comp,
         )
 
 

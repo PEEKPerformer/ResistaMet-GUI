@@ -357,4 +357,38 @@ class TestBuildMetadata:
         )
 
         assert 'params' in meta
-        assert meta['params']['test_current_A'] == 0.001
+
+    def test_resistance_metadata_records_enhanced_mode(self):
+        """The offset_compensated_ohms field tells downstream readers
+        whether σ_R came from the Enhanced R-spec column or V/I
+        propagation. Materially affects how the σ should be interpreted.
+        """
+        # Enhanced ON.
+        meta_on = build_metadata(
+            user='u', sample_name='s', mode='resistance',
+            settings={'measurement': {'res_offset_comp': True}},
+        )
+        assert meta_on['params']['offset_compensated_ohms'] is True
+
+        # Enhanced OFF.
+        meta_off = build_metadata(
+            user='u', sample_name='s', mode='resistance',
+            settings={'measurement': {'res_offset_comp': False}},
+        )
+        assert meta_off['params']['offset_compensated_ohms'] is False
+
+        # Missing (older config): defaults to False so old CSVs aren't
+        # silently re-interpreted as Enhanced.
+        meta_missing = build_metadata(
+            user='u', sample_name='s', mode='resistance',
+            settings={'measurement': {}},
+        )
+        assert meta_missing['params']['offset_compensated_ohms'] is False
+        # Re-assert the value test_mode_specific_params used to check
+        # before this fence post — it sat as a dangling reference to a
+        # variable in the previous test method's scope.
+        meta_with_current = build_metadata(
+            user='u', sample_name='s', mode='resistance',
+            settings={'measurement': {'res_test_current': 0.001}},
+        )
+        assert meta_with_current['params']['test_current_A'] == 0.001

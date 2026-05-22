@@ -275,12 +275,19 @@ def build_metadata(
     # the configured mode makes the audit trail explicit instead of
     # reverse-engineered.
     if mode == 'resistance':
+        # offset_compensated_ohms records whether Enhanced-accuracy R
+        # mode was active (:SENS:RES:OCOM ON). Materially affects how
+        # downstream code should interpret σ_R: when True, accuracy.py
+        # served the datasheet's Enhanced R-spec column; when False, σ_R
+        # came from V/I propagation. The two are *not* directly
+        # comparable across measurements — record per-run for audit.
         meta['params'] = {
             'test_current_A': measurement_settings.get('res_test_current'),
             'voltage_compliance_V': measurement_settings.get('res_voltage_compliance'),
             'measurement_type': measurement_settings.get('res_measurement_type'),
             'auto_range': measurement_settings.get('res_auto_range'),
             'auto_zero': measurement_settings.get('auto_zero'),
+            'offset_compensated_ohms': bool(measurement_settings.get('res_offset_comp', False)),
         }
     elif mode == 'source_v':
         meta['params'] = {
