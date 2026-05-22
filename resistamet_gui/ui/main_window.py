@@ -20,7 +20,7 @@ from ..buffers import EnhancedDataBuffer
 from ..config import ConfigManager
 from ..constants import __version__
 from ..workers import MeasurementWorker, VdpMeasurementWorker
-from .canvas import MplCanvas, HistogramCanvas, IVCanvas, PgLiveCanvas
+from .canvas import HistogramCanvas, IVCanvas, PgLiveCanvas
 from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, VdpSampleDiagram, VdpProtocolFilmstrip, VdpPerGeometryBarChart, format_engineering
 from .dialogs import SettingsDialog, UserSelectionDialog
 

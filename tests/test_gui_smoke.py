@@ -242,7 +242,11 @@ class TestSettingsDialog:
         from resistamet_gui.ui.dialogs import SettingsDialog
         dialog = SettingsDialog(main_window.config_manager, "test_user", main_window)
         assert dialog.enable_plot is not None
-        assert dialog.plot_update_interval.value() > 0
+        # plot_update_interval / plot_figsize were removed from the dialog in
+        # v1.9.x — the refresh rate is hard-capped at ~60 fps in the timer
+        # setup and figsize never reached the canvas constructors.
+        assert not hasattr(dialog, 'plot_update_interval')
+        assert not hasattr(dialog, 'plot_width')
         assert dialog.buffer_size is not None
         dialog.close()
 

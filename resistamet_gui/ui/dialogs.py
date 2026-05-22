@@ -200,9 +200,10 @@ class SettingsDialog(QDialog):
         self.enable_plot.setToolTip("Enable or disable the real-time plot during measurement.\nDisabling can improve performance for high-speed sampling.")
         layout.addRow("Enable Real-time Plots:", self.enable_plot)
 
-        self.plot_update_interval = QSpinBox(minimum=50, maximum=5000, singleStep=50, suffix=" ms")
-        self.plot_update_interval.setToolTip("How often the plot redraws (milliseconds).\nLower = smoother but uses more CPU. Default: 200 ms.")
-        layout.addRow("Plot Update Interval:", self.plot_update_interval)
+        # Refresh rate is now hard-capped at ~60 fps in the timer setup
+        # (main_window: min(plot_update_interval, 16)). The old user-facing
+        # interval knob was theatrical under pyqtgraph; figsize likewise
+        # never reached the canvas constructors. Both removed here.
 
         self.plot_color_r = QComboBox(); self.plot_color_r.addItems(["red","blue","green","black","purple","orange","cyan","magenta"])
         self.plot_color_r.setToolTip("Line color for the Resistance mode plot.")
@@ -213,15 +214,6 @@ class SettingsDialog(QDialog):
         self.plot_color_i = QComboBox(); self.plot_color_i.addItems(["red","blue","green","black","purple","orange","cyan","magenta"])
         self.plot_color_i.setToolTip("Line color for the Current Source mode plot.")
         layout.addRow("I Source Plot Color:", self.plot_color_i)
-
-        self.plot_width = QDoubleSpinBox(decimals=1, minimum=4, maximum=20, singleStep=0.5)
-        self.plot_width.setToolTip("Plot width in inches (affects saved plot resolution).")
-        self.plot_height = QDoubleSpinBox(decimals=1, minimum=3, maximum=15, singleStep=0.5)
-        self.plot_height.setToolTip("Plot height in inches (affects saved plot resolution).")
-        size_layout = QHBoxLayout()
-        size_layout.addWidget(QLabel("Width:")); size_layout.addWidget(self.plot_width)
-        size_layout.addWidget(QLabel("Height:")); size_layout.addWidget(self.plot_height)
-        layout.addRow("Plot Figure Size (inches):", size_layout)
 
         self.buffer_size = QSpinBox(minimum=0, maximum=1000000, singleStep=100)
         self.buffer_size.setSpecialValueText("Unlimited")
@@ -344,12 +336,9 @@ class SettingsDialog(QDialog):
         self.res_offset_comp.setChecked(bool(m_cfg.get('res_offset_comp', False)))
         d_cfg = self.settings['display']
         self.enable_plot.setCurrentText("True" if d_cfg['enable_plot'] else "False")
-        self.plot_update_interval.setValue(d_cfg['plot_update_interval'])
         self.plot_color_r.setCurrentText(d_cfg['plot_color_r'])
         self.plot_color_v.setCurrentText(d_cfg['plot_color_v'])
         self.plot_color_i.setCurrentText(d_cfg['plot_color_i'])
-        self.plot_width.setValue(d_cfg['plot_figsize'][0])
-        self.plot_height.setValue(d_cfg['plot_figsize'][1])
         self.buffer_size.setValue(0 if not d_cfg['buffer_size'] else d_cfg['buffer_size'])
         f_cfg = self.settings['file']
         self.auto_save_interval.setValue(f_cfg['auto_save_interval'])
@@ -400,11 +389,9 @@ class SettingsDialog(QDialog):
         m_cfg['res_offset_comp'] = self.res_offset_comp.isChecked()
         d_cfg = self.settings['display']
         d_cfg['enable_plot'] = (self.enable_plot.currentText() == "True")
-        d_cfg['plot_update_interval'] = self.plot_update_interval.value()
         d_cfg['plot_color_r'] = self.plot_color_r.currentText()
         d_cfg['plot_color_v'] = self.plot_color_v.currentText()
         d_cfg['plot_color_i'] = self.plot_color_i.currentText()
-        d_cfg['plot_figsize'] = [self.plot_width.value(), self.plot_height.value()]
         self.settings['display']['buffer_size'] = self.buffer_size.value() if self.buffer_size.value() > 0 else None
         f_cfg = self.settings['file']
         f_cfg['auto_save_interval'] = self.auto_save_interval.value()
