@@ -178,17 +178,28 @@ def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] 
             per-polarity values V+, V-, R_f, R_r (F84 §11.2.2.2 diagnostic).
     """
     configs = {
+        # V_meas, I_meas, R_unc added 2026-05: raw V and I are pulled
+        # alongside R so downstream analysis can carry per-reading
+        # uncertainty (Σ propagated in quadrature from 2400 per-range V
+        # and I accuracy specs — see accuracy.resistance_uncertainty). R
+        # remains the instrument-reported ohms reading (not V/I computed
+        # here), so any ohms-mode features (offset compensation, source
+        # readback) are preserved in the R column.
         'resistance': (
-            ['elapsed_s', 'R_ohm', 'compliance', 'event'],
-            ['s', 'Ω', '', '']
+            ['elapsed_s', 'V_meas', 'I_meas', 'R_ohm', 'R_unc_ohm', 'compliance', 'event'],
+            ['s', 'V', 'A', 'Ω', 'Ω', '', '']
         ),
+        # I_unc is the 1-year measurement accuracy on the I reading; the
+        # sourced V is taken as known (source accuracy spec not yet tracked).
         'source_v': (
-            ['elapsed_s', 'V_set', 'I_meas', 'R_calc', 'compliance', 'event'],
-            ['s', 'V', 'A', 'Ω', '', '']
+            ['elapsed_s', 'V_set', 'I_meas', 'R_calc', 'I_unc_A', 'compliance', 'event'],
+            ['s', 'V', 'A', 'Ω', 'A', '', '']
         ),
+        # V_unc is the 1-year measurement accuracy on the V reading; the
+        # sourced I is taken as known.
         'source_i': (
-            ['elapsed_s', 'V_meas', 'I_set', 'R_calc', 'compliance', 'event'],
-            ['s', 'V', 'A', 'Ω', '', '']
+            ['elapsed_s', 'V_meas', 'I_set', 'R_calc', 'V_unc_V', 'compliance', 'event'],
+            ['s', 'V', 'A', 'Ω', 'V', '', '']
         ),
         'four_point': (
             ['elapsed_s', 'V', 'I', 'V_over_I', 'Rs_ohm_sq', 'rho_ohm_cm', 'sigma_S_cm', 'compliance', 'event'],

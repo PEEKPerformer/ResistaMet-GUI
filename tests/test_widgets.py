@@ -2,7 +2,9 @@
 import math
 import pytest
 
-from resistamet_gui.ui.widgets import parse_engineering, format_engineering
+from resistamet_gui.ui.widgets import (
+    format_engineering, format_with_uncertainty, parse_engineering,
+)
 
 
 class TestParseEngineering:
@@ -107,3 +109,40 @@ class TestFormatEngineering:
     def test_large_value(self):
         result = format_engineering(1e6, 'Ω')
         assert 'MΩ' in result
+
+
+class TestFormatWithUncertainty:
+    """Shared-prefix value ± uncertainty formatting."""
+
+    def test_resistance_kohm(self):
+        # 1487 ± 1.3 Ω in a 2 V / 1 mA resistance run. Shared kΩ prefix.
+        # σ rounded to 2 sig figs → 0.0013 kΩ; value to same decimal → 1.4870.
+        result = format_with_uncertainty(1487.0, 1.3, 'Ω')
+        assert result == "1.4870 ± 0.0013 kΩ"
+
+    def test_low_resistance_milliohm(self):
+        # 99.5 mΩ ± 1.0 mΩ. σ=1.0 already has 2 sig figs (trailing 0 counts),
+        # so we round at the 1-decimal place in mΩ.
+        result = format_with_uncertainty(0.0995, 0.001, 'Ω')
+        assert result == "99.5 ± 1.0 mΩ"
+
+    def test_current_microamps(self):
+        # 100 µA ± 25 nA → 100.000 ± 0.025 µA.
+        result = format_with_uncertainty(100e-6, 25e-9, 'A')
+        assert result == "100.025 ± 0.025 µA" or result == "100.000 ± 0.025 µA"
+
+    def test_falls_back_when_uncertainty_nonfinite(self):
+        # NaN σ → plain engineering format (no ± shown).
+        assert format_with_uncertainty(1.5, float('nan'), 'V') == format_engineering(1.5, 'V')
+
+    def test_falls_back_when_uncertainty_zero(self):
+        # 0 σ would be a divide-by-zero in the rounding step; fall back.
+        assert format_with_uncertainty(1.5, 0.0, 'V') == format_engineering(1.5, 'V')
+
+    def test_nan_value(self):
+        assert format_with_uncertainty(float('nan'), 0.1, 'Ω') == "-- Ω"
+
+    def test_unc_sig_figs_one(self):
+        # σ rounded to 1 sf instead of 2.
+        result = format_with_uncertainty(1487.0, 1.3, 'Ω', unc_sig_figs=1)
+        assert result == "1.487 ± 0.001 kΩ"

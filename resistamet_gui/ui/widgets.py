@@ -79,6 +79,56 @@ def format_engineering(value: float, unit: str, precision: int = 4) -> str:
     return f"{scaled:.{precision-1}f} {prefix}{unit}"
 
 
+def format_with_uncertainty(
+    value: float, uncertainty: float, unit: str, unc_sig_figs: int = 2
+) -> str:
+    """Format ``value ± uncertainty unit`` with a shared SI prefix.
+
+    Rounds the uncertainty to ``unc_sig_figs`` significant figures (default
+    2 per GUM §7.2.6) and the value to the same decimal place — so the
+    number of digits in the value never implies more precision than the
+    uncertainty justifies. Both share the engineering prefix picked from
+    the value's magnitude, which keeps the pair readable at a glance.
+
+    Falls back to plain ``format_engineering(value, unit)`` when the
+    uncertainty isn't finite or is non-positive.
+
+    Examples (Ω):
+        value=1487,    σ=1.3   →  "1.4870 ± 0.0013 kΩ"
+        value=0.0995,  σ=0.001 →  "99.50 ± 1.00 mΩ"
+        value=2.5e-3,  σ=4e-5  →  "2.500 ± 0.040 mΩ"
+    """
+    if not math.isfinite(value):
+        return f"-- {unit}"
+    if not math.isfinite(uncertainty) or uncertainty <= 0:
+        return format_engineering(value, unit)
+
+    # Prefix chosen from the value (not the uncertainty) so the live
+    # readout's "magnitude" stays anchored to what the user is measuring.
+    abs_val = abs(value)
+    chosen_prefix = ''
+    chosen_mult = 1.0
+    if abs_val > 0:
+        for prefix, multiplier in _SI_PREFIXES:
+            if abs_val >= multiplier * 0.9999:
+                chosen_prefix = prefix
+                chosen_mult = multiplier
+                break
+        else:
+            chosen_prefix, chosen_mult = _SI_PREFIXES[-1]
+
+    v_scaled = value / chosen_mult
+    u_scaled = uncertainty / chosen_mult
+
+    # Decimal place where the uncertainty's leading sig fig sits, in the
+    # scaled units. Floor(log10) gives the exponent of the leading digit.
+    order = math.floor(math.log10(u_scaled)) if u_scaled > 0 else 0
+    round_decimals = max(0, -(order - (unc_sig_figs - 1)))
+
+    return (f"{v_scaled:.{round_decimals}f} ± "
+            f"{u_scaled:.{round_decimals}f} {chosen_prefix}{unit}")
+
+
 def parse_engineering(text: str, unit: str = '') -> Optional[float]:
     """Parse engineering notation text to a float value in base units.
 

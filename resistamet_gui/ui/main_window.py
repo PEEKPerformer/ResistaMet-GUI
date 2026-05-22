@@ -21,7 +21,7 @@ from ..config import ConfigManager
 from ..constants import __version__
 from ..workers import MeasurementWorker, VdpMeasurementWorker
 from .canvas import HistogramCanvas, IVCanvas, PgLiveCanvas
-from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, VdpSampleDiagram, VdpProtocolFilmstrip, VdpPerGeometryBarChart, format_engineering
+from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, VdpSampleDiagram, VdpProtocolFilmstrip, VdpPerGeometryBarChart, format_engineering, format_with_uncertainty
 from .dialogs import SettingsDialog, UserSelectionDialog
 
 
@@ -2087,7 +2087,11 @@ class ResistanceMeterApp(QMainWindow):
         if not self.measurement_running or self.active_mode is None:
             return
         buffer = self.data_buffers[self.active_mode]
-        if 'resistance' in value and ('voltage' not in value and 'current' not in value):
+        # Route by mode rather than by dict shape: resistance mode now also
+        # emits V and I (for uncertainty propagation), but the buffer needs
+        # the instrument-reported, cable-null-corrected R — not V/I, which
+        # add_voltage_current would compute and which would skip the null.
+        if self.active_mode == 'resistance':
             buffer.add_resistance(timestamp, value.get('resistance', float('nan')), compliance_status)
         else:
             buffer.add_voltage_current(timestamp, value.get('voltage', float('nan')), value.get('current', float('nan')), compliance_status)
@@ -2098,10 +2102,17 @@ class ResistanceMeterApp(QMainWindow):
         if widget and hasattr(widget, 'live_readout'):
             if self.active_mode == 'resistance':
                 r = value.get('resistance', float('nan'))
+                r_unc = value.get('resistance_unc', float('nan'))
                 if np.isfinite(r):
-                    parts = [format_engineering(r, '\u03a9')]
-                    # In resistance mode the worker doesn't emit V/I, but we know
-                    # the configured test current \u2014 compute P = I^2 * R.
+                    # Show R with \u00b1 when we have a finite uncertainty from
+                    # the worker (accuracy.py). Falls back to plain
+                    # format_engineering for very-low-R cases where \u03c3
+                    # blows up beyond meaningful display.
+                    if np.isfinite(r_unc) and r_unc > 0:
+                        parts = [format_with_uncertainty(r, r_unc, '\u03a9')]
+                    else:
+                        parts = [format_engineering(r, '\u03a9')]
+                    # Power from the configured test current, P = I\u00b2 * R.
                     try:
                         i_test = float(widget.res_test_current.value())
                     except Exception:
@@ -2114,11 +2125,19 @@ class ResistanceMeterApp(QMainWindow):
             elif self.active_mode in ('source_v', 'source_i'):
                 v = value.get('voltage', float('nan'))
                 i = value.get('current', float('nan'))
+                v_unc = value.get('voltage_unc', float('nan'))
+                i_unc = value.get('current_unc', float('nan'))
                 parts = []
                 if np.isfinite(v):
-                    parts.append(f"V: {format_engineering(v, 'V')}")
+                    if np.isfinite(v_unc) and v_unc > 0:
+                        parts.append(f"V: {format_with_uncertainty(v, v_unc, 'V')}")
+                    else:
+                        parts.append(f"V: {format_engineering(v, 'V')}")
                 if np.isfinite(i):
-                    parts.append(f"I: {format_engineering(i, 'A')}")
+                    if np.isfinite(i_unc) and i_unc > 0:
+                        parts.append(f"I: {format_with_uncertainty(i, i_unc, 'A')}")
+                    else:
+                        parts.append(f"I: {format_engineering(i, 'A')}")
                 if np.isfinite(v) and np.isfinite(i) and i != 0:
                     ohm = '\u03a9'
                     parts.append(f"R: {format_engineering(v/i, ohm)}")

@@ -22,6 +22,9 @@ from .constants import (
 # Keithley 2400 series STATUS word bit masks (24-bit)
 # Bit 3: Compliance — source is in real compliance
 _STAT_BIT_COMPLIANCE = 1 << 3
+from .accuracy import (
+    current_uncertainty, resistance_uncertainty, voltage_uncertainty,
+)
 from .data_export import build_metadata, get_column_config, make_exporter
 from .instrument import Keithley2400, humanize_connection_error
 from .system_utils import SleepInhibitor
@@ -137,6 +140,10 @@ class MeasurementWorker(QThread):
                 # Identify model and surface its limits — informational only;
                 # the instrument enforces its own ranges via SCPI errors.
                 self._model_spec = self.keithley.detect_model()
+                # Short model string ("2400", "2410", ...) for accuracy.py
+                # lookups. Falls back to "2400" if IDN parsing failed; that's
+                # the most conservative baseline.
+                self._model_name = self._model_spec.model if self._model_spec else "2400"
                 if self._model_spec is not None:
                     spec = self._model_spec
                     self.status_update.emit(
@@ -203,9 +210,13 @@ class MeasurementWorker(QThread):
                         self.keithley.write(":SENS:RES:OCOM ON")
                     # Cable null: software subtraction (2400 series lacks :SENS:RES:REL)
                     self._cable_null = float(measurement_settings.get('res_cable_null', 0.0))
-                    # Include STAT for hardware compliance detection (bit 3)
-                    # Fixed element order: RES, STAT
-                    self.keithley.write(":FORM:ELEM RES,STAT")
+                    # Pull raw V and I alongside R so accuracy.py can propagate
+                    # the per-range V and I uncertainties into σ_R. The 2400's
+                    # ohms function senses V and I internally regardless of
+                    # FORM:ELEM, so listing VOLT,CURR,RES,STAT just enables
+                    # them to be returned. Fixed-order output: VOLT, CURR,
+                    # RES, TIME, STAT (regardless of argument order).
+                    self.keithley.write(":FORM:ELEM VOLT,CURR,RES,STAT")
 
                     metadata = {
                         'Mode': 'Resistance Measurement',
@@ -214,7 +225,7 @@ class MeasurementWorker(QThread):
                         'Measurement Type': measurement_type,
                         'Resistance Auto Range': 'ON' if auto_range else 'OFF',
                     }
-                    csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Resistance (Ohms)', 'Compliance Status', 'Event']
+                    csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Voltage (V)', 'Current (A)', 'Resistance (Ohms)', 'Compliance Status', 'Event']
                     source_value_str = f"{test_current*1000:.2f}mA"
 
                 elif self.mode == 'source_v':
@@ -646,21 +657,32 @@ class MeasurementWorker(QThread):
                     hw_compliance = bool(stat_word & _STAT_BIT_COMPLIANCE)
 
                     if self.mode == 'resistance':
+                        # Fixed-order output: VOLT, CURR, RES, [TIME], STAT.
+                        # We requested VOLT,CURR,RES,STAT so parts is V, I, R, STAT.
                         try:
-                            value = float(parts[0])
+                            voltage = float(parts[0])
+                            current = float(parts[1]) if len(parts) > 1 else float('nan')
+                            value = float(parts[2]) if len(parts) > 2 else float('nan')
                         except Exception:
-                            value = float('nan')
+                            voltage = float('nan'); current = float('nan'); value = float('nan')
                         compliance_type = 'Voltage'
                         if hw_compliance:
                             compliance_status = 'V_COMP'
                         if not np.isfinite(value):
                             value = float('nan')
                             self.status_update.emit(f"Invalid value detected ({reading_str})")
-                        # Apply software cable null if set
+                        # Apply software cable null if set (R only — V and I
+                        # are reported as-measured by the instrument).
                         cable_null = getattr(self, '_cable_null', 0.0)
                         if cable_null != 0.0 and np.isfinite(value):
                             value -= cable_null
-                        data_dict = {'resistance': value}
+                        sigma_r = resistance_uncertainty(
+                            voltage, current, model=self._model_name, nplc=nplc,
+                        )
+                        data_dict = {
+                            'voltage': voltage, 'current': current, 'resistance': value,
+                            'resistance_unc': sigma_r,
+                        }
                     elif self.mode == 'source_v':
                         # Keithley 2400 series returns elements in fixed order:
                         # VOLT, CURR, STAT
@@ -673,7 +695,14 @@ class MeasurementWorker(QThread):
                         comp_limit_i = measurement_settings.get('vsource_current_compliance')
                         if hw_compliance or (np.isfinite(current) and abs(current) >= comp_limit_i * 0.99):
                             compliance_status = 'I_COMP'
-                        data_dict = {'current': current, 'voltage': voltage}
+                        # We source V (known to source-accuracy spec, which
+                        # we don't track yet) and measure I — so the
+                        # measurement uncertainty we report is σ_I.
+                        sigma_i = current_uncertainty(current, model=self._model_name, nplc=nplc)
+                        data_dict = {
+                            'current': current, 'voltage': voltage,
+                            'current_unc': sigma_i,
+                        }
                     elif self.mode == 'source_i':
                         try:
                             voltage = float(parts[0])
@@ -684,7 +713,11 @@ class MeasurementWorker(QThread):
                         comp_limit_v = measurement_settings.get('isource_voltage_compliance')
                         if hw_compliance or (np.isfinite(voltage) and abs(voltage) >= comp_limit_v * 0.99):
                             compliance_status = 'V_COMP'
-                        data_dict = {'voltage': voltage, 'current': current}
+                        sigma_v = voltage_uncertainty(voltage, model=self._model_name, nplc=nplc)
+                        data_dict = {
+                            'voltage': voltage, 'current': current,
+                            'voltage_unc': sigma_v,
+                        }
                     elif self.mode == 'four_point':
                         try:
                             voltage = float(parts[0])
@@ -750,8 +783,11 @@ class MeasurementWorker(QThread):
 
                     # Build row data with raw values (exporter handles formatting)
                     if self.mode == 'resistance':
+                        v = data_dict.get('voltage', float('nan'))
+                        i = data_dict.get('current', float('nan'))
                         r = data_dict.get('resistance', float('nan'))
-                        row_data = [elapsed_time, r, compliance_status, event_marker]
+                        r_unc = data_dict.get('resistance_unc', float('nan'))
+                        row_data = [elapsed_time, v, i, r, r_unc, compliance_status, event_marker]
                     elif self.mode == 'four_point':
                         v = data_dict.get('voltage', float('nan'))
                         i = data_dict.get('current', float('nan'))
@@ -865,9 +901,11 @@ class MeasurementWorker(QThread):
                         i = data_dict.get('current', float('nan'))
                         r = (v / i) if (np.isfinite(v) and np.isfinite(i) and i != 0) else float('nan')
                         if self.mode == 'source_v':
-                            row_data = [elapsed_time, v, i, r, compliance_status, event_marker]
+                            i_unc = data_dict.get('current_unc', float('nan'))
+                            row_data = [elapsed_time, v, i, r, i_unc, compliance_status, event_marker]
                         else:
-                            row_data = [elapsed_time, v, i, r, compliance_status, event_marker]
+                            v_unc = data_dict.get('voltage_unc', float('nan'))
+                            row_data = [elapsed_time, v, i, r, v_unc, compliance_status, event_marker]
 
                     # Write to exporter (handles both JSON and CSV)
                     try:
