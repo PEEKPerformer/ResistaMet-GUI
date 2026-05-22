@@ -2729,23 +2729,74 @@ class ResistanceMeterApp(QMainWindow):
         self.log_status(message, color=color)
         self.statusBar().showMessage(message, 3000)
 
+    def _get_active_canvas_for_save(self):
+        """Resolve the canvas on the current tab and how to export it.
+
+        Returns (canvas, kind) where kind is 'pg' for PgLiveCanvas
+        (pyqtgraph) or 'mpl' for matplotlib-backed canvases
+        (HistogramCanvas, IVCanvas). Returns None when the active tab has
+        no plottable canvas — e.g. the vdP tab, which renders its results
+        as a table/bar chart rather than a single saveable figure.
+        """
+        from .canvas import PgLiveCanvas
+        tab = self.main_tabs.currentWidget()
+        if tab is None:
+            return None
+        # I-V sweep tab: matplotlib IVCanvas. Prefer the explicit attr over
+        # the 'canvas' alias so the kind classification stays unambiguous.
+        if getattr(tab, 'iv_canvas', None) is not None:
+            return tab.iv_canvas, 'mpl'
+        # 4PP tab: matplotlib HistogramCanvas in the right panel.
+        if getattr(tab, 'fpp_histogram', None) is not None:
+            return tab.fpp_histogram, 'mpl'
+        # Sensor tabs: PgLiveCanvas. vdP also has a 'canvas' attribute but
+        # it's None, so the isinstance/truthiness check filters it out.
+        canvas = getattr(tab, 'canvas', None)
+        if canvas is None:
+            return None
+        if isinstance(canvas, PgLiveCanvas):
+            return canvas, 'pg'
+        return canvas, 'mpl'
+
     def save_active_plot(self):
-        current_tab_widget = self.main_tabs.currentWidget()
-        if not hasattr(current_tab_widget, 'canvas'):
-            QMessageBox.warning(self, "Save Error", "Could not find plot canvas on the current tab.")
+        found = self._get_active_canvas_for_save()
+        if found is None:
+            QMessageBox.warning(self, "Save Error", "No plot to save on the current tab.")
             return
-        mode = getattr(current_tab_widget, 'mode', 'unknown')
-        sample_name = self.sample_input.text().strip().replace(' ','_') or "plot"
+        canvas, kind = found
+        mode = getattr(self.main_tabs.currentWidget(), 'mode', 'unknown')
+        sample_name = self.sample_input.text().strip().replace(' ', '_') or "plot"
         timestamp = int(time.time())
         suggested = f"{timestamp}_{sample_name}_{mode}.png"
         default_dir = self.user_settings['file']['data_directory'] if self.user_settings else "."
-        filename, _ = QFileDialog.getSaveFileName(self, "Save Plot", f"{default_dir}/{suggested}", "PNG Files (*.png);;PDF Files (*.pdf);;JPEG Files (*.jpg);;All Files (*)")
-        if filename:
-            try:
-                current_tab_widget.canvas.fig.savefig(filename, dpi=300)
-                self.log_status(f"Plot saved to: {filename}", color="blue")
-            except Exception as e:
-                QMessageBox.critical(self, "Save Error", f"Failed to save plot: {str(e)}"); self.log_status(f"Error saving plot: {str(e)}", color="red")
+        # pyqtgraph can't write PDFs, so the filter set adapts to the canvas.
+        if kind == 'pg':
+            filters = "PNG Files (*.png);;SVG Files (*.svg);;JPEG Files (*.jpg);;All Files (*)"
+        else:
+            filters = "PNG Files (*.png);;PDF Files (*.pdf);;SVG Files (*.svg);;JPEG Files (*.jpg);;All Files (*)"
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save Plot", f"{default_dir}/{suggested}", filters,
+        )
+        if not filename:
+            return
+        try:
+            if kind == 'pg':
+                # pyqtgraph exporters operate on a PlotItem, not the QWidget
+                # wrapper. SVG goes through the vector exporter; everything
+                # else through the raster image exporter (PNG/JPG/etc).
+                plot_item = canvas.plot_widget.plotItem
+                if filename.lower().endswith('.svg'):
+                    from pyqtgraph.exporters import SVGExporter
+                    SVGExporter(plot_item).export(filename)
+                else:
+                    from pyqtgraph.exporters import ImageExporter
+                    ImageExporter(plot_item).export(filename)
+            else:
+                canvas.fig.savefig(filename, dpi=300)
+            self.log_status(f"Plot saved to: {filename}", color="blue")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save plot: {e}")
+            self.log_status(f"Error saving plot: {e}", color="red")
 
     def prompt_gpib_selection(self, current_addr: str):
         try:
