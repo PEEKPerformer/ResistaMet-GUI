@@ -17,12 +17,12 @@ from pathlib import Path
 
 import pytest
 
-# Skip if PyQt5 missing
-pytest.importorskip("PyQt5")
+# Skip if PySide6 missing
+pytest.importorskip("PySide6")
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication
 
 from resistamet_gui.workers import MeasurementWorker
 

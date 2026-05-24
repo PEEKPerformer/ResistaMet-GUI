@@ -1,27 +1,29 @@
 import logging
 import time
+from collections import deque
 from datetime import datetime
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 import numpy as np
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import (
-    QAction, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QScrollArea, QShortcut,
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (
+    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QScrollArea,
     QTextEdit, QTabWidget, QVBoxLayout, QWidget, QFileDialog, QSplitter, QTableWidget, QTableWidgetItem,
     QDialog, QSpinBox, QSizePolicy, QInputDialog
 )
-from PyQt5.QtGui import QIcon, QFont, QBrush, QColor
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+# Qt6 moved QAction and QShortcut from QtWidgets to QtGui.
+from PySide6.QtGui import QAction, QBrush, QColor, QFont, QIcon, QShortcut
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 
 from ..buffers import EnhancedDataBuffer
 from ..config import ConfigManager
 from ..constants import __version__
 from ..workers import MeasurementWorker, VdpMeasurementWorker
 from .canvas import HistogramCanvas, IVCanvas, PgLiveCanvas
-from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, VdpSampleDiagram, VdpProtocolFilmstrip, VdpPerGeometryBarChart, format_engineering, format_with_uncertainty, precision_for_nplc
+from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, VdpSampleDiagram, VdpProtocolFilmstrip, VdpPerGeometryBarChart, format_engineering, format_readout_html, format_with_uncertainty, precision_for_nplc
 from .dialogs import SettingsDialog, UserSelectionDialog
 
 
@@ -39,6 +41,16 @@ class ResistanceMeterApp(QMainWindow):
         self.measurement_worker = None
         self.plot_timer = QTimer(self)
         self.plot_timer.timeout.connect(self.update_active_plot)
+        # Live-readout smoothing: full-rate data still flows to the plot and
+        # CSV, but the *text* readout updates at 4 Hz over a ~500ms rolling
+        # mean so noisy traces don't make the digits unreadable. Buffer
+        # maxlen is rescaled to the active sampling rate in _start_measurement
+        # (5 samples at 10 Hz, 50 at 100 Hz, etc.).
+        self._readout_buffer: deque = deque(maxlen=5)
+        self._readout_latest_is_bd: bool = False
+        self._readout_timer = QTimer(self)
+        self._readout_timer.setInterval(250)  # 4 Hz
+        self._readout_timer.timeout.connect(self._refresh_smoothed_readout)
         self.current_user = None
         self.user_settings = None
         self.measurement_running = False
@@ -157,12 +169,37 @@ class ResistanceMeterApp(QMainWindow):
         h.addWidget(w2, 1)
         return label1 + ":", container
 
+    # HTML divider between readout chunks. Same visual weight as the Min/Max/Avg
+    # row dividers above, so the strip reads as a row of grouped fields rather
+    # than a wall of run-on text.
+    _READOUT_DIVIDER = (
+        '<span style="color:#ccc; font-weight:normal;">'
+        '&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;'
+        '</span>'
+    )
+
     @staticmethod
     def _build_live_readout(font_pt: int = 28) -> QLabel:
-        """Big centered measurement readout used at the top of each tab."""
+        """Big centered measurement readout used at the top of each tab.
+
+        RichText so the per-channel update path can color the V/I/R/P labels
+        and dim the ± σ portion. Plain text strings still render correctly.
+        Tabular-figures OpenType feature is enabled so individual digits
+        occupy the same column width — keeps the strip from shimmering
+        left/right when the value's digit count changes between updates.
+        """
         live = QLabel("--")
         live.setAlignment(Qt.AlignCenter)
+        live.setTextFormat(Qt.RichText)
         f = QFont(); f.setPointSize(font_pt); f.setBold(True)
+        # Qt 6.5+: QFont.setFeature(Tag, value) enables OpenType features.
+        # tnum = tabular figures. Wrapped in try/except because older Qt
+        # builds (< 6.5) lack the Tag API; absence just means proportional
+        # digits, which is the pre-existing behavior.
+        try:
+            f.setFeature(QFont.Tag("tnum"), 1)
+        except (AttributeError, TypeError):
+            pass
         live.setFont(f)
         live.setStyleSheet(
             "color: #222; background: #f0f0f0; border: 1px solid #ccc; "
@@ -1728,7 +1765,7 @@ class ResistanceMeterApp(QMainWindow):
             QMessageBox.warning(self, "Action Denied", "Cannot change user while a measurement is running.")
             return
         dialog = UserSelectionDialog(self.config_manager, self)
-        if dialog.exec_():
+        if dialog.exec():
             username = dialog.selected_user
             if username:
                 self.current_user = username
@@ -1841,7 +1878,7 @@ class ResistanceMeterApp(QMainWindow):
             QMessageBox.warning(self, "Action Denied", "Cannot change settings while a measurement is running.")
             return
         dialog = SettingsDialog(self.config_manager, self.current_user, self)
-        if dialog.exec_():
+        if dialog.exec():
             self.log_status(f"User settings for {self.current_user} updated.")
             self.user_settings = self.config_manager.get_user_settings(self.current_user)
             self.update_ui_from_settings()
@@ -1851,7 +1888,7 @@ class ResistanceMeterApp(QMainWindow):
             QMessageBox.warning(self, "Action Denied", "Cannot change settings while a measurement is running.")
             return
         dialog = SettingsDialog(self.config_manager, parent=self)
-        if dialog.exec_():
+        if dialog.exec():
             self.log_status("Global settings updated.")
             if self.current_user:
                 self.user_settings = self.config_manager.get_user_settings(self.current_user)
@@ -2031,7 +2068,7 @@ class ResistanceMeterApp(QMainWindow):
         box.setStandardButtons(QMessageBox.Ok)
         dont_show = QCheckBox("Don't show this again for this profile")
         box.setCheckBox(dont_show)
-        box.exec_()
+        box.exec()
         if dont_show.isChecked():
             m['safety_voltage_warn_silenced'] = True
             try:
@@ -2152,6 +2189,17 @@ class ResistanceMeterApp(QMainWindow):
             self.plot_timer.start(update_interval)
         else:
             self.log_status("Plotting disabled in settings.")
+        # Size the readout-smoothing buffer for a ~500ms rolling mean at the
+        # active sampling rate. Floor of 5 keeps a usable smoothing window
+        # even when sampling is slow.
+        try:
+            rate = float(current_settings['measurement'].get('sampling_rate', 10.0))
+        except (TypeError, ValueError):
+            rate = 10.0
+        maxlen = max(5, int(round(0.5 * rate)))
+        self._readout_buffer = deque(maxlen=maxlen)
+        self._readout_latest_is_bd = False
+        self._readout_timer.start()
 
     def stop_current_measurement(self):
         if self.measurement_worker and self.measurement_running:
@@ -2168,6 +2216,8 @@ class ResistanceMeterApp(QMainWindow):
                     widget.pause_button.setEnabled(False)
             self.shortcut_mark.setEnabled(False)
             self.plot_timer.stop()
+            self._readout_timer.stop()
+            self._refresh_smoothed_readout()
             self.measurement_worker.stop_measurement()
         else:
             self.log_status("No measurement currently running.")
@@ -2214,69 +2264,12 @@ class ResistanceMeterApp(QMainWindow):
         else:
             buffer.add_voltage_current(timestamp, value.get('voltage', float('nan')), value.get('current', float('nan')), compliance_status)
 
-        # Update live readout with engineering notation
-        widget = self.get_widget_for_mode(self.active_mode)
+        # Buffer the reading for the throttled/smoothed readout (rendered at
+        # 4 Hz by _refresh_smoothed_readout). The plot, CSV, and stats below
+        # still see every full-rate sample.
         is_bd = (compliance_status != 'OK')
-        if widget and hasattr(widget, 'live_readout'):
-            # NPLC for sig-fig fallback (when \u03c3 isn't available). The three
-            # sensor-mode tabs share the global NPLC from user_settings \u2014
-            # they don't have a per-tab spinbox like 4PP/vdP do.
-            try:
-                fallback_nplc = float(self.user_settings['measurement'].get('nplc', 1.0))
-            except (TypeError, KeyError):
-                fallback_nplc = 1.0
-            fallback_precision = precision_for_nplc(fallback_nplc)
-
-            if self.active_mode == 'resistance':
-                r = value.get('resistance', float('nan'))
-                r_unc = value.get('resistance_unc', float('nan'))
-                if np.isfinite(r):
-                    # Show R with \u00b1 when we have a finite uncertainty from
-                    # the worker (accuracy.py). Falls back to NPLC-aware
-                    # plain format for very-low-R cases where \u03c3 blows up.
-                    if np.isfinite(r_unc) and r_unc > 0:
-                        parts = [format_with_uncertainty(r, r_unc, '\u03a9')]
-                    else:
-                        parts = [format_engineering(r, '\u03a9', precision=fallback_precision)]
-                    # Power from the configured test current, P = I\u00b2 * R.
-                    try:
-                        i_test = float(widget.res_test_current.value())
-                    except Exception:
-                        i_test = float('nan')
-                    if np.isfinite(i_test) and i_test != 0:
-                        parts.append(f"P: {format_engineering(abs(i_test * i_test * r), 'W', precision=fallback_precision)}")
-                    widget.live_readout.setText("   ".join(parts))
-                else:
-                    widget.live_readout.setText("-- \u03a9")
-            elif self.active_mode in ('source_v', 'source_i'):
-                v = value.get('voltage', float('nan'))
-                i = value.get('current', float('nan'))
-                v_unc = value.get('voltage_unc', float('nan'))
-                i_unc = value.get('current_unc', float('nan'))
-                r_unc = value.get('resistance_unc', float('nan'))
-                parts = []
-                if np.isfinite(v):
-                    if np.isfinite(v_unc) and v_unc > 0:
-                        parts.append(f"V: {format_with_uncertainty(v, v_unc, 'V')}")
-                    else:
-                        parts.append(f"V: {format_engineering(v, 'V', precision=fallback_precision)}")
-                if np.isfinite(i):
-                    if np.isfinite(i_unc) and i_unc > 0:
-                        parts.append(f"I: {format_with_uncertainty(i, i_unc, 'A')}")
-                    else:
-                        parts.append(f"I: {format_engineering(i, 'A', precision=fallback_precision)}")
-                if np.isfinite(v) and np.isfinite(i) and i != 0:
-                    ohm = '\u03a9'
-                    r_val = v / i
-                    if np.isfinite(r_unc) and r_unc > 0:
-                        parts.append(f"R: {format_with_uncertainty(r_val, r_unc, ohm)}")
-                    else:
-                        parts.append(f"R: {format_engineering(r_val, ohm, precision=fallback_precision)}")
-                if np.isfinite(v) and np.isfinite(i):
-                    parts.append(f"P: {format_engineering(abs(v * i), 'W')}")
-                widget.live_readout.setText("   ".join(parts) if parts else "--")
-            elif self.active_mode == 'four_point':
-                self._update_fpp_live_readout(widget, value, is_bd)
+        self._readout_buffer.append(value)
+        self._readout_latest_is_bd = is_bd
 
         # Append a row to 4PP table and update stats live
         if self.active_mode == 'four_point':
@@ -2314,6 +2307,91 @@ class ResistanceMeterApp(QMainWindow):
             w._fpp_rows.append(row)
             self._append_four_point_row(row)
             self._update_four_point_stats()
+
+    def _refresh_smoothed_readout(self):
+        """4 Hz tick: render the live readout from the rolling-mean buffer.
+
+        Update-rate decoupling: data_point fires at the worker's sampling rate
+        (often 10–100 Hz). At those rates the rightmost digits of the readout
+        flicker faster than the eye can lock — especially with noisy DUTs.
+        We average the buffered samples (~500ms window, sized when the run
+        starts) and only repaint the text at 4 Hz. The plot still draws full
+        rate, so fast transients remain visible there.
+        """
+        if not self._readout_buffer or self.active_mode is None:
+            return
+        widget = self.get_widget_for_mode(self.active_mode)
+        if not widget or not hasattr(widget, 'live_readout'):
+            return
+        # Per-key arithmetic mean across the buffered dicts. Skip non-finite
+        # entries so a single bad sample doesn't poison the mean.
+        smoothed: Dict[str, float] = {}
+        keys = set()
+        for d in self._readout_buffer:
+            keys.update(d.keys())
+        for k in keys:
+            vals = [d.get(k, float('nan')) for d in self._readout_buffer]
+            finite = [x for x in vals if isinstance(x, (int, float)) and np.isfinite(x)]
+            smoothed[k] = float(np.mean(finite)) if finite else float('nan')
+        self._apply_readout(widget, smoothed, self._readout_latest_is_bd)
+
+    def _apply_readout(self, widget, value: Dict[str, float], is_bd: bool):
+        """Render the live readout strip for one (already-smoothed) sample.
+
+        Pulled out of update_data so the same render path serves both the
+        per-sample push (direct call) and the 4 Hz smoothing timer
+        (rolling-mean push). Routes to the 4PP-specific renderer when
+        appropriate; otherwise composes a colored V/I/R/P chunk row.
+        """
+        # NPLC for sig-fig fallback (when σ isn't available). The three
+        # sensor-mode tabs share the global NPLC from user_settings —
+        # they don't have a per-tab spinbox like 4PP/vdP do.
+        try:
+            fallback_nplc = float(self.user_settings['measurement'].get('nplc', 1.0))
+        except (TypeError, KeyError):
+            fallback_nplc = 1.0
+        fp = precision_for_nplc(fallback_nplc)
+
+        if self.active_mode == 'resistance':
+            r = value.get('resistance', float('nan'))
+            r_unc = value.get('resistance_unc', float('nan'))
+            if np.isfinite(r):
+                parts = [format_readout_html(
+                    'R', r, r_unc, 'Ω', fallback_precision=fp)]
+                try:
+                    i_test = float(widget.res_test_current.value())
+                except Exception:
+                    i_test = float('nan')
+                if np.isfinite(i_test) and i_test != 0:
+                    parts.append(format_readout_html(
+                        'P', abs(i_test * i_test * r), float('nan'), 'W',
+                        fallback_precision=fp))
+                widget.live_readout.setText(self._READOUT_DIVIDER.join(parts))
+            else:
+                widget.live_readout.setText("-- Ω")
+        elif self.active_mode in ('source_v', 'source_i'):
+            v = value.get('voltage', float('nan'))
+            i = value.get('current', float('nan'))
+            v_unc = value.get('voltage_unc', float('nan'))
+            i_unc = value.get('current_unc', float('nan'))
+            r_unc = value.get('resistance_unc', float('nan'))
+            parts = []
+            if np.isfinite(v):
+                parts.append(format_readout_html(
+                    'V', v, v_unc, 'V', fallback_precision=fp))
+            if np.isfinite(i):
+                parts.append(format_readout_html(
+                    'I', i, i_unc, 'A', fallback_precision=fp))
+            if np.isfinite(v) and np.isfinite(i) and i != 0:
+                parts.append(format_readout_html(
+                    'R', v / i, r_unc, 'Ω', fallback_precision=fp))
+            if np.isfinite(v) and np.isfinite(i):
+                parts.append(format_readout_html(
+                    'P', abs(v * i), float('nan'), 'W', fallback_precision=fp))
+            widget.live_readout.setText(
+                self._READOUT_DIVIDER.join(parts) if parts else "--")
+        elif self.active_mode == 'four_point':
+            self._update_fpp_live_readout(widget, value, is_bd)
 
     def update_active_plot(self):
         if not self.measurement_running or self.active_mode is None or not self.user_settings:
@@ -2379,16 +2457,23 @@ class ResistanceMeterApp(QMainWindow):
                 "or check probe contact."
             )
         else:
+            # 4PP per-reading σ is plumbed alongside V/I in some workers but
+            # not always — fall back to plain format when missing. Same
+            # colored-label/dimmed-σ treatment as the sensor-mode tabs.
+            v_unc = value.get('voltage_unc', float('nan'))
+            i_unc = value.get('current_unc', float('nan'))
             parts = []
             if np.isfinite(v):
-                parts.append(f"V: {format_engineering(v, 'V')}")
+                parts.append(format_readout_html('V', v, v_unc, 'V'))
             if np.isfinite(i):
-                parts.append(f"I: {format_engineering(i, 'A')}")
+                parts.append(format_readout_html('I', i, i_unc, 'A'))
             if np.isfinite(v) and np.isfinite(i) and i != 0:
-                parts.append(f"R: {format_engineering(v/i, 'Ω')}")
+                parts.append(format_readout_html('R', v / i, float('nan'), 'Ω'))
             if np.isfinite(v) and np.isfinite(i):
-                parts.append(f"P: {format_engineering(abs(v * i), 'W')}")
-            widget.live_readout.setText("   ".join(parts) if parts else "--")
+                parts.append(format_readout_html(
+                    'P', abs(v * i), float('nan'), 'W'))
+            widget.live_readout.setText(
+                self._READOUT_DIVIDER.join(parts) if parts else "--")
             widget.live_readout.setStyleSheet(
                 "color: #222; background: #f0f0f0; border: 1px solid #ccc; "
                 "border-radius: 4px; padding: 4px;"
@@ -2528,6 +2613,7 @@ class ResistanceMeterApp(QMainWindow):
         self.log_status(f"ERROR: {error_message}", color="red")
         self.statusBar().showMessage(f"Measurement Error ({self.active_mode})", 5000)
         self.plot_timer.stop()
+        self._readout_timer.stop()
         # Always show the friendly error first — the user needs context for
         # what's about to pop up next. If the message looks like an address
         # problem, follow up with the GPIB selector so they can fix it in
@@ -2585,6 +2671,10 @@ class ResistanceMeterApp(QMainWindow):
         self.active_mode = None
         self.measurement_worker = None
         self.plot_timer.stop()
+        self._readout_timer.stop()
+        # Final flush so the readout reflects the very last buffered samples
+        # rather than freezing on whatever the 4 Hz timer painted last.
+        self._refresh_smoothed_readout()
         self.sample_input.setEnabled(True); self.change_user_button.setEnabled(True)
         widget = self.get_widget_for_mode(finished_mode)
         if widget:
@@ -2993,7 +3083,7 @@ class ResistanceMeterApp(QMainWindow):
         use_btn = QPushButton("Use Address")
         use_btn.clicked.connect(dialog.accept)
         v.addWidget(use_btn)
-        if dialog.exec_():
+        if dialog.exec():
             addr = combo.currentText()
             self.config_manager.set_gpib_address(addr)
             # Refresh the in-memory cache so the next measurement reads the

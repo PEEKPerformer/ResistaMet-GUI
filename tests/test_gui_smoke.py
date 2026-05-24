@@ -1,16 +1,16 @@
 """
 GUI Smoke Test — catches widget parenting, missing attributes, and crash-on-open bugs.
-Requires PyQt5 but NOT a real instrument.
+Requires PySide6 but NOT a real instrument.
 """
 import sys
 import os
 import pytest
 
-# Skip entire module if PyQt5 is not available
-pytest.importorskip("PyQt5")
+# Skip entire module if PySide6 is not available
+pytest.importorskip("PySide6")
 
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import Qt
+from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
 
 
 @pytest.fixture(scope="module")
@@ -387,7 +387,7 @@ class TestUIInteractions:
 
     def test_require_sample_name_prompts_when_empty(self, main_window, monkeypatch):
         """Empty field -> inline QInputDialog; accepted text populates the field."""
-        from PyQt5.QtWidgets import QInputDialog
+        from PySide6.QtWidgets import QInputDialog
         main_window.sample_input.setText("")
         monkeypatch.setattr(
             QInputDialog, "getText",
@@ -399,7 +399,7 @@ class TestUIInteractions:
 
     def test_require_sample_name_returns_none_on_cancel(self, main_window, monkeypatch):
         """User cancels the prompt -> helper returns None and field stays empty."""
-        from PyQt5.QtWidgets import QInputDialog
+        from PySide6.QtWidgets import QInputDialog
         main_window.sample_input.setText("")
         monkeypatch.setattr(
             QInputDialog, "getText",
@@ -410,7 +410,7 @@ class TestUIInteractions:
 
     def test_require_sample_name_rejects_whitespace_only(self, main_window, monkeypatch):
         """Prompt accepted with whitespace-only text -> still treated as missing."""
-        from PyQt5.QtWidgets import QInputDialog
+        from PySide6.QtWidgets import QInputDialog
         main_window.sample_input.setText("")
         monkeypatch.setattr(
             QInputDialog, "getText",

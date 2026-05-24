@@ -1,7 +1,7 @@
 """SSH-friendly bench-test driver for the van der Pauw mode (ASTM F76 Method A).
 
 Mirrors the VdpMeasurementWorker SCPI sequence but as a stdin-driven CLI
-so it runs cleanly over SSH on the lab Windows box -- no PyQt5 / GUI
+so it runs cleanly over SSH on the lab Windows box -- no PySide6 / GUI
 required.
 
 Workflow:

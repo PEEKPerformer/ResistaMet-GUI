@@ -19,7 +19,7 @@ import sys
 import time
 from pathlib import Path
 
-from PyQt5.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication
 
 from resistamet_gui.workers import MeasurementWorker
 from resistamet_gui.data_export import parse_metadata

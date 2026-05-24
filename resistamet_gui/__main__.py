@@ -6,13 +6,20 @@ the two paths stay identical.
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
 
-# Heavy imports (PyQt5, matplotlib, the main window) are deferred into main()
+# Heavy imports (PySide6, matplotlib, the main window) are deferred into main()
 # so --version and --help return instantly without spinning up Cocoa / X11
 # event-loop bookkeeping that would otherwise prevent a clean process exit.
 from resistamet_gui.constants import __version__
+
+# Matplotlib's qtagg backend and pyqtgraph both auto-detect the active Qt
+# binding by env var. Set before either import so they don't accidentally
+# pick up a stray PyQt5 install and end up with two bindings loaded at once.
+os.environ.setdefault("QT_API", "pyside6")
+os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
 
 
 def _parse_args(argv):
@@ -42,6 +49,12 @@ def _parse_args(argv):
              "response (default: 2420). Only meaningful with --simulate.",
     )
     parser.add_argument(
+        "--sim-noise-rsd", type=float, default=0.0, metavar="RSD",
+        help="Gaussian noise RSD applied to the measured side of each "
+             "reading (default: 0.0 = perfect Ohm's law). Typical demo "
+             "value: 1e-3 (0.1%%). Only meaningful with --simulate.",
+    )
+    parser.add_argument(
         "--version", action="version", version=f"ResistaMet GUI {__version__}",
     )
     return parser.parse_args(argv)
@@ -55,16 +68,14 @@ def main():
         enable_simulation(
             dut_resistance_ohms=args.sim_resistance,
             model=args.sim_model,
+            noise_rsd=args.sim_noise_rsd,
         )
 
-    from PyQt5.QtCore import Qt
-    from PyQt5.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication
     from resistamet_gui.ui.main_window import ResistanceMeterApp
 
-    if hasattr(Qt, "AA_EnableHighDpiScaling"):
-        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    if hasattr(Qt, "AA_UseHighDpiPixmaps"):
-        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # HighDPI is always-on in Qt6; the AA_* attributes are no-op
+    # DeprecationWarnings here, so they're dropped.
 
     # Pass only argv[0] so QApplication doesn't choke on our --simulate flag.
     app = QApplication([sys.argv[0]])
@@ -84,7 +95,7 @@ def main():
     window.show()
 
     try:
-        sys.exit(app.exec_())
+        sys.exit(app.exec())
     except KeyboardInterrupt:
         print("Ctrl+C detected, exiting.")
 

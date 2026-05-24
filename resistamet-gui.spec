@@ -29,7 +29,11 @@ a = Analysis(
         'pyqtgraph.exporters',
         'pyvisa',
         'pyvisa_py',
-        'matplotlib.backends.backend_qt5agg',
+        # Qt-agnostic matplotlib backend; dispatches via QT_API env var
+        # (set in resistamet_gui/__main__.py before any mpl import).
+        'matplotlib.backends.backend_qtagg',
+        'PySide6',
+        'shiboken6',
         'resistamet_gui.simulator',
     ],
     hookspath=[],
@@ -37,9 +41,9 @@ a = Analysis(
     excludes=[
         # Trim obvious bloat the GUI never imports.
         'tkinter',
+        'PyQt5',
         'PyQt6',
         'PySide2',
-        'PySide6',
         'IPython',
         'jupyter',
         'notebook',

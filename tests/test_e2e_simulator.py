@@ -27,8 +27,8 @@ import time
 
 import pytest
 
-# Skip the whole module if PyQt5 isn't installed (matches test_gui_smoke).
-pytest.importorskip("PyQt5")
+# Skip the whole module if PySide6 isn't installed (matches test_gui_smoke).
+pytest.importorskip("PySide6")
 
 # All tests in this module are end-to-end. The marker is informational —
 # pytest.ini ignores this file in the default run; CI runs it explicitly.
@@ -37,7 +37,7 @@ pytestmark = pytest.mark.e2e
 # Offscreen platform so the tests run in CI without a display.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
 # Known DUT resistance for Ohm's-law assertions across all modes.
 DUT_OHMS = 100.0
@@ -364,7 +364,7 @@ def test_mark_event_lands_in_csv(sim_window, app, monkeypatch):
     monkey-patch that to return a fixed label. The label must then appear in
     the ``event`` column of at least one row of the saved CSV.
     """
-    from PyQt5.QtWidgets import QInputDialog
+    from PySide6.QtWidgets import QInputDialog
     monkeypatch.setattr(
         QInputDialog, "getText",
         staticmethod(lambda *a, **kw: ("PROBE_MOVED", True)),
@@ -564,7 +564,7 @@ def test_close_event_stops_worker_cleanly(sim_window, app, monkeypatch):
     leaving a zombie thread. Catches a regression where closeEvent fails to
     join the worker, hanging the process at shutdown.
     """
-    from PyQt5.QtWidgets import QMessageBox
+    from PySide6.QtWidgets import QMessageBox
     monkeypatch.setattr(
         QMessageBox, "question",
         staticmethod(lambda *a, **kw: QMessageBox.Yes),
@@ -577,8 +577,8 @@ def test_close_event_stops_worker_cleanly(sim_window, app, monkeypatch):
     assert sim_window.measurement_running
 
     # closeEvent is what we're testing — call it the way Qt would.
-    from PyQt5.QtCore import QEvent
-    from PyQt5.QtGui import QCloseEvent
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QCloseEvent
     ev = QCloseEvent()
     sim_window.closeEvent(ev)
     app.processEvents()

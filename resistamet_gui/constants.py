@@ -1,7 +1,7 @@
 import os
 
 # Script version and metadata
-__version__ = "1.10.0"
+__version__ = "1.11.0"
 __original_version__ = "0.9.2"
 __author__ = "Brenden Ferland"
 
@@ -113,9 +113,13 @@ DEFAULT_SETTINGS = {
         # for free at this cadence. The main_window timer also caps at
         # 16 ms so older saved configs still get the snappy feel.
         "plot_update_interval": 16,          # Plot update interval in milliseconds
-        "plot_color_r": "red",               # Plot line color for Resistance
-        "plot_color_v": "blue",              # Plot line color for Voltage Source (Current)
-        "plot_color_i": "green",             # Plot line color for Current Source (Voltage)
+        # Plot line colors — Wong (Nature Methods 2011) colorblind-safe
+        # palette. Matched by the readout-strip label colors in
+        # ui/widgets.py so the live label hue equals the trace hue.
+        # Existing configs override these via deep-merge.
+        "plot_color_r": "#D55E00",           # Wong vermillion (Resistance)
+        "plot_color_v": "#0072B2",           # Wong blue (Voltage Source / Current trace)
+        "plot_color_i": "#009E73",           # Wong bluish green (Current Source / Voltage trace)
         "plot_figsize": [8, 5],              # Plot figure size [width, height]
         # Unlimited by default — pyqtgraph downsamples on render (peak mode +
         # clipToView), so a 17-hr / 270k-sample run is ~13 MB and stays smooth.
