@@ -9,7 +9,7 @@ from typing import Dict, Optional
 
 import numpy as np
 import pyvisa
-from PyQt5.QtCore import QThread, pyqtSignal
+from PySide6.QtCore import QThread, Signal
 
 logger = logging.getLogger(__name__)
 
@@ -33,17 +33,17 @@ from .system_utils import SleepInhibitor
 
 class MeasurementWorker(QThread):
     """Worker thread for running measurements in different modes."""
-    data_point = pyqtSignal(float, dict, str, str)  # timestamp, data dict, compliance, event
-    status_update = pyqtSignal(str)
-    measurement_complete = pyqtSignal(str)
-    error_occurred = pyqtSignal(str)
-    compliance_hit = pyqtSignal(str)  # 'Voltage' or 'Current'
-    overpower_hit = pyqtSignal(float, float)  # measured_power_w, hard_stop_w (4PP only)
-    sweep_complete = pyqtSignal(list, list, list)  # voltages, currents, compliance_list
+    data_point = Signal(float, dict, str, str)  # timestamp, data dict, compliance, event
+    status_update = Signal(str)
+    measurement_complete = Signal(str)
+    error_occurred = Signal(str)
+    compliance_hit = Signal(str)  # 'Voltage' or 'Current'
+    overpower_hit = Signal(float, float)  # measured_power_w, hard_stop_w (4PP only)
+    sweep_complete = Signal(list, list, list)  # voltages, currents, compliance_list
     # Short model name ("2400", "2410", ...) once IDN has been parsed. The
     # GUI caches this for accuracy.py uncertainty lookups after the worker
     # thread tears down, since per-spot stats are computed post-measurement.
-    instrument_identified = pyqtSignal(str)
+    instrument_identified = Signal(str)
 
     def __init__(self, mode, sample_name, username, settings, parent=None):
         super().__init__(parent)
@@ -1260,13 +1260,13 @@ class VdpMeasurementWorker(QThread):
         status_update(str), error_occurred(str), compliance_hit(str).
     """
 
-    geometry_ready = pyqtSignal(int, dict)
-    geometry_complete = pyqtSignal(int, dict)
-    vdp_complete = pyqtSignal(dict)
-    status_update = pyqtSignal(str)
-    error_occurred = pyqtSignal(str)
-    compliance_hit = pyqtSignal(str)
-    instrument_identified = pyqtSignal(str)  # see MeasurementWorker
+    geometry_ready = Signal(int, dict)
+    geometry_complete = Signal(int, dict)
+    vdp_complete = Signal(dict)
+    status_update = Signal(str)
+    error_occurred = Signal(str)
+    compliance_hit = Signal(str)
+    instrument_identified = Signal(str)  # see MeasurementWorker
 
     MODE = 'vdp'
 

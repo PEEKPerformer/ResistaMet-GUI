@@ -10,9 +10,9 @@ import math
 import re
 from typing import Optional
 
-from PyQt5.QtCore import Qt, pyqtSignal, QSize, QRect, QPoint
-from PyQt5.QtGui import QValidator, QPainter, QPen, QBrush, QColor, QFont, QFontMetrics
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLineEdit, QLabel, QDoubleSpinBox, QSpinBox
+from PySide6.QtCore import Qt, Signal, QSize, QRect, QPoint
+from PySide6.QtGui import QValidator, QPainter, QPen, QBrush, QColor, QFont, QFontMetrics
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QLineEdit, QLabel, QDoubleSpinBox, QSpinBox
 
 # SI prefix table: prefix → multiplier (ordered large to small for display selection)
 _SI_PREFIXES = [
@@ -198,7 +198,7 @@ class EngineeringSpinBox(QWidget):
         val = box.value()    # returns 0.001
     """
 
-    valueChanged = pyqtSignal(float)
+    valueChanged = Signal(float)
 
     def __init__(self, unit: str = 'A', minimum: float = 0, maximum: float = 1,
                  default: float = 0, allow_negative: bool = False, parent: QWidget = None):

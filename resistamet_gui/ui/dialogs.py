@@ -1,10 +1,10 @@
 import os
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QDialog, QFrame, QScrollArea, QTabWidget, QWidget, QVBoxLayout, QFormLayout,
     QHBoxLayout, QLineEdit, QPushButton, QDoubleSpinBox, QSpinBox, QComboBox, QLabel,
     QFileDialog, QMessageBox, QCheckBox
 )
-from PyQt5.QtCore import Qt
+from PySide6.QtCore import Qt
 
 import pyvisa
 
@@ -281,7 +281,7 @@ class SettingsDialog(QDialog):
             self._h5py_available = True
         except ImportError:
             self._h5py_available = False
-            from PyQt5.QtCore import QModelIndex  # noqa: F401
+            from PySide6.QtCore import QModelIndex  # noqa: F401
             model = self.output_format.model()
             item = model.item(1)
             item.setEnabled(False)
@@ -458,7 +458,7 @@ class SettingsDialog(QDialog):
             QMessageBox.information(self, "GPIB Detection", "No VISA instruments detected.")
             return
         # simple selection prompt
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout
+        from PySide6.QtWidgets import QDialog, QVBoxLayout
         dialog = QDialog(self)
         dialog.setWindowTitle("Select GPIB Device")
         layout = QVBoxLayout(dialog)
@@ -471,7 +471,7 @@ class SettingsDialog(QDialog):
         btn = QPushButton("Select", dialog)
         btn.clicked.connect(dialog.accept)
         layout.addWidget(btn)
-        if dialog.exec_():
+        if dialog.exec():
             self.gpib_address.setText(combo.currentText())
 
 
@@ -484,7 +484,7 @@ class UserSelectionDialog(QDialog):
         self.init_ui()
 
     def init_ui(self):
-        from PyQt5.QtWidgets import QVBoxLayout, QGroupBox, QHBoxLayout
+        from PySide6.QtWidgets import QVBoxLayout, QGroupBox, QHBoxLayout
         # Default size: wide enough for "Create New User" group label and the
         # user combo on a single row, regardless of profile-name length.
         ch = self.fontMetrics().averageCharWidth()
@@ -555,4 +555,4 @@ class UserSelectionDialog(QDialog):
 
     def open_global_settings(self):
         dialog = SettingsDialog(self.config_manager, parent=self)
-        dialog.exec_()
+        dialog.exec()

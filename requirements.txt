@@ -1,8 +1,10 @@
 # ResistaMet-GUI dependencies
 # Install with: pip install -r requirements.txt
 
-# GUI framework
-PyQt5>=5.15.0
+# GUI framework. LGPL-3.0 (official Qt Company binding) — chosen over PyQt5
+# (GPL-3.0) so MIT-licensed downstreams can distribute the PyInstaller .exe
+# without GPL contamination.
+PySide6>=6.5.0
 
 # Instrument communication
 pyvisa>=1.11.0

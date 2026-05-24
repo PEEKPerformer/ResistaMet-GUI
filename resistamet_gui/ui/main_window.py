@@ -6,15 +6,16 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 import numpy as np
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import (
-    QAction, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QScrollArea, QShortcut,
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (
+    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QScrollArea,
     QTextEdit, QTabWidget, QVBoxLayout, QWidget, QFileDialog, QSplitter, QTableWidget, QTableWidgetItem,
     QDialog, QSpinBox, QSizePolicy, QInputDialog
 )
-from PyQt5.QtGui import QIcon, QFont, QBrush, QColor
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+# Qt6 moved QAction and QShortcut from QtWidgets to QtGui.
+from PySide6.QtGui import QAction, QBrush, QColor, QFont, QIcon, QShortcut
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 
 from ..buffers import EnhancedDataBuffer
 from ..config import ConfigManager
@@ -1728,7 +1729,7 @@ class ResistanceMeterApp(QMainWindow):
             QMessageBox.warning(self, "Action Denied", "Cannot change user while a measurement is running.")
             return
         dialog = UserSelectionDialog(self.config_manager, self)
-        if dialog.exec_():
+        if dialog.exec():
             username = dialog.selected_user
             if username:
                 self.current_user = username
@@ -1841,7 +1842,7 @@ class ResistanceMeterApp(QMainWindow):
             QMessageBox.warning(self, "Action Denied", "Cannot change settings while a measurement is running.")
             return
         dialog = SettingsDialog(self.config_manager, self.current_user, self)
-        if dialog.exec_():
+        if dialog.exec():
             self.log_status(f"User settings for {self.current_user} updated.")
             self.user_settings = self.config_manager.get_user_settings(self.current_user)
             self.update_ui_from_settings()
@@ -1851,7 +1852,7 @@ class ResistanceMeterApp(QMainWindow):
             QMessageBox.warning(self, "Action Denied", "Cannot change settings while a measurement is running.")
             return
         dialog = SettingsDialog(self.config_manager, parent=self)
-        if dialog.exec_():
+        if dialog.exec():
             self.log_status("Global settings updated.")
             if self.current_user:
                 self.user_settings = self.config_manager.get_user_settings(self.current_user)
@@ -2031,7 +2032,7 @@ class ResistanceMeterApp(QMainWindow):
         box.setStandardButtons(QMessageBox.Ok)
         dont_show = QCheckBox("Don't show this again for this profile")
         box.setCheckBox(dont_show)
-        box.exec_()
+        box.exec()
         if dont_show.isChecked():
             m['safety_voltage_warn_silenced'] = True
             try:
@@ -2993,7 +2994,7 @@ class ResistanceMeterApp(QMainWindow):
         use_btn = QPushButton("Use Address")
         use_btn.clicked.connect(dialog.accept)
         v.addWidget(use_btn)
-        if dialog.exec_():
+        if dialog.exec():
             addr = combo.currentText()
             self.config_manager.set_gpib_address(addr)
             # Refresh the in-memory cache so the next measurement reads the

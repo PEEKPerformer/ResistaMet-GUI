@@ -4,7 +4,7 @@
     1. exit 0,
     2. print recognizable output,
     3. return *quickly* — argparse handlers must run before the GUI
-       imports load PyQt5 + matplotlib, otherwise the process hangs on
+       imports load PySide6 + matplotlib, otherwise the process hangs on
        Cocoa/X11 event-loop bookkeeping (we hit this exact issue during
        v1.6.0 polish).
 
