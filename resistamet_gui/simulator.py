@@ -23,6 +23,7 @@ def enable_simulation(
     dut_voltage_offset: float = 0.0,
     model: str = "2420",
     gpib_address: str = "GPIB0::24::INSTR",
+    noise_rsd: float = 0.0,
 ) -> None:
     """Replace ``pyvisa.ResourceManager`` with the in-package fake.
 
@@ -44,6 +45,7 @@ def enable_simulation(
             dut_resistance_ohms=dut_resistance_ohms,
             dut_voltage_offset=dut_voltage_offset,
             model=model,
+            noise_rsd=noise_rsd,
         )
 
     pyvisa.ResourceManager = _factory  # type: ignore[assignment]

@@ -149,6 +149,66 @@ def format_with_uncertainty(
             f"{u_scaled:.{round_decimals}f} {chosen_prefix}{unit}")
 
 
+# Live-readout strip palette — Wong (Nature Methods 2011) colorblind-safe
+# scientific palette. The same hexes are the plot line defaults in
+# constants.py so the V/I/R label colors here match the live trace.
+# Orange is used for P (no plot line) because Wong's vermillion + orange
+# stay distinguishable under both protanopia and deuteranopia.
+READOUT_LABEL_COLORS = {
+    'V': '#0072B2',  # Wong blue
+    'I': '#009E73',  # Wong bluish green
+    'R': '#D55E00',  # Wong vermillion
+    'P': '#E69F00',  # Wong orange
+}
+
+
+def format_readout_html(
+    label: str, value: float, uncertainty: float, unit: str,
+    *, color: Optional[str] = None, unc_sig_figs: int = 2,
+    fallback_precision: int = 4,
+) -> str:
+    """Compose one ``"<label>: <value> ± <σ> <unit>"`` chunk as HTML.
+
+    The label is rendered in ``color`` (resolved from
+    :data:`READOUT_LABEL_COLORS` when omitted), the value at the host
+    QLabel's full weight, and the ``± σ`` portion dimmed (lighter gray,
+    smaller font) so the main number is the visual anchor and the
+    uncertainty reads as a secondary annotation.
+
+    Used by the per-tab live readout (one chunk per channel, joined with
+    a vertical divider). Returns a plain string when ``value`` isn't
+    finite. When ``uncertainty`` isn't finite or non-positive, falls back
+    to ``format_engineering`` (no ± span).
+    """
+    if color is None:
+        color = READOUT_LABEL_COLORS.get(label, '#222')
+    label_html = (
+        f'<span style="color:{color}; font-weight:700;">{label}:</span>'
+    )
+    if not math.isfinite(value):
+        return (
+            f'{label_html} <span style="color:{color};">-- {unit}</span>'
+        )
+    if not math.isfinite(uncertainty) or uncertainty <= 0:
+        full = format_engineering(value, unit, precision=fallback_precision)
+        return f'{label_html} <span style="color:{color};">{full}</span>'
+
+    full = format_with_uncertainty(value, uncertainty, unit, unc_sig_figs)
+    # full is "<v> ± <σ> <prefix><unit>". Split on ' ± ' to isolate the
+    # uncertainty + unit portion for dimming.
+    try:
+        value_part, after = full.split(' ± ', 1)
+        sigma_with_unit = after  # e.g. "0.31 mV"
+    except ValueError:
+        return f'{label_html} <span style="color:{color};">{full}</span>'
+
+    return (
+        f'{label_html} <span style="color:{color};">{value_part}</span>'
+        f'<span style="color:#888; font-size:75%; font-weight:normal;">'
+        f' ± {sigma_with_unit}</span>'
+    )
+
+
 def parse_engineering(text: str, unit: str = '') -> Optional[float]:
     """Parse engineering notation text to a float value in base units.
 

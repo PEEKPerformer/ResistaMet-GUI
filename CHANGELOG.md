@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-05-24
+
+### Changed
+- **GUI binding swapped from PyQt5 → PySide6** for LGPL-3.0 license compatibility. The PyInstaller `.exe` attached to each release can now be redistributed by MIT-licensed downstreams without inheriting GPL terms. Also moves the project to Qt6 (Qt5 reached EOL Oct 2025). No user-visible behavior change: same widgets, same shortcuts, same canvas backends. Verified end-to-end (521 unit + 15 e2e tests on macOS; 518 + 15 on Windows; hardware roundtrip with a real Keithley 2420 over GPIB). Windows `.exe` grows ~30 MB from the larger Qt6 binaries.
+- **Matplotlib backend** switched from `backend_qt5agg` to the Qt-agnostic `backend_qtagg`, dispatching via `QT_API=pyside6` set in `__main__.py` before any matplotlib import. pyqtgraph follows the same convention via `PYQTGRAPH_QT_LIB`.
+
+### Removed
+- **Deprecated HighDPI attributes** (`Qt.AA_EnableHighDpiScaling`, `Qt.AA_UseHighDpiPixmaps`). Both became unconditional defaults in Qt6; the explicit calls are no-ops that emit DeprecationWarnings.
+
 ## [1.10.0] - 2026-05-22
 
 ### Added

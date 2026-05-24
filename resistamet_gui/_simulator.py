@@ -36,6 +36,7 @@ What it does NOT model:
 from __future__ import annotations
 
 import math
+import random
 import re
 from collections import deque
 from typing import Optional
@@ -218,6 +219,7 @@ class FakeKeithley:
         idn: Optional[str] = None,
         model: Optional[str] = None,
         dut_resistance_callable=None,
+        noise_rsd: float = 0.0,
     ):
         """Construct a fake instrument.
 
@@ -236,6 +238,12 @@ class FakeKeithley:
                 DUT whose effective R changes during a run (e.g., sample
                 heating, thermistor-like behavior). When set, supersedes
                 ``dut_resistance_ohms`` for read-time computation.
+            noise_rsd: Relative-standard-deviation of Gaussian noise added
+                to the *measured* side of each reading (I in source-V mode,
+                V in source-I mode). 0.0 disables (default — keeps every
+                replay/fixture-driven test bit-exact). Typical demo value
+                is 1e-3 (0.1% RSD) which makes the live trace look alive
+                without crossing the σ derived from the datasheet specs.
         """
         if idn is not None and model is not None:
             raise ValueError("pass either idn= or model=, not both")
@@ -245,6 +253,9 @@ class FakeKeithley:
         self._dut_r_callable = dut_resistance_callable
         self.dut_voltage_offset = dut_voltage_offset
         self._idn = idn
+        self._noise_rsd = float(noise_rsd)
+        # Seeded so test runs that opt in are still deterministic per-process.
+        self._noise_rng = random.Random(0xC0FFEE)
 
         # PyVISA-compatible knobs
         self.timeout = 5000
@@ -617,8 +628,9 @@ class FakeKeithley:
                 measured_i = math.copysign(i_limit, ideal_i)
             else:
                 measured_i = ideal_i
+            measured_i = self._apply_noise(measured_i)
             actual_v = requested_v             # echoed source setpoint
-            actual_i = measured_i              # measured / clamped
+            actual_i = measured_i              # measured / clamped (+ noise)
         else:  # source CURR
             requested_i = source_value
             ideal_v = requested_i * r + self.dut_voltage_offset
@@ -628,10 +640,22 @@ class FakeKeithley:
                 measured_v = math.copysign(v_limit, ideal_v)
             else:
                 measured_v = ideal_v
-            actual_v = measured_v              # measured / clamped
+            measured_v = self._apply_noise(measured_v)
+            actual_v = measured_v              # measured / clamped (+ noise)
             actual_i = requested_i             # echoed source setpoint
         actual_r = (actual_v / actual_i) if actual_i != 0 else float("nan")
         return actual_v, actual_i, actual_r, in_compliance
+
+    def _apply_noise(self, value: float) -> float:
+        """Add Gaussian noise (relative-std-dev = self._noise_rsd) to value.
+
+        No-op when noise_rsd is 0 — preserves bit-exact behavior for the
+        replay tests that diff against captured SCPI traces.
+        """
+        if self._noise_rsd <= 0.0 or not math.isfinite(value):
+            return value
+        sigma = abs(value) * self._noise_rsd
+        return value + self._noise_rng.gauss(0.0, sigma)
 
     def _compute_read(self) -> str:
         sour_func = self.state["sour_func"]
@@ -739,12 +763,14 @@ class FakeResourceManager:
         dut_voltage_offset: float = 0.0,
         idn: Optional[str] = None,
         model: Optional[str] = None,
+        noise_rsd: float = 0.0,
     ):
         if idn is not None and model is not None:
             raise ValueError("pass either idn= or model=, not both")
         self._addr = gpib_address
         self._dut_r = dut_resistance_ohms
         self._dut_v = dut_voltage_offset
+        self._noise_rsd = float(noise_rsd)
         self._idn = idn if idn is not None else (
             _idn_for_model(model) if model is not None else DEFAULT_IDN
         )
@@ -767,6 +793,7 @@ class FakeResourceManager:
             dut_resistance_ohms=self._dut_r,
             dut_voltage_offset=self._dut_v,
             idn=self._idn,
+            noise_rsd=self._noise_rsd,
         )
         if self._pre_inject_fail_n > 0:
             dev._pre_inject_skip = self._pre_inject_fail_skip

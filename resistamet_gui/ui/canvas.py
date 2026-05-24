@@ -16,9 +16,11 @@ pg.setConfigOptions(antialias=True, background=(250, 250, 252),
 
 # Aesthetic constants shared with the live canvas — same palette + bg so
 # the 4PP tab reads as a single instrument rather than two separate plots.
+# Bar/mean hues use the Wong (Nature Methods 2011) colorblind-safe palette
+# to match the live trace + readout-strip label colors.
 _HIST_BG       = '#fafafc'
-_HIST_BAR      = '#2c5f8f'   # deep blue, matches PgLiveCanvas 'blue'
-_HIST_MEAN     = '#c0392b'   # deep red, matches PgLiveCanvas 'red'
+_HIST_BAR      = '#0072B2'   # Wong blue — matches V trace + V readout label
+_HIST_MEAN     = '#D55E00'   # Wong vermillion — matches R trace + R readout label
 _HIST_AXIS     = '#666666'
 _HIST_GRID     = '#e6e6e6'
 _HIST_BBOX     = dict(boxstyle='round,pad=0.4', fc='white', ec='#cccccc', alpha=0.95)

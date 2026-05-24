@@ -49,6 +49,12 @@ def _parse_args(argv):
              "response (default: 2420). Only meaningful with --simulate.",
     )
     parser.add_argument(
+        "--sim-noise-rsd", type=float, default=0.0, metavar="RSD",
+        help="Gaussian noise RSD applied to the measured side of each "
+             "reading (default: 0.0 = perfect Ohm's law). Typical demo "
+             "value: 1e-3 (0.1%%). Only meaningful with --simulate.",
+    )
+    parser.add_argument(
         "--version", action="version", version=f"ResistaMet GUI {__version__}",
     )
     return parser.parse_args(argv)
@@ -62,6 +68,7 @@ def main():
         enable_simulation(
             dut_resistance_ohms=args.sim_resistance,
             model=args.sim_model,
+            noise_rsd=args.sim_noise_rsd,
         )
 
     from PySide6.QtWidgets import QApplication
