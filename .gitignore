@@ -204,6 +204,10 @@ resistamet-gui_old.py
 config.json
 measurement_data/
 
+# Per-user Claude Code overrides — the project-level .claude/settings.json
+# (hooks) is tracked; this local override file is not.
+.claude/settings.local.json
+
 # macOS system files
 .DS_Store
 

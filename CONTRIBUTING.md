@@ -41,6 +41,15 @@ For usage questions or clarification, open a GitHub issue tagged as `question`. 
 - Many SCPI commands behave differently across Keithley 2400 series variants. If you find a model-specific quirk, document it in `instrument.py` near the relevant call.
 - Compliance detection uses the magic number `9.9e37` from Keithley firmware (see `KEITHLEY_COMPLIANCE_MAGIC_NUMBER` in constants).
 
+## Claude Code automation (optional)
+
+If you happen to use [Claude Code](https://docs.claude.com/en/docs/claude-code) when working in this repo, two project-level hooks ship in `.claude/settings.json` and will activate automatically:
+
+- **PreToolUse**: refuses Write/Edit on bench-captured SCPI traces (`tests/fixtures/scpi_traces*`), `_archive/` directories, HDF5 files, and measurement CSVs. Those are immutable artifacts — copy to a new file if you need to evolve them.
+- **PostToolUse**: after any edit to `resistamet_gui/*.py`, runs the fast unit-test bundle (`test_calculations`, `test_buffers`, `test_config`, `test_accuracy`, `test_combined_uncertainty`) so regressions surface in the same turn as the edit.
+
+To disable both temporarily, create `.claude/settings.local.json` (already gitignored) with `{"disableAllHooks": true}`. Contributors who don't use Claude Code can ignore this section entirely — the hooks have no effect outside that environment.
+
 ## Code of Conduct
 
 This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). By participating, you agree to abide by it.
