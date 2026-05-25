@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QTableWidgetItem  # noqa: E402
 
 from resistamet_gui.ui.main_window import ResistanceMeterApp  # noqa: E402
 from resistamet_gui.ui.widgets import (  # noqa: E402
@@ -199,37 +199,86 @@ def fill_current_source(win):
 
 
 def fill_four_point(win):
+    """Synthesize a realistic 4PP workflow snapshot:
+      - 8 spots × 30 readings (Wong/F84-aligned thin-film numbers)
+      - 7 of them already saved → populate fpp_spots_table
+      - 8th in progress → populate fpp_table (per-reading) + "Current
+        Spot Stats" panel from that spot only
+      - Histogram aggregates across all readings (matches what the user
+        sees when reviewing a finished multi-spot survey)
+    """
     rng = np.random.default_rng(3)
-    n_spots, n_per_spot = 8, 30
-    rs_mean = 47.3  # Ω/□
-    rs_per_spot = rs_mean + rng.normal(0, 0.6, n_spots)
-    rs_values = []
-    for s in range(n_spots):
-        rs_values.extend(rs_per_spot[s] + rng.normal(0, 0.15, n_per_spot))
+    n_spots_total, n_per_spot = 8, 30
+    n_saved = n_spots_total - 1
+    rs_mean_overall = 47.3  # Ω/□
+    rs_per_spot = rs_mean_overall + rng.normal(0, 0.6, n_spots_total)
+    spot_readings = [
+        rs_per_spot[s] + rng.normal(0, 0.15, n_per_spot)
+        for s in range(n_spots_total)
+    ]
 
     w = win.tab_four_point
     # Use a realistic source current — default in the UI is now 100 µA.
     w.fpp_current.setValue(1e-4)
-    w.fpp_histogram.update_histogram(rs_values, "Rs (Ω/□)")
+    src_i = float(w.fpp_current.value())
+    t_cm = 0.5e-4  # 0.5 µm thin film
+    k = 4.532  # Smits geometric factor
 
-    mean = float(np.mean(rs_values))
-    std = float(np.std(rs_values, ddof=1))
-    rsd = std / mean * 100
-    w.fpp_n_label.setText(str(len(rs_values)))
-    w.fpp_rs_label.setText(f"{mean:.3f} ± {std:.3f} ({rsd:.2f}%)")
-    # Synthetic ρ and σ assuming t = 0.5 µm thin film, K = 4.532
-    t_cm = 0.5e-4
-    k = 4.532
-    rho_mean = mean * t_cm / k * k  # equals mean*t_cm
+    # Histogram aggregates across all readings.
+    all_rs = np.concatenate(spot_readings).tolist()
+    w.fpp_histogram.update_histogram(all_rs, "Rs (Ω/□)")
+
+    # Saved-spots summary table — first 7 spots already locked in.
+    # Mirrors the row format produced by _save_fpp_spot at
+    # main_window.py:3159.
+    for s_idx in range(n_saved):
+        readings = spot_readings[s_idx]
+        m = float(np.mean(readings))
+        s_std = float(np.std(readings, ddof=1))
+        rsd = (s_std / m * 100) if m != 0 else 0.0
+        row_idx = w.fpp_spots_table.rowCount()
+        w.fpp_spots_table.insertRow(row_idx)
+        for col, val in enumerate([
+            f"Spot {s_idx + 1}", str(len(readings)),
+            f"{m:.5g}", f"{s_std:.3g}", f"{rsd:.2f}",
+        ]):
+            w.fpp_spots_table.setItem(row_idx, col, QTableWidgetItem(val))
+
+    # The 8th (in-progress) spot drives the Current Spot Stats panel
+    # and the per-reading fpp_table. This is the live state the user
+    # sees just before clicking "Save Spot".
+    current_readings = spot_readings[-1]
+    mean = float(np.mean(current_readings))
+    std = float(np.std(current_readings, ddof=1))
+    rsd = (std / mean * 100) if mean != 0 else 0.0
+    rho_mean = mean * t_cm
     rho_std = std * t_cm
-    sigma_mean = 1.0 / rho_mean if rho_mean > 0 else 0
-    sigma_std = sigma_mean * (rho_std / rho_mean) if rho_mean > 0 else 0
-    w.fpp_rho_label.setText(
-        f"{rho_mean:.3e} ± {rho_std:.2e} ({rsd:.2f}%)"
-    )
+    sigma_mean = (1.0 / rho_mean) if rho_mean > 0 else 0.0
+    sigma_std = sigma_mean * (rho_std / rho_mean) if rho_mean > 0 else 0.0
+
+    w.fpp_n_label.setText(str(len(current_readings)))
+    w.fpp_rs_label.setText(f"{mean:.3f} ± {std:.3f} ({rsd:.2f}%)")
+    w.fpp_rho_label.setText(f"{rho_mean:.3e} ± {rho_std:.2e} ({rsd:.2f}%)")
     w.fpp_sigma_label.setText(
         f"{sigma_mean:.3e} ± {sigma_std:.2e} ({rsd:.2f}%)"
     )
+
+    # Per-reading table for the in-progress spot at 10 Hz cadence.
+    # Mirrors the row format produced by _append_four_point_row at
+    # main_window.py:2485 (9 cols: Time, V, I, V/I, Rs, ρ, σ, Comp, Event).
+    dt = 0.1
+    for k_idx, rs in enumerate(current_readings):
+        v_i = rs / k                       # V/I = Rs / k by F84 inversion
+        v_meas = src_i * v_i               # measured voltage at the probes
+        rho = rs * t_cm
+        sigma = (1.0 / rho) if rho > 0 else 0.0
+        row = [k_idx * dt, v_meas, src_i, v_i, rs, rho, sigma, 'OK', '']
+        row_idx = w.fpp_table.rowCount()
+        w.fpp_table.insertRow(row_idx)
+        for col, val in enumerate(row):
+            text = f"{val:.6g}" if isinstance(val, float) else str(val)
+            w.fpp_table.setItem(row_idx, col, QTableWidgetItem(text))
+    w.fpp_table.scrollToBottom()
     # Mirror production 4PP per-reading live-readout (main_window.py:2460).
     # The real GUI shows V/I/R/P for the *last reading* — the per-spot
     # derived Rs/ρ/σ already live in the "Current Spot Stats" panel on
