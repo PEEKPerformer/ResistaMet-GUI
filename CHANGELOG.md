@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-05-25
+
+JOSS-submission-ready release. No user-visible application changes; this turn bundles the submission paper, gitignore hygiene, and a screenshot-generation pipeline that is honest about what the GUI actually renders.
+
+### Added
+- **JOSS submission paper.** `paper/paper.md` + `paper/paper.bib` with the six JOSS-required sections (Summary, Statement of Need, State of the Field, Software Design, Validation, Research Impact, AI Usage Disclosure). All 14 bibliography entries Crossref-verified or pulled directly from upstream CITATION.cff files (`pyvisa`, `pymeasure`, `qcodes`, `keithleygui`, `qkeithleycontrol`, `oh2023meassure`, `febba2025`, `astm_f84`, `astm_f76`, `smits1958`, `harris2020array`, `keithley2400manual`, `meg2026`, `silicone2026`). One 4PP screenshot embedded via pandoc-native `{#fig:fpp}` attribute syntax. Renders cleanly through the JOSS `openjournals/inara` container with no warnings or undefined refs.
+- **Pull request template** (`.github/pull_request_template.md`) prompting for summary, change type, hardware-testing notes, and test plan. Lines up with the existing `.github/ISSUE_TEMPLATE/` set.
+- **Screenshot-generator smoke test** in `test.yml` on every push/PR. Runs `tools/generate_screenshots.py` on Linux/Py3.12 to catch generator-broke regressions early — does not byte-diff against committed PNGs because macOS-vs-Linux font rendering differs slightly.
+- **Auto-regenerate screenshots on tag push** via a new `regen-screenshots` job in `build.yml`, parallel to the Windows `.exe` build. Regenerates on Linux (the canonical CI platform), commits any drift back to main with a `[skip ci]` tag commit. Tag releases never go out with stale screenshots again.
+
+### Changed
+- **Screenshot generator is now honest.** `tools/generate_screenshots.py` was bypassing the production live-readout pipeline with plain `setText(f"…")` calls, hiding the colored Wong-palette V/I/R/P labels and dimmed `±σ` annotations that v1.10.0 shipped. Refactored each `fill_*` function to mirror the exact production code path: real `format_readout_html` rendering, real `accuracy.py` σ values (`voltage_uncertainty` / `current_uncertainty` / `resistance_uncertainty` / `voltage_source_uncertainty` / `current_source_uncertainty`), real `_READOUT_DIVIDER`. Each `fill_*` block now references the `main_window.py` line it mirrors so future drift is auditable.
+- **4PP screenshot now populates `fpp_spots_table` + `fpp_table`.** Previously only the histogram and Current Spot Stats panel had data — both tables in the right panel were empty, suggesting a broken multi-spot survey. New `fill_four_point` synthesizes 8 spots × 30 readings, treats spots 1–7 as saved (populating `fpp_spots_table` in the 5-col format `_save_fpp_spot` writes at `main_window.py:3159`), and treats spot 8 as in-progress (populating `fpp_table` per-reading at 10 Hz in the 9-col format `_append_four_point_row` writes at `main_window.py:2485`). Also switched the 4PP live readout from misleading `Rs/ρ/σ/V/I` labels (which duplicated the right-panel) to the V/I/R/P labels the real `_update_fpp_live_readout` writes.
+- **`.gitignore` scoped to reality.** Root-only `/*.md` glob (instead of recursive `*.md`) so `paper/`, `docs/`, and future contributor docs flow without per-file exceptions; `paper/` rule narrowed to `paper/joss-docs/` so the submission paper + .bib can ship. Runtime artifacts `config.json` and `measurement_data/` are now gitignored — CLAUDE.md already described `config.json` as gitignored; this makes it true.
+- **Paper prose copy-edit** on the State of the Field paragraph (L35): added parenthetical commas around "to my knowledge", hyphenated "point-and-click" as a compound adjective, fixed a sentence fragment ("Resistance over time measurement, fixed-bias modes…" had no main verb), swapped `&` for "and", removed a duplicate "and" in the mode list, and replaced a comma splice with a semicolon. Editorial "we"/"our" → first-person singular to match the single-author byline.
+
+### Fixed
+- **Committed screenshots were stale.** All five screenshots in `docs/screenshots/` predated v1.10.0 and v1.11.0 by 14–17 days, so they showed neither the `±σ` uncertainty readout, the Enhanced R mode toggle, the Wong palette, nor the smoothed readout. Regenerated, committed, and (per the new CI job above) protected against silent re-staling.
+
 ## [1.11.0] - 2026-05-24
 
 ### Changed
