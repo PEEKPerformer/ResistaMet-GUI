@@ -67,3 +67,60 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/ResistaMet.exe
+
+  regen-screenshots:
+    name: Regenerate screenshots and commit any drift
+    runs-on: ubuntu-latest
+    # Only run on actual tag pushes (not workflow_dispatch) so the
+    # commit message can reference the tag. The canonical committed
+    # screenshots in docs/screenshots/ are Linux-rendered to keep them
+    # reproducible — macOS local generation will differ slightly due
+    # to font rendering. CI normalizes them on every release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Check out main with full history
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Linux Qt runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libxkbcommon-x11-0 libdbus-1-3 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+            libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 \
+            libxcb-cursor0
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Regenerate screenshots
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tools/generate_screenshots.py
+
+      - name: Commit and push if screenshots changed
+        run: |
+          if [[ -z "$(git status --porcelain docs/screenshots/)" ]]; then
+            echo "Screenshots already match generator output for ${{ github.ref_name }}."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/screenshots/
+          git commit -m "docs(screenshots): auto-regen for ${{ github.ref_name }} [skip ci]"
+          git push origin main
