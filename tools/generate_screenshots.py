@@ -27,6 +27,17 @@ from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from resistamet_gui.ui.main_window import ResistanceMeterApp  # noqa: E402
+from resistamet_gui.ui.widgets import (  # noqa: E402
+    format_readout_html,
+    precision_for_nplc,
+)
+from resistamet_gui.accuracy import (  # noqa: E402
+    current_source_uncertainty,
+    current_uncertainty,
+    resistance_uncertainty,
+    voltage_source_uncertainty,
+    voltage_uncertainty,
+)
 
 
 DEMO_USER = "demo"
@@ -86,11 +97,28 @@ def fill_resistance(win):
         win.current_user, win.sample_input.text(),
     )
 
+    # Mirror production resistance live-readout (main_window.py:2354):
+    # same uncertainty source (resistance_uncertainty with enhanced flag
+    # from the offset-comp checkbox) and same format_readout_html chain
+    # so the screenshot is a faithful render of what the user sees.
     i_test = float(win.tab_resistance.res_test_current.value())
-    p = abs(i_test * i_test * r[-1])
-    win.tab_resistance.live_readout.setText(
-        f"{r[-1]:.3f} Ω   P: {p*1e6:.2f} µW"
+    r_last = float(r[-1])
+    enhanced = bool(win.tab_resistance.res_offset_comp.isChecked())
+    sigma_r = resistance_uncertainty(
+        voltage=i_test * r_last,
+        current=i_test,
+        nplc=1.0,
+        enhanced=enhanced,
     )
+    fp = precision_for_nplc(1.0)
+    parts = [format_readout_html(
+        'R', r_last, sigma_r, 'Ω', fallback_precision=fp)]
+    if i_test != 0:
+        p = abs(i_test * i_test * r_last)
+        parts.append(format_readout_html(
+            'P', p, float('nan'), 'W', fallback_precision=fp))
+    win.tab_resistance.live_readout.setText(
+        win._READOUT_DIVIDER.join(parts))
     win.tab_resistance.status_label.setText("Status: Running")
 
 
@@ -111,11 +139,24 @@ def fill_voltage_source(win):
         timestamps, values, comp, stats,
         win.current_user, win.sample_input.text(),
     )
+    # Mirror production source_v live-readout (main_window.py:2374): V is
+    # sourced (voltage_source_uncertainty), I is measured (current_uncertainty),
+    # R is propagated (resistance_uncertainty), P has no propagated σ.
     last_i = float(i[-1])
+    sigma_v = voltage_source_uncertainty(v)
+    sigma_i = current_uncertainty(last_i, nplc=1.0)
+    sigma_r = resistance_uncertainty(v, last_i, nplc=1.0)
+    fp = precision_for_nplc(1.0)
+    parts = [
+        format_readout_html('V', v, sigma_v, 'V', fallback_precision=fp),
+        format_readout_html('I', last_i, sigma_i, 'A', fallback_precision=fp),
+        format_readout_html(
+            'R', v / last_i, sigma_r, 'Ω', fallback_precision=fp),
+        format_readout_html(
+            'P', abs(v * last_i), float('nan'), 'W', fallback_precision=fp),
+    ]
     win.tab_voltage_source.live_readout.setText(
-        f"V: 1.000 V   I: {last_i*1000:.3f} mA   "
-        f"R: {v/last_i:.2f} Ω   P: {abs(v*last_i)*1000:.2f} mW"
-    )
+        win._READOUT_DIVIDER.join(parts))
     win.tab_voltage_source.status_label.setText("Status: Running")
 
 
@@ -136,11 +177,24 @@ def fill_current_source(win):
         timestamps, values, comp, stats,
         win.current_user, win.sample_input.text(),
     )
+    # Mirror production source_i live-readout (main_window.py:2374): I is
+    # sourced (current_source_uncertainty), V is measured (voltage_uncertainty),
+    # R is propagated, P has no propagated σ.
     last_v = float(v[-1])
+    sigma_v = voltage_uncertainty(last_v, nplc=1.0)
+    sigma_i = current_source_uncertainty(i)
+    sigma_r = resistance_uncertainty(last_v, i, nplc=1.0)
+    fp = precision_for_nplc(1.0)
+    parts = [
+        format_readout_html('V', last_v, sigma_v, 'V', fallback_precision=fp),
+        format_readout_html('I', i, sigma_i, 'A', fallback_precision=fp),
+        format_readout_html(
+            'R', last_v / i, sigma_r, 'Ω', fallback_precision=fp),
+        format_readout_html(
+            'P', abs(last_v * i), float('nan'), 'W', fallback_precision=fp),
+    ]
     win.tab_current_source.live_readout.setText(
-        f"V: {last_v*1000:.3f} mV   I: 1.000 mA   "
-        f"R: {last_v/i:.2f} Ω   P: {abs(last_v*i)*1e6:.2f} µW"
-    )
+        win._READOUT_DIVIDER.join(parts))
     win.tab_current_source.status_label.setText("Status: Running")
 
 
@@ -176,9 +230,27 @@ def fill_four_point(win):
     w.fpp_sigma_label.setText(
         f"{sigma_mean:.3e} ± {sigma_std:.2e} ({rsd:.2f}%)"
     )
-    w.live_readout.setText(
-        f"Rs: {mean:.2f} Ω/□   ρ: {rho_mean:.2e} Ω·cm   "
-        f"σ: {sigma_mean:.0f} S/cm   V/I: {mean/k:.3f} Ω"
+    # Mirror production 4PP per-reading live-readout (main_window.py:2460).
+    # The real GUI shows V/I/R/P for the *last reading* — the per-spot
+    # derived Rs/ρ/σ already live in the "Current Spot Stats" panel on
+    # the right side of this same screenshot. Synthesize a single reading
+    # from the spot mean: source current I, measured V = I·Rs/k.
+    src_i = float(w.fpp_current.value())
+    v_per_reading = src_i * mean / k  # invert Rs = k · V/I
+    sigma_v = voltage_uncertainty(v_per_reading, nplc=1.0)
+    sigma_i = current_uncertainty(src_i, nplc=1.0)
+    parts = [
+        format_readout_html('V', v_per_reading, sigma_v, 'V'),
+        format_readout_html('I', src_i, sigma_i, 'A'),
+        format_readout_html(
+            'R', v_per_reading / src_i, float('nan'), 'Ω'),
+        format_readout_html(
+            'P', abs(v_per_reading * src_i), float('nan'), 'W'),
+    ]
+    w.live_readout.setText(win._READOUT_DIVIDER.join(parts))
+    w.live_readout.setStyleSheet(
+        "color: #222; background: #f0f0f0; border: 1px solid #ccc; "
+        "border-radius: 4px; padding: 4px;"
     )
     w.status_label.setText("Status: Running")
 
