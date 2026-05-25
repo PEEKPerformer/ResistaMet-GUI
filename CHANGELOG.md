@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.1] - 2026-05-25
+
+Documentation-only patch. No application behavior changes from v1.12.0.
+
+### Added
+- **Hosted docs site** at [bfer.land/ResistaMet-GUI](https://bfer.land/ResistaMet-GUI/), built with mkdocs-material and deployed via a new `docs.yml` GitHub Actions workflow. Eight pages: Home, Installation, Quick Start, Concepts (SMU glossary), Settings, Data Outputs (CSV / HDF5 / legacy JSON column reference for every mode), Troubleshooting, Simulator Fidelity, and Citation. Every claim in the docs is grounded in a specific source-code line (~11,000 lines read this pass: every Python file in `resistamet_gui/` plus `tools/generate_screenshots.py`).
+- **README documentation map**: top-level README now links the 8 hosted docs pages so a visitor landing on the GitHub repo has one click to any reference material.
+
+### Changed
+- **`CITATION.cff` title scope-tightened** from "for Keithley Sourcemeters" → "for Keithley 2400-family Sourcemeters" to match what the software actually supports (`ModelSpec` table in `instrument.py`). Plain-text + BibTeX citation blocks in `README.md` and `docs/citation.md` updated to match. Per-version Zenodo DOIs are immutable so v1.12.0's archive keeps its existing title; the concept-DOI page will pick up the new title on this release.
+- **README slimmed from 286 → 140 lines.** Deep per-mode descriptions, full installation paths (VISA backends, Linux Qt packages, per-model envelope, cross-model help), and detailed Quick Start expansions moved to the docs site. Everything dropped from the README is still in the repo — just one click away on the docs site. 2-sentence Statement of Need retained.
+- **Screenshot generator tolerates `--out` paths outside the repo root.** The CI smoke step in `test.yml` passes `--out /tmp/screenshots-smoke`, which crashed the generator at `print(out_dir.relative_to(ROOT))` because `/tmp` isn't under ROOT. New `_pretty()` helper falls back to the absolute path when `relative_to` raises ValueError.
+- **`mkdocs.yml` `site_url`** updated from the `peekperformer.github.io` default to the actual `bfer.land/ResistaMet-GUI/` custom-domain URL so canonical link tags and `sitemap.xml` are correct.
+- **Paper Acknowledgements** add a one-line no-funding statement per JOSS policy.
+
+### Fixed
+- **`.gitignore` runtime artifact gaps.** `config.json` and `measurement_data/` are now gitignored at the project level. CLAUDE.md already described `config.json` as gitignored; this commit makes it true for contributors who don't share Brenden's `~/.config/git/ignore` global rule.
+- **`.gitignore` for `paper/joss-docs/`** narrowed from `paper/` so future paper assets (figures, additional bib files) can ship without per-file exceptions.
+- **`.claude/settings.local.json`** project-gitignored so contributors aren't relying on a global ignore rule for their personal Claude Code overrides. CONTRIBUTING.md now documents what the tracked `.claude/settings.json` project hooks do.
+
+### Infrastructure
+- **PR template** (`.github/pull_request_template.md`) prompting for summary, change type, hardware testing notes, and test plan.
+- **`docs.yml` workflow** rebuilds and deploys the mkdocs site on any push to `main` that touches `docs/**`, `mkdocs.yml`, or the workflow itself.
+
 ## [1.12.0] - 2026-05-25
 
 JOSS-submission-ready release. No user-visible application changes; this turn bundles the submission paper, gitignore hygiene, and a screenshot-generation pipeline that is honest about what the GUI actually renders.

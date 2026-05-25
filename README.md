@@ -6,7 +6,7 @@
 
 Open-source graphical interface for electrical characterization with Keithley 2400-family sourcemeters, with ASTM F84-aligned four-point-probe and ASTM F76 van der Pauw analysis built in.
 
-**Version:** 1.12.0
+**Version:** 1.12.1
 **Author:** Brenden Ferland
 
 ![ResistaMet GUI — I-V Sweep tab](docs/screenshots/05_iv_sweep.png)
