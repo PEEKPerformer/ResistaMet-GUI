@@ -1,0 +1,70 @@
+site_name: ResistaMet GUI
+site_description: Open-source electrical characterization for Keithley 2400-family sourcemeters
+site_url: https://peekperformer.github.io/ResistaMet-GUI/
+repo_url: https://github.com/PEEKPerformer/ResistaMet-GUI
+repo_name: PEEKPerformer/ResistaMet-GUI
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2025-2026 Brenden Ferland — MIT licensed
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.action.edit
+    - search.highlight
+    - search.share
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Quick Start: quickstart.md
+  - Simulator Fidelity: sim_fidelity.md
+  - Citation: citation.md
+  - Contributing: https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/CONTRIBUTING.md
+  - Changelog: https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/CHANGELOG.md
+  - Issues: https://github.com/PEEKPerformer/ResistaMet-GUI/issues
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/PEEKPerformer/ResistaMet-GUI
+    - icon: fontawesome/solid/circle-dot
+      link: https://doi.org/10.5281/zenodo.19919751
+      name: Zenodo concept DOI
