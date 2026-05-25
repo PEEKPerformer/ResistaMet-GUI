@@ -8,7 +8,7 @@ The **concept DOI** always resolves to the latest archived version on Zenodo:
 
 ```
 Ferland, B. (2026). ResistaMet GUI: An Open-Source Electrical Measurement Suite
-for Keithley Sourcemeters [Software]. Zenodo. https://doi.org/10.5281/zenodo.19919751
+for Keithley 2400-family Sourcemeters [Software]. Zenodo. https://doi.org/10.5281/zenodo.19919751
 ```
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19919751.svg)](https://doi.org/10.5281/zenodo.19919751)
@@ -23,7 +23,7 @@ Each tagged release also gets its own DOI. To cite a specific version (recommend
 @software{ferland_resistamet_gui,
   author    = {Ferland, Brenden},
   title     = {{ResistaMet GUI: An Open-Source Electrical Measurement Suite
-               for Keithley Sourcemeters}},
+               for Keithley 2400-family Sourcemeters}},
   year      = {2026},
   publisher = {Zenodo},
   doi       = {10.5281/zenodo.19919751},

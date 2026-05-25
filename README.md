@@ -266,7 +266,7 @@ If you use ResistaMet GUI in your research, please cite:
 
 ```
 Ferland, B. (2026). ResistaMet GUI: An Open-Source Electrical Measurement Suite
-for Keithley Sourcemeters [Software]. Zenodo. https://doi.org/10.5281/zenodo.19919751
+for Keithley 2400-family Sourcemeters [Software]. Zenodo. https://doi.org/10.5281/zenodo.19919751
 ```
 
 The DOI above is the *concept DOI* and always resolves to the latest archived version. Zenodo also provides a per-version DOI for citing a specific release. A `CITATION.cff` is included in the repository for machine-readable citation metadata.

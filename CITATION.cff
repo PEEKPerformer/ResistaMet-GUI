@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
-title: "ResistaMet GUI: An Open-Source Electrical Measurement Suite for Keithley Sourcemeters"
+title: "ResistaMet GUI: An Open-Source Electrical Measurement Suite for Keithley 2400-family Sourcemeters"
 abstract: >
   ResistaMet GUI is a PySide6 desktop application for electrical characterization
   using Keithley 2400/2450 sourcemeters. It provides resistance, voltage-source,
