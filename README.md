@@ -40,7 +40,7 @@ Optional: `--sim-resistance 1000` (1 kΩ DUT) or `--sim-model 2410` (advertise a
 
 ## Overview
 
-ResistaMet GUI is a PyQt5 desktop application for controlling Keithley sourcemeters and performing electrical measurements. It supports five measurement modes (including hardware-driven I-V sweeps), real-time data visualization, multi-spot four-point-probe analysis with delta mode and ASTM F84-aligned correction factors, and dual-format data export.
+ResistaMet GUI is a PySide6 desktop application for controlling Keithley sourcemeters and performing electrical measurements. It supports six measurement modes (including hardware-driven I-V sweeps and van der Pauw), real-time data visualization, multi-spot four-point-probe analysis with delta mode and ASTM F84-aligned correction factors, and dual-format data export.
 
 ## Statement of need
 
@@ -142,7 +142,7 @@ The live readout displays in engineering notation too: `V: 2.830 mV  I: 1.000 mA
 ### Requirements
 
 - Python 3.9+
-- PyQt5, PyVISA, NumPy, Matplotlib (installed automatically)
+- PySide6, PyVISA, NumPy, Matplotlib (installed automatically)
 - A VISA backend if you want to talk to real hardware (see below)
 
 ### Setup
@@ -166,9 +166,9 @@ If you launch without `--simulate` you need a VISA backend so PyVISA can reach t
 
 If neither is installed and you're not using `--simulate`, **Test Connection** will fail with `ValueError: Could not locate a VISA implementation`.
 
-#### Linux system packages (PyQt5 runtime)
+#### Linux system packages (PySide6 runtime)
 
-Headless Linux distributions (and many CI images) don't ship the X11/Qt platform shared libraries that PyQt5 dynamically loads. On Debian/Ubuntu:
+Headless Linux distributions (and many CI images) don't ship the X11/Qt platform shared libraries that PySide6 dynamically loads. On Debian/Ubuntu:
 
 ```bash
 sudo apt-get install -y \

@@ -174,13 +174,15 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
-*.md
-!README.md
-!LICENSE.md
-!CHANGELOG.md
-!CONTRIBUTING.md
-!CODE_OF_CONDUCT.md
-!docs/*.md
+# Block scratch / personal Markdown at the repo root only — subdirectories
+# (docs/, paper/, .github/) are free to add .md files without per-file
+# exceptions. Root-level user-facing docs stay tracked via the !exceptions.
+/*.md
+!/README.md
+!/LICENSE.md
+!/CHANGELOG.md
+!/CONTRIBUTING.md
+!/CODE_OF_CONDUCT.md
 resistamet-gui-1.1.0.py
 
 # v1.4.0 SCPI debugging / diagnostic scratch scripts at repo root.
@@ -191,7 +193,10 @@ debug_*.py
 diag_*.py
 production_test.py
 test_settings.py
-paper/
+# JOSS reviewer/editor reference docs were cloned in for local convenience;
+# they're upstream content and don't belong in the repo. The actual paper
+# (paper/paper.md, paper/paper.bib, future figures) is tracked.
+paper/joss-docs/
 resistamet-gui_old.py
 
 # macOS system files
