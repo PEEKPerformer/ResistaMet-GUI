@@ -199,6 +199,11 @@ test_settings.py
 paper/joss-docs/
 resistamet-gui_old.py
 
+# Runtime artifacts: per-user config and bench-measurement output
+# directories created by the app. Per-user data, not portable.
+config.json
+measurement_data/
+
 # macOS system files
 .DS_Store
 
