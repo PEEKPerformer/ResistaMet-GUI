@@ -93,7 +93,13 @@ When a reading exceeds range or hits compliance, the Keithley 2400 family return
 
 IEC 61010-1 sets the SELV (Safety Extra-Low Voltage) upper bound at 30 V DC — below this, electric-shock hazard is negligible under any realistic skin-resistance condition. The 2400/2410/2425/2430/2450 can compliance-clamp at 60–1100 V depending on model, well above SELV.
 
-Before any run whose **compliance voltage** (not just sourced — an open-circuit current source swings *up to* compliance) reaches the threshold, ResistaMet shows a warning modal. The threshold defaults to 30 V and is per-user-profile-configurable; set `safety_voltage_warn_v = 0` to disable entirely. A "Don't show again" checkbox flips a sticky silence flag; Settings → Measurement has a re-enable toggle.
+Before any run whose gating voltage reaches the threshold, ResistaMet shows a warning modal. The gating voltage depends on mode (from `_MODE_VOLTAGE_KEYS` in `safety.py`):
+
+- **Voltage Source mode**: the sourced V (`vsource_voltage`)
+- **Resistance / Current Source / Four-Point / Van der Pauw**: the configured V compliance — an open-circuit current source swings *up to* compliance, so even a 1 mA test current can put 200 V on the leads if compliance is set there
+- **I-V Sweep**: `max(|sweep_start|, |sweep_stop|)` when sourcing voltage, otherwise the compliance
+
+The threshold defaults to 30 V and is per-user-profile-configurable; set `safety_voltage_warn_v = 0` to disable entirely. A "Don't show again" checkbox flips a sticky silence flag (`safety_voltage_warn_silenced`); Settings → Measurement has a re-enable toggle.
 
 The status bar appends `⚡ N V live` while a hazardous run is active. Warning is informational — it never blocks the measurement.
 

@@ -42,7 +42,8 @@ If you don't have Python, the latest GitHub release has a **standalone Windows `
 Optional flags:
 
 - `--sim-resistance 1000` — advertise a 1 kΩ DUT (default 100 Ω)
-- `--sim-model 2410` — advertise a different Keithley model (default 2400)
+- `--sim-model 2410` — advertise a different Keithley model (default 2420)
+- `--sim-noise-rsd 1e-3` — Gaussian noise RSD applied to the measured side of each reading (default 0.0 = perfect Ohm's law)
 
 ## Documentation map
 

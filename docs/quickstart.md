@@ -34,7 +34,7 @@ CSV columns: `elapsed_s, V_meas, I_meas, R_ohm, R_unc_ohm, compliance, event`. T
 
 ### Voltage Source
 
-Apply a DC voltage, monitor the resulting current. Good for chronoamperometry, electrochemistry, device biasing, and bias-stress experiments. Touch-safety warning fires before any run with compliance ≥ 30 V — see [Concepts → Touch-safety warning](concepts.md#touch-safety-warning).
+Apply a DC voltage, monitor the resulting current. Good for chronoamperometry, electrochemistry, device biasing, and bias-stress experiments. Touch-safety warning fires before any run whose sourced V (for this mode) reaches the configured threshold (default 30 V) — see [Concepts → Touch-safety warning](concepts.md#touch-safety-warning).
 
 Key settings: Source voltage, current compliance, duration (`0` = run until you click Stop), auto-zero.
 
@@ -56,7 +56,7 @@ Sheet resistance, resistivity, and conductivity via a collinear 4-point probe. S
 2. Start the measurement. Readings stream into the per-reading table, the live histogram fills in with the Rs distribution, and the Current Spot Stats panel updates after each reading.
 3. **Save Spot** archives the current set into the saved-spots table (top right). Move probe to next position.
 4. Repeat. After ≥2 spots, the histogram canvas switches to a per-spot bar chart, color-coded green/orange/red by deviation from the cross-spot mean.
-5. **Export Summary** writes a per-spot breakdown CSV with inter-spot uniformity RSD.
+5. **Export Summary…** writes a hand-rolled CSV (separate from the v2.0 streaming CSV) with overall Rs / ρ / σ mean+std, plus a per-spot table when ≥1 spot has been saved. See [Data Outputs → 4PP per-spot summary](outputs.md#four-point-probe).
 
 **ASTM F84-02 correction factors activate automatically** when you supply:
 
@@ -87,13 +87,10 @@ CSV gains per-polarity columns `V_plus, V_minus, R_f, R_r` for the F84 §11.2.2.
 
 ASTM F76-08 Method A for sheet resistance + resistivity on arbitrary-shape, hole-free samples with four periphery contacts (numbered 1–4 counter-clockwise).
 
-The worker is a state machine: emits `geometry_ready`, blocks while you reconnect leads for the next geometry, sources `+I` then `−I`, enforces `:OUTP OFF` between geometries. Schematic + filmstrip update as you advance.
+The worker is a state machine (see `VdpMeasurementWorker` in `workers.py`): emits `geometry_ready`, blocks on a `threading.Event` until you click Measure for the geometry, sources `+I` then `−I` and averages `vdp_readings_per_polarity` readings at each, then writes `:OUTP OFF` between geometries so you can safely reconnect leads. The vdP tab has a sample-diagram widget (`VdpSampleDiagram`), a filmstrip preview of the four geometries (`VdpProtocolFilmstrip`), and a per-geometry bar chart (`VdpPerGeometryBarChart`).
 
-- F76's implicit `f(Q)` equation is solved numerically (hand-rolled bisection; no scipy dependency)
-- **§11.1 homogeneity gate** automatically flags samples where ρ_A and ρ_B disagree by more than 10%
-- Per-geometry bar chart visualizes uniformity, color-coded by deviation from the mean
-
-You will be prompted for sample thickness on Start if it isn't set (default is `0` sentinel — prevents the silent `ρ = R_s × 1 µm` failure mode).
+- F76's implicit `f(Q)` is solved by `calculate_van_der_pauw` in `calculations_vdp.py`. The final result fields land in the trailing CSV metadata block as `vdp_result.sheet_resistance`, `vdp_result.rho_avg`, `vdp_result.homogeneous` (boolean per F76 §11.1), `vdp_result.asymmetry_pct`, `vdp_result.q_a/b`, `vdp_result.f_a/b` — see [Data Outputs → Van der Pauw](outputs.md#van-der-pauw) for the full schema.
+- The default `vdp_thickness_cm` is `0.0` (sentinel "unset"). If you click Start without entering a thickness, `_require_vdp_thickness` in `main_window.py` opens a `QInputDialog.getDouble` modal asking for it in µm — prevents the silent `ρ = R_s × 1 µm` failure mode the old default had.
 
 CSV is one row per geometry with both polarities captured — see [Data Outputs → van der Pauw](outputs.md#van-der-pauw).
 

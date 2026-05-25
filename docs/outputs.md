@@ -1,6 +1,14 @@
 # Data outputs
 
-Every measurement writes a single file (or pair, for legacy mode) named after the sample + a timestamp, into `<data_directory>/<username>/`. The format is selected in Settings → Output.
+Every measurement writes a single file (or pair, for legacy mode) into `<data_directory>/<sanitized-username>/`. The base filename is built as:
+
+```
+{unix_timestamp}_{sanitized_sample_name}_{mode_tag}_{source_value_str}
+```
+
+where `mode_tag` is `R`, `VSRC`, `ISRC`, `4PP`, `vdP`, or `DATA`, and `source_value_str` summarises the source level (e.g. `1.00mA`, `0.500V`, `2.00mA_delta`, `sweep_0.0to1.0`). Username and sample name are sanitized to strip path separators and `..` traversal before they touch the filesystem.
+
+The file extension is chosen by the active exporter (selected in Settings → Output).
 
 ## Format choices
 
@@ -67,7 +75,7 @@ Single dataset named `data` of compound dtype (every column as a variable-length
 | `I_meas` | A | Current sourced (instrument-reported, matches the test-current setpoint) |
 | `R_ohm` | Ω | Instrument-reported R — preserves Enhanced R / offset-comp / source-readback features (NOT `V_meas/I_meas` recomputed here) |
 | `R_unc_ohm` | Ω | Per-reading σ_R. When Enhanced R is on, this comes from the datasheet's Enhanced column; otherwise from V/I RSS propagation. |
-| `compliance` | | Empty or a flag string when the row hit compliance (V at limit, or magic 9.91e37) |
+| `compliance` | | `OK` on a normal reading, `V_COMP` when the voltage side hit compliance |
 | `event` | | Empty or the label of the most recent `M` keypress event marker |
 
 Metadata `params`: `test_current_A`, `voltage_compliance_V`, `measurement_type`, `auto_range`, `auto_zero`, `offset_compensated_ohms`.
@@ -82,8 +90,8 @@ Metadata `params`: `test_current_A`, `voltage_compliance_V`, `measurement_type`,
 | `R_calc` | Ω | `V_set / I_meas` |
 | `I_unc_A` | A | σ_I from the per-range current-measurement spec |
 | `R_calc_unc_ohm` | Ω | σ_R via RSS through `R = V_set/I_meas` (combining V-source spec + I-measure spec) |
-| `compliance` | | Compliance flag for the current side |
-| `event` | | Event-marker label |
+| `compliance` | | `OK` on a normal reading, `I_COMP` when the current side hit compliance |
+| `event` | | Event-marker label written by the `M` keyboard shortcut |
 
 Metadata `params`: `source_voltage_V`, `current_compliance_A`, `current_auto_range`, `duration_hours`, `auto_zero`.
 
@@ -106,8 +114,8 @@ Metadata `params`: `source_current_A`, `voltage_compliance_V`, `voltage_auto_ran
 | `sigma_S_cm` | S/cm | Conductivity = `1 / rho` |
 | `V_unc_V` | V | σ_V from per-range voltage-measurement spec |
 | `I_unc_A` | A | σ_I from per-range current-measurement spec |
-| `compliance` | | Compliance flag |
-| `event` | | Event-marker label |
+| `compliance` | | `OK` on a normal reading, `V_COMP` when the voltage side hit compliance |
+| `event` | | Event-marker label written by the `M` keyboard shortcut |
 
 Per-reading uncertainty on Rs / ρ / σ is recoverable downstream: `σ_X/X = √((V_unc/V)² + (I_unc/I)²)`. The aggregated per-spot stats use a different formula combining statistical and instrument uncertainty — see [Concepts → Uncertainty](concepts.md#uncertainty-instrument-vs-statistical-vs-combined).
 
@@ -140,13 +148,16 @@ One row per geometry (4 rows total per spot), both polarities captured in the sa
 | `V_neg` | V | Voltage at `−I` |
 | `current_A` | A | Sourced current magnitude (same `|I|` at both polarities) |
 
-The final sheet resistance, resistivity, f(Q), Q, the §11.1 homogeneity check result, and the combined uncertainty land in the **metadata** at finalize — not as data rows. Look in the end-of-file `# --- run completed ---` block for:
+The final sheet resistance, resistivity, f-factors, Q ratios, and the §11.1 homogeneity result land in the **metadata** at finalize, not as data rows. The worker emits a `vdp_result` dict that `_flatten_metadata` writes into the trailing `# --- run completed ---` block with dotted keys:
 
-- `sheet_resistance_ohm_sq`, `sheet_resistance_uncertainty`
-- `rho_avg_ohm_cm`, `rho_avg_uncertainty`
-- `f_q_factor`, `q_factor`
-- `homogeneity_check`, `rho_a_vs_rho_b_pct`
-- `homogeneity_gate_passed` (boolean per F76 §11.1)
+- `vdp_result.sheet_resistance` (Ω/□), `vdp_result.sheet_resistance_uncertainty`
+- `vdp_result.rho_avg` (Ω·cm), `vdp_result.rho_avg_uncertainty`
+- `vdp_result.rho_a`, `vdp_result.rho_b` (the two F76 group resistivities)
+- `vdp_result.q_a`, `vdp_result.q_b`, `vdp_result.f_a`, `vdp_result.f_b`
+- `vdp_result.homogeneous` (boolean — `true` when |ρ_A − ρ_B|/ρ_avg ≤ F76 §11.1 threshold)
+- `vdp_result.asymmetry_pct` (the |ρ_A − ρ_B|/ρ_avg × 100 number)
+- `vdp_result.current_a`, `vdp_result.thickness_cm`
+- `vdp_result.voltages.<label>` — every raw V measurement, keyed by F76 geometry label
 
 Metadata `params`: `source_current_A`, `voltage_compliance_V`, `thickness_cm`, `settling_s`, `readings_per_polarity`, `standard: ASTM F76-08 Method A`.
 
@@ -157,7 +168,7 @@ Metadata `params`: `source_current_A`, `voltage_compliance_V`, `thickness_cm`, `
 | `point` | | Sweep index (0…N) |
 | `V_source` | V | Sourced voltage at this step (for V-source sweeps) — for I-source sweeps this column is named `I_source` and the next is `V_meas` |
 | `I_meas` | A | Measured current (for V-source sweeps) |
-| `compliance` | | Compliance flag |
+| `compliance` | | `OK` on a normal point, `COMP` when that point hit compliance |
 
 Metadata `params`: `source_function`, `start`, `stop`, `step`, `compliance`, `delay_s`, `direction`.
 
@@ -191,4 +202,25 @@ with h5py.File(path.replace(".csv", ".h5"), "r") as f:
     print(data.dtype.names)             # column names
 ```
 
-For per-spot 4PP summaries, the **Export Summary** button on the 4PP tab writes a separate CSV with one row per saved spot, columns: `spot_name, n_readings, Rs_mean, Rs_std, Rs_rsd_pct, rho_mean, rho_std, sigma_mean, sigma_std, u_total, u_stat, u_inst`. Inter-spot uniformity is reported in the trailing metadata block.
+For per-spot 4PP summaries, the **Export Summary…** button on the 4PP tab writes a separate (non-v2.0) CSV with a header block and two sections. From `export_fpp_summary` in `main_window.py`:
+
+```
+4-Point Probe Summary
+Sample,<sample-name>
+User,<username>
+Model,<thin_film | semi_infinite | finite_thin | finite_alpha>
+Spacing s (cm),<value>
+Thickness t (cm),<value>
+Alpha,<value>
+
+Metric,Mean,StdDev
+Sheet Resistance (Ω/□),<mean>,<std>
+Resistivity (Ω·cm),<mean>,<std>
+Conductivity (S/cm),<mean>,<std>
+
+Per-Spot Results
+Spot,N,Rs Mean (Ω/□),Rs Std,Rs RSD%,ρ Mean (Ω·cm),ρ Std,σ Mean (S/cm),σ Std
+<spot-name>,<n>,...
+```
+
+The "Per-Spot Results" section is only written when ≥1 spot has been saved with the **Save Spot** button. Mean/Std use `np.nanmean` / `np.nanstd(ddof=1)`; NaN and infinite values are written as the literal string `N/A`.

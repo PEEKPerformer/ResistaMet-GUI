@@ -71,16 +71,6 @@ pip install pyvisa-py
 
 **Fix:** Either lower `I_source` (typical 100 µA is safe for unknown films), lower `V_compliance`, or — if you genuinely want to run with more power — raise `fpp_power_stop_w` in the 4PP tab Advanced section. The warn threshold (`fpp_power_warn_w`, default 10 mW) is non-blocking; only the stop threshold aborts.
 
-### Live readout stays at `--`
-
-**Cause:** The Keithley returned a non-finite value (NaN, or the sentinel) for that channel. Common after a compliance hit, or when the active range can't represent the reading.
-
-**Fix:**
-
-1. Click **Stop** and re-check your source/compliance settings.
-2. For 4PP / vdP, verify your probes are actually contacting the sample (lift and re-seat).
-3. If the issue persists with verified contact, the sample resistance may be outside the instrument's measurable range for your settings — try a different model (the 2410 covers 1100 V; the 2440 sources 5 A) or change `I_source` to put the reading on a sensible range.
-
 ## Plot / display
 
 ### Live plot is choppy or laggy
@@ -129,9 +119,10 @@ pip install pyvisa-py
 resistamet-gui --simulate --sim-resistance 1000      # 1 kΩ DUT
 resistamet-gui --simulate --sim-resistance 1e6        # 1 MΩ DUT
 resistamet-gui --simulate --sim-model 2410            # advertise as a 2410
+resistamet-gui --simulate --sim-noise-rsd 1e-3       # add 0.1% Gaussian noise
 ```
 
-The simulator generates noise consistent with the advertised instrument's per-range specs, so you can validate uncertainty propagation end-to-end without hardware.
+By default the simulator returns perfect Ohm's-law readings (`--sim-noise-rsd 0.0`); pass a non-zero RSD to inject Gaussian noise on the measured side of each reading. See [Simulator Fidelity](sim_fidelity.md) for what's modeled and what isn't.
 
 ### Simulator behaves slightly differently from my real Keithley
 
@@ -143,11 +134,10 @@ The simulator generates noise consistent with the advertised instrument's per-ra
 
 If the error message doesn't match anything here:
 
-1. Check the log file at `~/.resistamet/logs/resistamet.log` for the full traceback.
-2. Re-run with `--verbose` to capture verbose SCPI traffic in the log.
-3. [Open an issue](https://github.com/PEEKPerformer/ResistaMet-GUI/issues/new/choose) with:
-    - ResistaMet GUI version (`Help → About`)
+1. Check the log file at `~/.resistamet/logs/resistamet_YYYYMMDD.log` (one per UTC date, rotated at 5 MB × 3 backups) for the full traceback.
+2. [Open an issue](https://github.com/PEEKPerformer/ResistaMet-GUI/issues/new/choose) with:
+    - ResistaMet GUI version (`resistamet-gui --version`)
     - OS + Python version
-    - Keithley model + firmware (from `*IDN?`)
+    - Keithley model + firmware (from `*IDN?`, surfaced in the status bar after Test Connection)
     - The exact error text and the relevant log excerpt
     - The exact steps that produced the error
