@@ -1,12 +1,37 @@
 # Installation
 
-## Requirements
+Two paths depending on whether you want to develop ResistaMet GUI or just run it.
+
+## Windows — no Python required
+
+Each tagged release attaches a standalone `ResistaMet.exe` to the GitHub release page. It bundles Python, PySide6, and all dependencies — double-click and run.
+
+1. Go to the [releases page](https://github.com/PEEKPerformer/ResistaMet-GUI/releases/latest)
+2. Download **`ResistaMet.exe`** from the Assets section
+3. (Optional) put it somewhere convenient on PATH or pinned to your Start menu
+4. Double-click to launch
+
+You can also run it from a Command Prompt to pass flags:
+
+```cmd
+ResistaMet.exe --simulate
+ResistaMet.exe --version
+```
+
+The `.exe` is built by GitHub Actions on every tag push (see [`build.yml`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/.github/workflows/build.yml)) using PyInstaller, then smoke-tested with `--version` before being attached to the release. ~30 MB for the v1.11.0+ Qt6 binaries.
+
+!!! info "Why Windows-only for the bundled binary?"
+    NI-VISA — the standard driver for Keithley GPIB adapters — runs on Windows and Linux but was dropped on macOS after NI-VISA 18.5 (2020). Most lab PCs running 2400-series instruments are Windows, so that's what we ship the .exe for. macOS and Linux users should use the source install below.
+
+## Python source install (all platforms)
+
+### Requirements
 
 - Python 3.9 or later
-- PySide6, PyVISA, NumPy, Matplotlib (installed automatically)
-- A VISA backend if you want to talk to real hardware (see below)
+- PySide6, PyVISA, NumPy, Matplotlib, pyqtgraph (installed automatically by `pip install -e .`)
+- A VISA backend if you want to talk to real hardware (see [VISA backend](#visa-backend-real-hardware-only) below)
 
-## Setup
+### Setup
 
 ```bash
 git clone https://github.com/PEEKPerformer/ResistaMet-GUI.git
@@ -16,25 +41,39 @@ resistamet-gui              # real instrument (needs VISA backend)
 resistamet-gui --simulate   # in-package simulator, no hardware
 ```
 
-`pip install -e .` reads [`pyproject.toml`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/pyproject.toml) and registers the `resistamet-gui` console command. You can also run `python resistamet-gui.py` from the repo root.
+`pip install -e .` reads [`pyproject.toml`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/pyproject.toml) and registers `resistamet-gui` on your PATH. You can also run `python resistamet-gui.py` from the repo root if you prefer to bypass the entry-point.
+
+### Optional: HDF5 export
+
+CSV is the default output format. To also enable HDF5 (`.h5`) export, install `h5py`:
+
+```bash
+pip install h5py
+```
+
+Without `h5py`, the HDF5 option in Settings → Output is disabled with a tooltip explaining why. See [Data Outputs](outputs.md) for the format reference.
 
 ## VISA backend (real-hardware only)
 
-If you launch without `--simulate` you need a VISA backend so PyVISA can reach the instrument:
+If you launch without `--simulate` you need a VISA backend so PyVISA can reach the instrument.
 
 === "NI-VISA (Windows / Linux)"
 
     [Download from NI](https://www.ni.com/en/support/downloads/drivers/download.ni-visa.html). Needed for NI GPIB adapters. Windows and Linux only — NI dropped macOS support after NI-VISA 18.5 (2020); on Apple Silicon the legacy installer will not run at all.
 
+    This is the bench-validated path used by the development lab (Windows 10/11 + NI-USB-GPIB-HS adapter + Keithley 2420).
+
 === "pyvisa-py (cross-platform, recommended on macOS)"
+
+    Pure-Python VISA backend.
 
     ```bash
     pip install pyvisa-py
     ```
 
-    Pure-Python backend. Reportedly works with Prologix USB-GPIB adapters and serial sourcemeters, but only NI-VISA + a Keithley 2420 on Windows is verified in-house. Reports welcome.
+    Reported to work with Prologix USB-GPIB adapters and serial-port sourcemeters, but only NI-VISA + Keithley 2420 on Windows is verified in-house. Bench reports from other configurations are welcome via [GitHub issues](https://github.com/PEEKPerformer/ResistaMet-GUI/issues).
 
-If neither is installed and you're not using `--simulate`, **Test Connection** will fail with `ValueError: Could not locate a VISA implementation`.
+If neither backend is installed and you're not using `--simulate`, the **Test Connection** button on each tab will fail with `ValueError: Could not locate a VISA implementation`. See [Troubleshooting → VISA backend not found](troubleshooting.md#visa-backend-not-found-valueerror-could-not-locate-a-visa-implementation).
 
 ## Linux system packages (PySide6 runtime)
 
@@ -48,16 +87,31 @@ sudo apt-get install -y \
     libxcb-sync1 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1
 ```
 
-This is the same list our CI uses — see [`.github/workflows/test.yml`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/.github/workflows/test.yml).
+This matches the list CI uses — see [`.github/workflows/test.yml`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/.github/workflows/test.yml).
 
 ## Instrument compatibility
 
-Hardware-validated:
+ResistaMet GUI identifies the connected model from its `*IDN?` response and surfaces the matching source/measure envelope at connect time. The full table:
 
-- **Keithley 2420** (3 A model, firmware C30) — primary capture source, 29 SCPI fixtures + 6 documented quirks across three DUT decades
-- **Keithley 2400** (1 A model, firmware C30) — cross-model validation, 29/29 pass
+| Model | Max source V | Max source I | Max power | Notes |
+|---|---|---|---|---|
+| **2400** | ±200 V | ±1.05 A | 22 W | Original 2400 SCPI surface |
+| **2401** | ±20 V | ±1.05 A | 22 W | Low-voltage variant of the 2400 |
+| **2410** | ±1100 V | ±1.05 A | 22 W | High-voltage; special handling above 100 V |
+| **2420** | ±60 V | ±3.05 A | 22 W | Bench-primary; 29 SCPI fixtures captured |
+| **2425** | ±100 V | ±3.05 A | 22 W |  |
+| **2430** | ±100 V | ±3.05 A | 22 W | Pulse mode supports 10 A (5 W avg) |
+| **2440** | ±40 V | ±5.05 A | 22 W | Highest-current model in the family |
+| **2450** | ±200 V | ±1.05 A | 22 W | Touchscreen successor; TSP+SCPI surface |
 
-The production code identifies the connected model from `*IDN?` against a static specification table covering the 2400 / 2401 / 2410 / 2420 / 2425 / 2430 / 2440 / 2450 family and surfaces the matching source/measure envelope at connect time. The 2400-family SCPI surface is largely uniform, so the other models in that table should work in principle, but only the 2400 and 2420 are hardware-validated in-house.
+Source: per-model `ModelSpec` table in [`resistamet_gui/instrument.py`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/resistamet_gui/instrument.py), grounded in the Keithley datasheet.
+
+### What's bench-validated vs documented
+
+- **Keithley 2420** (3 A model, firmware C30) — primary capture source, 29 SCPI fixtures + 6 documented quirks across three DUT decades (100 Ω, 10 kΩ, 1 MΩ)
+- **Keithley 2400** (1 A model, firmware C30) — cross-model validation, all 29 fixtures pass
+
+The other models in the table should work — the 2400-family SCPI surface is largely uniform — but **only the 2400 and 2420 are bench-validated in-house**. If your model isn't yet captured, see [Help validate cross-model fidelity](#help-validate-cross-model-fidelity) below.
 
 ### Help validate cross-model fidelity
 

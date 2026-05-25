@@ -37,9 +37,15 @@ theme:
 
 nav:
   - Home: index.md
-  - Installation: installation.md
-  - Quick Start: quickstart.md
-  - Simulator Fidelity: sim_fidelity.md
+  - Get started:
+    - Installation: installation.md
+    - Quick Start: quickstart.md
+  - Reference:
+    - Concepts & glossary: concepts.md
+    - Settings: settings.md
+    - Data outputs: outputs.md
+    - Troubleshooting: troubleshooting.md
+    - Simulator fidelity: sim_fidelity.md
   - Citation: citation.md
   - Contributing: https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/CONTRIBUTING.md
   - Changelog: https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/CHANGELOG.md

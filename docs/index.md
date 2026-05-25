@@ -9,20 +9,24 @@ Open-source graphical interface for electrical characterization with Keithley 24
 
 ## What it does
 
-Six measurement modes for the same Keithley 2400/2450-family instrument, all in one point-and-click GUI:
+Six measurement modes on the same Keithley 2400-family instrument, all in one point-and-click GUI:
 
-| Mode | Sources | Measures | Use case |
-|------|---------|----------|----------|
-| **Resistance** | Current (up to 3 A) | Resistance | 2-/4-wire resistance, long-duration logging |
-| **Voltage Source** | Voltage (-200 to +200 V) | Current | Bias stress, chronoamperometry, electrochemistry |
-| **Current Source** | Current (-3 to +3 A) | Voltage | Material characterization |
+| Mode | Sources | Measures | Typical use |
+|------|---------|----------|----|
+| **Resistance** | Current | Resistance | 2- or 4-wire resistance, long-duration logging |
+| **Voltage Source** | Voltage | Current | Bias stress, chronoamperometry, electrochemistry |
+| **Current Source** | Current | Voltage | Material characterization |
 | **Four-Point Probe** | Current | Voltage | Sheet resistance + resistivity (ASTM F84) |
-| **I-V Sweep** | Voltage or Current | Current or Voltage | Diode / device curves, hysteresis |
+| **I-V Sweep** | Voltage *or* Current | Current *or* Voltage | Diode / device curves, hysteresis |
 | **Van der Pauw** | Current | Voltage | Sheet resistance on arbitrary-shape samples (ASTM F76) |
 
-Per-reading instrument uncertainty from the Keithley datasheet propagates all the way through to derived quantities like sheet resistance and resistivity.
+Source / measure envelopes vary by model — see [Installation → Instrument compatibility](installation.md#instrument-compatibility) for the full per-model table. Per-reading instrument uncertainty from the Keithley datasheet propagates through every derived quantity (sheet resistance, resistivity, conductivity).
+
+The live readout colors V/I/R/P labels per channel using the [Wong colorblind-safe palette](https://www.nature.com/articles/nmeth.1618) (Nature Methods, 2011) — blue V, green I, vermillion R, orange P — with the `± σ` portion dimmed so the main number stays the visual anchor.
 
 ## Try it now (no instrument required)
+
+If you already have Python:
 
 ```bash
 git clone https://github.com/PEEKPerformer/ResistaMet-GUI.git
@@ -31,22 +35,30 @@ pip install -e .
 resistamet-gui --simulate
 ```
 
-The `--simulate` flag launches the full GUI against an in-package Keithley 2400-family simulator. Every measurement mode works end-to-end with no NI-VISA, no pyvisa-py, and no GPIB hardware. The simulator is the same one tests validate byte-equivalent against captured hardware traces — see [Simulator Fidelity](sim_fidelity.md).
+The `--simulate` flag launches the full GUI against an in-package Keithley 2400-family simulator. Every measurement mode works end-to-end with no NI-VISA, no pyvisa-py, and no GPIB hardware. The simulator is byte-validated against captured hardware traces — see [Simulator Fidelity](sim_fidelity.md).
+
+If you don't have Python, the latest GitHub release has a **standalone Windows `.exe`** — see [Installation → Windows .exe](installation.md#windows-no-python-required).
 
 Optional flags:
 
-- `--sim-resistance 1000` — advertise a 1 kΩ DUT
-- `--sim-model 2410` — advertise a different Keithley model
+- `--sim-resistance 1000` — advertise a 1 kΩ DUT (default 100 Ω)
+- `--sim-model 2410` — advertise a different Keithley model (default 2400)
 
-## Where next
+## Documentation map
 
-- **[Installation](installation.md)** — full install paths including VISA backends and Linux Qt deps
-- **[Quick Start](quickstart.md)** — first-measurement walkthrough, per-mode workflows
-- **[Simulator Fidelity](sim_fidelity.md)** — what the in-package fake covers, what it intentionally doesn't, and how it's validated against hardware
-- **[Citation](citation.md)** — citation block for papers using ResistaMet GUI
+| Page | Purpose |
+|---|---|
+| [Installation](installation.md) | Two install paths (Python source, Windows .exe), VISA backends, Linux Qt deps, per-model envelope |
+| [Quick Start](quickstart.md) | First-measurement walkthrough, per-mode workflows, useful inputs |
+| [Concepts](concepts.md) | Plain-English glossary for SMU terms (NPLC, compliance, auto-zero, Enhanced R, 4PP, vdP) |
+| [Settings](settings.md) | Settings dialog tour with per-knob explanation and defaults |
+| [Data Outputs](outputs.md) | CSV / HDF5 / legacy JSON reference, every column for every mode |
+| [Troubleshooting](troubleshooting.md) | Common errors and how to resolve them |
+| [Simulator Fidelity](sim_fidelity.md) | What the in-package fake covers, what it doesn't, and how it's validated |
+| [Citation](citation.md) | BibTeX, DOIs, downstream publications |
 
-## Source code, issues, contributions
+## Source, issues, contributions
 
-The full source lives on GitHub: [PEEKPerformer/ResistaMet-GUI](https://github.com/PEEKPerformer/ResistaMet-GUI).
+Source: [PEEKPerformer/ResistaMet-GUI](https://github.com/PEEKPerformer/ResistaMet-GUI).
 
 Bug reports, feature requests, and SCPI-trace contributions are welcome — see [CONTRIBUTING.md](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/CONTRIBUTING.md).
