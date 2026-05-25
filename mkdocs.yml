@@ -1,6 +1,6 @@
 site_name: ResistaMet GUI
 site_description: Open-source electrical characterization for Keithley 2400-family sourcemeters
-site_url: https://peekperformer.github.io/ResistaMet-GUI/
+site_url: https://bfer.land/ResistaMet-GUI/
 repo_url: https://github.com/PEEKPerformer/ResistaMet-GUI
 repo_name: PEEKPerformer/ResistaMet-GUI
 edit_uri: edit/main/docs/
