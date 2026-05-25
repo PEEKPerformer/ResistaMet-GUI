@@ -28,7 +28,7 @@ Key settings (on the tab itself, not Settings dialog):
 - **Measurement type** — 2-wire (includes lead resistance) or 4-wire (eliminates it)
 - **Auto Zero** — `on` / `once` / `off`. See [Concepts → Auto-zero](concepts.md#auto-zero) for the speed/accuracy trade.
 - **Enhanced accuracy** — checkbox enables offset-compensated ohms (cancels thermoelectric EMF; ~2× slower per reading). **ON by default** because a precision-measurement tool should ship the accurate default. See [Concepts → Enhanced R mode](concepts.md#enhanced-r-mode).
-- **Cable null** — one-button measure-and-subtract of lead resistance (software-side reference)
+- **Cable null** — click **Null Cables** with the probes shorted; the helper runs a one-shot resistance reading at NPLC=10 and stores it as a software offset (`res_cable_null`) that's subtracted from every subsequent R reading. The 2400 series lacks `:SENS:RES:REL`, so the subtraction is Python-side. **Clear Null** removes it.
 
 CSV columns: `elapsed_s, V_meas, I_meas, R_ohm, R_unc_ohm, compliance, event`. The R column is the instrument-reported ohms (preserves Enhanced R if enabled); `V_meas` and `I_meas` let you recompute σ_R downstream. See [Data Outputs → resistance](outputs.md#resistance).
 
@@ -56,7 +56,7 @@ Sheet resistance, resistivity, and conductivity via a collinear 4-point probe. S
 2. Start the measurement. Readings stream into the per-reading table, the live histogram fills in with the Rs distribution, and the Current Spot Stats panel updates after each reading.
 3. **Save Spot** archives the current set into the saved-spots table (top right). Move probe to next position.
 4. Repeat. After ≥2 spots, the histogram canvas switches to a per-spot bar chart, color-coded green/orange/red by deviation from the cross-spot mean.
-5. **Export Summary…** writes a hand-rolled CSV (separate from the v2.0 streaming CSV) with overall Rs / ρ / σ mean+std, plus a per-spot table when ≥1 spot has been saved. See [Data Outputs → 4PP per-spot summary](outputs.md#four-point-probe).
+5. **Export Summary…** writes a hand-rolled CSV (separate from the v2.0 streaming CSV) with overall Rs / ρ / σ mean+std, a per-spot table when ≥1 spot has been saved, and an inter-spot uniformity block (mean-of-means, std-of-means, RSD%) when ≥2 spots are saved. See [Data Outputs → 4PP per-spot summary](outputs.md#four-point-probe).
 
 **ASTM F84-02 correction factors activate automatically** when you supply:
 
@@ -112,10 +112,13 @@ The live readout displays in engineering notation: `V: 2.830 mV  I: 1.000 mA  R:
 
 Other UI conveniences:
 
-- **Event markers** — press `M` during a run to insert a labeled event in the CSV's `event` column
-- **Multi-user profiles** — each user gets their own settings, switchable from the File menu
+- **Event markers** — press `M` during a run; a dialog asks for a label (default `MARK`) which lands in the CSV's `event` column. The mark-event button on the active tab flashes yellow for 500 ms as visual confirmation.
+- **Tab keyboard shortcuts** — `Ctrl/Cmd + 1..6` jumps to tabs 1 through 6 (Resistance → vdP) without clicking
+- **Multi-user profiles** — each user gets their own settings via the Settings → User Settings menu
+- **Parameter profiles** — Profiles menu → Save / Load Profile for Current Mode writes/reads a JSON of the active tab's measurement-block settings (useful for per-sample-type templates)
 - **"Run until stopped"** — set duration to `0` on timed modes for indefinite logging
-- **Tab switching during a run** — the active tab keeps logging, inactive tabs are read-only
+- **Tab switching during a run** — the active tab keeps logging, inactive tabs are read-only; status bar shows "Viewing X tab (read-only) — Y measurement running"
+- **Smoothed live readout** — the text readout updates at 4 Hz from a ~500 ms rolling mean over the last `max(5, round(0.5 × sampling_rate))` samples, so noisy traces stay readable. The plot, CSV, and stats still see every full-rate sample.
 
 ## Testing locally
 

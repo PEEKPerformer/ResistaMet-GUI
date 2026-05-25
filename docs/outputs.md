@@ -73,7 +73,7 @@ Single dataset named `data` of compound dtype (every column as a variable-length
 | `elapsed_s` | s | Time since Start |
 | `V_meas` | V | Voltage measured at the DUT (across the probes if 4-wire) |
 | `I_meas` | A | Current sourced (instrument-reported, matches the test-current setpoint) |
-| `R_ohm` | Ω | Instrument-reported R — preserves Enhanced R / offset-comp / source-readback features (NOT `V_meas/I_meas` recomputed here) |
+| `R_ohm` | Ω | Instrument-reported R — preserves Enhanced R / offset-comp / source-readback features (NOT `V_meas/I_meas` recomputed here). When **Cable Null** is active the `res_cable_null` offset is subtracted from this column only; `V_meas` and `I_meas` are written as the instrument measured them. |
 | `R_unc_ohm` | Ω | Per-reading σ_R. When Enhanced R is on, this comes from the datasheet's Enhanced column; otherwise from V/I RSS propagation. |
 | `compliance` | | `OK` on a normal reading, `V_COMP` when the voltage side hit compliance |
 | `event` | | Empty or the label of the most recent `M` keypress event marker |
@@ -223,4 +223,13 @@ Spot,N,Rs Mean (Ω/□),Rs Std,Rs RSD%,ρ Mean (Ω·cm),ρ Std,σ Mean (S/cm),σ
 <spot-name>,<n>,...
 ```
 
-The "Per-Spot Results" section is only written when ≥1 spot has been saved with the **Save Spot** button. Mean/Std use `np.nanmean` / `np.nanstd(ddof=1)`; NaN and infinite values are written as the literal string `N/A`.
+The "Per-Spot Results" section is only written when ≥1 spot has been saved with the **Save Spot** button. When ≥2 spots are saved, an **Inter-spot Uniformity** block is appended:
+
+```
+Inter-spot Uniformity
+Rs Mean-of-Means (Ω/□),<value>
+Rs Std-of-Means (Ω/□),<value>
+Inter-spot RSD%,<value>
+```
+
+Mean/Std use `np.nanmean` / `np.nanstd(ddof=1)`; NaN and infinite values are written as the literal string `N/A`.

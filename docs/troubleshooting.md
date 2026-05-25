@@ -15,6 +15,8 @@ Common failures and how to resolve them. Most connection-side messages come from
 3. Confirm the instrument's GPIB address on the front panel: **MENU → Comm → GPIB**. The default factory address is 24.
 4. In ResistaMet GUI: **Settings → Measurement → Detect Devices** to scan for what PyVISA actually sees, then pick the right address from the list.
 
+ResistaMet GUI auto-escalates this: when a measurement fails to connect with an address-like error (matching substrings `not found`, `not detected`, `no instrument responded`, `no visa instruments`), the friendly error dialog is followed by a GPIB-selector popup so you can pick the right address in one click. The new address is written to `config['machines'][hostname]['gpib_address']` and persists across sessions.
+
 ### "NI-VISA is not supported on macOS"
 
 **Cause:** Running on macOS without `pyvisa-py` installed. NI-VISA was dropped on macOS after NI-VISA 18.5 (2020).

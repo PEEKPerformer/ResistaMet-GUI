@@ -8,8 +8,8 @@ Open via the **Settings** button or menu. Four tabs: Measurement, Display, File,
 
 | Setting | Default | Range / type | What it does |
 |---|---|---|---|
-| **GPIB Address** | `GPIB0::24::INSTR` | VISA resource string | Where to find the instrument. **Detect Devices** button scans all available VISA buses and offers the result in a picker. Per-machine — don't expect to copy this across hosts. |
-| **Sampling Rate** | `10.0 Hz` | `0.1 – 100 Hz` | Default readings per second. Per-tab tabs can override. Actual rate may be limited by NPLC, filter, and instrument throughput; the rate-cap predictor in the main UI shows when you've asked for more than the Keithley can deliver. |
+| **GPIB Address** | `GPIB0::24::INSTR` | VISA resource string | Where to find the instrument. **Detect Devices** button scans all available VISA buses and offers the result in a picker. **Machine-local** — `ConfigManager` writes this to `config['machines'][<hostname>]['gpib_address']` rather than the shared `measurement` block, so a NAS-shared `config.json` works across lab PCs with different wiring. On first save, any legacy `measurement.gpib_address` is auto-lifted into the per-machine slot. |
+| **Sampling Rate** | `10.0 Hz` | `0.1 – 100 Hz` | Default readings per second. Each measurement tab has its own spinbox that overrides this. Each per-tab spinbox is dynamically capped to what `timing.estimate_max_sample_rate_hz` predicts for the active (NPLC × auto-zero × filter × offset-comp) combination; if you commit a value above the cap the status bar reports the cap and suggests the cheapest single setting change to reach the requested rate. See [Concepts → Rate-cap predictor](concepts.md#rate-cap-predictor). |
 | **NPLC** | `1` | `0.01 – 10` | [Integration time](concepts.md#nplc-number-of-power-line-cycles) per reading. Lower = faster + noisier; higher = slower + cleaner. |
 | **Settling Time** | `0.2 s` | `0 – 10 s` | Delay after output enable before the first reading. Lets DUT + instrument stabilize. |
 
@@ -107,6 +107,25 @@ Settings are kept in `config.json` in the working directory (gitignored — per-
 ```
 
 When a user is selected, their per-user overrides deep-merge on top of the global defaults. Editing this file by hand works but is error-prone — prefer the dialog. If the file gets corrupted, delete it and ResistaMet will recreate from `DEFAULT_SETTINGS` (in [`resistamet_gui/constants.py`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/resistamet_gui/constants.py)).
+
+## Profiles menu
+
+The top-level **Profiles** menu has two entries that operate on the currently-active tab (Resistance / Voltage Source / Current Source / Four-Point Probe — Sweep and vdP are excluded):
+
+- **Save Profile for Current Mode...** — writes the `measurement` sub-dict from `gather_settings_for_mode` to a `.json` file (suggested name `<mode>_profile.json`). Useful for "sensor A typical run" vs "sensor B typical run" templates that you swap between samples.
+- **Load Profile to Current Mode...** — reads a `.json` and applies known fields to the active tab's widgets. Unknown fields are ignored. Legacy `fpp_thickness_cm` is auto-converted to `fpp_thickness_um` for backward compatibility.
+
+These are file-level profiles distinct from the per-user settings stored in `config.json`. They don't move the GPIB address (which is machine-local).
+
+## Results Viewer tab
+
+A 7th tab "Results Viewer" is auto-created by `create_menus`. It lets you:
+
+- Open any v2.0 `.csv` or `.csv.gz` file produced by ResistaMet GUI (also accepts older legacy CSVs)
+- Pick any column from the dropdown to plot vs `elapsed_s`
+- Read the trailing metadata (run mode, sample name, start time) into the status log via `data_export.parse_metadata`
+
+No write-back — it's strictly a post-run viewer.
 
 ## Per-tab settings (not in this dialog)
 

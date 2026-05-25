@@ -83,7 +83,9 @@ Four collinear probe tips, evenly spaced (default spacing `s = 0.1016 cm` = 40 m
 
 ## Van der Pauw (vdP) — quick anatomy
 
-Sheet resistance of arbitrary-shape samples with four periphery contacts. Procedure per ASTM F76-08 Method A: cable up four geometries in sequence (the worker walks you through each), source `+I` then `−I` at each, gives 8 voltage readings. Solve the implicit `f(Q)` equation for the geometry asymmetry factor; F76 §11.1 homogeneity gate flags >10% ρ disagreement between the two orthogonal pairs.
+Sheet resistance of arbitrary-shape samples with four periphery contacts. Procedure per ASTM F76-08 Method A: cable up four geometries in sequence (the worker walks you through each), source `+I` then `−I` at each, gives 8 voltage readings. The implicit `f(Q)` equation is solved by hand-rolled bisection in `vdp_geometric_factor` (no scipy dependency — the comment in `calculations_vdp.py` explains: "Hand-rolled rather than scipy.optimize to avoid a heavy dependency for a 25-line root-finder on a smooth monotone function"). F76 §11.1 homogeneity gate flags samples where `|ρ_A − ρ_B|/ρ_avg > 10%` (constant `F76_HOMOGENEITY_TOLERANCE_PCT = 10.0` in `calculations_vdp.py`).
+
+The per-geometry bar chart on the vdP result panel (`VdpPerGeometryBarChart` in `ui/widgets.py`) color-codes the four R values by deviation from the mean: **green** for `|R_i − mean|/mean < 3%` (clearly uniform), **orange** for `< 10%` (within the F76 gate but worth watching), **red** for `≥ 10%` (outlier; sample probably bad).
 
 ## Compliance "magic number" (9.91 × 10³⁷)
 
@@ -143,6 +145,20 @@ When propagating uncertainty through `R = V/I`, the Keithley user manual sums th
 This is the standard treatment for *uncorrelated* error sources under the law of propagation of uncertainty. V and I uncertainties come from different signal paths inside the Keithley, so treating them as uncorrelated is appropriate. In V-dominated or I-dominated regimes the two methods agree to ~0.1%; in the balanced regime RSS gives ~0.71× the linear-sum answer.
 
 Full rationale + GUM citations in the docstring of [`resistance_uncertainty`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/resistamet_gui/accuracy.py).
+
+## Machine-local GPIB address
+
+`gpib_address` is the one setting that *can't* be portable across PCs — a 2400 wired up as `GPIB0::24::INSTR` on one machine might be `GPIB0::3::INSTR` on another. `ConfigManager` in `config.py` stores it under `config['machines'][hostname]` and the migration step (`_migrate_machine_local`) auto-lifts any legacy `measurement.gpib_address` into the per-machine slot on first save. User-profile and global-settings writes strip the field so a NAS-shared `config.json` won't shadow each PC's local wiring.
+
+## Rate-cap predictor
+
+The per-tab **Sampling Rate** spinbox is dynamically capped based on a model of the Keithley's actual per-reading time (`timing.estimate_max_sample_rate_hz`). The cap depends on NPLC, auto-zero mode, hardware-filter count, and (for resistance mode) the Enhanced-accuracy / offset-compensated-ohms checkbox.
+
+When you type a rate above what the instrument can sustain, the spinbox clamps to the cap and the status bar reads (e.g.):
+
+> *"15.0 Hz is above what the instrument sustains right now (8.5 Hz). To get there: set auto\_zero to 'once' (re-zeros are cached during the run)."*
+
+The suggestion comes from `timing.suggest_change_for_rate`, which tries the cheapest accuracy-cost change first (`auto_zero` ON→ONCE), then `filter_count` reductions, then NPLC reductions. The tooltip on the spinbox always shows the current ceiling and the next cheapest change to raise it. Bench-validated within ~5% across 27 (NPLC, auto-zero, filter-count) combos.
 
 ## Wong palette
 
