@@ -319,11 +319,19 @@ def fill_sweep(win):
 
 # ---------- driver ----------
 
+def _pretty(path: Path) -> str:
+    """Render path relative to repo root when possible; fall back to absolute."""
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
 def grab(win, path: Path):
     pix = win.grab()
     path.parent.mkdir(parents=True, exist_ok=True)
     pix.save(str(path), "PNG")
-    print(f"  -> {path.relative_to(ROOT)}")
+    print(f"  -> {_pretty(path)}")
 
 
 def main():
@@ -350,7 +358,7 @@ def main():
             ("05_iv_sweep", "I-V Sweep", fill_sweep),
         ]
 
-        print(f"Generating screenshots in {out_dir.relative_to(ROOT)}/")
+        print(f"Generating screenshots in {_pretty(out_dir)}/")
         for name, label, fill in tabs:
             idx = next(
                 i for i in range(win.main_tabs.count())
