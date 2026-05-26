@@ -8,9 +8,8 @@ Each tagged release attaches a standalone `ResistaMet.exe` to the GitHub release
 
 1. Go to the [releases page](https://github.com/PEEKPerformer/ResistaMet-GUI/releases/latest)
 2. Download **`ResistaMet.exe`** from the Assets section
-3. Put it in its own folder (e.g. `C:\ResistaMet\`) — see the warning below for why this matters
-4. (Optional) right-click the `.exe` → **Create shortcut** and drag the shortcut to your desktop
-5. Double-click to launch
+3. Make a new folder on your desktop named `ResistaMet` and move the `.exe` into it (see the warning below for why this matters)
+4. Open the folder and double-click `ResistaMet.exe` to launch
 
 You can also run it from a Command Prompt to pass flags:
 
@@ -26,9 +25,9 @@ The `.exe` is built by GitHub Actions on every tag push (see [`build.yml`](https
 
     Practical consequences:
 
-    - **Drop `ResistaMet.exe` into its own folder** (e.g. `C:\ResistaMet\`) before first launch — don't run it from `Downloads\`, and don't put it in `Program Files\` (no write permission there).
-    - Launching from different shortcuts with different "Start in" directories will give you different `config.json` files in different places. Pin one shortcut and stick with it.
-    - When you upgrade to a new release, drop the new `ResistaMet.exe` into the same folder as the old one — your settings and data will be picked up automatically.
+    - **Drop `ResistaMet.exe` into its own folder on your desktop** (e.g. `Desktop\ResistaMet\`) before first launch. Don't run it from `Downloads\`, and don't put it in `Program Files\` (no write permission there).
+    - If you create a shortcut to the `.exe`, make sure its **Start in** field points at the folder containing the `.exe`. Launching from different shortcuts with different Start-in directories will give you different `config.json` files in different places.
+    - When you upgrade to a new release, drop the new `ResistaMet.exe` into the same folder as the old one. Your settings and data will be picked up automatically.
     - The **Data Directory** setting (Settings → File) accepts an absolute path if you want output to live somewhere else (e.g. a OneDrive folder, a NAS mount). The default is relative to the .exe's launch dir.
 
 !!! info "Why Windows-only for the bundled binary?"
