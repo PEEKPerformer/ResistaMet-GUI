@@ -10,7 +10,7 @@ A **source measure unit (SMU)** can both source and measure on the same pair of 
 
 The maximum the *measured* quantity is allowed to reach before the instrument clamps. When you source 1 V into a short circuit, current would in principle be infinite; the **current compliance** prevents that by capping output current. Compliance protects both your DUT and the instrument.
 
-If a reading hits compliance, the Keithley reports a magic number (`9.91 × 10³⁷`) in the affected channel. ResistaMet GUI detects this via the SCPI STAT word's bit 3 (`KEITHLEY_COMPLIANCE_MAGIC_NUMBER = 9.9e37`) and flags the row in the CSV's `compliance` column.
+If a reading hits compliance, the Keithley reports a magic number (`9.91 × 10³⁷`) in the affected channel. ResistaMet GUI detects this via the SCPI STAT word's bit 3 and flags the row in the CSV's `compliance` column.
 
 ## 2-wire vs 4-wire
 
@@ -43,7 +43,7 @@ The Keithley periodically re-references its internal ADC against ground and a pr
 - **`once`** — auto-zero once at run start, then never. ~3× speed-up. Acceptable for sensor work where the signal of interest is R(t) or V(t) and absolute-zero drift over a single run is below the noise floor.
 - **`off`** — never auto-zero. Fastest, but readings drift as the instrument warms or cools.
 
-**Default is `once`** — good for typical sensor sessions. Switch to `on` for absolute-accuracy runs longer than ~30 min, or runs where you need long-term comparability across runs. 4PP and vdP modes force `on` regardless of the shared setting (per `MODE_TIMING_OVERRIDES` in [`constants.py`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/resistamet_gui/constants.py)).
+**Default is `once`**, good for typical sensor sessions. Switch to `on` for absolute-accuracy runs longer than ~30 min, or for runs where you need long-term comparability. 4PP and vdP modes force `on` regardless of the shared setting.
 
 ## Hardware averaging filter
 
@@ -77,15 +77,15 @@ Win: at low R (V-offset-dominated regime, ~ < 200 Ω) the published σ_R is dram
 
 The 4PP tab computes all three from V, I, geometric factors, and thickness. The vdP tab computes Rs first and then ρ from the F76 chain.
 
-## Four-point probe (4PP) — quick anatomy
+## Four-point probe (4PP) quick anatomy
 
 Four collinear probe tips, evenly spaced (default spacing `s = 0.1016 cm` = 40 mil for the Signatone SP4). Outer two source current, inner two measure voltage. Standards-aligned with ASTM F84-02; correction factors F₂ (geometry), F(w/S) (thickness), F_T (temperature, for n-/p-type silicon) compose multiplicatively to give the effective K.
 
-## Van der Pauw (vdP) — quick anatomy
+## Van der Pauw (vdP) quick anatomy
 
-Sheet resistance of arbitrary-shape samples with four periphery contacts. Procedure per ASTM F76-08 Method A: cable up four geometries in sequence (the worker walks you through each), source `+I` then `−I` at each, gives 8 voltage readings. The implicit `f(Q)` equation is solved by hand-rolled bisection in `vdp_geometric_factor` (no scipy dependency — the comment in `calculations_vdp.py` explains: "Hand-rolled rather than scipy.optimize to avoid a heavy dependency for a 25-line root-finder on a smooth monotone function"). F76 §11.1 homogeneity gate flags samples where `|ρ_A − ρ_B|/ρ_avg > 10%` (constant `F76_HOMOGENEITY_TOLERANCE_PCT = 10.0` in `calculations_vdp.py`).
+Sheet resistance of arbitrary-shape samples with four periphery contacts. Procedure per ASTM F76-08 Method A: cable up four geometries in sequence (the GUI walks you through each), source `+I` then `−I` at each, for 8 voltage readings total. The implicit `f(Q)` factor is solved numerically. F76 §11.1 flags the sample as non-homogeneous when `|ρ_A − ρ_B|/ρ_avg > 10%`.
 
-The per-geometry bar chart on the vdP result panel (`VdpPerGeometryBarChart` in `ui/widgets.py`) color-codes the four R values by deviation from the mean: **green** for `|R_i − mean|/mean < 3%` (clearly uniform), **orange** for `< 10%` (within the F76 gate but worth watching), **red** for `≥ 10%` (outlier; sample probably bad).
+The per-geometry bar chart on the vdP result panel color-codes the four R values by deviation from the mean: **green** for `|R_i − mean|/mean < 3%` (clearly uniform), **orange** for `< 10%` (within the F76 gate but worth watching), **red** for `≥ 10%` (outlier; sample probably bad).
 
 ## Compliance "magic number" (9.91 × 10³⁷)
 
@@ -95,13 +95,13 @@ When a reading exceeds range or hits compliance, the Keithley 2400 family return
 
 IEC 61010-1 sets the SELV (Safety Extra-Low Voltage) upper bound at 30 V DC — below this, electric-shock hazard is negligible under any realistic skin-resistance condition. The 2400/2410/2425/2430/2450 can compliance-clamp at 60–1100 V depending on model, well above SELV.
 
-Before any run whose gating voltage reaches the threshold, ResistaMet shows a warning modal. The gating voltage depends on mode (from `_MODE_VOLTAGE_KEYS` in `safety.py`):
+Before any run whose gating voltage reaches the threshold, ResistaMet shows a warning modal. The gating voltage depends on mode:
 
 - **Voltage Source mode**: the sourced V (`vsource_voltage`)
 - **Resistance / Current Source / Four-Point / Van der Pauw**: the configured V compliance — an open-circuit current source swings *up to* compliance, so even a 1 mA test current can put 200 V on the leads if compliance is set there
 - **I-V Sweep**: `max(|sweep_start|, |sweep_stop|)` when sourcing voltage, otherwise the compliance
 
-The threshold defaults to 30 V and is per-user-profile-configurable; set `safety_voltage_warn_v = 0` to disable entirely. A "Don't show again" checkbox flips a sticky silence flag (`safety_voltage_warn_silenced`); Settings → Measurement has a re-enable toggle.
+The threshold defaults to 30 V and is per-user-profile-configurable; set it to 0 to disable entirely. A "Don't show again" checkbox sets a sticky silence flag for the profile; Settings → Measurement has a re-enable toggle.
 
 The status bar appends `⚡ N V live` while a hazardous run is active. Warning is informational — it never blocks the measurement.
 
@@ -134,7 +134,7 @@ Three flavors appear in the GUI and CSV:
 - **Statistical** uncertainty (`u_stat`): standard error of the mean, `std / √N`. Reduces with more samples (random component).
 - **Combined** uncertainty (`u_total = √(u_stat² + u_inst²)`): the right way to roll them up under GUM §5.1.2.
 
-The live results panel and CSV finalize metadata report all three on 4PP per-spot stats and on vdP final results. Shared pure helpers in `calculations.four_point_combined_uncertainty` and `calculations_vdp.vdp_combined_uncertainty` — GUI and worker call into the same code so the result panel and CSV metadata cannot drift.
+The live results panel and CSV finalize metadata report all three for 4PP per-spot stats and for vdP final results.
 
 ## RSS vs linear-sum propagation
 
@@ -148,7 +148,7 @@ Full rationale + GUM citations in the docstring of [`resistance_uncertainty`](ht
 
 ## Machine-local GPIB address
 
-`gpib_address` is the one setting that *can't* be portable across PCs — a 2400 wired up as `GPIB0::24::INSTR` on one machine might be `GPIB0::3::INSTR` on another. `ConfigManager` in `config.py` stores it under `config['machines'][hostname]` and the migration step (`_migrate_machine_local`) auto-lifts any legacy `measurement.gpib_address` into the per-machine slot on first save. User-profile and global-settings writes strip the field so a NAS-shared `config.json` won't shadow each PC's local wiring.
+`gpib_address` is the one setting that can't be portable across PCs: a 2400 wired up as `GPIB0::24::INSTR` on one machine might be `GPIB0::3::INSTR` on another. ResistaMet stores it keyed by hostname and strips it from user-profile and global-settings writes, so a NAS-shared `config.json` works across lab PCs without one machine's wiring shadowing another's. Any legacy single-address slot is auto-lifted into the per-machine entry on first save.
 
 ## Rate-cap predictor
 
@@ -158,7 +158,7 @@ When you type a rate above what the instrument can sustain, the spinbox clamps t
 
 > *"15.0 Hz is above what the instrument sustains right now (8.5 Hz). To get there: set auto\_zero to 'once' (re-zeros are cached during the run)."*
 
-The suggestion comes from `timing.suggest_change_for_rate`, which tries the cheapest accuracy-cost change first (`auto_zero` ON→ONCE), then `filter_count` reductions, then NPLC reductions. The tooltip on the spinbox always shows the current ceiling and the next cheapest change to raise it. Bench-validated within ~5% across 27 (NPLC, auto-zero, filter-count) combos.
+The suggestion tries the cheapest accuracy-cost change first (`auto_zero` ON→ONCE), then `filter_count` reductions, then NPLC reductions. The tooltip on the spinbox always shows the current ceiling and the next cheapest change to raise it. Bench-validated within ~5% across 27 (NPLC, auto-zero, filter-count) combinations.
 
 ## Wong palette
 

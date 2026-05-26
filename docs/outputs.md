@@ -148,7 +148,7 @@ One row per geometry (4 rows total per spot), both polarities captured in the sa
 | `V_neg` | V | Voltage at `−I` |
 | `current_A` | A | Sourced current magnitude (same `|I|` at both polarities) |
 
-The final sheet resistance, resistivity, f-factors, Q ratios, and the §11.1 homogeneity result land in the **metadata** at finalize, not as data rows. The worker emits a `vdp_result` dict that `_flatten_metadata` writes into the trailing `# --- run completed ---` block with dotted keys:
+The final sheet resistance, resistivity, f-factors, Q ratios, and the §11.1 homogeneity result land in the **metadata** at finalize, not as data rows. They appear in the trailing `# --- run completed ---` block with dotted keys:
 
 - `vdp_result.sheet_resistance` (Ω/□), `vdp_result.sheet_resistance_uncertainty`
 - `vdp_result.rho_avg` (Ω·cm), `vdp_result.rho_avg_uncertainty`
@@ -202,7 +202,7 @@ with h5py.File(path.replace(".csv", ".h5"), "r") as f:
     print(data.dtype.names)             # column names
 ```
 
-For per-spot 4PP summaries, the **Export Summary…** button on the 4PP tab writes a separate (non-v2.0) CSV with a header block and two sections. From `export_fpp_summary` in `main_window.py`:
+For per-spot 4PP summaries, the **Export Summary…** button on the 4PP tab writes a separate (non-v2.0) CSV with a header block and two sections:
 
 ```
 4-Point Probe Summary

@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Common failures and how to resolve them. Most connection-side messages come from [`humanize_connection_error`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/resistamet_gui/instrument.py) — if you hit a message not listed here, please [open an issue](https://github.com/PEEKPerformer/ResistaMet-GUI/issues) with the exact text.
+Common failures and how to resolve them. If you hit a message not listed here, please [open an issue](https://github.com/PEEKPerformer/ResistaMet-GUI/issues) with the exact text.
 
 ## Connection failures
 
@@ -15,7 +15,7 @@ Common failures and how to resolve them. Most connection-side messages come from
 3. Confirm the instrument's GPIB address on the front panel: **MENU → Comm → GPIB**. The default factory address is 24.
 4. In ResistaMet GUI: **Settings → Measurement → Detect Devices** to scan for what PyVISA actually sees, then pick the right address from the list.
 
-ResistaMet GUI auto-escalates this: when a measurement fails to connect with an address-like error (matching substrings `not found`, `not detected`, `no instrument responded`, `no visa instruments`), the friendly error dialog is followed by a GPIB-selector popup so you can pick the right address in one click. The new address is written to `config['machines'][hostname]['gpib_address']` and persists across sessions.
+ResistaMet GUI auto-escalates this: when a measurement fails to connect with an address-like error, the friendly error dialog is followed by a GPIB-selector popup so you can pick the right address in one click. The new address is stored per-host and persists across sessions.
 
 ### "NI-VISA is not supported on macOS"
 
@@ -63,7 +63,7 @@ pip install pyvisa-py
 
 **Symptom:** A V or I reading suddenly shows `9.91e37` (or `9.9e37`), the `compliance` column in the CSV gets flagged, and the status bar reads `Compliance`.
 
-**Cause:** The measured quantity reached the compliance limit and the Keithley clamped it. `9.91e37` is the magic sentinel value the 2400 family returns for an over-range / compliance condition; ResistaMet also detects this via the SCPI STAT word's bit 3 (`KEITHLEY_COMPLIANCE_MAGIC_NUMBER` in [`constants.py`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/resistamet_gui/constants.py)).
+**Cause:** The measured quantity reached the compliance limit and the Keithley clamped it. `9.91e37` is the magic sentinel value the 2400 family returns for an over-range / compliance condition; ResistaMet detects this via the SCPI STAT word's bit 3.
 
 **Fix:** Raise the compliance setting for that channel, or lower the source level. If you intended to discover the compliance limit (e.g. you're tracing a diode breakdown), this is the expected behavior — just be aware that the rows with the sentinel are not real measurements.
 

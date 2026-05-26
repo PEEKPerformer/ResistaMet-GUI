@@ -22,7 +22,7 @@ Six measurement modes on the same Keithley 2400-family instrument, all in one po
 
 Source / measure envelopes vary by model — see [Installation → Instrument compatibility](installation.md#instrument-compatibility) for the full per-model table. Per-reading instrument uncertainty from the Keithley datasheet propagates through every derived quantity (sheet resistance, resistivity, conductivity).
 
-The live readout colors V/I/R/P labels per channel using the [Wong colorblind-safe palette](https://www.nature.com/articles/nmeth.1618) (Nature Methods, 2011) — blue V, green I, vermillion R, orange P — with the `± σ` portion dimmed so the main number stays the visual anchor.
+The live readout colors V/I/R/P labels per channel using the [Wong colorblind-safe palette](https://www.nature.com/articles/nmeth.1618) (Nature Methods, 2011): blue V, green I, vermillion R, orange P. The `± σ` portion is dimmed so the main number stays the visual anchor.
 
 ## Try it now (no instrument required)
 
@@ -35,7 +35,7 @@ pip install -e .
 resistamet-gui --simulate
 ```
 
-The `--simulate` flag launches the full GUI against an in-package Keithley 2400-family simulator. Every measurement mode works end-to-end with no NI-VISA, no pyvisa-py, and no GPIB hardware. The simulator is byte-validated against captured hardware traces — see [Simulator Fidelity](sim_fidelity.md).
+The `--simulate` flag launches the full GUI against an in-package Keithley 2400-family simulator. Every measurement mode works end-to-end with no NI-VISA, no pyvisa-py, and no GPIB hardware. The simulator is byte-validated against captured hardware traces; see [Simulator Fidelity](sim_fidelity.md).
 
 If you don't have Python, the latest GitHub release has a **standalone Windows `.exe`** — see [Installation → Windows .exe](installation.md#windows-no-python-required).
 
