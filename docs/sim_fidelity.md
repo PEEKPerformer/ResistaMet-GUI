@@ -218,8 +218,8 @@ stateful fake bypasses the YAML format entirely while preserving the
 PyVISA `ResourceManager.open_resource` interface, so the production code
 under test runs unchanged in CI.
 
-Validation against captured traces from real hardware — rather than
-hand-coded expected values — is the design choice that makes the
-simulator credible for JOSS review: the assertion is not "we believe the
-simulator is correct," it is "the simulator has been shown to reproduce
-N captured SCPI dialogues from a documented physical instrument."
+Captured hardware traces rather than hand-written expected values
+means a simulator regression shows up as a divergence from a recorded
+instrument dialogue, not from an opinion about correct behavior. The
+trade-off: updating the simulator requires bench access to re-capture,
+not just an edit to a fixture file.

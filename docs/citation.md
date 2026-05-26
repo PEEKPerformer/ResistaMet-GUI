@@ -41,7 +41,7 @@ A machine-readable [`CITATION.cff`](https://github.com/PEEKPerformer/ResistaMet-
 
 **Ferland & Adamson.** *Interfacial Self-Assembly of Graphene Networks at 1 vol% Enables Piezoresistive and Electrothermal Silicone Foams.* ChemRxiv preprint (2026). [DOI: 10.26434/chemrxiv-2026-vsz4h](https://doi.org/10.26434/chemrxiv-2026-vsz4h).
 
-> Piezoresistive characterization (current source mode) and voltage-controlled de-icing.
+> Piezoresistive characterization (resistance mode) and voltage-controlled de-icing.
 
 **Sun group, UConn Institute of Materials Science.** Adopted for four-point-probe measurements (no published work cited yet — please reach out if you'd like to be added).
 

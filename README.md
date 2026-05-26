@@ -9,7 +9,7 @@ Open-source graphical interface for electrical characterization with Keithley 24
 **Version:** 1.12.1
 **Author:** Brenden Ferland
 
-![ResistaMet GUI — I-V Sweep tab](docs/screenshots/05_iv_sweep.png)
+![ResistaMet GUI — Van der Pauw tab, mid-protocol. The sample diagram shows lead wiring for the active F76 geometry; the filmstrip below tracks progress through the four geometries.](docs/screenshots/06_van_der_pauw.png)
 
 <details>
 <summary>More tabs (click to expand)</summary>
@@ -21,6 +21,7 @@ Open-source graphical interface for electrical characterization with Keithley 24
 | Current Source | ![Current Source](docs/screenshots/03_current_source.png) |
 | 4-Point Probe | ![4-Point Probe](docs/screenshots/04_four_point_probe.png) |
 | I-V Sweep | ![I-V Sweep](docs/screenshots/05_iv_sweep.png) |
+| Van der Pauw | ![Van der Pauw](docs/screenshots/06_van_der_pauw.png) |
 
 Generated reproducibly via `python tools/generate_screenshots.py` — runs headless under Qt's offscreen platform, no instrument required.
 

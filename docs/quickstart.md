@@ -17,88 +17,68 @@ This walks you through your first measurement and the per-mode workflows. If a t
 
 ## Per-mode workflows
 
+For CSV schemas see [Data Outputs](outputs.md); for parameter explanations see [Concepts](concepts.md).
+
 ### Resistance
 
-Source a known current, measure resulting voltage, report resistance over time. Best for sensors, conductive composites, and any DUT where you want R(t).
+Source a known current, measure resulting voltage, report R(t). Good for sensors, conductive composites, any DUT where you want resistance over time.
 
-Key settings (on the tab itself, not Settings dialog):
+1. Choose **2-wire** or **4-wire** (4-wire eliminates lead resistance — preferred when possible).
+2. Set **Test current** and **Voltage compliance** on the tab.
+3. (Optional) Short the probes and click **Null Cables** to subtract lead resistance from every subsequent reading.
+4. Click **Start**.
 
-- **Test current** — DC current sourced through the DUT (default 1 mA)
-- **Voltage compliance** — maximum voltage allowed across the DUT before clamping
-- **Measurement type** — 2-wire (includes lead resistance) or 4-wire (eliminates it)
-- **Auto Zero** — `on` / `once` / `off`. See [Concepts → Auto-zero](concepts.md#auto-zero) for the speed/accuracy trade.
-- **Enhanced accuracy** — checkbox enables offset-compensated ohms (cancels thermoelectric EMF; ~2× slower per reading). **ON by default** because a precision-measurement tool should ship the accurate default. See [Concepts → Enhanced R mode](concepts.md#enhanced-r-mode).
-- **Cable null** — click **Null Cables** with the probes shorted; the helper runs a one-shot resistance reading at NPLC=10 and stores it as a software offset (`res_cable_null`) that's subtracted from every subsequent R reading. The 2400 series lacks `:SENS:RES:REL`, so the subtraction is Python-side. **Clear Null** removes it.
-
-CSV columns: `elapsed_s, V_meas, I_meas, R_ohm, R_unc_ohm, compliance, event`. The R column is the instrument-reported ohms (preserves Enhanced R if enabled); `V_meas` and `I_meas` let you recompute σ_R downstream. See [Data Outputs → resistance](outputs.md#resistance).
+**Enhanced accuracy** is on by default (offset-compensated ohms, ~2× slower per reading, cancels thermoelectric EMF).
 
 ### Voltage Source
 
-Apply a DC voltage, monitor the resulting current. Good for chronoamperometry, electrochemistry, device biasing, and bias-stress experiments. Touch-safety warning fires before any run whose sourced V (for this mode) reaches the configured threshold (default 30 V) — see [Concepts → Touch-safety warning](concepts.md#touch-safety-warning).
+Apply a DC voltage, monitor the resulting current. For chronoamperometry, device biasing, bias-stress experiments.
 
-Key settings: Source voltage, current compliance, duration (`0` = run until you click Stop), auto-zero.
+1. Set **Source voltage**, **Current compliance**, and **Duration** (`0` = run until you click Stop).
+2. Click **Start**.
 
-CSV columns: `elapsed_s, V_set, I_meas, R_calc, I_unc_A, R_calc_unc_ohm, compliance, event`. `R_calc = V_set / I_meas` with uncertainty propagated via RSS — see [Data Outputs → source_v](outputs.md#voltage-source).
+A touch-safety warning fires before any run whose sourced voltage reaches the configured threshold (default 30 V).
 
 ### Current Source
 
-Mirror of Voltage Source: apply a DC current, monitor the resulting voltage.
-
-CSV columns: `elapsed_s, V_meas, I_set, R_calc, V_unc_V, R_calc_unc_ohm, compliance, event`.
+Mirror of Voltage Source — apply a DC current, monitor the resulting voltage. Same workflow with the source/measure roles swapped.
 
 ### Four-Point Probe
 
-Sheet resistance, resistivity, and conductivity via a collinear 4-point probe. Standards-aligned with ASTM F84-02 corrections.
+Sheet resistance, resistivity, and conductivity via a collinear 4-point probe. ASTM F84-02 corrections applied automatically when you supply specimen geometry.
 
-**Workflow:**
+1. Set **Source current**, **Probe spacing**, and **Thickness**. Defaults: 100 µA, 0.1016 cm (Signatone SP4).
+2. (Optional) Set **specimen diameter**, **w/S**, and **temperature + dopant type** to activate F₂ / F(w/S) / F_T corrections. Leaving these at defaults falls back to classical Smits-1958.
+3. Click **Start**. Readings stream into the per-reading table; the live histogram fills in.
+4. Click **Save Spot** to archive the current set. Move probe to next position and repeat.
+5. Click **Export Summary…** for a per-spot + cross-spot CSV summary.
 
-1. Set source current, probe spacing, and thickness. Default current is **100 µA** (conservative for unknown films); default spacing is **0.1016 cm** = 40 mil (Signatone SP4).
-2. Start the measurement. Readings stream into the per-reading table, the live histogram fills in with the Rs distribution, and the Current Spot Stats panel updates after each reading.
-3. **Save Spot** archives the current set into the saved-spots table (top right). Move probe to next position.
-4. Repeat. After ≥2 spots, the histogram canvas switches to a per-spot bar chart, color-coded green/orange/red by deviation from the cross-spot mean.
-5. **Export Summary…** writes a hand-rolled CSV (separate from the v2.0 streaming CSV) with overall Rs / ρ / σ mean+std, a per-spot table when ≥1 spot has been saved, and an inter-spot uniformity block (mean-of-means, std-of-means, RSD%) when ≥2 spots are saved. See [Data Outputs → 4PP per-spot summary](outputs.md#four-point-probe).
-
-**ASTM F84-02 correction factors activate automatically** when you supply:
-
-- a finite specimen diameter `D` → geometry-aware F₂ from Table 3 (circles) or Smits 1958 (squares, rectangles with L/W ∈ {2, 3, 4})
-- thickness `w/S` → F(w/S) from Appendix X1.1, valid out to w/S = 2.0
-- temperature + dopant type (`n` or `p`) → F_T from Table 5 for n-/p-type silicon
-
-When you leave these inputs at their defaults (infinite-diameter circle, no temperature correction), the math falls back to the classical Smits-1958 `F = 4.5324` factor so existing config files keep producing the same numbers as pre-F84-aligned releases.
-
-**Probe safety envelope** (defaults sized for tungsten-carbide Signatone SP4 tips):
-
-- `fpp_power_warn_w` = 10 mW — status-bar flash above this measured V·I
-- `fpp_power_stop_w` = 100 mW — hard stop, output disabled, run aborted above this
-- Pre-flight check refuses to start if worst-case `I_source × V_compliance` exceeds the hard stop
-
-CSV columns include per-reading V, I, V/I, Rs, ρ, σ + uncertainties on V and I — see [Data Outputs → four_point](outputs.md#four-point-probe).
+**Probe power safety**: default soft warn at 10 mW, hard stop at 100 mW (sized for tungsten-carbide SP4 tips). Pre-flight check refuses to start if worst-case `I × V_compliance` exceeds the hard stop.
 
 #### Delta Mode (thermoelectric cancellation)
 
-1. In the 4PP tab, expand **Advanced**
-2. Check **Current Reversal (Delta Mode)**
-3. Set settling time (default 0.1 s between polarity flips)
-4. Each reading now alternates `+I` / `−I`, reporting `V_delta = (V₊ − V₋) / 2`
-
-CSV gains per-polarity columns `V_plus, V_minus, R_f, R_r` for the F84 §11.2.2.2 forward/reverse diagnostic.
+In the 4PP tab → **Advanced** → check **Current Reversal (Delta Mode)**. Each reading then alternates `+I` / `−I` and reports `V_delta = (V₊ − V₋) / 2`.
 
 ### Van der Pauw
 
-ASTM F76-08 Method A for sheet resistance + resistivity on arbitrary-shape, hole-free samples with four periphery contacts (numbered 1–4 counter-clockwise).
+ASTM F76-08 Method A for sheet resistance and resistivity on arbitrary-shape, hole-free samples with four periphery contacts.
 
-The worker is a state machine (see `VdpMeasurementWorker` in `workers.py`): emits `geometry_ready`, blocks on a `threading.Event` until you click Measure for the geometry, sources `+I` then `−I` and averages `vdp_readings_per_polarity` readings at each, then writes `:OUTP OFF` between geometries so you can safely reconnect leads. The vdP tab has a sample-diagram widget (`VdpSampleDiagram`), a filmstrip preview of the four geometries (`VdpProtocolFilmstrip`), and a per-geometry bar chart (`VdpPerGeometryBarChart`).
+![Van der Pauw tab mid-protocol — sample diagram shows lead wiring for the current geometry; the filmstrip below tracks progress through the four geometries](screenshots/06_van_der_pauw.png)
 
-- F76's implicit `f(Q)` is solved by `calculate_van_der_pauw` in `calculations_vdp.py`. The final result fields land in the trailing CSV metadata block as `vdp_result.sheet_resistance`, `vdp_result.rho_avg`, `vdp_result.homogeneous` (boolean per F76 §11.1), `vdp_result.asymmetry_pct`, `vdp_result.q_a/b`, `vdp_result.f_a/b` — see [Data Outputs → Van der Pauw](outputs.md#van-der-pauw) for the full schema.
-- The default `vdp_thickness_cm` is `0.0` (sentinel "unset"). If you click Start without entering a thickness, `_require_vdp_thickness` in `main_window.py` opens a `QInputDialog.getDouble` modal asking for it in µm — prevents the silent `ρ = R_s × 1 µm` failure mode the old default had.
+1. Number your four periphery contacts **1–4 counter-clockwise** and connect leads.
+2. Enter **sample thickness in µm** (required — you'll be prompted if you leave it blank).
+3. Click **Start**. The tab shows a filmstrip of the four geometries. For each one: rewire your leads as shown in the sample diagram, then click **Measure**.
+4. After all four geometries, the result panel reports sheet resistance, resistivity, F76 asymmetry, and a homogeneity pass/fail per F76 §11.1.
 
-CSV is one row per geometry with both polarities captured — see [Data Outputs → van der Pauw](outputs.md#van-der-pauw).
+Output is disabled between geometries so you can safely reconnect leads.
 
 ### I-V Sweep
 
-Hardware staircase sweep using the Keithley's trigger model for precise inter-step timing. Source voltage or current with configurable start, stop, step, and per-step delay. Sweep directions: `up`, `down`, or `up_down` (forward + reverse for hysteresis curves).
+Hardware staircase sweep using the Keithley's trigger model. Source voltage or current with configurable start, stop, step, and per-step delay.
 
-CSV: `point, V_source, I_meas, compliance` — one row per sweep point.
+1. Choose **Source mode** (V or I).
+2. Set **Start**, **Stop**, **Step**, **Per-step delay**, and **Direction** (`up`, `down`, or `up_down` for hysteresis curves).
+3. Click **Start**. The sweep runs on the instrument and the full I-V curve appears at the end.
 
 ## Useful inputs
 

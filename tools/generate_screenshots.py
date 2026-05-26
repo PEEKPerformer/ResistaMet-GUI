@@ -38,6 +38,7 @@ from resistamet_gui.accuracy import (  # noqa: E402
     voltage_source_uncertainty,
     voltage_uncertainty,
 )
+from resistamet_gui.calculations_vdp import f76_geometries  # noqa: E402
 
 
 DEMO_USER = "demo"
@@ -304,6 +305,67 @@ def fill_four_point(win):
     w.status_label.setText("Status: Running")
 
 
+def fill_vdp(win):
+    """Synthesize a mid-protocol vdP frame: geometries 1-2 completed,
+    geometry 3 of 4 active. Highlights the sample-diagram-driven wizard
+    flow (the whole point of putting a screenshot in Quick Start).
+    """
+    w = win.tab_vdp
+    geoms = f76_geometries()
+    active_idx = 2  # geometry 3 of 4 (zero-indexed)
+    geom = geoms[active_idx]
+    geom_dict = {
+        'name': geom.name,
+        'source_high': geom.source_high,
+        'source_low': geom.source_low,
+        'sense_high': geom.sense_high,
+        'sense_low': geom.sense_low,
+        'label_pos': geom.label_pos,
+        'label_neg': geom.label_neg,
+        'group': geom.group,
+    }
+
+    # Sample diagram + step label match what `_vdp_on_geometry_ready`
+    # writes in production (main_window.py:1332-1352).
+    w.vdp_diagram.set_configuration(geom_dict)
+    w.vdp_step_label.setText(
+        f"<b>{geom_dict['name']}</b>  (group {geom_dict['group']})<br>"
+        f"<br>"
+        f"<b>Force HI</b>  &rarr;  Contact <b>{geom_dict['source_high']}</b>"
+        f"&nbsp;&nbsp;&nbsp;&nbsp;"
+        f"<b>Force LO</b>  &rarr;  Contact <b>{geom_dict['source_low']}</b><br>"
+        f"<b>Sense HI</b>  &rarr;  Contact <b>{geom_dict['sense_high']}</b>"
+        f"&nbsp;&nbsp;&nbsp;&nbsp;"
+        f"<b>Sense LO</b>  &rarr;  Contact <b>{geom_dict['sense_low']}</b><br>"
+        f"<br>"
+        f"Reconnect leads, then press <b>Measure This Configuration</b>.<br>"
+        f"Will produce: {geom_dict['label_pos']} (at +I) and "
+        f"{geom_dict['label_neg']} (at &minus;I)."
+    )
+    w.vdp_step_label.setTextFormat(Qt.RichText)
+
+    # Filmstrip: 1 and 2 done, 3 (zero-indexed 2) current, 4 pending.
+    w.vdp_filmstrip.mark_completed(0)
+    w.vdp_filmstrip.mark_completed(1)
+    w.vdp_filmstrip.set_current(active_idx)
+
+    # Populate the readings table for the two completed geometries.
+    # Each geometry contributes 2 rows (+I, -I). Numbers loosely match
+    # the bench-verified copper-plate run (R_s ≈ 5.65 mΩ/sq).
+    completed_voltages = [
+        # (V at +I, V at -I) per completed geometry
+        (5.71e-6, -5.69e-6),
+        (5.66e-6, -5.64e-6),
+    ]
+    for g_idx, (v_pos, v_neg) in enumerate(completed_voltages):
+        w.vdp_readings_table.item(2 * g_idx, 2).setText(f"{v_pos:.6e}")
+        w.vdp_readings_table.item(2 * g_idx + 1, 2).setText(f"{v_neg:.6e}")
+
+    w.vdp_proceed_button.setEnabled(True)
+    w.vdp_proceed_button.setText(f"Measure {geom_dict['name']}")
+    w.status_label.setText("Status: Awaiting lead reconnection (Geometry 3 of 4)")
+
+
 def fill_sweep(win):
     # Linear DUT: 100 Ω resistor, sweep ±1 V in 50 mV steps.
     v = np.linspace(-1.0, 1.0, 41)
@@ -356,6 +418,7 @@ def main():
             ("03_current_source", "Current Source", fill_current_source),
             ("04_four_point_probe", "4-Point Probe", fill_four_point),
             ("05_iv_sweep", "I-V Sweep", fill_sweep),
+            ("06_van_der_pauw", "Van der Pauw", fill_vdp),
         ]
 
         print(f"Generating screenshots in {_pretty(out_dir)}/")
