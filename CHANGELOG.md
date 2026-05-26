@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.3] - 2026-05-26
+
+Paper-only patch. No software changes from v1.12.2.
+
+### Fixed
+- **`paper/paper.md` Acknowledgements** corrected from "received no external funding" to disclose support from the U.S. Department of Education GAANN program (award **P200A240111** to the UConn Polymer Program, PI: Mu-Ping Nieh). Standard federal-funding disclaimer included.
+- **Backup advice admonition** in `docs/installation.md` demoted from `!!! warning` to `!!! tip` so it no longer stacks visually with the data-location warning above it. Synology paragraph trimmed from four sentences to two.
+
 ## [1.12.2] - 2026-05-26
 
 `.exe` now bundles `h5py` so the HDF5 output backend is reachable for `.exe` users, plus a docs pass that swaps the README hero, rewrites Quick Start per-mode workflows as how-to steps, and strips implementation-symbol leakage from the reference pages.

@@ -67,6 +67,8 @@ Claude (Anthropic) was used extensively as a coding assistant; the majority of t
 
 # Acknowledgements
 
-Special thanks to Prof. Douglas H. Adamson (UConn) for providing the instrumentation required for this project and for allowing me to pursue interests like this despite not being direct materials research. Thanks to Adamson group members Jakiya Sultana Joya, Rumesha Anthoni M. Pererage, and Mahdad Mahmoudi for both intentionally and unintentionally breaking the software during debugging. This work received no external funding.
+Special thanks to Prof. Douglas H. Adamson (UConn) for providing the instrumentation required for this project and for allowing me to pursue interests like this despite not being direct materials research. Thanks to Adamson group members Jakiya Sultana Joya, Rumesha Anthoni M. Pererage, and Mahdad Mahmoudi for both intentionally and unintentionally breaking the software during debugging.
+
+This work was supported in part by the U.S. Department of Education Graduate Assistance in Areas of National Need (GAANN) program under award P200A240111 to the University of Connecticut Polymer Program (PI: Mu-Ping Nieh). The contents do not necessarily represent the policy of the Department of Education, and you should not assume endorsement by the Federal Government.
 
 # References
