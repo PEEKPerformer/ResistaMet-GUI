@@ -20,6 +20,16 @@ ResistaMet.exe --version
 
 The `.exe` is built by GitHub Actions on every tag push (see [`build.yml`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/.github/workflows/build.yml)) using PyInstaller, then smoke-tested with `--version` before being attached to the release. ~30 MB for the v1.11.0+ Qt6 binaries.
 
+!!! warning "Give the .exe its own folder"
+    `config.json` and the default `measurement_data/` directory are created **next to wherever the .exe is launched from** (the current working directory). Logs are the only thing that go to a per-user location (`C:\Users\<you>\.resistamet\logs\`).
+
+    Practical consequences:
+
+    - **Drop `ResistaMet.exe` into its own folder** (e.g. `C:\ResistaMet\`) before first launch — don't run it from `Downloads\`, and don't put it in `Program Files\` (no write permission there).
+    - Launching from different shortcuts with different "Start in" directories will give you different `config.json` files in different places. Pin one shortcut and stick with it.
+    - When you upgrade to a new release, drop the new `ResistaMet.exe` into the same folder as the old one — your settings and data will be picked up automatically.
+    - The **Data Directory** setting (Settings → File) accepts an absolute path if you want output to live somewhere else (e.g. a OneDrive folder, a NAS mount). The default is relative to the .exe's launch dir.
+
 !!! info "Why Windows-only for the bundled binary?"
     NI-VISA — the standard driver for Keithley GPIB adapters — runs on Windows and Linux but was dropped on macOS after NI-VISA 18.5 (2020). Most lab PCs running 2400-series instruments are Windows, so that's what we ship the .exe for. macOS and Linux users should use the source install below.
 
