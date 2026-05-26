@@ -6,7 +6,7 @@
 
 Open-source graphical interface for electrical characterization with Keithley 2400-family sourcemeters, with ASTM F84-aligned four-point-probe and ASTM F76 van der Pauw analysis built in.
 
-**Version:** 1.12.1
+**Version:** 1.12.2
 **Author:** Brenden Ferland
 
 ![ResistaMet GUI — Van der Pauw tab, mid-protocol. The sample diagram shows lead wiring for the active F76 geometry; the filmstrip below tracks progress through the four geometries.](docs/screenshots/06_van_der_pauw.png)

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.2] - 2026-05-26
+
+`.exe` now bundles `h5py` so the HDF5 output backend is reachable for `.exe` users, plus a docs pass that swaps the README hero, rewrites Quick Start per-mode workflows as how-to steps, and strips implementation-symbol leakage from the reference pages.
+
+### Added
+- **`h5py` bundled in the Windows `.exe`.** The HDF5 output backend was previously unreachable for `.exe` users: `h5py` wasn't in the dependency chain and the GUI grayed out the option with `pip install h5py` advice that `.exe` users can't act on. Bumps the binary by ~10–15 MB and ships the HDF5 native runtime via the wheel. Source installs unchanged (`h5py` remains an optional extra: `pip install -e .[hdf5]`).
+- **Van der Pauw screenshot** in the screenshot-generator harness (`tools/generate_screenshots.py`), so it stays auto-regenerated on each tag push alongside the other five tabs. Mid-protocol frame: geometries 1–2 complete, geometry 3 active; sample-diagram, filmstrip, and F76 readings table all visible.
+- **Data-storage warning admonition** in `docs/installation.md` explaining that `.exe` users get `config.json` and `measurement_data/` next to the `.exe` (the launch directory), with practical consequences (don't run from `Downloads\`, don't put in `Program Files\`, "Start in" gotcha for shortcuts, upgrade workflow).
+- **Backup warning admonition** in `docs/installation.md` introducing the 3-2-1 rule and pointing users at cloud-synced folders (Google Drive client, OneDrive, Dropbox) or institutional NAS. Includes a worked example of the development lab's three-PC Synology Drive Client deployment, showing why `gpib_address` is stored per-hostname.
+
+### Changed
+- **README hero image swapped from I-V sweep to Van der Pauw.** The visually richest mode (sample diagram, filmstrip, mid-protocol state) lands first; I-V sweep moves to the expandable tab gallery.
+- **Quick Start per-mode workflows rewritten as how-to steps.** The vdP section was previously a `VdpMeasurementWorker` / SCPI / widget-class walkthrough; now it's four numbered steps plus the new screenshot. Other modes lost inline CSV-column listings in favor of one link to `outputs.md` at the top.
+- **Reference docs stripped of implementation-symbol leakage.** `concepts.md`, `settings.md`, `troubleshooting.md`, and `outputs.md` no longer drop internal constants (`KEITHLEY_COMPLIANCE_MAGIC_NUMBER`, `MODE_TIMING_OVERRIDES`, `F76_HOMOGENEITY_TOLERANCE_PCT`, `_MODE_VOLTAGE_KEYS`), function names (`gather_settings_for_mode`, `humanize_connection_error`, `timing.suggest_change_for_rate`), or `file.py:line` references into user-facing prose. The factual content (10% F76 homogeneity gate, STAT bit 3 detection, force-on auto-zero for 4PP/vdP, machine-local `gpib_address` design) is preserved; only the code-archaeology surface is gone.
+- **`docs/installation.md` Windows section reorganized.** New step 3: make a `ResistaMet\` folder on the desktop and move the `.exe` into it; step 4: open the folder and double-click. Replaces the old "put it somewhere on PATH or pinned to Start menu" step that contradicted the data-location warning right below.
+- **`CITATION.cff` abstract rewritten** to be framework- and format-agnostic. Drops the stale `PySide6` / `JSON+CSV` / crash-recovery framing in favor of capability- and standard-scoped language (ASTM F84, F76) that survives format and binding swaps. Will propagate to Zenodo on this tag.
+- **`docs/sim_fidelity.md` "why this design"** paragraph rewritten to drop the JOSS-reviewer manifesto framing in favor of one sentence on the methodology and its bench-access cost.
+
+### Fixed
+- **`docs/citation.md` piezoresistive characterization note** corrected: the silicone-foam paper used resistance mode, not current source mode.
+
 ## [1.12.1] - 2026-05-25
 
 Documentation-only patch. No application behavior changes from v1.12.0.
