@@ -35,6 +35,11 @@ a = Analysis(
         'PySide6',
         'shiboken6',
         'resistamet_gui.simulator',
+        # h5py is lazy-imported by Hdf5Exporter; PyInstaller's static
+        # analysis won't follow the import-inside-method, so list it
+        # explicitly. Without this the .exe's Output → HDF5 radio stays
+        # grayed out with no fix path for end users.
+        'h5py',
     ],
     hookspath=[],
     runtime_hooks=[],

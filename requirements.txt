@@ -18,6 +18,12 @@ matplotlib>=3.3.0
 # histogram and I-V sweep canvases.
 pyqtgraph>=0.13.0
 
+# HDF5 export backend. Bundled here (rather than in optional-dependencies
+# only) so the PyInstaller .exe ships with HDF5 support enabled; otherwise
+# the Output → HDF5 radio is permanently grayed out for .exe users with
+# no pip-install escape hatch.
+h5py>=3.0.0
+
 # Testing (development)
 pytest>=7.0.0
 pytest-cov>=4.0.0
