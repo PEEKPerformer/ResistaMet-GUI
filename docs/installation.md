@@ -30,6 +30,15 @@ The `.exe` is built by GitHub Actions on every tag push (see [`build.yml`](https
     - When you upgrade to a new release, drop the new `ResistaMet.exe` into the same folder as the old one. Your settings and data will be picked up automatically.
     - The **Data Directory** setting (Settings → File) accepts an absolute path if you want output to live somewhere else (e.g. a OneDrive folder, a NAS mount). The default is relative to the .exe's launch dir.
 
+!!! warning "Back up your data. Computers break, hard drives fail."
+    The default install puts your `measurement_data/` folder on the desktop of one specific computer. A single hard-drive failure, laptop reimage, or accidental folder delete wipes every measurement you've ever taken.
+
+    The standard backup discipline is the **3-2-1 rule**: at least **3** copies of your data, on **2** different media, with **1** copy off-site.
+
+    Easiest way to get there for ResistaMet output is to point **Settings → File → Data Directory** at a cloud-synced folder: Google Drive (with the desktop sync client installed), OneDrive, Dropbox, or your institution's equivalent. Every measurement then writes into a folder that auto-syncs to the cloud, satisfying 3-2-1 without you thinking about it. Your laptop dies, your data doesn't.
+
+    Institutional NAS or managed network shares work too: point Data Directory at the mounted path. If your group already has a shared measurement-data folder on a NAS, point everyone's installs at the same path and you get backup plus group-wide visibility for free.
+
 !!! info "Why Windows-only for the bundled binary?"
     NI-VISA — the standard driver for Keithley GPIB adapters — runs on Windows and Linux but was dropped on macOS after NI-VISA 18.5 (2020). Most lab PCs running 2400-series instruments are Windows, so that's what we ship the .exe for. macOS and Linux users should use the source install below.
 
