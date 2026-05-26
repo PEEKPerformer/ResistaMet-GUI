@@ -8,8 +8,9 @@ Each tagged release attaches a standalone `ResistaMet.exe` to the GitHub release
 
 1. Go to the [releases page](https://github.com/PEEKPerformer/ResistaMet-GUI/releases/latest)
 2. Download **`ResistaMet.exe`** from the Assets section
-3. (Optional) put it somewhere convenient on PATH or pinned to your Start menu
-4. Double-click to launch
+3. Put it in its own folder (e.g. `C:\ResistaMet\`) — see the warning below for why this matters
+4. (Optional) right-click the `.exe` → **Create shortcut**, drag the shortcut to your desktop or Start menu
+5. Double-click to launch
 
 You can also run it from a Command Prompt to pass flags:
 
