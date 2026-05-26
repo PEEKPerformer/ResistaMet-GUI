@@ -37,7 +37,7 @@ The `.exe` is built by GitHub Actions on every tag push (see [`build.yml`](https
 
     Easiest way to get there for ResistaMet output is to point **Settings → File → Data Directory** at a cloud-synced folder: Google Drive (with the desktop sync client installed), OneDrive, Dropbox, or your institution's equivalent. Every measurement then writes into a folder that auto-syncs to the cloud, satisfying 3-2-1 without you thinking about it. Your laptop dies, your data doesn't.
 
-    Institutional NAS or managed network shares work too: point Data Directory at the mounted path. If your group already has a shared measurement-data folder on a NAS, point everyone's installs at the same path and you get backup plus group-wide visibility for free.
+    Institutional NAS or managed network shares work too: point Data Directory at the mounted path. The development lab uses this pattern in production — three lab PCs share one config and data folder via the Synology Drive Client (a Synology NAS sits on the lab network; each PC runs the sync client and keeps a local mirror of the shared folder). The `gpib_address` setting is the only knob stored per-machine (keyed by hostname), so each PC's instrument wiring stays local even when the rest of `config.json` is shared across the group. Net result: every lab PC sees every measurement, the NAS is the canonical copy, and a single laptop dying loses nothing.
 
 !!! info "Why Windows-only for the bundled binary?"
     NI-VISA — the standard driver for Keithley GPIB adapters — runs on Windows and Linux but was dropped on macOS after NI-VISA 18.5 (2020). Most lab PCs running 2400-series instruments are Windows, so that's what we ship the .exe for. macOS and Linux users should use the source install below.
