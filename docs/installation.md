@@ -18,7 +18,7 @@ ResistaMet.exe --simulate
 ResistaMet.exe --version
 ```
 
-The `.exe` is built by GitHub Actions on every tag push (see [`build.yml`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/.github/workflows/build.yml)) using PyInstaller, then smoke-tested with `--version` before being attached to the release. ~30 MB for the v1.11.0+ Qt6 binaries.
+The `.exe` is built by GitHub Actions on every tag push (see [`build.yml`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/.github/workflows/build.yml)) using PyInstaller, then smoke-tested with `--version` before being attached to the release. ~85 MB for the v1.12.2+ binaries (Qt6 runtime, h5py with the HDF5 native library, NumPy, Matplotlib, and the pyqtgraph + pyvisa stack).
 
 !!! warning "Give the .exe its own folder"
     `config.json` and the default `measurement_data/` directory are created **next to wherever the .exe is launched from** (the current working directory). Logs are the only thing that go to a per-user location (`C:\Users\<you>\.resistamet\logs\`).
