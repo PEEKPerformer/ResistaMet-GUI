@@ -217,6 +217,12 @@ measurement_data/
 # Instrument manuals (large PDFs)
 *.pdf
 
+# Vendor reference docs (kept locally, not shipped)
+docs/_refs/
+
+# Archived one-off scripts (kept locally, not shipped)
+_archive/
+
 # Live test scripts (not part of the app)
 live_hardware_test.py
 debug_scpi*.py
