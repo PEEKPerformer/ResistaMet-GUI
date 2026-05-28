@@ -36,7 +36,7 @@ pip install -e .
 resistamet-gui --simulate
 ```
 
-This launches the full GUI against an in-package Keithley 2400-family simulator. Every measurement mode works end-to-end with no NI-VISA, no pyvisa-py, and no GPIB hardware. The simulator is byte-validated against captured hardware traces — see [`docs/sim_fidelity.md`](docs/sim_fidelity.md).
+This launches the full GUI against an in-package Keithley 2400-family simulator. Every measurement mode works end-to-end with no NI-VISA and no GPIB hardware. The simulator is byte-validated against captured hardware traces — see [`docs/sim_fidelity.md`](docs/sim_fidelity.md).
 
 Optional: `--sim-resistance 1000` (1 kΩ DUT) or `--sim-model 2410` (advertise a different Keithley model).
 
