@@ -55,6 +55,7 @@ dependencies = [
     "numpy>=1.19.0",
     "matplotlib>=3.3.0",
     "pyqtgraph>=0.13.0",
+    "pyserial>=3.4",
 ]
 
 [project.optional-dependencies]

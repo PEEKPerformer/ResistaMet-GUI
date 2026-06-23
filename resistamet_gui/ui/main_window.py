@@ -741,6 +741,22 @@ class ResistanceMeterApp(QMainWindow):
             "(advanced — not recommended for delicate samples).")
         adv_form.addRow(main_container.fpp_stop_on_overpower)
 
+        # Auxiliary-sensor co-logging (e.g. a thermocouple). When checked, each
+        # 4PP point is stamped with the sensor's channel values (aux_* columns).
+        main_container.fpp_log_temp = QCheckBox("Log Auxiliary Sensor (e.g. temperature)")
+        main_container.fpp_log_temp.setToolTip(
+            "Co-log a streaming auxiliary sensor with each 4PP point.\n"
+            "The sensor declares its own channels; one aux_<channel> column\n"
+            "is added per channel. Off leaves the CSV schema unchanged.")
+        adv_form.addRow(main_container.fpp_log_temp)
+        main_container.fpp_temp_address = QLineEdit("ASRL6::INSTR")
+        main_container.fpp_temp_address.setToolTip(
+            "VISA/serial address of the auxiliary sensor (e.g. ASRL6::INSTR).\n"
+            "Machine-local — not portable across rigs.")
+        main_container.fpp_temp_address.setEnabled(False)
+        main_container.fpp_log_temp.toggled.connect(main_container.fpp_temp_address.setEnabled)
+        adv_form.addRow("Aux Address:", main_container.fpp_temp_address)
+
         layout.addRow("", adv_group)
         
         # Action buttons: Mark Event | Export Summary | Test Connection on one row
@@ -1964,6 +1980,10 @@ class ResistanceMeterApp(QMainWindow):
                     m_cfg['fpp_power_stop_w'] = widget.fpp_power_stop_w.value()
                 if hasattr(widget, 'fpp_stop_on_overpower'):
                     m_cfg['fpp_stop_on_overpower'] = widget.fpp_stop_on_overpower.isChecked()
+                if hasattr(widget, 'fpp_log_temp'):
+                    m_cfg['fpp_log_temp'] = widget.fpp_log_temp.isChecked()
+                if hasattr(widget, 'fpp_temp_address'):
+                    m_cfg['fpp_temp_address'] = widget.fpp_temp_address.text().strip()
             elif mode == 'sweep':
                 m_cfg['sweep_source'] = widget.sweep_source.currentText()
                 m_cfg['sweep_start'] = widget.sweep_start.value()
