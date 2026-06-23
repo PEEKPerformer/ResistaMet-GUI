@@ -51,6 +51,15 @@ class ResistanceMeterApp(QMainWindow):
         self._readout_timer = QTimer(self)
         self._readout_timer.setInterval(250)  # 4 Hz
         self._readout_timer.timeout.connect(self._refresh_smoothed_readout)
+        # Auxiliary-sensor live preview. Shown at 2 Hz while 4PP aux logging is
+        # enabled but idle (so you can watch the sample equilibrate before
+        # triggering a run). During a run the worker owns the only serial-port
+        # handle, so the readout is fed from data_point instead.
+        self._aux_preview_sensor = None
+        self._aux_channels_cache = []
+        self._aux_monitor_timer = QTimer(self)
+        self._aux_monitor_timer.setInterval(500)  # 2 Hz
+        self._aux_monitor_timer.timeout.connect(self._refresh_aux_preview)
         self.current_user = None
         self.user_settings = None
         self.measurement_running = False
@@ -756,6 +765,12 @@ class ResistanceMeterApp(QMainWindow):
         main_container.fpp_temp_address.setEnabled(False)
         main_container.fpp_log_temp.toggled.connect(main_container.fpp_temp_address.setEnabled)
         adv_form.addRow("Aux Address:", main_container.fpp_temp_address)
+        main_container.fpp_temp_readout = QLabel("Aux sensor: off")
+        main_container.fpp_temp_readout.setToolTip(
+            "Live auxiliary-sensor reading. Updates ~2 Hz while idle (watch the\n"
+            "sample equilibrate) and from each point during a run.")
+        adv_form.addRow("Aux Reading:", main_container.fpp_temp_readout)
+        main_container.fpp_log_temp.toggled.connect(self._on_aux_logging_toggled)
 
         layout.addRow("", adv_group)
         
@@ -2189,6 +2204,10 @@ class ResistanceMeterApp(QMainWindow):
         widget.status_label.setStyleSheet("font-weight: bold; color: green;")
         if getattr(widget, 'mark_event_button', None): widget.mark_event_button.setEnabled(True)
         self.log_status(f"Starting {mode} measurement for sample: {sample_name}..."); self.statusBar().showMessage(self._running_status_message(mode))
+        # Release the idle aux-sensor preview so the worker can open the serial
+        # port — only one handle per port. The in-run readout is fed from
+        # data_point below.
+        self._stop_aux_preview()
         self.measurement_worker = MeasurementWorker(mode=mode, sample_name=sample_name, username=self.current_user, settings=current_settings)
         self.measurement_worker.instrument_identified.connect(self._on_instrument_identified)
         self.measurement_worker.data_point.connect(self.update_data)
@@ -2271,6 +2290,97 @@ class ResistanceMeterApp(QMainWindow):
                     widget.mark_event_button.setStyleSheet("background-color: yellow;")
                     QTimer.singleShot(500, lambda: widget.mark_event_button.setStyleSheet(original_style))
 
+    def _on_aux_logging_toggled(self, checked: bool):
+        """Start/stop the idle aux-sensor preview when the 4PP checkbox flips.
+
+        Only previews while idle — during a run the worker owns the serial port
+        and the readout is fed from data_point instead.
+        """
+        w = getattr(self, 'tab_four_point', None)
+        if checked and not self.measurement_running:
+            self._start_aux_preview()
+        elif not checked:
+            self._stop_aux_preview()
+            if w and hasattr(w, 'fpp_temp_readout'):
+                w.fpp_temp_readout.setText("Aux sensor: off")
+
+    def _start_aux_preview(self):
+        """Open the aux sensor for a live idle readout (equilibration watch).
+
+        No-op during a run (the worker holds the port). Failures are shown in
+        the readout label, not raised — a missing sensor must not block setup.
+        """
+        w = getattr(self, 'tab_four_point', None)
+        if (not w or self.measurement_running
+                or not getattr(w, 'fpp_log_temp', None)
+                or not w.fpp_log_temp.isChecked()):
+            return
+        self._stop_aux_preview()
+        from ..sensors import make_sensor
+        driver = 'arduino_thermocouple'
+        if self.user_settings:
+            driver = self.user_settings['measurement'].get('fpp_temp_driver', driver)
+        address = w.fpp_temp_address.text().strip()
+        try:
+            sensor = make_sensor(driver, address, timeout_ms=800).open()
+            # Keep an idle preview read snappy: a silent device must not freeze
+            # the GUI thread for the full attempt budget.
+            sensor.MAX_READ_ATTEMPTS = 3
+            self._aux_preview_sensor = sensor
+            self._aux_channels_cache = list(sensor.channels())
+            w.fpp_temp_readout.setText("Aux sensor: connecting…")
+            self._aux_monitor_timer.start()
+        except Exception as e:
+            self._aux_preview_sensor = None
+            w.fpp_temp_readout.setText(f"Aux sensor: not connected ({str(e)[:40]})")
+
+    def _stop_aux_preview(self):
+        """Stop the preview timer and release the serial-port handle."""
+        self._aux_monitor_timer.stop()
+        if self._aux_preview_sensor is not None:
+            try:
+                self._aux_preview_sensor.close()
+            except Exception:
+                pass
+            self._aux_preview_sensor = None
+
+    def _refresh_aux_preview(self):
+        """2 Hz idle tick: read the aux sensor and repaint the readout. A read
+        failure stops the preview (rather than re-blocking every tick)."""
+        w = getattr(self, 'tab_four_point', None)
+        if not w or self._aux_preview_sensor is None:
+            return
+        try:
+            reading = self._aux_preview_sensor.read_latest()
+            w.fpp_temp_readout.setText(self._format_aux_text(reading.values, reading.ok))
+        except Exception as e:
+            self._stop_aux_preview()
+            w.fpp_temp_readout.setText(f"Aux sensor: read error ({str(e)[:30]})")
+
+    def _format_aux_text(self, values: Dict[str, float], ok: bool = True) -> str:
+        """Render a one-line aux readout. Accepts channel-keyed values (preview)
+        or aux_-prefixed values (in-run data dict)."""
+        parts = []
+        if self._aux_channels_cache:
+            for ch in self._aux_channels_cache:
+                v = values.get(ch.key)
+                if v is None:
+                    v = values.get(f"aux_{ch.key}")
+                if v is None:
+                    continue
+                parts.append(f"{ch.label}: {v:.2f} {ch.unit}")
+        else:
+            for k, v in values.items():
+                if k.startswith('aux_') and k != 'aux_ok' and not k.endswith('_flag'):
+                    try:
+                        parts.append(f"{k[4:]}: {float(v):.2f}")
+                    except (TypeError, ValueError):
+                        pass
+        text = " | ".join(parts) if parts else "—"
+        if not ok:
+            text += "  ⚠ fault"
+        return text
+
     def update_data(self, timestamp: float, value: Dict[str, float], compliance_status: str, event: str):
         if not self.measurement_running or self.active_mode is None:
             return
@@ -2327,6 +2437,10 @@ class ResistanceMeterApp(QMainWindow):
             w._fpp_rows.append(row)
             self._append_four_point_row(row)
             self._update_four_point_stats()
+            if hasattr(w, 'fpp_temp_readout') and any(
+                    k.startswith('aux_') and k != 'aux_ok' for k in value):
+                w.fpp_temp_readout.setText(
+                    self._format_aux_text(value, value.get('aux_ok', True)))
 
     def _refresh_smoothed_readout(self):
         """4 Hz tick: render the live readout from the rolling-mean buffer.
@@ -2712,6 +2826,11 @@ class ResistanceMeterApp(QMainWindow):
         else:
             self.statusBar().showMessage("Ready", 0)
         self.log_status("Measurement stopped. UI controls re-enabled.")
+        # Serial port is free again — resume the idle aux preview if enabled.
+        if (getattr(self, 'tab_four_point', None)
+                and getattr(self.tab_four_point, 'fpp_log_temp', None)
+                and self.tab_four_point.fpp_log_temp.isChecked()):
+            self._start_aux_preview()
 
     def set_controls_for_mode(self, mode: str, running: bool):
         widget = self.get_widget_for_mode(mode)
