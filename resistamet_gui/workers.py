@@ -28,6 +28,7 @@ from .accuracy import (
 )
 from .data_export import build_metadata, get_column_config, make_exporter
 from .instrument import Keithley2400, humanize_connection_error
+from .sensors import aux_column_names, make_sensor
 from .system_utils import SleepInhibitor
 
 
@@ -67,6 +68,13 @@ class MeasurementWorker(QThread):
         self.start_time = 0
         self.filename = ""
         self._instrument_idn = ""
+
+        # Optional auxiliary sensor (4PP co-logging). Stays None on every path
+        # that doesn't opt in, so the no-sensor path is unchanged.
+        self._aux_sensor = None
+        self._aux_channels = []
+        self._aux_columns = []
+        self._aux_row_values = []
 
         # System sleep prevention
         self._sleep_inhibitor = SleepInhibitor()
@@ -429,6 +437,32 @@ class MeasurementWorker(QThread):
                 self.error_occurred.emit(f"Error configuring instrument: {str(e)}")
                 return
 
+            # Optional auxiliary sensor (4PP co-logging). Opened here, before the
+            # exporter, so its declared channels() drive the CSV column schema.
+            # A failure to open aborts the run the same way an instrument-connect
+            # failure does. Stashing the column names/units into the (copied)
+            # measurement_settings lets get_column_config/build_metadata pick
+            # them up without a wider signature change.
+            if self.mode == 'four_point' and measurement_settings.get('fpp_log_temp'):
+                driver = measurement_settings.get('fpp_temp_driver', 'arduino_thermocouple')
+                aux_address = measurement_settings.get('fpp_temp_address', '')
+                try:
+                    self.status_update.emit(
+                        f"Connecting to auxiliary sensor ({driver}) at {aux_address}..."
+                    )
+                    self._aux_sensor = make_sensor(driver, aux_address).open()
+                    self._aux_channels = self._aux_sensor.channels()
+                    self._aux_columns = aux_column_names(self._aux_sensor)
+                    measurement_settings['_aux_columns'] = self._aux_columns
+                    measurement_settings['_aux_units'] = [ch.unit for ch in self._aux_channels]
+                    self.status_update.emit(
+                        "Auxiliary sensor ready: "
+                        + ", ".join(f"{ch.label} ({ch.unit})" for ch in self._aux_channels)
+                    )
+                except Exception as e:
+                    self.error_occurred.emit(humanize_connection_error(e, aux_address))
+                    return
+
             # File setup via the configured exporter (csv / hdf5 / csv+legacy_json).
             self.start_time = time.time()
             try:
@@ -762,6 +796,31 @@ class MeasurementWorker(QThread):
                             compliance_status = 'V_COMP'
                         data_dict = {'voltage': voltage, 'current': current}
 
+                        # Auxiliary-sensor read at the measurement instant. A
+                        # faulted (.ok False) or failed read records NaN for the
+                        # channels rather than crashing the run or logging a
+                        # plausible-but-wrong value. Values are stamped into the
+                        # data dict (for the live signal) and stashed in
+                        # channel order for the CSV row splice below.
+                        if self._aux_sensor is not None:
+                            try:
+                                reading = self._aux_sensor.read_latest()
+                                if reading.ok:
+                                    aux_vals = {ch.key: reading.values.get(ch.key, float('nan'))
+                                                for ch in self._aux_channels}
+                                    data_dict['aux_ok'] = True
+                                else:
+                                    aux_vals = {ch.key: float('nan') for ch in self._aux_channels}
+                                    data_dict['aux_ok'] = False
+                                    self.status_update.emit("⚠️ Auxiliary sensor reported a fault flag")
+                            except Exception as e:
+                                aux_vals = {ch.key: float('nan') for ch in self._aux_channels}
+                                data_dict['aux_ok'] = False
+                                self.status_update.emit(f"Auxiliary sensor read failed: {str(e)[:60]}")
+                            for ch in self._aux_channels:
+                                data_dict[f"aux_{ch.key}"] = aux_vals[ch.key]
+                            self._aux_row_values = [aux_vals[ch.key] for ch in self._aux_channels]
+
                     stop_on_comp = bool(measurement_settings.get('stop_on_compliance', False))
                     if compliance_status != 'OK' and compliance_type:
                         try:
@@ -931,6 +990,17 @@ class MeasurementWorker(QThread):
                             row_data = (
                                 row_data[:insert_at]
                                 + [ld['v_plus'], ld['v_minus'], ld['r_f'], ld['r_r']]
+                                + row_data[insert_at:]
+                            )
+
+                        # Splice auxiliary-sensor channel values (after any delta
+                        # columns, before compliance/event) — mirrors the splice
+                        # order in get_column_config().
+                        if self._aux_sensor is not None and self._aux_columns:
+                            insert_at = len(row_data) - 2  # before compliance, event
+                            row_data = (
+                                row_data[:insert_at]
+                                + list(self._aux_row_values)
                                 + row_data[insert_at:]
                             )
                     else:
@@ -1127,6 +1197,13 @@ class MeasurementWorker(QThread):
                 self.status_update.emit(f"Warning: Error during instrument cleanup: {str(e)}")
             finally:
                 self.keithley = None
+        if self._aux_sensor is not None:
+            try:
+                self._aux_sensor.close()
+            except Exception as e:
+                self.status_update.emit(f"Warning: Error during aux-sensor cleanup: {str(e)}")
+            finally:
+                self._aux_sensor = None
         if self.exporter:
             try:
                 # Ensure exporter is finalized if not already
