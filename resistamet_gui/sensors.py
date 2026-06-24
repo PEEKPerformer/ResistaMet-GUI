@@ -183,13 +183,17 @@ def parse_thermocouple_line(line: str) -> Optional[SensorReading]:
 
 
 class ArduinoThermocouple(SerialLineSensor):
-    """Arduino K-type thermocouple over USB-serial (e.g. a MAX31855 board).
+    """Arduino K-type thermocouple over USB-serial (e.g. a MAX31856 board).
 
     Streams ``DATA,<tip_C>,<coldjunction_C>,<fault>,<status>`` at a few Hz.
     Native-USB CDC, so the baud rate is ignored; addressed as an ASRL VISA
     resource (``ASRL6::INSTR`` on the lab rig). Field 1 is the sample
     temperature, field 2 the chip cold-junction (diagnostic), fields 3-4 are
     fault/status flags (0 == OK).
+
+    On open the board emits a one-line banner then ``READY`` before the data
+    stream (e.g. "maxwelld foam-TC v1 MAX31856 K-type CS7"); ``read_latest``
+    resyncs past those non-DATA lines automatically.
     """
 
     CHANNELS = [
