@@ -751,27 +751,15 @@ class ResistanceMeterApp(QMainWindow):
             "(advanced — not recommended for delicate samples).")
         adv_form.addRow(main_container.fpp_stop_on_overpower)
 
-        # Auxiliary-sensor co-logging (e.g. a thermocouple). When checked, each
-        # 4PP point is stamped with the sensor's channel values (aux_* columns).
-        main_container.fpp_log_temp = QCheckBox("Log Auxiliary Sensor (e.g. temperature)")
-        main_container.fpp_log_temp.setToolTip(
-            "Co-log a streaming auxiliary sensor with each 4PP point.\n"
-            "The sensor declares its own channels; one aux_<channel> column\n"
-            "is added per channel. Off leaves the CSV schema unchanged.")
-        adv_form.addRow(main_container.fpp_log_temp)
-        main_container.fpp_temp_address = QLineEdit("ASRL6::INSTR")
-        main_container.fpp_temp_address.setToolTip(
-            "VISA/serial address of the auxiliary sensor (e.g. ASRL6::INSTR).\n"
-            "Machine-local — not portable across rigs.")
-        main_container.fpp_temp_address.setEnabled(False)
-        main_container.fpp_log_temp.toggled.connect(main_container.fpp_temp_address.setEnabled)
-        adv_form.addRow("Aux Address:", main_container.fpp_temp_address)
+        # Auxiliary-sensor live reading. Enabling and addressing the aux source
+        # is global (Settings ▸ Measurement), since co-logging now applies to
+        # every continuous mode. This read-only label shows the live value while
+        # idle (watch equilibration) and per-point during a run.
         main_container.fpp_temp_readout = QLabel("Aux sensor: off")
         main_container.fpp_temp_readout.setToolTip(
-            "Live auxiliary-sensor reading. Updates ~2 Hz while idle (watch the\n"
-            "sample equilibrate) and from each point during a run.")
+            "Live auxiliary-sensor reading. Enable and address the aux source in\n"
+            "Settings ▸ Measurement. Updates ~2 Hz while idle and per-point in a run.")
         adv_form.addRow("Aux Reading:", main_container.fpp_temp_readout)
-        main_container.fpp_log_temp.toggled.connect(self._on_aux_logging_toggled)
 
         layout.addRow("", adv_group)
         
@@ -1914,6 +1902,7 @@ class ResistanceMeterApp(QMainWindow):
             self.log_status(f"User settings for {self.current_user} updated.")
             self.user_settings = self.config_manager.get_user_settings(self.current_user)
             self.update_ui_from_settings()
+            self._maybe_start_aux_preview()
 
     def open_global_settings(self):
         if self.measurement_running:
@@ -1925,6 +1914,7 @@ class ResistanceMeterApp(QMainWindow):
             if self.current_user:
                 self.user_settings = self.config_manager.get_user_settings(self.current_user)
                 self.update_ui_from_settings()
+            self._maybe_start_aux_preview()
 
     def get_widget_for_mode(self, mode: str) -> Optional[QWidget]:
         if mode == 'resistance': return self.tab_resistance
@@ -1996,10 +1986,6 @@ class ResistanceMeterApp(QMainWindow):
                     m_cfg['fpp_power_stop_w'] = widget.fpp_power_stop_w.value()
                 if hasattr(widget, 'fpp_stop_on_overpower'):
                     m_cfg['fpp_stop_on_overpower'] = widget.fpp_stop_on_overpower.isChecked()
-                if hasattr(widget, 'fpp_log_temp'):
-                    m_cfg['fpp_log_temp'] = widget.fpp_log_temp.isChecked()
-                if hasattr(widget, 'fpp_temp_address'):
-                    m_cfg['fpp_temp_address'] = widget.fpp_temp_address.text().strip()
             elif mode == 'sweep':
                 m_cfg['sweep_source'] = widget.sweep_source.currentText()
                 m_cfg['sweep_start'] = widget.sweep_start.value()
@@ -2291,37 +2277,51 @@ class ResistanceMeterApp(QMainWindow):
                     widget.mark_event_button.setStyleSheet("background-color: yellow;")
                     QTimer.singleShot(500, lambda: widget.mark_event_button.setStyleSheet(original_style))
 
-    def _on_aux_logging_toggled(self, checked: bool):
-        """Start/stop the idle aux-sensor preview when the 4PP checkbox flips.
+    def _four_point_tab_active(self) -> bool:
+        """True when the 4PP tab (which hosts the aux readout) is showing."""
+        tabs = getattr(self, 'main_tabs', None)
+        if not tabs:
+            return False
+        return tabs.tabText(tabs.currentIndex()) == "4-Point Probe"
 
-        Only previews while idle — during a run the worker owns the serial port
-        and the readout is fed from data_point instead.
+    def _aux_enabled_in_settings(self) -> bool:
+        return bool(self.user_settings
+                    and self.user_settings['measurement'].get('aux_log_enabled'))
+
+    def _maybe_start_aux_preview(self):
+        """Start the idle aux preview iff aux logging is enabled (global setting),
+        we're idle, and the 4PP tab is showing; otherwise ensure it's stopped.
+
+        Safe to call from tab-change, settings-applied, and run-end paths.
         """
         w = getattr(self, 'tab_four_point', None)
-        if checked and not self.measurement_running:
+        if (self._aux_enabled_in_settings()
+                and self._four_point_tab_active()
+                and not self.measurement_running):
             self._start_aux_preview()
-        elif not checked:
+        else:
             self._stop_aux_preview()
-            if w and hasattr(w, 'fpp_temp_readout'):
-                w.fpp_temp_readout.setText("Aux sensor: off")
+            if w and hasattr(w, 'fpp_temp_readout') and not self.measurement_running:
+                w.fpp_temp_readout.setText(
+                    "Aux sensor: idle" if self._aux_enabled_in_settings()
+                    else "Aux sensor: off")
 
     def _start_aux_preview(self):
         """Open the aux sensor for a live idle readout (equilibration watch).
 
+        Driver/address come from the global Settings ▸ Measurement aux_* keys.
         No-op during a run (the worker holds the port). Failures are shown in
         the readout label, not raised — a missing sensor must not block setup.
         """
         w = getattr(self, 'tab_four_point', None)
         if (not w or self.measurement_running
-                or not getattr(w, 'fpp_log_temp', None)
-                or not w.fpp_log_temp.isChecked()):
+                or not self._aux_enabled_in_settings()):
             return
         self._stop_aux_preview()
         from ..sensors import make_sensor
-        driver = 'arduino_thermocouple'
-        if self.user_settings:
-            driver = self.user_settings['measurement'].get('fpp_temp_driver', driver)
-        address = w.fpp_temp_address.text().strip()
+        m_cfg = self.user_settings['measurement']
+        driver = m_cfg.get('aux_driver', 'arduino_thermocouple')
+        address = m_cfg.get('aux_address', '')
         try:
             sensor = make_sensor(driver, address, timeout_ms=800).open()
             # Keep an idle preview read snappy: a silent device must not freeze
@@ -2837,10 +2837,7 @@ class ResistanceMeterApp(QMainWindow):
             self.statusBar().showMessage("Ready", 0)
         self.log_status("Measurement stopped. UI controls re-enabled.")
         # Serial port is free again — resume the idle aux preview if enabled.
-        if (getattr(self, 'tab_four_point', None)
-                and getattr(self.tab_four_point, 'fpp_log_temp', None)
-                and self.tab_four_point.fpp_log_temp.isChecked()):
-            self._start_aux_preview()
+        self._maybe_start_aux_preview()
 
     def set_controls_for_mode(self, mode: str, running: bool):
         widget = self.get_widget_for_mode(mode)
@@ -2883,6 +2880,8 @@ class ResistanceMeterApp(QMainWindow):
             current_widget = self.main_tabs.widget(index)
             if hasattr(current_widget, 'mode') and current_widget.mode != self.active_mode:
                 self.statusBar().showMessage(f"Viewing {current_widget.mode} tab (read-only) — {self.active_mode} measurement running", 3000)
+        # Idle aux preview follows the 4PP tab (which hosts the readout).
+        self._maybe_start_aux_preview()
 
     def export_fpp_summary(self):
         # Export summary for 4-point probe using current buffer and settings

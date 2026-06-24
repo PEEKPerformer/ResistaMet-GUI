@@ -79,13 +79,14 @@ DEFAULT_SETTINGS = {
         "fpp_power_warn_w": 1.0e-2,           # warn (status flash) above this measured V*I, watts
         "fpp_power_stop_w": 1.0e-1,           # hard stop above this measured V*I, watts
         "fpp_stop_on_overpower": True,        # abort 4PP run if measured power exceeds fpp_power_stop_w
-        # Auxiliary-sensor co-logging (e.g. a thermocouple). When enabled, each
-        # 4PP point is stamped with the sensor's channel values (aux_* columns).
-        # Off by default — keeps existing 4PP CSVs byte-identical. The address
-        # is machine-local in spirit (like gpib_address); not portable.
-        "fpp_log_temp": False,                # co-log an auxiliary sensor with each 4PP point
-        "fpp_temp_driver": "arduino_thermocouple",  # sensors.make_sensor() driver name
-        "fpp_temp_address": "ASRL6::INSTR",   # VISA/serial address of the auxiliary sensor
+        # Auxiliary-sensor co-logging (global, Keithley-centric). When enabled,
+        # every continuous-mode point (resistance / source_v / source_i /
+        # four_point) is stamped with the aux sensor's channel values (aux_*
+        # columns). Off by default — keeps existing CSVs byte-identical. The
+        # address is machine-local in spirit (like gpib_address); not portable.
+        "aux_log_enabled": False,             # co-log an auxiliary data source with each point
+        "aux_driver": "arduino_thermocouple", # sensors.make_sensor() driver name
+        "aux_address": "ASRL6::INSTR",        # VISA/serial address of the auxiliary sensor
         # Van der Pauw (vdP) defaults per ASTM F76-08 Method A. 4 manual lead
         # reconnections, current reversal automated at each geometry → 8
         # voltage readings total. Thickness in cm to match F76 units.

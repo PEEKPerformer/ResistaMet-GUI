@@ -26,6 +26,7 @@ def enable_simulation(
     noise_rsd: float = 0.0,
     aux_address: str = "ASRL6::INSTR",
     sim_temp_c: float = 25.0,
+    stream_address: str = "ASRL7::INSTR",
 ) -> None:
     """Replace ``pyvisa.ResourceManager`` with the in-package fake.
 
@@ -50,6 +51,7 @@ def enable_simulation(
             noise_rsd=noise_rsd,
             aux_address=aux_address,
             sim_temp_c=sim_temp_c,
+            stream_address=stream_address,
         )
 
     pyvisa.ResourceManager = _factory  # type: ignore[assignment]

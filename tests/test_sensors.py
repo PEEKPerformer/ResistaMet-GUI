@@ -11,12 +11,16 @@ from resistamet_gui.sensors import (
     ArduinoThermocouple,
     AuxiliarySensor,
     SensorChannel,
+    SensorError,
     SensorReading,
     SensorReadError,
     SerialLineSensor,
+    StreamSensor,
     available_sensors,
     aux_column_names,
     make_sensor,
+    parse_stream_data,
+    parse_stream_header,
     parse_thermocouple_line,
     reading_to_columns,
     register_sensor,
@@ -227,7 +231,7 @@ def test_get_column_config_aux_splice():
     assert not any(c.startswith("aux_") for c in baseline)
 
     cols, units = get_column_config("four_point", {
-        "fpp_log_temp": True,
+        "aux_log_enabled": True,
         "_aux_columns": ["aux_t_sample", "aux_t_coldjunction"],
         "_aux_units": ["°C", "°C"],
     })
@@ -238,8 +242,96 @@ def test_get_column_config_aux_splice():
     # With delta mode too, aux columns come AFTER the delta columns.
     cols2, _ = get_column_config("four_point", {
         "fpp_delta_mode": True,
-        "fpp_log_temp": True,
+        "aux_log_enabled": True,
         "_aux_columns": ["aux_t_sample"],
         "_aux_units": ["°C"],
     })
     assert cols2.index("R_r") < cols2.index("aux_t_sample") < cols2.index("compliance")
+
+
+def test_get_column_config_aux_splice_is_mode_agnostic():
+    """Aux columns splice into every continuous mode, not just 4PP."""
+    from resistamet_gui.data_export import get_column_config
+
+    for mode in ("resistance", "source_v", "source_i", "four_point"):
+        base, _ = get_column_config(mode)
+        assert not any(c.startswith("aux_") for c in base), mode
+        cols, units = get_column_config(mode, {
+            "aux_log_enabled": True,
+            "_aux_columns": ["aux_flow"],
+            "_aux_units": ["mL/min"],
+        })
+        assert len(cols) == len(units), mode
+        assert cols.index("aux_flow") < cols.index("compliance"), mode
+
+    # sweep is excluded (atomic :READ?, no aux co-logging).
+    sweep_cols, _ = get_column_config("sweep", {
+        "aux_log_enabled": True,
+        "_aux_columns": ["aux_flow"],
+        "_aux_units": ["mL/min"],
+    })
+    assert not any(c.startswith("aux_") for c in sweep_cols)
+
+
+# --- StreamSensor: dynamic multi-channel discovery -------------------------
+
+def test_parse_stream_header_valid():
+    chans = parse_stream_header("HDR,pressure:psi,t_sample:degC,force:N")
+    assert [c.key for c in chans] == ["pressure", "t_sample", "force"]
+    assert [c.unit for c in chans] == ["psi", "degC", "N"]
+
+
+@pytest.mark.parametrize("bad", ["", "DATA,1,2", "HDR,noun", "HDR,", "HDR,:psi"])
+def test_parse_stream_header_rejects(bad):
+    assert parse_stream_header(bad) is None
+
+
+def test_parse_stream_data_positional():
+    chans = [SensorChannel("a", "A", "x"), SensorChannel("b", "B", "y")]
+    r = parse_stream_data("DATA,1.5,2.5", chans)
+    assert r.values == {"a": 1.5, "b": 2.5}
+
+
+@pytest.mark.parametrize("bad", ["DATA,1", "DATA,1,2,3", "HDR,a:b", "DATA,x,y"])
+def test_parse_stream_data_rejects(bad):
+    chans = [SensorChannel("a", "A", "x"), SensorChannel("b", "B", "y")]
+    assert parse_stream_data(bad, chans) is None
+
+
+def test_stream_sensor_discovers_channels_and_reads():
+    s = StreamSensor("ASRL7::INSTR", clock=lambda: 5.0)
+    s.dev = _FakeDev(["HDR,pressure:psi,t_sample:degC,force:N",
+                      "DATA,32.5,24.1,0.98"])
+    s._channels = s._read_header()
+    assert [c.key for c in s.channels()] == ["pressure", "t_sample", "force"]
+    r = s.read_latest()
+    assert r.values == {"pressure": 32.5, "t_sample": 24.1, "force": 0.98}
+    assert r.timestamp == 5.0
+
+
+def test_stream_sensor_no_header_raises():
+    s = StreamSensor("ASRL7::INSTR")
+    s.dev = _FakeDev(["DATA,1,2"] * StreamSensor.MAX_READ_ATTEMPTS)
+    with pytest.raises(SensorError):
+        s._read_header()
+
+
+def test_stream_sensor_satisfies_protocol_and_registered():
+    assert isinstance(StreamSensor("ASRL7::INSTR"), AuxiliarySensor)
+    assert "stream_sensor" in available_sensors()
+
+
+def test_stream_sensor_through_fake_under_sim():
+    import pyvisa
+    from resistamet_gui.simulator import enable_simulation
+    orig = pyvisa.ResourceManager
+    try:
+        enable_simulation(stream_address="ASRL7::INSTR")
+        s = make_sensor("stream_sensor", "ASRL7::INSTR").open()
+        keys = [c.key for c in s.channels()]
+        assert "pressure" in keys and "t_sample" in keys
+        r = s.read_latest()
+        assert set(r.values) == set(keys)
+        s.close()
+    finally:
+        pyvisa.ResourceManager = orig

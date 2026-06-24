@@ -437,15 +437,17 @@ class MeasurementWorker(QThread):
                 self.error_occurred.emit(f"Error configuring instrument: {str(e)}")
                 return
 
-            # Optional auxiliary sensor (4PP co-logging). Opened here, before the
-            # exporter, so its declared channels() drive the CSV column schema.
-            # A failure to open aborts the run the same way an instrument-connect
-            # failure does. Stashing the column names/units into the (copied)
+            # Optional auxiliary sensor (co-logging on any continuous mode,
+            # anchored to the Keithley run). Opened here, before the exporter,
+            # so its declared channels() drive the CSV column schema. A failure
+            # to open aborts the run the same way an instrument-connect failure
+            # does. Stashing the column names/units into the (copied)
             # measurement_settings lets get_column_config/build_metadata pick
             # them up without a wider signature change.
-            if self.mode == 'four_point' and measurement_settings.get('fpp_log_temp'):
-                driver = measurement_settings.get('fpp_temp_driver', 'arduino_thermocouple')
-                aux_address = measurement_settings.get('fpp_temp_address', '')
+            if (self.mode in ('resistance', 'source_v', 'source_i', 'four_point')
+                    and measurement_settings.get('aux_log_enabled')):
+                driver = measurement_settings.get('aux_driver', 'arduino_thermocouple')
+                aux_address = measurement_settings.get('aux_address', '')
                 try:
                     self.status_update.emit(
                         f"Connecting to auxiliary sensor ({driver}) at {aux_address}..."
@@ -796,30 +798,31 @@ class MeasurementWorker(QThread):
                             compliance_status = 'V_COMP'
                         data_dict = {'voltage': voltage, 'current': current}
 
-                        # Auxiliary-sensor read at the measurement instant. A
-                        # faulted (.ok False) or failed read records NaN for the
-                        # channels rather than crashing the run or logging a
-                        # plausible-but-wrong value. Values are stamped into the
-                        # data dict (for the live signal) and stashed in
-                        # channel order for the CSV row splice below.
-                        if self._aux_sensor is not None:
-                            try:
-                                reading = self._aux_sensor.read_latest()
-                                if reading.ok:
-                                    aux_vals = {ch.key: reading.values.get(ch.key, float('nan'))
-                                                for ch in self._aux_channels}
-                                    data_dict['aux_ok'] = True
-                                else:
-                                    aux_vals = {ch.key: float('nan') for ch in self._aux_channels}
-                                    data_dict['aux_ok'] = False
-                                    self.status_update.emit("⚠️ Auxiliary sensor reported a fault flag")
-                            except Exception as e:
+                    # Auxiliary-sensor read at the measurement instant — shared
+                    # across every mode that opened a sensor (Keithley-centric
+                    # co-logging). A faulted (.ok False) or failed read records
+                    # NaN for the channels rather than crashing the run or
+                    # logging a plausible-but-wrong value. Values go into the
+                    # data dict (for the live signal) and are stashed in channel
+                    # order for the CSV row splice below.
+                    if self._aux_sensor is not None:
+                        try:
+                            reading = self._aux_sensor.read_latest()
+                            if reading.ok:
+                                aux_vals = {ch.key: reading.values.get(ch.key, float('nan'))
+                                            for ch in self._aux_channels}
+                                data_dict['aux_ok'] = True
+                            else:
                                 aux_vals = {ch.key: float('nan') for ch in self._aux_channels}
                                 data_dict['aux_ok'] = False
-                                self.status_update.emit(f"Auxiliary sensor read failed: {str(e)[:60]}")
-                            for ch in self._aux_channels:
-                                data_dict[f"aux_{ch.key}"] = aux_vals[ch.key]
-                            self._aux_row_values = [aux_vals[ch.key] for ch in self._aux_channels]
+                                self.status_update.emit("⚠️ Auxiliary sensor reported a fault flag")
+                        except Exception as e:
+                            aux_vals = {ch.key: float('nan') for ch in self._aux_channels}
+                            data_dict['aux_ok'] = False
+                            self.status_update.emit(f"Auxiliary sensor read failed: {str(e)[:60]}")
+                        for ch in self._aux_channels:
+                            data_dict[f"aux_{ch.key}"] = aux_vals[ch.key]
+                        self._aux_row_values = [aux_vals[ch.key] for ch in self._aux_channels]
 
                     stop_on_comp = bool(measurement_settings.get('stop_on_compliance', False))
                     if compliance_status != 'OK' and compliance_type:
@@ -992,17 +995,6 @@ class MeasurementWorker(QThread):
                                 + [ld['v_plus'], ld['v_minus'], ld['r_f'], ld['r_r']]
                                 + row_data[insert_at:]
                             )
-
-                        # Splice auxiliary-sensor channel values (after any delta
-                        # columns, before compliance/event) — mirrors the splice
-                        # order in get_column_config().
-                        if self._aux_sensor is not None and self._aux_columns:
-                            insert_at = len(row_data) - 2  # before compliance, event
-                            row_data = (
-                                row_data[:insert_at]
-                                + list(self._aux_row_values)
-                                + row_data[insert_at:]
-                            )
                     else:
                         # source_v or source_i
                         v = data_dict.get('voltage', float('nan'))
@@ -1015,6 +1007,17 @@ class MeasurementWorker(QThread):
                         else:
                             v_unc = data_dict.get('voltage_unc', float('nan'))
                             row_data = [elapsed_time, v, i, r, v_unc, r_unc, compliance_status, event_marker]
+
+                    # Splice auxiliary-sensor channel values for any mode that
+                    # opened a sensor — after any delta columns, before
+                    # compliance/event, mirroring get_column_config()'s splice.
+                    if self._aux_sensor is not None and self._aux_columns:
+                        insert_at = len(row_data) - 2  # before compliance, event
+                        row_data = (
+                            row_data[:insert_at]
+                            + list(self._aux_row_values)
+                            + row_data[insert_at:]
+                        )
 
                     # Write to exporter (handles both JSON and CSV)
                     try:
