@@ -792,6 +792,60 @@ class FakeSerialSensor:
         pass
 
 
+class FakeStreamSensor:
+    """Drop-in for a self-describing multi-channel streaming sensor.
+
+    Emits a ``HDR,<key>:<unit>,...`` line first, then positional
+    ``DATA,<v1>,<v2>,...`` rows — exercising :class:`StreamSensor`'s dynamic
+    channel discovery under ``--simulate`` with no hardware. Duck-types the
+    same pyvisa subset as :class:`FakeSerialSensor`. Seeded noise for
+    per-process determinism.
+    """
+
+    DEFAULT_CHANNELS = (
+        ("pressure", "psi", 35.0),
+        ("t_sample", "degC", 25.0),
+        ("force", "N", 1.0),
+    )
+
+    def __init__(self, channels=None, noise=0.02):
+        self._chans = list(channels or self.DEFAULT_CHANNELS)
+        self._noise = float(noise)
+        self._rng = random.Random(0x57EA)
+        self._sent_header = False
+        self.timeout = 3000
+        self.read_termination = "\n"
+        self.write_termination = "\n"
+        self.read_count = 0
+
+    def _header(self) -> str:
+        return "HDR," + ",".join(f"{k}:{u}" for k, u, _ in self._chans) + "\r\n"
+
+    def _data(self) -> str:
+        vals = [base * (1 + self._rng.gauss(0.0, self._noise))
+                for _, _, base in self._chans]
+        return "DATA," + ",".join(f"{v:.4f}" for v in vals) + "\r\n"
+
+    def read(self) -> str:
+        self.read_count += 1
+        if not self._sent_header:
+            self._sent_header = True
+            return self._header()
+        return self._data()
+
+    def flush(self, *_args, **_kwargs) -> None:
+        pass
+
+    def write(self, *_args, **_kwargs):
+        return None
+
+    def query(self, _cmd: str) -> str:
+        return self._data()
+
+    def close(self) -> None:
+        pass
+
+
 # ============================================================================
 # Resource manager shim — lets us monkeypatch pyvisa with one line.
 # ============================================================================
@@ -815,6 +869,7 @@ class FakeResourceManager:
         noise_rsd: float = 0.0,
         aux_address: str = "ASRL6::INSTR",
         sim_temp_c: float = 25.0,
+        stream_address: str = "ASRL7::INSTR",
     ):
         if idn is not None and model is not None:
             raise ValueError("pass either idn= or model=, not both")
@@ -830,6 +885,7 @@ class FakeResourceManager:
         # exercisable under --simulate with no hardware.
         self._aux_addr = aux_address
         self._sim_temp_c = float(sim_temp_c)
+        self._stream_addr = stream_address
         self.opened: list[FakeKeithley] = []
 
         # Pre-injection: applied to the next opened FakeKeithley. Used by
@@ -840,13 +896,15 @@ class FakeResourceManager:
         self._pre_inject_exception: Optional[BaseException] = None
 
     def list_resources(self) -> tuple[str, ...]:
-        return (self._addr, self._aux_addr)
+        return (self._addr, self._aux_addr, self._stream_addr)
 
     def open_resource(self, resource_name: str, **_kwargs):
-        # Auxiliary serial sensor branch — checked before the GPIB SMU so a
-        # streaming-sensor open under --simulate gets a FakeSerialSensor.
+        # Auxiliary serial sensor branches — checked before the GPIB SMU so a
+        # streaming-sensor open under --simulate gets the right fake device.
         if resource_name == self._aux_addr:
             return FakeSerialSensor(sim_temp_c=self._sim_temp_c)
+        if resource_name == self._stream_addr:
+            return FakeStreamSensor()
         if resource_name != self._addr:
             raise pyvisa.errors.VisaIOError(-1073807343)  # VI_ERROR_RSRC_NFOUND
         dev = FakeKeithley(

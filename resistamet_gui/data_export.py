@@ -38,6 +38,10 @@ LEGACY_FORMAT_VERSION = "1.0"
 
 _CSV_END_MARKER = "# --- run completed ---"
 
+# Continuous polling modes that support auxiliary-sensor co-logging. Sweep
+# (atomic :READ?) and vdP (manual geometry protocol) are excluded.
+_AUX_LOG_MODES = ('resistance', 'source_v', 'source_i', 'four_point')
+
 # Threshold above which CsvExporter fires the large-file notification when
 # the final artifact landed uncompressed. Aggressive on purpose — most
 # overnight runs cross 20 MB, so users discover the compression setting
@@ -238,21 +242,22 @@ def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] 
             cols[insert_at:insert_at] = ['V_plus', 'V_minus', 'R_f', 'R_r']
             units[insert_at:insert_at] = ['V', 'V', 'Ω', 'Ω']
 
-        # Auxiliary-sensor co-logging: splice one column per declared sensor
-        # channel before compliance/event (after any delta columns). The
-        # worker stashes the channel names/units (from the opened sensor's
-        # channels()) here so the schema follows the sensor, not a hardcoded
-        # column list. When logging is off, nothing is spliced and the CSV is
-        # byte-identical to a non-sensor run.
-        if measurement_settings.get('fpp_log_temp'):
-            aux_cols = measurement_settings.get('_aux_columns') or []
-            aux_units = measurement_settings.get('_aux_units') or ([''] * len(aux_cols))
-            if aux_cols:
-                cols = list(cols)
-                units = list(units)
-                insert_at = cols.index('compliance')
-                cols[insert_at:insert_at] = list(aux_cols)
-                units[insert_at:insert_at] = list(aux_units)
+    # Auxiliary-sensor co-logging applies to every continuous polling mode
+    # (anchored to the Keithley run): splice one column per declared sensor
+    # channel before compliance/event (after any delta columns). The worker
+    # stashes the channel names/units (from the opened sensor's channels())
+    # here so the schema follows the sensor, not a hardcoded list. When logging
+    # is off, nothing is spliced and the CSV is byte-identical to a plain run.
+    if (mode in _AUX_LOG_MODES and measurement_settings is not None
+            and measurement_settings.get('aux_log_enabled')):
+        aux_cols = measurement_settings.get('_aux_columns') or []
+        aux_units = measurement_settings.get('_aux_units') or ([''] * len(aux_cols))
+        if aux_cols:
+            cols = list(cols)
+            units = list(units)
+            insert_at = cols.index('compliance')
+            cols[insert_at:insert_at] = list(aux_cols)
+            units[insert_at:insert_at] = list(aux_units)
 
     return (cols, units)
 
@@ -334,12 +339,6 @@ def build_metadata(
             'target_samples': measurement_settings.get('fpp_samples'),
             'auto_zero': measurement_settings.get('auto_zero'),
         }
-        # Auxiliary-sensor provenance — only recorded when co-logging is on,
-        # so a non-sensor run's metadata header is unchanged.
-        if measurement_settings.get('fpp_log_temp'):
-            meta['params']['aux_sensor_driver'] = measurement_settings.get('fpp_temp_driver')
-            meta['params']['aux_sensor_address'] = measurement_settings.get('fpp_temp_address')
-            meta['params']['aux_channels'] = measurement_settings.get('_aux_columns')
     elif mode == 'vdp':
         meta['params'] = {
             'source_current_A': measurement_settings.get('vdp_current'),
@@ -361,6 +360,15 @@ def build_metadata(
             'delay_s': measurement_settings.get('sweep_delay'),
             'direction': measurement_settings.get('sweep_direction'),
         }
+
+    # Auxiliary-sensor provenance (any continuous mode) — only recorded when
+    # co-logging is on, so a non-sensor run's metadata header is unchanged.
+    if (mode in _AUX_LOG_MODES
+            and measurement_settings.get('aux_log_enabled')
+            and 'params' in meta):
+        meta['params']['aux_sensor_driver'] = measurement_settings.get('aux_driver')
+        meta['params']['aux_sensor_address'] = measurement_settings.get('aux_address')
+        meta['params']['aux_channels'] = measurement_settings.get('_aux_columns')
 
     return meta
 

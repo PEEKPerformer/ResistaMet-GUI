@@ -112,8 +112,8 @@ def _newest_4pp_csv():
 
 
 def test_aux_columns_present_with_plausible_values(sim_window, app):
-    sim_window.tab_four_point.fpp_log_temp.setChecked(True)
-    sim_window.tab_four_point.fpp_temp_address.setText("ASRL6::INSTR")
+    sim_window.user_settings['measurement']['aux_log_enabled'] = True
+    sim_window.user_settings['measurement']['aux_address'] = "ASRL6::INSTR"
     _run_4pp(sim_window, app, seconds=3.0)
 
     rows = _read_csv_data(_newest_4pp_csv())
@@ -130,7 +130,7 @@ def test_aux_columns_present_with_plausible_values(sim_window, app):
 
 
 def test_aux_columns_land_before_compliance(sim_window, app):
-    sim_window.tab_four_point.fpp_log_temp.setChecked(True)
+    sim_window.user_settings['measurement']['aux_log_enabled'] = True
     _run_4pp(sim_window, app, seconds=2.5)
     header = _read_csv_data(_newest_4pp_csv())[0]
     # aux columns splice in just before compliance/event.
@@ -142,7 +142,7 @@ def test_logging_off_leaves_schema_unchanged(sim_window, app):
     from resistamet_gui.data_export import get_column_config
     baseline, _ = get_column_config("four_point")
 
-    sim_window.tab_four_point.fpp_log_temp.setChecked(False)
+    sim_window.user_settings['measurement']['aux_log_enabled'] = False
     _run_4pp(sim_window, app, seconds=2.5)
     header = _read_csv_data(_newest_4pp_csv())[0]
     assert header == baseline, (

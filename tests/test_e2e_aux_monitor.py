@@ -89,26 +89,27 @@ def _switch_to_4pp(window, app):
 
 
 def test_idle_preview_shows_temperature(sim_window, app):
-    _switch_to_4pp(sim_window, app)
-    tab = sim_window.tab_four_point
-    tab.fpp_log_temp.setChecked(True)          # triggers _start_aux_preview
+    sim_window.user_settings['measurement']['aux_log_enabled'] = True
+    _switch_to_4pp(sim_window, app)            # tab-change starts the preview
+    sim_window._maybe_start_aux_preview()       # explicit (no-op if already on)
     app.processEvents()
     assert sim_window._aux_preview_sensor is not None, "preview did not open"
 
     sim_window._refresh_aux_preview()          # deterministic tick
-    text = tab.fpp_temp_readout.text()
+    text = sim_window.tab_four_point.fpp_temp_readout.text()
     assert "°C" in text, f"no unit in readout: {text!r}"
     # The simulated thermocouple streams ~SIM_TEMP_C.
     assert "25" in text, f"expected ~25 C in readout: {text!r}"
 
 
 def test_start_releases_preview_and_run_feeds_readout(sim_window, app):
+    sim_window.user_settings['measurement']['aux_log_enabled'] = True
     _switch_to_4pp(sim_window, app)
-    tab = sim_window.tab_four_point
-    tab.fpp_log_temp.setChecked(True)
+    sim_window._maybe_start_aux_preview()
     app.processEvents()
     assert sim_window._aux_preview_sensor is not None
 
+    tab = sim_window.tab_four_point
     tab.start_button.click()
     app.processEvents()
     assert sim_window.measurement_running, "4PP run did not start"

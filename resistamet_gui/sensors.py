@@ -205,6 +205,99 @@ class ArduinoThermocouple(SerialLineSensor):
         return parse_thermocouple_line(line)
 
 
+# --- General multi-channel driver: self-describing stream -------------------
+
+def parse_stream_header(line: str) -> Optional[list[SensorChannel]]:
+    """Parse a ``HDR,<key>:<unit>,<key>:<unit>,...`` line into channels.
+
+    Returns None for any line that isn't a well-formed header so the reader
+    can keep looking. Units are ASCII wire tokens (e.g. ``degC``, ``uS/cm``)
+    surfaced verbatim; the label is derived from the key.
+    """
+    if not line.startswith("HDR,"):
+        return None
+    fields = line.split(",")[1:]
+    chans: list[SensorChannel] = []
+    for f in fields:
+        if ":" not in f:
+            return None
+        key, _, unit = f.partition(":")
+        key = key.strip()
+        unit = unit.strip()
+        if not key:
+            return None
+        chans.append(SensorChannel(key, key.replace("_", " ").title(), unit))
+    return chans or None
+
+
+def parse_stream_data(line: str,
+                      channels: list[SensorChannel]) -> Optional[SensorReading]:
+    """Parse a ``DATA,<v1>,<v2>,...`` row positionally against ``channels``.
+
+    Returns None for partial lines, wrong field count, or non-numeric values
+    so the reader resyncs on the next valid row.
+    """
+    if not line.startswith("DATA,") or not channels:
+        return None
+    fields = line.split(",")[1:]
+    if len(fields) != len(channels):
+        return None
+    try:
+        vals = {ch.key: float(f) for ch, f in zip(channels, fields)}
+    except ValueError:
+        return None
+    return SensorReading(timestamp=0.0, values=vals)
+
+
+class StreamSensor(SerialLineSensor):
+    """Generic multi-channel streaming sensor with self-describing channels.
+
+    The device announces its channels in a header line at connect, then streams
+    positional data rows::
+
+        HDR,pressure:psi,t_sample:degC,force:N
+        DATA,32.5,24.1,0.98
+        ...
+
+    This is the general case behind the Characterization Bench: one serial link,
+    many channels, declared by the device — not hardcoded here. :meth:`open`
+    captures the header and :meth:`channels` returns the dynamically discovered
+    channels, so the worker / exporter / UI build columns from whatever the
+    device reports.
+    """
+
+    def __init__(self, resource: str, timeout_ms: int = 3000,
+                 clock: Callable[[], float] = time.time):
+        super().__init__(resource, timeout_ms, clock)
+        self._channels: list[SensorChannel] = []
+
+    def open(self) -> "StreamSensor":
+        self.connect()
+        self._channels = self._read_header()
+        return self
+
+    def _read_header(self) -> list[SensorChannel]:
+        for _ in range(self.MAX_READ_ATTEMPTS):
+            try:
+                raw = self.dev.read()
+            except Exception:
+                continue
+            line = raw.strip() if isinstance(raw, str) else str(raw).strip()
+            chans = parse_stream_header(line)
+            if chans:
+                return chans
+        raise SensorError(
+            f"No HDR line from {self.resource_str} after "
+            f"{self.MAX_READ_ATTEMPTS} attempts; not a stream_sensor?"
+        )
+
+    def channels(self) -> list[SensorChannel]:
+        return list(self._channels)
+
+    def parse_line(self, line: str) -> Optional[SensorReading]:
+        return parse_stream_data(line, self._channels)
+
+
 # --- Registry ---------------------------------------------------------------
 #
 # A plain name->class dict, mirroring instrument._MODELS. In-tree drivers are
@@ -214,6 +307,7 @@ class ArduinoThermocouple(SerialLineSensor):
 
 _SENSORS: dict[str, type] = {
     "arduino_thermocouple": ArduinoThermocouple,
+    "stream_sensor": StreamSensor,
 }
 
 

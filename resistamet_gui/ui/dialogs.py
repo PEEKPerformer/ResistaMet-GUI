@@ -210,6 +210,26 @@ class SettingsDialog(QDialog):
             "Uncheck to re-enable the warning dialog at the start of every run.")
         adv_layout.addRow(self.safety_voltage_warn_silenced)
 
+        # Auxiliary-sensor co-logging (global, Keithley-centric). When enabled,
+        # every continuous-mode run co-logs the chosen aux source's channels
+        # (resistance, source-V, source-I, 4-point-probe).
+        self.aux_log_enabled = QCheckBox("Co-log auxiliary data source")
+        self.aux_log_enabled.setToolTip(
+            "Synchronize a streaming aux source (thermocouple, flow, strain, …)\n"
+            "with each measurement point. Adds aux_<channel> columns. Applies to\n"
+            "resistance, source-V, source-I, and 4-point-probe modes.")
+        adv_layout.addRow(self.aux_log_enabled)
+        self.aux_driver = QComboBox()
+        from ..sensors import available_sensors
+        self.aux_driver.addItems(list(available_sensors()))
+        self.aux_driver.setToolTip("Registered aux-sensor driver.")
+        adv_layout.addRow("Aux Driver:", self.aux_driver)
+        self.aux_address = QLineEdit()
+        self.aux_address.setToolTip(
+            "VISA/serial address of the aux source (e.g. ASRL6::INSTR).\n"
+            "Machine-local — not portable across rigs.")
+        adv_layout.addRow("Aux Address:", self.aux_address)
+
         main_layout.addLayout(adv_layout)
 
         main_layout.addStretch()
@@ -362,6 +382,15 @@ class SettingsDialog(QDialog):
         self.safety_voltage_warn_silenced.setChecked(
             bool(m_cfg.get('safety_voltage_warn_silenced', False))
         )
+        self.aux_log_enabled.setChecked(bool(m_cfg.get('aux_log_enabled', False)))
+        drv = str(m_cfg.get('aux_driver', 'arduino_thermocouple'))
+        idx = self.aux_driver.findText(drv)
+        if idx >= 0:
+            self.aux_driver.setCurrentIndex(idx)
+        elif drv:
+            self.aux_driver.addItem(drv)
+            self.aux_driver.setCurrentText(drv)
+        self.aux_address.setText(str(m_cfg.get('aux_address', 'ASRL6::INSTR')))
         d_cfg = self.settings['display']
         self.enable_plot.setCurrentText("True" if d_cfg['enable_plot'] else "False")
         self.plot_color_r.setCurrentText(d_cfg['plot_color_r'])
@@ -417,6 +446,9 @@ class SettingsDialog(QDialog):
         m_cfg['res_offset_comp'] = self.res_offset_comp.isChecked()
         m_cfg['safety_voltage_warn_v'] = float(self.safety_voltage_warn_v.value())
         m_cfg['safety_voltage_warn_silenced'] = self.safety_voltage_warn_silenced.isChecked()
+        m_cfg['aux_log_enabled'] = self.aux_log_enabled.isChecked()
+        m_cfg['aux_driver'] = self.aux_driver.currentText()
+        m_cfg['aux_address'] = self.aux_address.text().strip()
         d_cfg = self.settings['display']
         d_cfg['enable_plot'] = (self.enable_plot.currentText() == "True")
         d_cfg['plot_color_r'] = self.plot_color_r.currentText()
