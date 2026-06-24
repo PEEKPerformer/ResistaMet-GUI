@@ -1,8 +1,24 @@
 # Pluggable Auxiliary Sensors — Design
 
-**Status:** Design spec + commit-1 landed
+**Status:** Implemented on `feature/aux-sensor-logging` (mode-agnostic; multi-channel)
 **Target:** ResistaMet-GUI v1.13
-**Date:** 2026-06-23
+**Date:** 2026-06-23 (updated 2026-06-24)
+
+> **Update 2026-06-24 — north star + what landed.** This serves the broader **Characterization Bench**
+> vision (`docs` north-star: a Keithley-centric operando layer — the Keithley measurement is the spine,
+> auxiliary data sources synchronize onto it; user may have all/none/more aux equipment). Landed since
+> the original draft:
+> - **Mode-agnostic co-logging** — aux logging works on every continuous mode (resistance, source-V,
+>   source-I, 4PP), not just 4PP. Sweep (atomic) and vdP (manual) are excluded by design.
+> - **Global config** — one aux-source section in the Settings dialog (enable / driver / address),
+>   replacing the 4PP-only checkbox. Sections §4/§7/§8 below describing `fpp_log_temp` and the 4PP-tab
+>   checkbox are superseded by the global `aux_log_enabled` / `aux_driver` / `aux_address` keys.
+> - **`StreamSensor`** — a generic multi-channel driver whose channels are self-described by the device
+>   at connect (`HDR,key:unit,...` then positional `DATA` rows) and discovered dynamically. This is the
+>   general "one serial link, many declared channels" case (e.g. the ESP32 Base); the thermocouple
+>   remains the single-channel example. `FakeStreamSensor` + `--sim-stream-address` exercise it.
+> - Live readout still 4PP-tab-only (driven by the global setting now); per-tab readouts for other modes
+>   and actuator/source drivers (Package B) + multi-rate timeline fusion remain future work.
 
 > **The goal is generality.** A researcher should be able to wire *any* secondary instrument —
 > thermocouple, strain/stress gauge, flow meter, hygrometer, anything that produces a number — and
