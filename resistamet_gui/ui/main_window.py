@@ -57,6 +57,7 @@ class ResistanceMeterApp(QMainWindow):
         # handle, so the readout is fed from data_point instead.
         self._aux_preview_sensor = None
         self._aux_channels_cache = []
+        self._aux_preview_fails = 0
         self._aux_monitor_timer = QTimer(self)
         self._aux_monitor_timer.setInterval(500)  # 2 Hz
         self._aux_monitor_timer.timeout.connect(self._refresh_aux_preview)
@@ -2328,6 +2329,7 @@ class ResistanceMeterApp(QMainWindow):
             sensor.MAX_READ_ATTEMPTS = 3
             self._aux_preview_sensor = sensor
             self._aux_channels_cache = list(sensor.channels())
+            self._aux_preview_fails = 0
             w.fpp_temp_readout.setText("Aux sensor: connecting…")
             self._aux_monitor_timer.start()
         except Exception as e:
@@ -2352,10 +2354,18 @@ class ResistanceMeterApp(QMainWindow):
             return
         try:
             reading = self._aux_preview_sensor.read_latest()
+            self._aux_preview_fails = 0
             w.fpp_temp_readout.setText(self._format_aux_text(reading.values, reading.ok))
         except Exception as e:
-            self._stop_aux_preview()
-            w.fpp_temp_readout.setText(f"Aux sensor: read error ({str(e)[:30]})")
+            # Tolerate transient misses — notably the ~2 s Arduino USB-reset
+            # window right after open, before the first line arrives. Give up
+            # only after several consecutive failures.
+            self._aux_preview_fails += 1
+            if self._aux_preview_fails >= 6:
+                self._stop_aux_preview()
+                w.fpp_temp_readout.setText(f"Aux sensor: read error ({str(e)[:30]})")
+            else:
+                w.fpp_temp_readout.setText("Aux sensor: waiting…")
 
     def _format_aux_text(self, values: Dict[str, float], ok: bool = True) -> str:
         """Render a one-line aux readout. Accepts channel-keyed values (preview)
