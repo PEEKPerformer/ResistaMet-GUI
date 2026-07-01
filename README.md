@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="docs/logo.png" alt="ResistaMet logo" width="120">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.png">
+    <img src="docs/logo.png" alt="ResistaMet logo" width="120">
+  </picture>
 </p>
 
 # ResistaMet GUI
