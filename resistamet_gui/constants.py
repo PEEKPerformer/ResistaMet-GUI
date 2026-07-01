@@ -1,7 +1,7 @@
 import os
 
 # Script version and metadata
-__version__ = "1.12.3"
+__version__ = "1.13.0"
 __original_version__ = "0.9.2"
 __author__ = "Brenden Ferland"
 
@@ -79,6 +79,14 @@ DEFAULT_SETTINGS = {
         "fpp_power_warn_w": 1.0e-2,           # warn (status flash) above this measured V*I, watts
         "fpp_power_stop_w": 1.0e-1,           # hard stop above this measured V*I, watts
         "fpp_stop_on_overpower": True,        # abort 4PP run if measured power exceeds fpp_power_stop_w
+        # Pre-run source-current finder. When enabled, the worker delta-probes
+        # the sample before the run, measures R and the empirical noise floor,
+        # and picks the smallest current reaching fpp_autoselect_sigfigs valid
+        # significant figures — or reports why the sample is un/marginally
+        # measurable. ON by default: a precision tool should size the current
+        # for the user (adds ~3 s/run). Uncheck for manual current (advanced).
+        "fpp_autoselect_current": True,       # auto-choose source current from a pre-run probe
+        "fpp_autoselect_sigfigs": 4,          # target valid significant figures (SNR = 10**this)
         # Van der Pauw (vdP) defaults per ASTM F76-08 Method A. 4 manual lead
         # reconnections, current reversal automated at each geometry → 8
         # voltage readings total. Thickness in cm to match F76 units.
@@ -165,3 +173,12 @@ MODE_TIMING_OVERRIDES = {
 # Keithley compliance heuristics
 KEITHLEY_COMPLIANCE_MAGIC_NUMBER = 9.9e37
 COMPLIANCE_THRESHOLD_FACTOR = 1.0
+
+# 4PP pre-run current finder tuning
+FPP_AUTOSELECT_MIN_SNR = 10.0        # required V/noise-floor for an 'ok' verdict
+FPP_AUTOSELECT_MIN_CURRENT = 1.0e-6  # lower clamp on chosen current, A (2400 smallest range)
+FPP_AUTOSELECT_PROBE_CYCLES = 8      # delta cycles used to estimate R + the empirical floor
+# Delta-repeatability resolution floor (V). The finder gates on the LARGER of
+# this and the measured per-cycle scatter — never on the datasheet accuracy
+# spec, which is systematic and cancels in delta mode.
+FPP_AUTOSELECT_RESOLUTION_FLOOR = 1.0e-6

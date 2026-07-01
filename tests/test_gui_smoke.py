@@ -488,3 +488,97 @@ class TestSpotManagement:
         s = main_window.gather_settings_for_mode('four_point')
         assert s['measurement']['fpp_delta_mode'] is True
         assert s['measurement']['fpp_delta_settling'] == 0.2
+
+    def test_autoselect_settings_round_trip(self, main_window):
+        """Auto-select toggle + target sig figs are gatherable."""
+        w = main_window.tab_four_point
+        assert hasattr(w, 'fpp_autoselect_current')
+        assert hasattr(w, 'fpp_autoselect_sigfigs')
+        w.fpp_autoselect_current.setChecked(True)
+        w.fpp_autoselect_sigfigs.setValue(5)
+        s = main_window.gather_settings_for_mode('four_point')
+        assert s['measurement']['fpp_autoselect_current'] is True
+        assert s['measurement']['fpp_autoselect_sigfigs'] == 5
+
+
+class TestAutoselectDialog:
+    """The 4PP current-finder Proceed/Abort slot routes the user's choice back
+    to the worker. The modal itself is stubbed via _ask_autoselect_proceed so
+    the routing logic is tested without driving a real dialog."""
+
+    class _FakeWorker:
+        def __init__(self):
+            self.responses = []
+
+        def autoselect_respond(self, proceed):
+            self.responses.append(proceed)
+
+    def test_proceed_routes_true_to_worker(self, main_window, monkeypatch):
+        worker = self._FakeWorker()
+        main_window.measurement_worker = worker
+        monkeypatch.setattr(main_window, "_ask_autoselect_proceed", lambda *a, **k: True)
+        main_window.on_autoselect_decision({
+            'verdict': 'too_conductive', 'reason': 'signal too low',
+            'suggested_current': 0.02, 'expected_voltage': 2e-7,
+        })
+        assert worker.responses == [True]
+
+    def test_abort_routes_false_to_worker(self, main_window, monkeypatch):
+        worker = self._FakeWorker()
+        main_window.measurement_worker = worker
+        monkeypatch.setattr(main_window, "_ask_autoselect_proceed", lambda *a, **k: False)
+        main_window.on_autoselect_decision({
+            'verdict': 'too_resistive', 'reason': 'exceeds compliance',
+            'suggested_current': 1e-6, 'expected_voltage': 1e3,
+        })
+        assert worker.responses == [False]
+
+    def test_no_worker_does_not_prompt_or_crash(self, main_window, monkeypatch):
+        main_window.measurement_worker = None
+        monkeypatch.setattr(main_window, "_ask_autoselect_proceed",
+                            lambda *a, **k: pytest.fail("prompted with no worker"))
+        # Must return quietly (guarded early).
+        main_window.on_autoselect_decision({'verdict': 'too_conductive', 'reason': 'x'})
+
+    def test_verdict_maps_to_dialog_title(self, main_window, monkeypatch):
+        seen = {}
+
+        def fake_ask(title, text, informative):
+            seen['title'] = title
+            seen['text'] = text
+            return False
+
+        main_window.measurement_worker = self._FakeWorker()
+        monkeypatch.setattr(main_window, "_ask_autoselect_proceed", fake_ask)
+        main_window.on_autoselect_decision({
+            'verdict': 'too_conductive', 'reason': 'R too low',
+            'suggested_current': 0.01,
+        })
+        assert "conductive" in seen['title'].lower()
+        assert seen['text'] == 'R too low'
+
+
+class TestFourPointAutoselectControls:
+    """Auto-select current is the default; it grays the manual current field
+    and displays the picked value."""
+
+    def test_default_on_grays_manual_current(self, main_window):
+        w = main_window.tab_four_point
+        # Default (v1.13.0) is auto-on -> manual current grayed, sig figs live.
+        assert w.fpp_autoselect_current.isChecked() is True
+        assert w.fpp_current.isEnabled() is False
+        assert w.fpp_autoselect_sigfigs.isEnabled() is True
+
+    def test_toggle_enables_and_disables_manual_current(self, main_window):
+        w = main_window.tab_four_point
+        w.fpp_autoselect_current.setChecked(False)
+        assert w.fpp_current.isEnabled() is True
+        assert w.fpp_autoselect_sigfigs.isEnabled() is False
+        w.fpp_autoselect_current.setChecked(True)
+        assert w.fpp_current.isEnabled() is False
+        assert w.fpp_autoselect_sigfigs.isEnabled() is True
+
+    def test_chosen_current_is_shown_in_field(self, main_window):
+        w = main_window.tab_four_point
+        main_window.on_autoselect_current_chosen(2.5e-4)
+        assert w.fpp_current.value() == pytest.approx(2.5e-4, rel=1e-6)

@@ -114,6 +114,25 @@ Four-point probe tips can melt or oxidize if you push too much power through the
 
 A pre-flight check refuses to start a 4PP run if worst-case `I_source × V_compliance` would exceed the hard stop. These are *also* protective for thin films and conductive polymers, where local Joule heating can damage the sample before the probe.
 
+## Four-point probe current finder
+
+The right source current for a 4PP measurement depends on the sample: too little and the sense voltage drowns in noise; too much and you waste headroom (or heat the sample). Rather than make you guess, enable **Auto-select source current** (4PP tab → Advanced) and the run will size it for you.
+
+Before acquiring, the worker briefly delta-probes the sample, measures its resistance **and the empirical noise floor** (the scatter across current-reversal cycles), then picks the *smallest* current whose sense voltage reaches your **Target sig figs** (default 4, i.e. SNR ≈ 10⁴). Choosing the minimum sufficient current — not the maximum — means self-heating is handled silently; you never have to reason about it.
+
+Number of valid significant figures ≈ log₁₀(SNR), so 4 figs needs SNR ~10⁴. Three outcomes:
+
+- **Measurable** — the current is set automatically and the achieved sig figs are logged.
+- **Limited** — the sample is measurable but the power-stop / compliance ceiling caps it below the target (e.g. *"2 valid sig figs at 20 mA — raise the power-stop for more"*). The run still proceeds.
+- **Too conductive** — even at the maximum safe current the signal can't clear ~1 valid figure (bare metal at a tight power-stop). A **Proceed / Abort** prompt explains what to change.
+- **Too resistive / insulator** — if the sample stays in voltage compliance even at the lowest current, there's no measurable *value*; instead the finder reports a **conductivity upper bound** — *"σ < X S/m"* (needs sample thickness; otherwise an R / Rs lower bound). Proceeding logs the compliance-bounded values over the run.
+
+The insulator bound is set by the instrument's own current-measurement floor (`estimate_current_floor`, baked into the accuracy model), so it reflects what a 2400 can actually resolve — realistically down to ~10⁻⁵–10⁻⁷ S/m. A genuinely lower σ (good dielectrics, <10⁻⁹ S/m) needs an electrometer such as the Keithley 6517.
+
+Note also that *any* sample more resistive than V_comp / (your source current) will hit compliance during the initial probe; the finder handles that by re-probing at the lowest current, so a high-but-measurable resistance is measured at a small current rather than mis-reported.
+
+Crucially, on the conductive end the floor it gates on is the **measured delta scatter**, not the datasheet accuracy spec — the datasheet's systematic offset cancels in delta mode, so using it would wrongly reject low-resistance samples (bare metal foils) that delta + averaging can in fact resolve.
+
 ## Output-off mode
 
 When the source output is disabled (between geometries in vdP, after a Stop, etc.), the Keithley can leave the output terminal in one of several states. ResistaMet uses **high-impedance** (`:OUTP:SMOD HIMP`), which gates the output through a relay — safest for delicate DUTs because there's no low-impedance path even momentarily.

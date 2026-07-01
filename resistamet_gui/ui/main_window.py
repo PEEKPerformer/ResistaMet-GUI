@@ -601,6 +601,37 @@ class ResistanceMeterApp(QMainWindow):
             "V Compliance", main_container.fpp_voltage_compliance,
         ))
 
+        # Pre-run current finder (primary control). When on, the sample is
+        # probed before the run and the gentlest current reaching the target
+        # significant figures is chosen; the manual Source Current above is
+        # grayed and updated to show the picked value. Uncheck for manual
+        # current (advanced).
+        main_container.fpp_autoselect_current = QCheckBox()
+        main_container.fpp_autoselect_current.setToolTip(
+            "Before the run, briefly probe the sample (delta), measure its\n"
+            "resistance and noise floor, then choose the gentlest current that\n"
+            "reaches the target significant figures. Grays the manual Source\n"
+            "Current above (which then shows the picked value). Uncheck to set\n"
+            "the current by hand (advanced). Adds ~3 s per run.")
+        main_container.fpp_autoselect_sigfigs = NoScrollIntSpinBox(minimum=1, maximum=6)
+        main_container.fpp_autoselect_sigfigs.setValue(4)
+        main_container.fpp_autoselect_sigfigs.setToolTip(
+            "How many valid significant figures to aim for (SNR = 10^this).\n"
+            "The finder picks the smallest current that reaches this quality —\n"
+            "least Joule heating for the target precision. Default 4 (e.g. a\n"
+            "4-digit conductivity like 1234 S/cm). If the sample can't reach it\n"
+            "within the power/compliance limits, you'll be told how many it can.")
+        layout.addRow(*self._form_pair(
+            "Auto-select current", main_container.fpp_autoselect_current,
+            "Target sig figs", main_container.fpp_autoselect_sigfigs,
+        ))
+        # Gray the manual current field while auto-select is on, and gate the
+        # sig-figs target on the same toggle.
+        main_container.fpp_autoselect_current.toggled.connect(
+            lambda on: main_container.fpp_current.setEnabled(not on))
+        main_container.fpp_autoselect_current.toggled.connect(
+            main_container.fpp_autoselect_sigfigs.setEnabled)
+
         main_container.fpp_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
         main_container.fpp_voltage_range_auto.setToolTip("Automatically select the best voltage measurement range.")
         main_container.fpp_spacing_cm = QDoubleSpinBox(decimals=5, minimum=0.001, maximum=5.0, singleStep=0.001, suffix=" cm")
@@ -1844,6 +1875,17 @@ class ResistanceMeterApp(QMainWindow):
             self.tab_four_point.fpp_power_stop_w.setValue(float(m_cfg.get('fpp_power_stop_w', 1.0e-1)))
         if hasattr(self.tab_four_point, 'fpp_stop_on_overpower'):
             self.tab_four_point.fpp_stop_on_overpower.setChecked(bool(m_cfg.get('fpp_stop_on_overpower', True)))
+        if hasattr(self.tab_four_point, 'fpp_autoselect_current'):
+            auto = bool(m_cfg.get('fpp_autoselect_current', True))
+            self.tab_four_point.fpp_autoselect_current.setChecked(auto)
+            # Sync dependent enabled-states explicitly (setChecked only fires
+            # toggled on a change): manual current grayed when auto is on.
+            self.tab_four_point.fpp_current.setEnabled(not auto)
+            if hasattr(self.tab_four_point, 'fpp_autoselect_sigfigs'):
+                self.tab_four_point.fpp_autoselect_sigfigs.setEnabled(auto)
+        if hasattr(self.tab_four_point, 'fpp_autoselect_sigfigs'):
+            self.tab_four_point.fpp_autoselect_sigfigs.setValue(
+                int(m_cfg.get('fpp_autoselect_sigfigs', 4)))
         self.tab_four_point.nplc.setValue(m_cfg['nplc'])
         self.tab_four_point.sampling_rate.setValue(m_cfg['sampling_rate'])
         self.tab_four_point.fpp_plot_var.setCurrentText('sheet_Rs')
@@ -1964,6 +2006,10 @@ class ResistanceMeterApp(QMainWindow):
                     m_cfg['fpp_power_stop_w'] = widget.fpp_power_stop_w.value()
                 if hasattr(widget, 'fpp_stop_on_overpower'):
                     m_cfg['fpp_stop_on_overpower'] = widget.fpp_stop_on_overpower.isChecked()
+                if hasattr(widget, 'fpp_autoselect_current'):
+                    m_cfg['fpp_autoselect_current'] = widget.fpp_autoselect_current.isChecked()
+                if hasattr(widget, 'fpp_autoselect_sigfigs'):
+                    m_cfg['fpp_autoselect_sigfigs'] = int(widget.fpp_autoselect_sigfigs.value())
             elif mode == 'sweep':
                 m_cfg['sweep_source'] = widget.sweep_source.currentText()
                 m_cfg['sweep_start'] = widget.sweep_start.value()
@@ -2176,6 +2222,8 @@ class ResistanceMeterApp(QMainWindow):
         self.measurement_worker.measurement_complete.connect(self.on_measurement_complete)
         self.measurement_worker.error_occurred.connect(self.on_error)
         self.measurement_worker.compliance_hit.connect(self.on_compliance_hit)
+        self.measurement_worker.autoselect_decision.connect(self.on_autoselect_decision)
+        self.measurement_worker.autoselect_current_chosen.connect(self.on_autoselect_current_chosen)
         self.measurement_worker.sweep_complete.connect(self.on_sweep_complete)
         self.measurement_worker.finished.connect(self.on_worker_finished)
         self.measurement_worker.start()
@@ -2654,6 +2702,62 @@ class ResistanceMeterApp(QMainWindow):
         self.log_status(f"⚠️ {compliance_type} Compliance Hit during {mode} measurement!", color="orange")
         # Non-blocking: show in status bar instead of modal popup
         self.statusBar().showMessage(f"⚠️ {compliance_type} COMPLIANCE — {mode} measurement", 10000)
+
+    def _ask_autoselect_proceed(self, title: str, text: str, informative: str) -> bool:
+        """Modal Proceed/Abort prompt for the current finder; True = proceed.
+
+        Split out from on_autoselect_decision so the decision-routing logic can
+        be tested without driving a real modal dialog.
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(title)
+        box.setText(text)
+        box.setInformativeText(informative)
+        proceed_btn = box.addButton("Proceed anyway", QMessageBox.AcceptRole)
+        abort_btn = box.addButton("Abort", QMessageBox.RejectRole)
+        box.setDefaultButton(abort_btn)
+        box.exec()
+        return box.clickedButton() is proceed_btn
+
+    def on_autoselect_current_chosen(self, current: float):
+        """Show the finder's chosen source current in the (grayed) 4PP field."""
+        w = getattr(self, 'tab_four_point', None)
+        if w is not None and hasattr(w, 'fpp_current'):
+            w.fpp_current.blockSignals(True)
+            try:
+                w.fpp_current.setValue(current)
+            finally:
+                w.fpp_current.blockSignals(False)
+
+    def on_autoselect_decision(self, info: dict):
+        """The 4PP current finder judged the sample marginal and is waiting.
+
+        Runs on the GUI thread (queued signal) while the worker blocks on its
+        decision Event. Show a Proceed/Abort dialog and hand the answer back.
+        """
+        if not self.measurement_worker:
+            return
+        verdict = info.get('verdict', '')
+        reason = info.get('reason', '')
+        suggested = float(info.get('suggested_current', 0.0) or 0.0)
+        title = {
+            'too_conductive': "Sample may be too conductive",
+            'too_resistive': "Sample may be too resistive",
+        }.get(verdict, "Auto-select warning")
+        if verdict == 'too_resistive':
+            informative = (f"Proceed to log this bound over the run (at "
+                           f"{suggested*1e3:.4g} mA, in compliance), or abort and "
+                           f"adjust (raise compliance / set thickness)?")
+        else:
+            informative = (f"Proceed anyway at {suggested*1e3:.4g} mA (data will be "
+                           f"noise-limited), or abort and adjust settings?")
+        proceed = self._ask_autoselect_proceed(title, reason, informative)
+        self.log_status(
+            f"Auto-select ({verdict}): user chose {'Proceed' if proceed else 'Abort'}.",
+            color="orange")
+        if self.measurement_worker:
+            self.measurement_worker.autoselect_respond(proceed)
 
     def on_worker_finished(self):
         self.log_status(f"Measurement worker thread ({self.active_mode}) finished.", color="grey")

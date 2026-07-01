@@ -26,6 +26,13 @@ from .accuracy import (
     current_source_uncertainty, current_uncertainty,
     resistance_uncertainty, voltage_source_uncertainty, voltage_uncertainty,
 )
+from .calculations import (
+    calculate_four_point_probe_bound, select_four_point_current,
+)
+from .constants import (
+    FPP_AUTOSELECT_MIN_CURRENT, FPP_AUTOSELECT_MIN_SNR,
+    FPP_AUTOSELECT_PROBE_CYCLES, FPP_AUTOSELECT_RESOLUTION_FLOOR,
+)
 from .data_export import build_metadata, get_column_config, make_exporter
 from .instrument import Keithley2400, humanize_connection_error
 from .system_utils import SleepInhibitor
@@ -39,6 +46,13 @@ class MeasurementWorker(QThread):
     error_occurred = Signal(str)
     compliance_hit = Signal(str)  # 'Voltage' or 'Current'
     overpower_hit = Signal(float, float)  # measured_power_w, hard_stop_w (4PP only)
+    # 4PP pre-run current finder needs a user decision for a marginal sample.
+    # Payload: {verdict, reason, resistance, suggested_current, expected_voltage}.
+    # The GUI shows a Proceed/Abort dialog and calls autoselect_respond().
+    autoselect_decision = Signal(dict)
+    # The current finder chose a source current (A); the GUI shows it in the
+    # (grayed) Source Current field so the user sees what was picked.
+    autoselect_current_chosen = Signal(float)
     sweep_complete = Signal(list, list, list)  # voltages, currents, compliance_list
     # Short model name ("2400", "2410", ...) once IDN has been parsed. The
     # GUI caches this for accuracy.py uncertainty lookups after the worker
@@ -61,6 +75,11 @@ class MeasurementWorker(QThread):
         self._event_marker = ""
         self._csv_error_count = 0  # Track consecutive CSV write failures
         self._max_csv_errors = 3   # Max consecutive errors before escalation
+
+        # 4PP pre-run current finder: blocks for a user Proceed/Abort decision
+        # on a marginal sample (mirrors the vdP proceed()/Event idiom).
+        self._autoselect_event = threading.Event()
+        self._autoselect_proceed = False
 
         self.keithley = None
         self.exporter = None
@@ -428,6 +447,33 @@ class MeasurementWorker(QThread):
             except Exception as e:
                 self.error_occurred.emit(f"Error configuring instrument: {str(e)}")
                 return
+
+            # Pre-run source-current finder (4PP, opt-in). Probes the sample,
+            # picks a current so the sense voltage clears the noise floor, and
+            # may block for a Proceed/Abort decision on a marginal sample. Runs
+            # after config (instrument fully set up) but before the exporter is
+            # built, so the chosen current lands in the filename + CSV metadata.
+            if (self.mode == 'four_point'
+                    and measurement_settings.get('fpp_autoselect_current', False)):
+                chosen = self._autoselect_four_point_current(
+                    measurement_settings, nplc, settling_time
+                )
+                if chosen is None:
+                    self.status_update.emit("Measurement cancelled before start.")
+                    return
+                try:
+                    self.keithley.write(f":SOUR:CURR:RANG {abs(chosen)}")
+                    self.keithley.write(f":SOUR:CURR {chosen}")
+                except Exception as e:
+                    self.error_occurred.emit(
+                        f"Error applying auto-selected current: {str(e)}")
+                    return
+                self._fpp_source_current = chosen
+                measurement_settings['fpp_current'] = chosen
+                source_value_str = f"{chosen*1000:.2f}mA"
+                if self._fpp_delta_mode:
+                    source_value_str += "_delta"
+                self.autoselect_current_chosen.emit(chosen)
 
             # File setup via the configured exporter (csv / hdf5 / csv+legacy_json).
             self.start_time = time.time()
@@ -1113,6 +1159,8 @@ class MeasurementWorker(QThread):
     def stop_measurement(self) -> None:
         self.status_update.emit(f"Stopping measurement ({self.mode})...")
         self.running = False
+        # Unblock a pending current-finder decision, if the run is waiting on one.
+        self._autoselect_event.set()
 
     def _cleanup(self) -> None:
         # Re-enable system sleep
@@ -1171,6 +1219,195 @@ class MeasurementWorker(QThread):
             if error:
                 self.status_update.emit(f"Warning: {error}")
                 logger.warning(f"Instrument error during measurement: {error}")
+
+    def autoselect_respond(self, proceed: bool) -> None:
+        """UI slot: the user's answer to the current-finder Proceed/Abort dialog."""
+        self._autoselect_proceed = bool(proceed)
+        self._autoselect_event.set()
+
+    def _probe_resistance(self, i_seed: float, cycles: int):
+        """Delta-probe the sample at ``i_seed`` for the pre-run current finder.
+
+        Runs ``cycles`` current-reversal pairs at +/- i_seed and returns
+        (R, sigma_emp, hit_compliance):
+          R              - signed 4-point V/I ratio, mean over cycles, Ω
+          sigma_emp      - empirical noise floor: std of the per-cycle V_delta, V
+          hit_compliance - True if any reading tripped the compliance bit
+
+        Assumes output is ON and the 4PP RSEN / FORM:ELEM config is in place.
+        Restores +i_seed on exit. Issues only direct queries — emits no signals.
+        """
+        i_mag = abs(i_seed)
+        settle = max(getattr(self, '_fpp_delta_settling', 0.1), 0.05)
+        self.keithley.write(f":SOUR:CURR:RANG {i_mag}")
+        vds = []
+        hit_comp = False
+        for _ in range(max(cycles, 1)):
+            self.keithley.write(f":SOUR:CURR {i_mag}")
+            time.sleep(settle)
+            pp = [x.strip() for x in self.keithley.query(":READ?").strip().split(',')]
+            vp = float(pp[0]); sp = int(float(pp[-1]))
+            self.keithley.write(f":SOUR:CURR {-i_mag}")
+            time.sleep(settle)
+            pm = [x.strip() for x in self.keithley.query(":READ?").strip().split(',')]
+            vm = float(pm[0]); sm = int(float(pm[-1]))
+            vds.append((vp - vm) / 2.0)
+            if (sp | sm) & _STAT_BIT_COMPLIANCE:
+                hit_comp = True
+        self.keithley.write(f":SOUR:CURR {i_mag}")  # restore + polarity
+        n = len(vds)
+        mean = sum(vds) / n
+        if n > 1:
+            sd = (sum((x - mean) ** 2 for x in vds) / (n - 1)) ** 0.5
+        else:
+            sd = abs(mean)  # single cycle: can't estimate scatter — be conservative
+        r = mean / i_mag if i_mag > 0 else float('nan')
+        return r, sd, hit_comp
+
+    def _autoselect_four_point_current(self, m, nplc, settling_time):
+        """Pre-run probe + current selection for 4PP (opt-in).
+
+        Handles the full conductivity range: too-conductive metals, ordinary
+        samples, high resistance, and insulators (reported as a conductivity
+        UPPER bound). Returns the chosen source-current magnitude for the run,
+        or None if the user chose Abort (or the run was stopped while waiting).
+        May block on a Proceed/Abort decision via autoselect_decision — but only
+        after the output has been turned back off.
+        """
+        seed = abs(float(m.get('fpp_current') or 1e-4)) or 1e-4
+        vcomp = abs(float(m.get('fpp_voltage_compliance') or 5.0))
+        power_stop = float(m.get('fpp_power_stop_w') or 0.1)
+        sig_figs = float(m.get('fpp_autoselect_sigfigs') or 4)
+        target_snr = 10.0 ** sig_figs
+        spacing_cm = float(m.get('fpp_spacing_cm') or 0.1016)
+        thickness_um = float(m.get('fpp_thickness_um') or 0.0)
+
+        self.status_update.emit("Auto-selecting source current (probing sample)...")
+        decision = None
+        try:
+            self.keithley.write(":OUTP ON")
+            time.sleep(max(settling_time, 0.2))
+            r, sigma_emp, probe_comp = self._probe_resistance(
+                seed, FPP_AUTOSELECT_PROBE_CYCLES)
+            # Gate on the MEASURED delta floor (never the datasheet accuracy
+            # spec, which cancels in delta mode), with a small resolution floor.
+            floor = max(sigma_emp, FPP_AUTOSELECT_RESOLUTION_FLOOR)
+
+            # The seed drove the source into voltage compliance -> the sample is
+            # more resistive than V_comp/seed. Re-probe on the lowest current
+            # range: either it's measurable at a small current, or it's too
+            # resistive even at 1 µA -> report a conductivity upper bound.
+            if probe_comp:
+                r, i_meas, comp_lo = self._probe_high_resistance()
+                if comp_lo:
+                    decision = self._resistive_bound_decision(
+                        vcomp, i_meas, spacing_cm, thickness_um)
+                else:
+                    # Measurable high R: thermoelectric offset is negligible
+                    # against the large V, so gate on the resolution floor.
+                    floor = FPP_AUTOSELECT_RESOLUTION_FLOOR
+        finally:
+            try:
+                self.keithley.write(":OUTP OFF")
+            except Exception:
+                pass
+
+        # Too resistive / insulator: block for a decision (output already off).
+        if decision is not None:
+            self.status_update.emit(decision['reason'])
+            return self._block_for_autoselect_decision(decision)
+
+        # Current ceiling: instrument model limit and the power-stop envelope
+        # (worst case I*Vcomp, matching the existing 4PP pre-flight check).
+        spec = getattr(self, '_model_spec', None)
+        i_max_model = spec.max_source_i if spec is not None else 1.05
+        i_max_power = (power_stop / vcomp) if vcomp > 0 else i_max_model
+        i_max = max(min(i_max_model, i_max_power), FPP_AUTOSELECT_MIN_CURRENT)
+
+        sel = select_four_point_current(
+            r, target_snr, i_max, lambda _v: floor,
+            min_current=FPP_AUTOSELECT_MIN_CURRENT,
+            min_snr=FPP_AUTOSELECT_MIN_SNR,
+            compliance_v=vcomp,
+        )
+        self.status_update.emit(
+            f"Probe: R≈{abs(r):.4g} Ω, noise floor≈{floor*1e6:.2g} µV. {sel.reason}"
+        )
+        if sel.verdict == 'ok':
+            return sel.current
+        return self._block_for_autoselect_decision({
+            'verdict': sel.verdict, 'reason': sel.reason, 'resistance': abs(r),
+            'suggested_current': sel.current, 'expected_voltage': sel.expected_voltage,
+        })
+
+    def _probe_high_resistance(self):
+        """One reading on the lowest current range for a sample that hit
+        compliance at the seed current.
+
+        Returns (R, i_measured, in_compliance). When in compliance, V is pinned
+        at V_comp and i_measured is the actual (reduced) current, so R = V/i;
+        if still in compliance the caller reports a bound instead of a value.
+        Emits no signals.
+        """
+        i_set = FPP_AUTOSELECT_MIN_CURRENT   # 2400's smallest source-current range
+        self.keithley.write(f":SOUR:CURR:RANG {i_set}")
+        self.keithley.write(f":SOUR:CURR {i_set}")
+        time.sleep(max(getattr(self, '_fpp_delta_settling', 0.1), 0.1))
+        parts = [x.strip() for x in self.keithley.query(":READ?").strip().split(',')]
+        v = float(parts[0]); i_meas = float(parts[1]); stat = int(float(parts[-1]))
+        in_comp = bool(stat & _STAT_BIT_COMPLIANCE)
+        r = (v / i_meas) if (np.isfinite(i_meas) and i_meas != 0) else float('nan')
+        return r, i_meas, in_comp
+
+    def _resistive_bound_decision(self, vcomp, i_meas, spacing_cm, thickness_um):
+        """Build the too_resistive decision for a sample that stays in compliance
+        even at the lowest current — a conductivity UPPER bound.
+
+        The bound uses calculate_four_point_probe_bound, whose current floor is
+        estimate_current_floor — the instrument's own baked-in measurement
+        limit — so the reported σ ceiling reflects what a 2400 can actually
+        resolve (not a hardcoded number). Proceeding runs at the lowest current
+        so the main loop logs the compliance-bounded values.
+        """
+        bound = calculate_four_point_probe_bound(
+            v_compliance=vcomp, measured_current=i_meas,
+            source_current=FPP_AUTOSELECT_MIN_CURRENT,
+            spacing_cm=spacing_cm, thickness_um=thickness_um,
+        )
+        if (thickness_um and thickness_um > 0
+                and np.isfinite(bound.conductivity) and bound.conductivity > 0):
+            sigma_m = bound.conductivity * 100.0   # S/cm -> S/m
+            quality = f"σ < {sigma_m:.2g} S/m (ρ > {bound.resistivity:.2g} Ω·cm)"
+        else:
+            quality = (f"R > {bound.ratio:.2g} Ω, Rs > {bound.sheet_resistance:.2g} Ω/sq "
+                       f"— set the sample thickness to report σ")
+        reason = (f"Sample too resistive to source current: still in compliance at "
+                  f"{FPP_AUTOSELECT_MIN_CURRENT*1e6:.0f} µA. Upper bound {quality}. "
+                  f"(Bounded by the 2400's current-measurement floor; a lower σ "
+                  f"needs an electrometer.)")
+        return {
+            'verdict': 'too_resistive', 'reason': reason, 'resistance': bound.ratio,
+            'suggested_current': FPP_AUTOSELECT_MIN_CURRENT, 'expected_voltage': vcomp,
+        }
+
+    def _block_for_autoselect_decision(self, decision):
+        """Emit autoselect_decision and block for the user's Proceed/Abort.
+
+        Returns the suggested current (proceed) or None (abort / run stopped).
+        """
+        self._autoselect_proceed = False
+        self._autoselect_event.clear()
+        self.autoselect_decision.emit(decision)
+        while not self._autoselect_event.wait(timeout=0.2):
+            if not self.running:
+                return None
+        if not self._autoselect_proceed:
+            self.status_update.emit("Auto-select: aborted by user.")
+            return None
+        self.status_update.emit(
+            f"Auto-select: proceeding at {decision['suggested_current']*1e3:.4g} mA."
+        )
+        return decision['suggested_current']
 
     def _read_delta(self) -> str:
         """Perform a current-reversal (delta) measurement for 4PP.

@@ -136,6 +136,7 @@ Some settings live on the individual mode tabs because they're per-measurement-c
 - **Source Range Auto / Voltage Range Auto** — every tab
 - **Cable null** — Resistance tab
 - **Delta mode (current reversal)** — Four-Point Probe tab Advanced section
+- **Auto-select source current / Target sig figs** — Four-Point Probe tab (**on by default**). The run probes the sample first and picks the gentlest source current that reaches the requested number of valid significant figures (default 4); the manual Source Current field is grayed and shows the picked value. Uncheck for manual current entry. See [Concepts → 4PP current finder](concepts.md#four-point-probe-current-finder).
 - **Geometry / dopant / temperature** — Four-Point Probe tab (drive F84 corrections)
 - **Sample thickness** — Four-Point Probe and Van der Pauw tabs
 - **Sweep start / stop / step / direction / per-step delay** — I-V Sweep tab

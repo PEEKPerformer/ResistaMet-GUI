@@ -1080,3 +1080,123 @@ class TestVdpStop:
             qapp.processEvents()
             time.sleep(0.01)
         assert not worker.isRunning()
+
+
+class TestFourPointAutoselectCurrent:
+    """Pre-run current finder: probe -> pick current, or block for a decision."""
+
+    def _autoselect_settings(self, tmp_path, sigfigs=4, seed=1e-3):
+        s = _four_point_settings(tmp_path, samples=2)
+        s["measurement"]["fpp_current"] = seed
+        s["measurement"]["fpp_autoselect_current"] = True
+        s["measurement"]["fpp_autoselect_sigfigs"] = sigfigs
+        return s
+
+    def test_measurable_sample_gets_current_auto_selected(self, qapp, fake_rm, tmp_path):
+        # Default fake DUT is 100 Ω. 4 figs (SNR 1e4) at a ~1 µV floor -> 10 mV
+        # -> ~100 µA, within the 20 mA power ceiling (0.1 W / 5 V), no decision.
+        settings = self._autoselect_settings(tmp_path, sigfigs=4, seed=1e-3)
+        worker = MeasurementWorker("four_point", "s", "alice", settings)
+        spies = _drive_worker(qapp, worker, stop_after_n_points=1)
+
+        assert spies.error_occurred == []
+        assert len(spies.data_point) >= 1
+        _, d, _, _ = spies.data_point[0]
+        # V = I*R with the chosen ~100 µA into 100 Ω -> ~10 mV.
+        assert d["current"] == pytest.approx(1e-4, rel=0.15)
+        assert d["voltage"] == pytest.approx(0.01, rel=0.15)
+        # The chosen current is written back into the settings (drives filename
+        # + CSV metadata) and announced on the status stream.
+        assert settings["measurement"]["fpp_current"] == pytest.approx(1e-4, rel=0.15)
+        assert any("uto-select" in s or "Probe:" in s for s in spies.status_update)
+
+    def test_too_conductive_sample_aborts_when_user_declines(self, qapp, fake_rm, tmp_path):
+        from tests.fakes.fake_keithley import FakeKeithley
+
+        def _open_low_r(*_a, **_k):
+            return FakeKeithley(dut_resistance_ohms=1e-5)  # 10 µΩ: unmeasurable
+        fake_rm.open_resource = _open_low_r
+
+        settings = self._autoselect_settings(tmp_path)
+        worker = MeasurementWorker("four_point", "s", "alice", settings)
+        decisions = []
+        worker.autoselect_decision.connect(
+            lambda info: (decisions.append(dict(info)), worker.autoselect_respond(False))
+        )
+        spies = _drive_worker(qapp, worker, timeout_s=8.0)
+
+        assert len(decisions) == 1
+        assert decisions[0]["verdict"] == "too_conductive"
+        # Aborted before the acquisition loop: no points, no completion.
+        assert spies.data_point == []
+        assert spies.measurement_complete == []
+
+    def test_too_conductive_sample_runs_when_user_accepts(self, qapp, fake_rm, tmp_path):
+        from tests.fakes.fake_keithley import FakeKeithley
+
+        def _open_low_r(*_a, **_k):
+            return FakeKeithley(dut_resistance_ohms=1e-5)
+        fake_rm.open_resource = _open_low_r
+
+        settings = self._autoselect_settings(tmp_path)
+        worker = MeasurementWorker("four_point", "s", "alice", settings)
+        worker.autoselect_decision.connect(lambda info: worker.autoselect_respond(True))
+        spies = _drive_worker(qapp, worker, stop_after_n_points=1, timeout_s=8.0)
+
+        # Proceeded despite the low signal -> data flows.
+        assert len(spies.data_point) >= 1
+
+    def test_autoselect_off_leaves_current_unchanged(self, qapp, fake_rm, tmp_path):
+        # With the toggle off, the seed current is used verbatim (no probe).
+        settings = _four_point_settings(tmp_path, samples=2)
+        settings["measurement"]["fpp_current"] = 1e-3
+        settings["measurement"]["fpp_autoselect_current"] = False
+        worker = MeasurementWorker("four_point", "s", "alice", settings)
+        spies = _drive_worker(qapp, worker, stop_after_n_points=1)
+        assert settings["measurement"]["fpp_current"] == 1e-3
+        _, d, _, _ = spies.data_point[0]
+        assert d["current"] == pytest.approx(1e-3, rel=0.1)
+
+    def test_insulator_reports_conductivity_upper_bound(self, qapp, fake_rm, tmp_path):
+        # A 1 TOhm sample stays in compliance even at the lowest current -> the
+        # finder reports a conductivity UPPER bound rather than a bogus value.
+        from tests.fakes.fake_keithley import FakeKeithley
+
+        def _open_insulator(*_a, **_k):
+            return FakeKeithley(dut_resistance_ohms=1e12)
+        fake_rm.open_resource = _open_insulator
+
+        settings = self._autoselect_settings(tmp_path)
+        settings["measurement"]["fpp_thickness_um"] = 100.0  # enables sigma bound
+        worker = MeasurementWorker("four_point", "s", "alice", settings)
+        decisions = []
+        worker.autoselect_decision.connect(
+            lambda info: (decisions.append(dict(info)), worker.autoselect_respond(False))
+        )
+        spies = _drive_worker(qapp, worker, timeout_s=8.0)
+
+        assert len(decisions) == 1
+        assert decisions[0]["verdict"] == "too_resistive"
+        assert "S/m" in decisions[0]["reason"]  # conductivity upper bound reported
+        assert spies.data_point == []           # aborted before the loop
+
+    def test_high_resistance_sample_measured_at_low_current(self, qapp, fake_rm, tmp_path):
+        # 1 MOhm: the seed (1 mA) hits compliance, but re-probing at the lowest
+        # range measures it and the run proceeds at a small current (no dialog).
+        from tests.fakes.fake_keithley import FakeKeithley
+
+        def _open_highr(*_a, **_k):
+            return FakeKeithley(dut_resistance_ohms=1e6)
+        fake_rm.open_resource = _open_highr
+
+        settings = self._autoselect_settings(tmp_path, seed=1e-3)
+        worker = MeasurementWorker("four_point", "s", "alice", settings)
+        decisions = []
+        worker.autoselect_decision.connect(lambda info: decisions.append(dict(info)))
+        spies = _drive_worker(qapp, worker, stop_after_n_points=1, timeout_s=8.0)
+
+        assert decisions == []                    # measurable -> no prompt
+        assert len(spies.data_point) >= 1
+        _, d, _, _ = spies.data_point[0]
+        assert d["current"] == pytest.approx(1e-6, rel=0.5)          # dropped to ~1 uA
+        assert d["voltage"] == pytest.approx(d["current"] * 1e6, rel=0.1)

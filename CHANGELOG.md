@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-07-01
+
+### Added
+- **Four-point probe pre-run current finder** (**on by default**). `Auto-select source current` on the 4PP tab delta-probes the sample before the run, measures its resistance and the *empirical* noise floor, and picks the **smallest** source current that reaches a target number of valid significant figures (`Target sig figs`, default 4 → SNR ≈ 10⁴). Choosing the minimum sufficient current means self-heating is handled silently — the tool never asks the user to reason about it. When on, the manual Source Current field is grayed and shows the picked value; uncheck it for manual current entry (advanced). Adds ~3 s per run. It reports one of three outcomes: measurable (auto-sets the current, logs the achieved sig figs), too conductive, or too resistive/compliance — the latter two via a blocking **Proceed / Abort** dialog explaining what to change (e.g. raise the power-stop limit or lower compliance). The chosen current flows into the filename and CSV metadata.
+  - New pure planner `calculations.select_four_point_current` (unit-tested; returns the achieved SNR and sig figs), new settings `fpp_autoselect_current` / `fpp_autoselect_sigfigs`, and tuning constants `FPP_AUTOSELECT_MIN_SNR` / `FPP_AUTOSELECT_MIN_CURRENT` / `FPP_AUTOSELECT_PROBE_CYCLES` / `FPP_AUTOSELECT_RESOLUTION_FLOOR`.
+  - The finder gates on the measured delta noise floor rather than the datasheet accuracy spec, because the datasheet offset is systematic and cancels in delta mode — so it will not wrongly reject low-resistance samples that delta + averaging can actually resolve.
+  - Handles the full conductivity range. If the seed current hits voltage compliance the finder re-probes at the lowest current: a high-but-measurable resistance is measured there (rather than mis-reported from the clamped voltage), and a genuine insulator — still in compliance at the lowest current — is reported as a **conductivity upper bound** (*"σ < X S/m"*, or an R/Rs lower bound without thickness). The bound is set by the instrument's own current-measurement floor (`estimate_current_floor`), so it reflects what a 2400 can actually resolve (~10⁻⁵–10⁻⁷ S/m; lower needs an electrometer).
+
 ## [1.12.3] - 2026-05-26
 
 Paper-only patch. No software changes from v1.12.2.

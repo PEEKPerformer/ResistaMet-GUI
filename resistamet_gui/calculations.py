@@ -16,7 +16,7 @@ Reference:
 """
 
 import math
-from typing import NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional
 
 import numpy as np
 
@@ -201,6 +201,155 @@ def calculate_four_point_probe_bound(
         sheet_resistance=rs_min,
         resistivity=rho_min,
         conductivity=sigma_max,
+    )
+
+
+class CurrentSelection(NamedTuple):
+    """Result of :func:`select_four_point_current`.
+
+    Attributes:
+        current: Recommended source-current MAGNITUDE in Amps (the worker
+            applies the sign / polarity).
+        expected_voltage: |I * R| the sense probes should see at ``current``, V.
+        snr: expected_voltage / noise-floor at that voltage (dimensionless).
+        sig_figs: valid significant figures the SNR supports (≈ log10(snr)).
+        verdict: one of 'ok', 'too_conductive', 'too_resistive'.
+        reason: short human-readable explanation for the UI.
+    """
+    current: float
+    expected_voltage: float
+    snr: float
+    sig_figs: float
+    verdict: str
+    reason: str
+
+
+def _snr_to_sig_figs(snr: float) -> float:
+    """Valid significant figures an SNR supports: n ≈ log10(SNR), floored at 0."""
+    if not np.isfinite(snr):
+        return float('inf')
+    if snr <= 1.0:
+        return 0.0
+    return math.log10(snr)
+
+
+def select_four_point_current(
+    resistance_ohms: float,
+    target_snr: float,
+    max_current: float,
+    sigma_v: Callable[[float], float],
+    min_current: float = 1e-9,
+    min_snr: float = 10.0,
+    compliance_v: Optional[float] = None,
+    compliance_headroom: float = 0.9,
+) -> 'CurrentSelection':
+    """Choose a 4PP source current for the most valid significant figures.
+
+    Pure planner: given a measured/estimated 4-point resistance, pick the
+    *smallest* source current whose sense voltage reaches ``target_snr``
+    (i.e. ~log10(target_snr) valid significant figures), staying under the
+    current / compliance ceilings. Choosing the minimum sufficient current —
+    rather than the maximum — is deliberate: it delivers the target data
+    quality at the least Joule heating, so self-heating never has to be a
+    user-facing concern. No Qt, no pyvisa, no I/O.
+
+    The noise floor is supplied by the caller as ``sigma_v`` — a callable
+    mapping a voltage to its ±1σ measurement floor. IMPORTANT: for delta /
+    current-reversal 4PP, pass the *empirically measured* noise floor (the
+    std of the probe's V_delta cycles), NOT the datasheet accuracy spec: the
+    datasheet offset is systematic and cancels in delta mode, so using it
+    would reject measurements that delta + averaging can actually resolve.
+    ``sigma_v`` is evaluated a few times because the floor depends on V
+    through the instrument's active range.
+
+    Args:
+        resistance_ohms: Measured 4-point V/I ratio (sign ignored), Ω.
+        target_snr: Desired signal-to-noise (10**target_sig_figs, e.g. 1e4
+            for 4 valid figures).
+        max_current: Hard ceiling on source current, A — already reduced by
+            the caller for model limit, power-stop, and source range.
+        sigma_v: V -> ±1σ noise floor at that voltage, V.
+        min_current: Lower clamp on the chosen current, A.
+        min_snr: SNR below which the sample is 'too_conductive' (< ~1 fig).
+        compliance_v: Voltage-compliance limit, V (None = ignore).
+        compliance_headroom: Fraction of compliance the chosen V may reach.
+
+    Returns:
+        CurrentSelection with the recommendation, achieved sig figs, and a verdict.
+    """
+    def _floor(v: float) -> float:
+        try:
+            return float(sigma_v(v))
+        except Exception:
+            return float('nan')
+
+    r = abs(resistance_ohms)
+    # Zero / invalid resistance: nothing to push a voltage across.
+    if not np.isfinite(r) or r <= 0.0:
+        return CurrentSelection(
+            current=max_current, expected_voltage=0.0, snr=0.0, sig_figs=0.0,
+            verdict='too_conductive',
+            reason="No measurable resistance (R≈0 or invalid) — signal is below the noise floor.",
+        )
+
+    # Effective current ceiling, also bounded by compliance headroom.
+    i_ceiling = max_current
+    has_comp = compliance_v is not None and np.isfinite(compliance_v) and compliance_v > 0
+    if has_comp:
+        i_ceiling = min(i_ceiling, compliance_headroom * compliance_v / r)
+
+    # Resistance so high even the minimum current would exceed compliance.
+    if has_comp and min_current * r > compliance_headroom * compliance_v:
+        v_at_min = min_current * r
+        return CurrentSelection(
+            current=min_current, expected_voltage=v_at_min, snr=float('inf'),
+            sig_figs=float('inf'), verdict='too_resistive',
+            reason=(f"R≈{r:.3g} Ω is high enough that even {min_current*1e3:.3g} mA "
+                    f"needs {v_at_min:.3g} V, above the {compliance_v:.3g} V compliance. "
+                    f"Raise the voltage compliance."),
+        )
+
+    # Smallest current whose voltage reaches target_snr × noise-floor.
+    i_ideal = min_current
+    for _ in range(3):
+        v = i_ideal * r
+        sv = _floor(v)
+        if np.isfinite(sv) and sv > 0:
+            i_ideal = (target_snr * sv) / r
+        else:
+            i_ideal = min_current  # unknown/zero floor: minimum current suffices
+            break
+
+    # Clamp into [min_current, i_ceiling].
+    i_chosen = min(max(i_ideal, min_current), i_ceiling)
+    v_chosen = i_chosen * r
+    sv_chosen = _floor(v_chosen)
+    snr = v_chosen / sv_chosen if (np.isfinite(sv_chosen) and sv_chosen > 0) else float('inf')
+    figs = _snr_to_sig_figs(snr)
+
+    if snr < min_snr:
+        # Hit the current/compliance ceiling before even ~1 valid figure.
+        return CurrentSelection(
+            current=i_chosen, expected_voltage=v_chosen, snr=snr, sig_figs=figs,
+            verdict='too_conductive',
+            reason=(f"R≈{r:.3g} Ω. At the maximum usable current "
+                    f"{i_chosen*1e3:.3g} mA the sense voltage is only ≈{v_chosen*1e6:.3g} µV "
+                    f"(SNR≈{snr:.1f}, under ~1 valid sig fig). Raise the power-stop limit or "
+                    f"lower compliance to allow more current, add averaging, or use a "
+                    f"thinner sample."),
+        )
+
+    reached = snr >= target_snr
+    if reached:
+        reason = (f"Auto-selected {i_chosen*1e3:.4g} mA → ~{figs:.1f} valid sig figs "
+                  f"(V≈{v_chosen*1e3:.3g} mV, SNR≈{snr:.0f}).")
+    else:
+        reason = (f"Auto-selected {i_chosen*1e3:.4g} mA → only ~{figs:.1f} valid sig figs "
+                  f"(V≈{v_chosen*1e3:.3g} mV, SNR≈{snr:.0f}); limited by power-stop/"
+                  f"compliance — raise them for more.")
+    return CurrentSelection(
+        current=i_chosen, expected_voltage=v_chosen, snr=snr, sig_figs=figs,
+        verdict='ok', reason=reason,
     )
 
 

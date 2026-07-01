@@ -25,6 +25,8 @@ from resistamet_gui.calculations import (
     f_thickness_correction,
     f_temperature_correction,
     calculate_resistivity_f84,
+    select_four_point_current,
+    CurrentSelection,
     FourPointProbeResult,
     F84ResistivityResult,
     DEFAULT_K_FACTOR,
@@ -614,3 +616,106 @@ class TestResistivityF84:
     def test_returns_named_tuple(self):
         result = calculate_resistivity_f84(50.0, 0.1, 0.001)
         assert isinstance(result, F84ResistivityResult)
+
+
+class TestSelectFourPointCurrent:
+    """Pure current-planner for the 4PP pre-run current finder (sig-fig based)."""
+
+    # A flat, empirical-style noise floor (delta repeatability), in volts.
+    FLOOR = 1e-6
+    TARGET_SNR = 1e4   # 4 valid significant figures
+
+    def _flat_floor(self, _v):
+        return self.FLOOR
+
+    def test_measurable_sample_reaches_target_sig_figs(self):
+        # R = 100 Ω, 4 figs (SNR 1e4) -> V 10 mV -> 0.1 mA, within a 20 mA ceiling.
+        sel = select_four_point_current(
+            100.0, self.TARGET_SNR, max_current=0.02,
+            sigma_v=self._flat_floor, compliance_v=5.0,
+        )
+        assert sel.verdict == 'ok'
+        assert sel.current == pytest.approx(1e-4, rel=1e-6)
+        assert sel.expected_voltage == pytest.approx(0.01, rel=1e-6)
+        assert sel.snr == pytest.approx(1e4, rel=1e-3)
+        assert sel.sig_figs == pytest.approx(4.0, abs=0.05)
+
+    def test_picks_minimum_current_for_target(self):
+        # Gentlest current that reaches the target — not the max available.
+        sel = select_four_point_current(
+            100.0, self.TARGET_SNR, max_current=1.0,   # huge ceiling
+            sigma_v=self._flat_floor, compliance_v=50.0,
+        )
+        assert sel.current == pytest.approx(1e-4, rel=1e-6)  # still just 0.1 mA
+
+    def test_sign_of_resistance_is_ignored(self):
+        pos = select_four_point_current(100.0, self.TARGET_SNR, 0.02, self._flat_floor, compliance_v=5.0)
+        neg = select_four_point_current(-100.0, self.TARGET_SNR, 0.02, self._flat_floor, compliance_v=5.0)
+        assert neg.verdict == 'ok'
+        assert neg.current == pytest.approx(pos.current, rel=1e-9)
+
+    def test_too_conductive_when_current_ceiling_too_low(self):
+        # R = 15 µΩ; at a 20 mA ceiling V is sub-µV -> under ~1 valid fig.
+        sel = select_four_point_current(
+            15e-6, self.TARGET_SNR, max_current=0.02,
+            sigma_v=self._flat_floor, compliance_v=5.0, min_snr=10.0,
+        )
+        assert sel.verdict == 'too_conductive'
+        assert sel.current == pytest.approx(0.02, rel=1e-6)  # clamped to the ceiling
+        assert sel.snr < 10.0
+        assert sel.sig_figs < 1.0
+
+    def test_conductive_sample_usable_with_more_current_headroom(self):
+        # Same 15 µΩ copper becomes usable (a fig or two) once the ceiling is 1 A.
+        sel = select_four_point_current(
+            15e-6, self.TARGET_SNR, max_current=1.0,
+            sigma_v=self._flat_floor, compliance_v=5.0, min_snr=10.0,
+        )
+        assert sel.verdict == 'ok'
+        assert sel.snr >= 10.0
+        assert sel.sig_figs >= 1.0
+        # ceiling-limited, so it does NOT reach the 4-fig target.
+        assert sel.snr < self.TARGET_SNR
+        assert sel.expected_voltage == pytest.approx(15e-6 * sel.current, rel=1e-6)
+
+    def test_too_resistive_when_min_current_exceeds_compliance(self):
+        sel = select_four_point_current(
+            1e9, self.TARGET_SNR, max_current=0.02,
+            sigma_v=self._flat_floor, compliance_v=5.0, min_current=1e-6,
+        )
+        assert sel.verdict == 'too_resistive'
+
+    def test_zero_resistance_is_too_conductive(self):
+        sel = select_four_point_current(0.0, self.TARGET_SNR, 0.02, self._flat_floor, compliance_v=5.0)
+        assert sel.verdict == 'too_conductive'
+        sel_nan = select_four_point_current(float('nan'), self.TARGET_SNR, 0.02, self._flat_floor)
+        assert sel_nan.verdict == 'too_conductive'
+
+    def test_chosen_current_respects_compliance_headroom(self):
+        # Demand so many figs that the voltage would blow past compliance;
+        # the chosen current must keep V under the headroom.
+        sel = select_four_point_current(
+            1e5, target_snr=1e8, max_current=1.0,
+            sigma_v=self._flat_floor, compliance_v=5.0, compliance_headroom=0.9,
+        )
+        assert sel.expected_voltage <= 0.9 * 5.0 + 1e-9
+
+    def test_noise_floor_drives_the_current(self):
+        # A larger floor needs proportionally more current for the same figs.
+        small = select_four_point_current(
+            100.0, self.TARGET_SNR, 1.0, lambda _v: 1e-6, compliance_v=50.0)
+        big = select_four_point_current(
+            100.0, self.TARGET_SNR, 1.0, lambda _v: 1e-4, compliance_v=50.0)
+        assert big.current == pytest.approx(100 * small.current, rel=1e-3)
+        assert big.verdict == 'ok'
+
+    def test_higher_sig_fig_target_needs_more_current(self):
+        three = select_four_point_current(100.0, 1e3, 1.0, self._flat_floor, compliance_v=50.0)
+        five = select_four_point_current(100.0, 1e5, 1.0, self._flat_floor, compliance_v=50.0)
+        assert five.current > three.current
+        assert five.sig_figs > three.sig_figs
+
+    def test_returns_named_tuple(self):
+        sel = select_four_point_current(100.0, self.TARGET_SNR, 0.02, self._flat_floor, compliance_v=5.0)
+        assert isinstance(sel, CurrentSelection)
+        assert hasattr(sel, 'sig_figs')

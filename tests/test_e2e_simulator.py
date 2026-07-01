@@ -81,6 +81,11 @@ def sim_window(app, tmp_path, monkeypatch):
     window.sample_input.setText("E2E-DUT")
     window.show()
     app.processEvents()
+    # 4PP auto-select current is ON by default (v1.13.0); disable it here so the
+    # e2e 4PP tests exercise the deterministic manual-current path. The finder
+    # itself is covered by test_workers / test_calculations / test_gui_smoke.
+    if hasattr(window.tab_four_point, 'fpp_autoselect_current'):
+        window.tab_four_point.fpp_autoselect_current.setChecked(False)
     try:
         yield window
     finally:
