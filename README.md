@@ -7,7 +7,7 @@
 
 # ResistaMet GUI
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19919751.svg)](https://doi.org/10.5281/zenodo.19919751)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19919751-blue)](https://doi.org/10.5281/zenodo.19919751)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docs](https://img.shields.io/badge/docs-bfer.land-blue.svg)](https://bfer.land/ResistaMet-GUI/)
 
