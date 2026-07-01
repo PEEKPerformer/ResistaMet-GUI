@@ -21,6 +21,7 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as Navigation
 from ..buffers import EnhancedDataBuffer
 from ..config import ConfigManager
 from ..constants import __version__
+from ..resources import app_icon
 from ..workers import MeasurementWorker, VdpMeasurementWorker
 from .canvas import HistogramCanvas, IVCanvas, PgLiveCanvas
 from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, VdpSampleDiagram, VdpProtocolFilmstrip, VdpPerGeometryBarChart, format_engineering, format_readout_html, format_with_uncertainty, precision_for_nplc
@@ -70,7 +71,7 @@ class ResistanceMeterApp(QMainWindow):
         # chrome. The horizontal-splitter layout makes this floor reachable;
         # the previous 900×700 was tied to the old vertical-splitter layout.
         self.setMinimumSize(720, 560)
-        self.setWindowIcon(QIcon.fromTheme("accessories-voltmeter"))
+        self.setWindowIcon(app_icon())
         self.init_ui()
         self.select_user()
 

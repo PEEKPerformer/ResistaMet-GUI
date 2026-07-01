@@ -20,7 +20,10 @@ a = Analysis(
     ['resistamet-gui.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    # Ship the packaged assets (logo / window icon) into the bundle so
+    # resistamet_gui.resources.app_icon() resolves them at runtime via its
+    # __file__-relative lookup. Target path mirrors the source layout.
+    datas=[('resistamet_gui/assets', 'resistamet_gui/assets')],
     # PyInstaller can miss imports done lazily inside resistamet_gui
     # (matplotlib backends, pyvisa-py transports, pyqtgraph helper modules).
     # Listing them here guarantees they end up in the frozen bundle.
@@ -81,4 +84,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    # Embed the multi-resolution icon into the PE so Explorer, the taskbar,
+    # and the Alt-Tab switcher show the ResistaMet mark on the .exe itself.
+    icon='resistamet_gui/assets/logo.ico',
 )

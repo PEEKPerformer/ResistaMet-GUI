@@ -80,6 +80,12 @@ def main():
     # Pass only argv[0] so QApplication doesn't choke on our --simulate flag.
     app = QApplication([sys.argv[0]])
     app.setStyle("Fusion")
+    # App-wide icon so Alt-Tab / dock / taskbar pick it up even before the
+    # main window exists. The frozen .exe also carries it embedded via the
+    # PyInstaller spec's icon= (that's what Explorer shows); this covers the
+    # source-run and title-bar paths.
+    from resistamet_gui.resources import app_icon
+    app.setWindowIcon(app_icon())
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     window = ResistanceMeterApp()

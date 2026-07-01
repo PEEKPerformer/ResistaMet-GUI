@@ -79,5 +79,10 @@ Releases = "https://github.com/PEEKPerformer/ResistaMet-GUI/releases"
 [tool.setuptools.packages.find]
 include = ["resistamet_gui*"]
 
+[tool.setuptools.package-data]
+# Ship the logo / window-icon assets inside the wheel so app_icon() finds
+# them after a plain `pip install` (not just from a source checkout).
+resistamet_gui = ["assets/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

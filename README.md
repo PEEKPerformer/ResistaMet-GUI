@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="ResistaMet logo" width="120">
+</p>
+
 # ResistaMet GUI
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19919751.svg)](https://doi.org/10.5281/zenodo.19919751)
