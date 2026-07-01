@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.1] - 2026-07-01
+
+### Added
+- **Application logo / icon.** ResistaMet now ships a proper mark — a charcoal/vermillion "source–measure" loop around a hexagonal sample — wired in as the window and taskbar icon (`resources.app_icon()`) and embedded in the Windows `.exe`. Assets (`logo.svg`/`.ico`/`.png`) ship in the wheel. No functional changes.
+
 ## [1.13.0] - 2026-07-01
 
 ### Added
