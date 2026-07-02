@@ -1,15 +1,14 @@
 """End-to-end: the live auxiliary-sensor readout on the 4PP tab.
 
 Verifies the equilibration-watch lifecycle under --simulate: an idle preview
-opens the sensor and shows a value; Start hands the serial port off to the
-worker (preview released); the readout keeps updating during the run from
-data_point; and the preview resumes once the run ends.
+opens the sensor and shows a value; tab switches do NOT close/reopen the
+port (no DTR reset churn — the reader thread keeps caching); Start hands the
+serial port off to the worker; the readout keeps updating during the run
+from data_point (for any mode); and the preview resumes once the run ends.
 """
 from __future__ import annotations
 
 import os
-import sys
-import time
 
 import pytest
 
@@ -17,96 +16,68 @@ pytest.importorskip("PySide6")
 pytestmark = pytest.mark.e2e
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
-
-DUT_OHMS = 100.0
-SIM_TEMP_C = 25.0
+from .e2e_utils import pump_for, switch_to, wait_until  # noqa: E402
 
 
-@pytest.fixture(scope="module")
-def app():
-    return QApplication.instance() or QApplication(sys.argv)
-
-
-@pytest.fixture
-def sim_window(app, tmp_path, monkeypatch):
-    from resistamet_gui.simulator import enable_simulation
-    enable_simulation(dut_resistance_ohms=DUT_OHMS, model="2420", sim_temp_c=SIM_TEMP_C)
-
-    monkeypatch.chdir(tmp_path)
-    from resistamet_gui import constants
-    monkeypatch.setattr(constants, "CONFIG_FILE", str(tmp_path / "config.json"))
-
-    from resistamet_gui.ui.main_window import ResistanceMeterApp
-
-    def _no_dialog(self):
-        self.current_user = "e2e"
-        self.user_label.setText("User: <b>e2e</b>")
-        self.user_settings = self.config_manager.get_user_settings("e2e")
-        self.update_ui_from_settings()
-        for buf in self.data_buffers.values():
-            buf.clear()
-        self.clear_all_plots()
-        self.set_all_controls_enabled(True)
-    monkeypatch.setattr(ResistanceMeterApp, "select_user", _no_dialog)
-
-    window = ResistanceMeterApp()
-    window.sample_input.setText("AUX-MON")
-    window.show()
-    app.processEvents()
-    try:
-        yield window
-    finally:
-        if window.measurement_running:
-            window.stop_current_measurement()
-            _wait_until(lambda: not window.measurement_running, timeout=3.0, app=app)
-        window._stop_aux_preview()
-        window.close()
-
-
-def _wait_until(condition, *, timeout, app):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if condition():
-            return True
-        app.processEvents()
-        time.sleep(0.05)
-    return False
-
-
-def _pump_for(seconds, app):
-    end = time.time() + seconds
-    while time.time() < end:
-        app.processEvents()
-        time.sleep(0.05)
-
-
-def _switch_to_4pp(window, app):
-    idx = next(i for i in range(window.main_tabs.count())
-               if window.main_tabs.tabText(i) == "4-Point Probe")
-    window.main_tabs.setCurrentIndex(idx)
+def _enable_aux_on_4pp_tab(window, app):
+    window.user_settings['measurement']['aux_log_enabled'] = True
+    switch_to(window, "4-Point Probe", app)   # tab-change reconciles the preview
+    window._maybe_start_aux_preview()          # explicit; must be a true no-op if on
     app.processEvents()
 
 
 def test_idle_preview_shows_temperature(sim_window, app):
-    sim_window.user_settings['measurement']['aux_log_enabled'] = True
-    _switch_to_4pp(sim_window, app)            # tab-change starts the preview
-    sim_window._maybe_start_aux_preview()       # explicit (no-op if already on)
-    app.processEvents()
+    _enable_aux_on_4pp_tab(sim_window, app)
     assert sim_window._aux_preview_sensor is not None, "preview did not open"
 
-    sim_window._refresh_aux_preview()          # deterministic tick
-    text = sim_window.tab_four_point.fpp_temp_readout.text()
-    assert "°C" in text, f"no unit in readout: {text!r}"
-    # The simulated thermocouple streams ~SIM_TEMP_C.
-    assert "25" in text, f"expected ~25 C in readout: {text!r}"
+    tab = sim_window.tab_four_point
+    # The reader thread needs a beat to cache the first line; the running
+    # QTimer repaints as soon as it lands.
+    assert wait_until(lambda: "°C" in tab.fpp_temp_readout.text(),
+                      timeout=3.0, app=app), (
+        f"no live value in readout: {tab.fpp_temp_readout.text()!r}")
+    # First number in the readout is the K-type tip — the sim streams ~25 °C
+    # with noise, so parse rather than substring-match.
+    import re
+    text = tab.fpp_temp_readout.text()
+    m = re.search(r"(-?\d+(?:\.\d+)?)", text)
+    assert m, f"no numeric value in readout: {text!r}"
+    assert abs(float(m.group(1)) - 25.0) < 2.0, f"expected ~25 C: {text!r}"
+
+
+def test_preview_not_reopened_when_config_unchanged(sim_window, app):
+    """_maybe_start_aux_preview with unchanged (driver, address) must keep the
+    SAME sensor object — a close/reopen would DTR-reset a native-USB board
+    into its ~2 s dead window on every tab flip or settings accept."""
+    _enable_aux_on_4pp_tab(sim_window, app)
+    first = sim_window._aux_preview_sensor
+    assert first is not None
+
+    sim_window._maybe_start_aux_preview()
+    app.processEvents()
+    assert sim_window._aux_preview_sensor is first, "preview was reopened needlessly"
+
+
+def test_tab_switch_keeps_port_open(sim_window, app):
+    """Leaving the 4PP tab pauses the repaint timer but keeps the port (and
+    reader thread) alive; returning resumes with the same sensor object."""
+    _enable_aux_on_4pp_tab(sim_window, app)
+    sensor = sim_window._aux_preview_sensor
+    assert sensor is not None
+
+    switch_to(sim_window, "Resistance Measurement", app)
+    assert sim_window._aux_preview_sensor is sensor, "tab leave closed the port"
+    assert not sim_window._aux_monitor_timer.isActive(), (
+        "repaint timer should pause off the 4PP tab")
+
+    switch_to(sim_window, "4-Point Probe", app)
+    assert sim_window._aux_preview_sensor is sensor, "tab return reopened the port"
+    assert sim_window._aux_monitor_timer.isActive(), (
+        "repaint timer should resume on the 4PP tab")
 
 
 def test_start_releases_preview_and_run_feeds_readout(sim_window, app):
-    sim_window.user_settings['measurement']['aux_log_enabled'] = True
-    _switch_to_4pp(sim_window, app)
-    sim_window._maybe_start_aux_preview()
-    app.processEvents()
+    _enable_aux_on_4pp_tab(sim_window, app)
     assert sim_window._aux_preview_sensor is not None
 
     tab = sim_window.tab_four_point
@@ -117,12 +88,44 @@ def test_start_releases_preview_and_run_feeds_readout(sim_window, app):
     # opens its own.
     assert sim_window._aux_preview_sensor is None, "preview not released on Start"
 
-    _pump_for(2.0, app)
-    in_run_text = tab.fpp_temp_readout.text()
-    assert any(ch.isdigit() for ch in in_run_text), f"no live value during run: {in_run_text!r}"
+    assert wait_until(
+        lambda: any(ch.isdigit() for ch in tab.fpp_temp_readout.text()),
+        timeout=4.0, app=app,
+    ), f"no live value during run: {tab.fpp_temp_readout.text()!r}"
 
     sim_window.stop_current_measurement()
-    assert _wait_until(lambda: not sim_window.measurement_running, timeout=3.0, app=app)
+    assert wait_until(lambda: not sim_window.measurement_running, timeout=3.0, app=app)
     # Preview resumes once the port is free again.
-    assert _wait_until(lambda: sim_window._aux_preview_sensor is not None,
-                       timeout=2.0, app=app), "preview did not resume after run"
+    assert wait_until(lambda: sim_window._aux_preview_sensor is not None,
+                      timeout=2.0, app=app), "preview did not resume after run"
+
+
+def test_disable_stops_preview_and_releases_port(sim_window, app):
+    _enable_aux_on_4pp_tab(sim_window, app)
+    assert sim_window._aux_preview_sensor is not None
+
+    sim_window.user_settings['measurement']['aux_log_enabled'] = False
+    sim_window._maybe_start_aux_preview()   # settings-accept / user-switch path
+    app.processEvents()
+    assert sim_window._aux_preview_sensor is None, "disable did not release the port"
+    assert sim_window.tab_four_point.fpp_temp_readout.text() == "Aux sensor: off"
+
+
+# ---------------------------------------------------------------------------
+# Aux connect failures must not trigger the SMU's GPIB-address remediation.
+# ---------------------------------------------------------------------------
+
+def test_is_address_error_ignores_aux_failures():
+    from resistamet_gui.ui.main_window import ResistanceMeterApp
+
+    is_addr = ResistanceMeterApp._is_address_error
+    # SMU failures still light up the selector...
+    assert is_addr("Instrument at GPIB0::24::INSTR was not detected. Check...")
+    assert is_addr("No instrument responded at GPIB0::24::INSTR.")
+    # ...but the worker prefixes aux failures, which must be excluded even
+    # though the humanized text contains the same trigger substrings.
+    assert not is_addr(
+        "Auxiliary sensor: Instrument at ASRL6::INSTR was not detected. "
+        "Check that it's powered on..."
+    )
+    assert not is_addr("AUXILIARY SENSOR: no instrument responded at ASRL6::INSTR")

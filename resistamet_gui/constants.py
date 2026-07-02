@@ -173,3 +173,14 @@ MODE_TIMING_OVERRIDES = {
 # Keithley compliance heuristics
 KEITHLEY_COMPLIANCE_MAGIC_NUMBER = 9.9e37
 COMPLIANCE_THRESHOLD_FACTOR = 1.0
+
+# Auxiliary-sensor co-logging timing. The sensor driver runs a background
+# reader thread that caches the newest parsed line; read_latest() is a
+# non-blocking cache read so the Keithley acquisition loop and the GUI
+# never wait on the serial stream.
+AUX_STALE_AFTER_S = 5.0        # cached reading older than this raises SensorReadError
+AUX_READY_TIMEOUT_S = 5.0      # worker budget for first reading (+ header) after open
+AUX_PREVIEW_TIMEOUT_MS = 800   # VISA timeout for the idle-preview sensor handle
+AUX_PREVIEW_INTERVAL_MS = 500  # idle-preview repaint tick (2 Hz)
+AUX_PREVIEW_GIVEUP_TICKS = 6   # consecutive empty ticks before the preview stops
+                               # (6 x 500 ms = 3 s — outlasts the ~2 s Arduino USB reset)

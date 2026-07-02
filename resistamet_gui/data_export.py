@@ -39,8 +39,23 @@ LEGACY_FORMAT_VERSION = "1.0"
 _CSV_END_MARKER = "# --- run completed ---"
 
 # Continuous polling modes that support auxiliary-sensor co-logging. Sweep
-# (atomic :READ?) and vdP (manual geometry protocol) are excluded.
-_AUX_LOG_MODES = ('resistance', 'source_v', 'source_i', 'four_point')
+# (atomic :READ?) and vdP (manual geometry protocol) are excluded. Public:
+# workers.py imports this so the sensor-open gate and the column splice can
+# never disagree about which modes co-log.
+AUX_LOG_MODES = ('resistance', 'source_v', 'source_i', 'four_point')
+
+
+def splice_before_tail(row: list, values: list, tail: int = 2) -> list:
+    """Insert ``values`` just before the last ``tail`` cells of a data row.
+
+    Every continuous-mode row ends with the ``[compliance, event]`` tail, and
+    get_column_config() splices optional columns (delta diagnostics, aux
+    channels) at ``cols.index('compliance')`` — i.e. immediately before that
+    tail. This helper is the row-side counterpart of that anchor: use it for
+    every row splice so header and row positions cannot drift apart.
+    """
+    cut = len(row) - tail
+    return list(row[:cut]) + list(values) + list(row[cut:])
 
 # Threshold above which CsvExporter fires the large-file notification when
 # the final artifact landed uncompressed. Aggressive on purpose — most
@@ -171,7 +186,9 @@ def parse_metadata(path: Union[str, Path]) -> Dict[str, Any]:
 # --------------------------- Column config helpers --------------------------
 
 
-def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] = None) -> tuple:
+def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] = None,
+                      aux_columns: Optional[List[str]] = None,
+                      aux_units: Optional[List[str]] = None) -> tuple:
     """Get column names and units for a measurement mode.
 
     Args:
@@ -180,6 +197,11 @@ def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] 
         measurement_settings: Optional settings dict. When provided and 4PP
             delta mode is enabled, the column list expands to include the
             per-polarity values V+, V-, R_f, R_r (F84 §11.2.2.2 diagnostic).
+        aux_columns / aux_units: Auxiliary-sensor column names/units, passed
+            explicitly by the worker after it has opened the sensor and read
+            its declared channels (sensors.aux_column_names). Only honored
+            for AUX_LOG_MODES. Callers without a live sensor pass nothing
+            and get the plain schema.
     """
     configs = {
         # V_meas, I_meas, R_unc added 2026-05: raw V and I are pulled
@@ -244,20 +266,18 @@ def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] 
 
     # Auxiliary-sensor co-logging applies to every continuous polling mode
     # (anchored to the Keithley run): splice one column per declared sensor
-    # channel before compliance/event (after any delta columns). The worker
-    # stashes the channel names/units (from the opened sensor's channels())
-    # here so the schema follows the sensor, not a hardcoded list. When logging
-    # is off, nothing is spliced and the CSV is byte-identical to a plain run.
-    if (mode in _AUX_LOG_MODES and measurement_settings is not None
-            and measurement_settings.get('aux_log_enabled')):
-        aux_cols = measurement_settings.get('_aux_columns') or []
-        aux_units = measurement_settings.get('_aux_units') or ([''] * len(aux_cols))
-        if aux_cols:
-            cols = list(cols)
-            units = list(units)
-            insert_at = cols.index('compliance')
-            cols[insert_at:insert_at] = list(aux_cols)
-            units[insert_at:insert_at] = list(aux_units)
+    # channel (+ the aux_fault provenance column) before compliance/event,
+    # after any delta columns. The names come from the opened sensor's
+    # channels() via the explicit aux_columns parameter, so the schema follows
+    # the sensor, not a hardcoded list. When no aux columns are passed,
+    # nothing is spliced and the CSV is byte-identical to a plain run.
+    if mode in AUX_LOG_MODES and aux_columns:
+        units_for_aux = list(aux_units) if aux_units else [''] * len(aux_columns)
+        cols = list(cols)
+        units = list(units)
+        insert_at = cols.index('compliance')
+        cols[insert_at:insert_at] = list(aux_columns)
+        units[insert_at:insert_at] = units_for_aux
 
     return (cols, units)
 
@@ -268,9 +288,14 @@ def build_metadata(
     mode: str,
     settings: Dict[str, Any],
     instrument_idn: str = "",
-    start_time: Optional[datetime] = None
+    start_time: Optional[datetime] = None,
+    aux_columns: Optional[List[str]] = None
 ) -> Dict[str, Any]:
-    """Build metadata dictionary for export. Shared schema across all backends."""
+    """Build metadata dictionary for export. Shared schema across all backends.
+
+    ``aux_columns`` is the aux-sensor column list (sensors.aux_column_names),
+    passed explicitly by the worker when co-logging is active.
+    """
     from .constants import __version__
 
     start_time = start_time or datetime.now()
@@ -363,12 +388,12 @@ def build_metadata(
 
     # Auxiliary-sensor provenance (any continuous mode) — only recorded when
     # co-logging is on, so a non-sensor run's metadata header is unchanged.
-    if (mode in _AUX_LOG_MODES
+    if (mode in AUX_LOG_MODES
             and measurement_settings.get('aux_log_enabled')
             and 'params' in meta):
         meta['params']['aux_sensor_driver'] = measurement_settings.get('aux_driver')
         meta['params']['aux_sensor_address'] = measurement_settings.get('aux_address')
-        meta['params']['aux_channels'] = measurement_settings.get('_aux_columns')
+        meta['params']['aux_channels'] = list(aux_columns) if aux_columns else None
 
     return meta
 

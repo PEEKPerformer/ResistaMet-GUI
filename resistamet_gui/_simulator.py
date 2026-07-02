@@ -38,6 +38,7 @@ from __future__ import annotations
 import math
 import random
 import re
+import time
 from collections import deque
 from typing import Optional
 
@@ -757,6 +758,12 @@ class FakeSerialSensor:
     determinism, matching :class:`FakeKeithley`.
     """
 
+    # Emulated stream period. The real board streams ~1-2 Hz; the fake runs
+    # faster so tests get fresh data quickly, but NOT instantly — the driver's
+    # background reader thread consumes read() in a loop, and an instant
+    # return would spin it hot.
+    STREAM_PERIOD_S = 0.02
+
     def __init__(self, sim_temp_c: float = 25.0, noise_c: float = 0.05):
         self.sim_temp_c = float(sim_temp_c)
         self._noise_c = float(noise_c)
@@ -767,6 +774,7 @@ class FakeSerialSensor:
         self.write_termination = "\n"
         # Handy in tests
         self.read_count = 0
+        self._closed = False
 
     def _line(self) -> str:
         tip = self.sim_temp_c + self._rng.gauss(0.0, self._noise_c)
@@ -774,6 +782,9 @@ class FakeSerialSensor:
         return f"DATA,{tip:.3f},{cold:.3f},0,0\r\n"
 
     def read(self) -> str:
+        if self._closed:
+            raise pyvisa.errors.InvalidSession()
+        time.sleep(self.STREAM_PERIOD_S)
         self.read_count += 1
         return self._line()
 
@@ -789,7 +800,7 @@ class FakeSerialSensor:
         return self._line()
 
     def close(self) -> None:
-        pass
+        self._closed = True
 
 
 class FakeStreamSensor:
@@ -808,6 +819,9 @@ class FakeStreamSensor:
         ("force", "N", 1.0),
     )
 
+    # See FakeSerialSensor.STREAM_PERIOD_S — paces the reader thread.
+    STREAM_PERIOD_S = 0.02
+
     def __init__(self, channels=None, noise=0.02):
         self._chans = list(channels or self.DEFAULT_CHANNELS)
         self._noise = float(noise)
@@ -817,6 +831,7 @@ class FakeStreamSensor:
         self.read_termination = "\n"
         self.write_termination = "\n"
         self.read_count = 0
+        self._closed = False
 
     def _header(self) -> str:
         return "HDR," + ",".join(f"{k}:{u}" for k, u, _ in self._chans) + "\r\n"
@@ -827,6 +842,9 @@ class FakeStreamSensor:
         return "DATA," + ",".join(f"{v:.4f}" for v in vals) + "\r\n"
 
     def read(self) -> str:
+        if self._closed:
+            raise pyvisa.errors.InvalidSession()
+        time.sleep(self.STREAM_PERIOD_S)
         self.read_count += 1
         if not self._sent_header:
             self._sent_header = True
@@ -843,7 +861,7 @@ class FakeStreamSensor:
         return self._data()
 
     def close(self) -> None:
-        pass
+        self._closed = True
 
 
 # ============================================================================
