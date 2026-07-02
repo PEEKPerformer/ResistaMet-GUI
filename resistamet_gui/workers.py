@@ -17,6 +17,7 @@ from .constants import (
     __version__,
     __original_version__,
     __author__,
+    AUX_READY_TIMEOUT_S,
 )
 
 # Keithley 2400 series STATUS word bit masks (24-bit)
@@ -26,9 +27,12 @@ from .accuracy import (
     current_source_uncertainty, current_uncertainty,
     resistance_uncertainty, voltage_source_uncertainty, voltage_uncertainty,
 )
-from .data_export import build_metadata, get_column_config, make_exporter
+from .data_export import (
+    AUX_LOG_MODES, build_metadata, get_column_config, make_exporter,
+    splice_before_tail,
+)
 from .instrument import Keithley2400, humanize_connection_error
-from .sensors import aux_column_names, make_sensor
+from .sensors import aux_column_names, make_sensor, reading_to_columns
 from .system_utils import SleepInhibitor
 
 
@@ -69,12 +73,14 @@ class MeasurementWorker(QThread):
         self.filename = ""
         self._instrument_idn = ""
 
-        # Optional auxiliary sensor (4PP co-logging). Stays None on every path
+        # Optional auxiliary sensor (co-logging). Stays None on every path
         # that doesn't opt in, so the no-sensor path is unchanged.
         self._aux_sensor = None
         self._aux_channels = []
-        self._aux_columns = []
+        self._aux_columns = []      # aux_<key>... + aux_fault (column order)
+        self._aux_units = []
         self._aux_row_values = []
+        self._aux_last_fault = None  # dedups per-point fault status messages
 
         # System sleep prevention
         self._sleep_inhibitor = SleepInhibitor()
@@ -441,10 +447,11 @@ class MeasurementWorker(QThread):
             # anchored to the Keithley run). Opened here, before the exporter,
             # so its declared channels() drive the CSV column schema. A failure
             # to open aborts the run the same way an instrument-connect failure
-            # does. Stashing the column names/units into the (copied)
-            # measurement_settings lets get_column_config/build_metadata pick
-            # them up without a wider signature change.
-            if (self.mode in ('resistance', 'source_v', 'source_i', 'four_point')
+            # does — but the message is prefixed so the GUI never routes it to
+            # the SMU's GPIB-address remediation. wait_ready blocks (worker
+            # thread, safe) until the reader thread has the channel description
+            # and a first cached reading.
+            if (self.mode in AUX_LOG_MODES
                     and measurement_settings.get('aux_log_enabled')):
                 driver = measurement_settings.get('aux_driver', 'arduino_thermocouple')
                 aux_address = measurement_settings.get('aux_address', '')
@@ -453,16 +460,19 @@ class MeasurementWorker(QThread):
                         f"Connecting to auxiliary sensor ({driver}) at {aux_address}..."
                     )
                     self._aux_sensor = make_sensor(driver, aux_address).open()
+                    if hasattr(self._aux_sensor, 'wait_ready'):
+                        self._aux_sensor.wait_ready(AUX_READY_TIMEOUT_S)
                     self._aux_channels = self._aux_sensor.channels()
                     self._aux_columns = aux_column_names(self._aux_sensor)
-                    measurement_settings['_aux_columns'] = self._aux_columns
-                    measurement_settings['_aux_units'] = [ch.unit for ch in self._aux_channels]
+                    self._aux_units = [ch.unit for ch in self._aux_channels] + ['']
                     self.status_update.emit(
                         "Auxiliary sensor ready: "
                         + ", ".join(f"{ch.label} ({ch.unit})" for ch in self._aux_channels)
                     )
                 except Exception as e:
-                    self.error_occurred.emit(humanize_connection_error(e, aux_address))
+                    self.error_occurred.emit(
+                        "Auxiliary sensor: " + humanize_connection_error(e, aux_address)
+                    )
                     return
 
             # File setup via the configured exporter (csv / hdf5 / csv+legacy_json).
@@ -470,14 +480,19 @@ class MeasurementWorker(QThread):
             try:
                 base_path = self._create_base_path(source_value_str)
 
-                columns, units = get_column_config(self.mode, measurement_settings)
+                columns, units = get_column_config(
+                    self.mode, measurement_settings,
+                    aux_columns=self._aux_columns or None,
+                    aux_units=self._aux_units or None,
+                )
                 export_metadata = build_metadata(
                     user=self.username,
                     sample_name=self.sample_name,
                     mode=self.mode,
                     settings=self.settings,
                     instrument_idn=self._instrument_idn,
-                    start_time=datetime.fromtimestamp(self.start_time)
+                    start_time=datetime.fromtimestamp(self.start_time),
+                    aux_columns=self._aux_columns or None,
                 )
 
                 self.exporter = make_exporter(
@@ -798,31 +813,30 @@ class MeasurementWorker(QThread):
                             compliance_status = 'V_COMP'
                         data_dict = {'voltage': voltage, 'current': current}
 
-                    # Auxiliary-sensor read at the measurement instant — shared
-                    # across every mode that opened a sensor (Keithley-centric
-                    # co-logging). A faulted (.ok False) or failed read records
-                    # NaN for the channels rather than crashing the run or
-                    # logging a plausible-but-wrong value. Values go into the
-                    # data dict (for the live signal) and are stashed in channel
-                    # order for the CSV row splice below.
+                    # Auxiliary-sensor sample at the measurement instant —
+                    # shared across every mode that opened a sensor
+                    # (Keithley-centric co-logging). read_latest() is a
+                    # non-blocking cache read (the driver's reader thread does
+                    # the waiting), so the acquisition loop never stalls on
+                    # the sensor. Channel values are PRESERVED even when
+                    # flagged; provenance rides in the aux_fault column
+                    # (sensors.reading_to_columns). A stale/missing cache
+                    # records NaN + 'read_error' and the run continues.
                     if self._aux_sensor is not None:
                         try:
-                            reading = self._aux_sensor.read_latest()
-                            if reading.ok:
-                                aux_vals = {ch.key: reading.values.get(ch.key, float('nan'))
-                                            for ch in self._aux_channels}
-                                data_dict['aux_ok'] = True
-                            else:
-                                aux_vals = {ch.key: float('nan') for ch in self._aux_channels}
-                                data_dict['aux_ok'] = False
-                                self.status_update.emit("⚠️ Auxiliary sensor reported a fault flag")
-                        except Exception as e:
-                            aux_vals = {ch.key: float('nan') for ch in self._aux_channels}
-                            data_dict['aux_ok'] = False
-                            self.status_update.emit(f"Auxiliary sensor read failed: {str(e)[:60]}")
-                        for ch in self._aux_channels:
-                            data_dict[f"aux_{ch.key}"] = aux_vals[ch.key]
-                        self._aux_row_values = [aux_vals[ch.key] for ch in self._aux_channels]
+                            aux_cols = reading_to_columns(self._aux_sensor.read_latest())
+                        except Exception:
+                            aux_cols = {name: float('nan') for name in self._aux_columns}
+                            aux_cols['aux_fault'] = 'read_error'
+                        data_dict.update(aux_cols)
+                        self._aux_row_values = [
+                            aux_cols.get(name, float('nan')) for name in self._aux_columns
+                        ]
+                        fault = aux_cols.get('aux_fault', '0')
+                        if fault != self._aux_last_fault:
+                            if fault != '0':
+                                self.status_update.emit(f"⚠️ Auxiliary sensor: {fault}")
+                            self._aux_last_fault = fault
 
                     stop_on_comp = bool(measurement_settings.get('stop_on_compliance', False))
                     if compliance_status != 'OK' and compliance_type:
@@ -985,15 +999,14 @@ class MeasurementWorker(QThread):
                             ]
 
                         # Splice per-polarity columns when delta mode produced
-                        # the reading. Position: just before compliance/event,
-                        # mirroring get_column_config()'s splice.
+                        # the reading. splice_before_tail lands them just
+                        # before compliance/event, mirroring
+                        # get_column_config()'s 'compliance' anchor.
                         if use_delta and getattr(self, '_last_delta', None):
                             ld = self._last_delta
-                            insert_at = len(row_data) - 2  # before compliance, event
-                            row_data = (
-                                row_data[:insert_at]
-                                + [ld['v_plus'], ld['v_minus'], ld['r_f'], ld['r_r']]
-                                + row_data[insert_at:]
+                            row_data = splice_before_tail(
+                                row_data,
+                                [ld['v_plus'], ld['v_minus'], ld['r_f'], ld['r_r']],
                             )
                     else:
                         # source_v or source_i
@@ -1008,16 +1021,11 @@ class MeasurementWorker(QThread):
                             v_unc = data_dict.get('voltage_unc', float('nan'))
                             row_data = [elapsed_time, v, i, r, v_unc, r_unc, compliance_status, event_marker]
 
-                    # Splice auxiliary-sensor channel values for any mode that
-                    # opened a sensor — after any delta columns, before
+                    # Splice auxiliary-sensor values (+ aux_fault) for any mode
+                    # that opened a sensor — after any delta columns, before
                     # compliance/event, mirroring get_column_config()'s splice.
                     if self._aux_sensor is not None and self._aux_columns:
-                        insert_at = len(row_data) - 2  # before compliance, event
-                        row_data = (
-                            row_data[:insert_at]
-                            + list(self._aux_row_values)
-                            + row_data[insert_at:]
-                        )
+                        row_data = splice_before_tail(row_data, self._aux_row_values)
 
                     # Write to exporter (handles both JSON and CSV)
                     try:

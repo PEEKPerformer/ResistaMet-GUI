@@ -20,7 +20,12 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as Navigation
 
 from ..buffers import EnhancedDataBuffer
 from ..config import ConfigManager
-from ..constants import __version__
+from ..constants import (
+    __version__,
+    AUX_PREVIEW_GIVEUP_TICKS,
+    AUX_PREVIEW_INTERVAL_MS,
+    AUX_PREVIEW_TIMEOUT_MS,
+)
 from ..workers import MeasurementWorker, VdpMeasurementWorker
 from .canvas import HistogramCanvas, IVCanvas, PgLiveCanvas
 from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, VdpSampleDiagram, VdpProtocolFilmstrip, VdpPerGeometryBarChart, format_engineering, format_readout_html, format_with_uncertainty, precision_for_nplc
@@ -56,10 +61,11 @@ class ResistanceMeterApp(QMainWindow):
         # triggering a run). During a run the worker owns the only serial-port
         # handle, so the readout is fed from data_point instead.
         self._aux_preview_sensor = None
+        self._aux_preview_config = None  # (driver, address) of the open preview
         self._aux_channels_cache = []
         self._aux_preview_fails = 0
         self._aux_monitor_timer = QTimer(self)
-        self._aux_monitor_timer.setInterval(500)  # 2 Hz
+        self._aux_monitor_timer.setInterval(AUX_PREVIEW_INTERVAL_MS)
         self._aux_monitor_timer.timeout.connect(self._refresh_aux_preview)
         self.current_user = None
         self.user_settings = None
@@ -1797,6 +1803,9 @@ class ResistanceMeterApp(QMainWindow):
                 for buffer in self.data_buffers.values():
                     buffer.clear()
                 self.clear_all_plots()
+                # Aux settings are per-user: reconcile the idle preview with
+                # the new user's aux_log_enabled/driver/address.
+                self._maybe_start_aux_preview()
         else:
             if not self.current_user:
                 self.log_status("No user selected. Please select or create a user.")
@@ -2193,8 +2202,13 @@ class ResistanceMeterApp(QMainWindow):
         self.log_status(f"Starting {mode} measurement for sample: {sample_name}..."); self.statusBar().showMessage(self._running_status_message(mode))
         # Release the idle aux-sensor preview so the worker can open the serial
         # port — only one handle per port. The in-run readout is fed from
-        # data_point below.
+        # data_point. Reset the label so a pre-run preview value never
+        # masquerades as live before the first point arrives.
         self._stop_aux_preview()
+        if (self._aux_enabled_in_settings()
+                and getattr(self, 'tab_four_point', None) is not None
+                and hasattr(self.tab_four_point, 'fpp_temp_readout')):
+            self.tab_four_point.fpp_temp_readout.setText("Aux: —")
         self.measurement_worker = MeasurementWorker(mode=mode, sample_name=sample_name, username=self.current_user, settings=current_settings)
         self.measurement_worker.instrument_identified.connect(self._on_instrument_identified)
         self.measurement_worker.data_point.connect(self.update_data)
@@ -2288,23 +2302,44 @@ class ResistanceMeterApp(QMainWindow):
         return bool(self.user_settings
                     and self.user_settings['measurement'].get('aux_log_enabled'))
 
-    def _maybe_start_aux_preview(self):
-        """Start the idle aux preview iff aux logging is enabled (global setting),
-        we're idle, and the 4PP tab is showing; otherwise ensure it's stopped.
+    def _aux_configured(self) -> tuple:
+        """The (driver, address) pair currently configured in settings."""
+        m_cfg = self.user_settings['measurement'] if self.user_settings else {}
+        return (m_cfg.get('aux_driver', 'arduino_thermocouple'),
+                m_cfg.get('aux_address', ''))
 
-        Safe to call from tab-change, settings-applied, and run-end paths.
+    def _maybe_start_aux_preview(self):
+        """Reconcile the idle aux preview with the current state.
+
+        Aux enabled, idle, 4PP tab showing: preview runs. If the sensor is
+        already open with an unchanged (driver, address), just ensure the
+        repaint timer is running — NO close/reopen, so tab flips never
+        DTR-reset a native-USB board. Aux enabled but another tab showing:
+        pause the repaint timer only; the port stays open and the driver's
+        reader thread keeps caching, so returning to the tab is instant.
+        Aux disabled (or during a run): release the port.
+
+        Safe to call from tab-change, settings-applied, user-switch, and
+        run-end paths.
         """
         w = getattr(self, 'tab_four_point', None)
-        if (self._aux_enabled_in_settings()
-                and self._four_point_tab_active()
-                and not self.measurement_running):
-            self._start_aux_preview()
-        else:
+        if self.measurement_running:
+            return  # run start already released the port for the worker
+        if not self._aux_enabled_in_settings():
             self._stop_aux_preview()
-            if w and hasattr(w, 'fpp_temp_readout') and not self.measurement_running:
-                w.fpp_temp_readout.setText(
-                    "Aux sensor: idle" if self._aux_enabled_in_settings()
-                    else "Aux sensor: off")
+            if w and hasattr(w, 'fpp_temp_readout'):
+                w.fpp_temp_readout.setText("Aux sensor: off")
+            return
+        if not self._four_point_tab_active():
+            # Keep the port (reader thread keeps caching); idle the repaints.
+            self._aux_monitor_timer.stop()
+            return
+        if (self._aux_preview_sensor is not None
+                and self._aux_configured() == self._aux_preview_config):
+            if not self._aux_monitor_timer.isActive():
+                self._aux_monitor_timer.start()
+            return
+        self._start_aux_preview()
 
     def _start_aux_preview(self):
         """Open the aux sensor for a live idle readout (equilibration watch).
@@ -2312,6 +2347,7 @@ class ResistanceMeterApp(QMainWindow):
         Driver/address come from the global Settings ▸ Measurement aux_* keys.
         No-op during a run (the worker holds the port). Failures are shown in
         the readout label, not raised — a missing sensor must not block setup.
+        The driver's reader thread does the serial I/O; nothing here blocks.
         """
         w = getattr(self, 'tab_four_point', None)
         if (not w or self.measurement_running
@@ -2319,25 +2355,24 @@ class ResistanceMeterApp(QMainWindow):
             return
         self._stop_aux_preview()
         from ..sensors import make_sensor
-        m_cfg = self.user_settings['measurement']
-        driver = m_cfg.get('aux_driver', 'arduino_thermocouple')
-        address = m_cfg.get('aux_address', '')
+        driver, address = self._aux_configured()
         try:
-            sensor = make_sensor(driver, address, timeout_ms=800).open()
-            # Keep an idle preview read snappy: a silent device must not freeze
-            # the GUI thread for the full attempt budget.
-            sensor.MAX_READ_ATTEMPTS = 3
+            sensor = make_sensor(
+                driver, address, timeout_ms=AUX_PREVIEW_TIMEOUT_MS).open()
             self._aux_preview_sensor = sensor
+            self._aux_preview_config = (driver, address)
             self._aux_channels_cache = list(sensor.channels())
             self._aux_preview_fails = 0
             w.fpp_temp_readout.setText("Aux sensor: connecting…")
             self._aux_monitor_timer.start()
         except Exception as e:
             self._aux_preview_sensor = None
+            self._aux_preview_config = None
+            self._aux_channels_cache = []
             w.fpp_temp_readout.setText(f"Aux sensor: not connected ({str(e)[:40]})")
 
     def _stop_aux_preview(self):
-        """Stop the preview timer and release the serial-port handle."""
+        """Stop the preview timer, release the serial port, drop cached state."""
         self._aux_monitor_timer.stop()
         if self._aux_preview_sensor is not None:
             try:
@@ -2345,23 +2380,32 @@ class ResistanceMeterApp(QMainWindow):
             except Exception:
                 pass
             self._aux_preview_sensor = None
+        self._aux_preview_config = None
+        self._aux_channels_cache = []
+        self._aux_preview_fails = 0
 
     def _refresh_aux_preview(self):
-        """2 Hz idle tick: read the aux sensor and repaint the readout. A read
-        failure stops the preview (rather than re-blocking every tick)."""
+        """Preview tick: nonblocking cache read + repaint.
+
+        The driver's reader thread fills the cache; a miss here just means no
+        line has arrived yet (e.g. the ~2 s Arduino USB-reset window after a
+        fresh open) or the stream died. Tolerate a few consecutive misses,
+        then stop rather than ticking forever against a dead port.
+        """
         w = getattr(self, 'tab_four_point', None)
         if not w or self._aux_preview_sensor is None:
             return
         try:
             reading = self._aux_preview_sensor.read_latest()
             self._aux_preview_fails = 0
+            # Refresh cached channels — a StreamSensor discovers them only
+            # after its header arrives, which may postdate the open.
+            if not self._aux_channels_cache:
+                self._aux_channels_cache = list(self._aux_preview_sensor.channels())
             w.fpp_temp_readout.setText(self._format_aux_text(reading.values, reading.ok))
         except Exception as e:
-            # Tolerate transient misses — notably the ~2 s Arduino USB-reset
-            # window right after open, before the first line arrives. Give up
-            # only after several consecutive failures.
             self._aux_preview_fails += 1
-            if self._aux_preview_fails >= 6:
+            if self._aux_preview_fails >= AUX_PREVIEW_GIVEUP_TICKS:
                 self._stop_aux_preview()
                 w.fpp_temp_readout.setText(f"Aux sensor: read error ({str(e)[:30]})")
             else:
@@ -2381,7 +2425,7 @@ class ResistanceMeterApp(QMainWindow):
                 parts.append(f"{ch.label}: {v:.2f} {ch.unit}")
         else:
             for k, v in values.items():
-                if k.startswith('aux_') and k != 'aux_ok' and not k.endswith('_flag'):
+                if k.startswith('aux_') and k != 'aux_fault' and not k.endswith('_flag'):
                     try:
                         parts.append(f"{k[4:]}: {float(v):.2f}")
                     except (TypeError, ValueError):
@@ -2447,10 +2491,15 @@ class ResistanceMeterApp(QMainWindow):
             w._fpp_rows.append(row)
             self._append_four_point_row(row)
             self._update_four_point_stats()
-            if hasattr(w, 'fpp_temp_readout') and any(
-                    k.startswith('aux_') and k != 'aux_ok' for k in value):
-                w.fpp_temp_readout.setText(
-                    self._format_aux_text(value, value.get('aux_ok', True)))
+
+        # In-run aux readout — mode-agnostic: every continuous mode co-logs,
+        # so the readout must render for all of them, not just 4PP (the label
+        # lives on the 4PP tab; a mid-run visit there shows live values).
+        aux_tab = getattr(self, 'tab_four_point', None)
+        if (aux_tab is not None and hasattr(aux_tab, 'fpp_temp_readout')
+                and any(k.startswith('aux_') and k != 'aux_fault' for k in value)):
+            aux_ok = str(value.get('aux_fault', '0')) == '0'
+            aux_tab.fpp_temp_readout.setText(self._format_aux_text(value, aux_ok))
 
     def _refresh_smoothed_readout(self):
         """4 Hz tick: render the live readout from the rolling-mean buffer.
@@ -2775,8 +2824,15 @@ class ResistanceMeterApp(QMainWindow):
         like the user picked the wrong GPIB address or the instrument isn't
         responding at the configured one. The check is substring-based on
         purpose: keeping it loose means new humanize phrasings still light
-        up the selector without an extra wiring change."""
+        up the selector without an extra wiring change.
+
+        Auxiliary-sensor failures are explicitly excluded: the worker
+        prefixes them 'Auxiliary sensor:', and offering the SMU's GPIB
+        selector for an unplugged thermocouple would invite the user to
+        rewrite the Keithley address."""
         low = error_message.lower()
+        if 'auxiliary sensor' in low:
+            return False
         return any(needle in low for needle in (
             "not found",
             "not detected",
@@ -3425,7 +3481,9 @@ class ResistanceMeterApp(QMainWindow):
             rm = pyvisa.ResourceManager()
             resources = rm.list_resources()
             if addr not in resources:
-                rm.close()
+                # Do not rm.close(): the ResourceManager is a process-wide
+                # cached singleton; closing it would sever every live VISA
+                # session (e.g. the aux-sensor preview).
                 available = ', '.join(resources) if resources else 'none'
                 QMessageBox.warning(
                     self, "Connection Failed",
@@ -3445,7 +3503,7 @@ class ResistanceMeterApp(QMainWindow):
                 pass
             idn = dev.query("*IDN?").strip()
             dev.close()
-            rm.close()
+            # No rm.close() — see membership-check comment above.
             QMessageBox.information(self, "Connection OK", f"Connected to:\n{idn}")
             self.log_status(f"Connection test OK: {idn}", color="darkGreen")
             self.statusBar().showMessage(f"Connected: {idn}", 5000)
@@ -3455,6 +3513,9 @@ class ResistanceMeterApp(QMainWindow):
             self.statusBar().showMessage("Connection failed", 5000)
 
     def closeEvent(self, event):
+        # The idle aux preview holds its serial port across tab switches;
+        # release it on exit.
+        self._stop_aux_preview()
         if self.measurement_running:
             reply = QMessageBox.question(self, "Exit Confirmation", f"A measurement ({self.active_mode}) is currently running.\nStopping may result in incomplete data.\n\nAre you sure you want to exit?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.Yes:

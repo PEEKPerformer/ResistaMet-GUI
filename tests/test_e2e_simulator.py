@@ -18,12 +18,9 @@ points, or a crash before Stop is the signal of a real defect.
 """
 from __future__ import annotations
 
-import csv
 import glob
 import math
 import os
-import sys
-import time
 
 import pytest
 
@@ -37,92 +34,17 @@ pytestmark = pytest.mark.e2e
 # Offscreen platform so the tests run in CI without a display.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+# Shared harness: the app / sim_window fixtures live in conftest.py; the
+# pump/CSV helpers in e2e_utils.py. Aliased to keep test bodies unchanged.
+from .e2e_utils import (  # noqa: E402
+    pump_for as _pump_for,
+    read_csv_data as _read_csv_data,
+    switch_to as _switch_to,
+    wait_until as _wait_until,
+)
 
 # Known DUT resistance for Ohm's-law assertions across all modes.
 DUT_OHMS = 100.0
-
-
-@pytest.fixture(scope="module")
-def app():
-    return QApplication.instance() or QApplication(sys.argv)
-
-
-@pytest.fixture
-def sim_window(app, tmp_path, monkeypatch):
-    """Yield a freshly-constructed ResistanceMeterApp wired to the in-package
-    Keithley simulator with a known DUT. cwd is the tmp_path so CSV/JSON
-    exports land in a per-test directory that pytest cleans up.
-    """
-    from resistamet_gui.simulator import enable_simulation
-    enable_simulation(dut_resistance_ohms=DUT_OHMS, model="2420")
-
-    # Run inside tmp_path so measurement_data/ writes don't pollute the repo.
-    monkeypatch.chdir(tmp_path)
-
-    from resistamet_gui import constants
-    monkeypatch.setattr(constants, "CONFIG_FILE", str(tmp_path / "config.json"))
-
-    from resistamet_gui.ui.main_window import ResistanceMeterApp
-
-    # Skip the modal user dialog and seed a usable demo user.
-    def _no_dialog(self):
-        self.current_user = "e2e"
-        self.user_label.setText("User: <b>e2e</b>")
-        self.user_settings = self.config_manager.get_user_settings("e2e")
-        self.update_ui_from_settings()
-        for buf in self.data_buffers.values():
-            buf.clear()
-        self.clear_all_plots()
-        self.set_all_controls_enabled(True)
-    monkeypatch.setattr(ResistanceMeterApp, "select_user", _no_dialog)
-
-    window = ResistanceMeterApp()
-    window.sample_input.setText("E2E-DUT")
-    window.show()
-    app.processEvents()
-    try:
-        yield window
-    finally:
-        if window.measurement_running:
-            window.stop_current_measurement()
-            _wait_until(lambda: not window.measurement_running, timeout=3.0, app=app)
-        window.close()
-
-
-def _switch_to(window, label, app):
-    idx = next(i for i in range(window.main_tabs.count())
-               if window.main_tabs.tabText(i) == label)
-    window.main_tabs.setCurrentIndex(idx)
-    app.processEvents()
-
-
-def _wait_until(condition, *, timeout, app):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if condition():
-            return True
-        app.processEvents()
-        time.sleep(0.05)
-    return False
-
-
-def _pump_for(seconds, app):
-    end = time.time() + seconds
-    while time.time() < end:
-        app.processEvents()
-        time.sleep(0.05)
-
-
-def _read_csv_data(path):
-    """Read a v2.0 CSV: skip #-prefixed metadata header + trailer lines.
-
-    Returns the list of CSV rows (column header first, then data) with all
-    `#` comment lines removed. Matches the behavior pandas gets with
-    `read_csv(comment='#')` but keeps stdlib-only.
-    """
-    with open(path) as f:
-        return list(csv.reader(line for line in f if not line.startswith('#')))
 
 
 def _reset_simulator(ohms: float, model: str = "2420"):

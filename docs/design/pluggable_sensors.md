@@ -42,7 +42,9 @@ class SensorChannel:   # key="strain", label="Strain", unit="µε"
     key: str; label: str; unit: str
 ```
 
-- The **per-point row** gets one `aux_<key>` column per channel (+ `aux_<key>_flag` if flagged).
+- The **per-point row** gets one `aux_<key>` column per channel plus a single `aux_fault` provenance
+  column (`"0"` when clean; `"key=v;…"` for nonzero flags; `"read_error"` when no fresh reading —
+  values are preserved and *marked* on fault, never silently NaN'd).
 - The **CSV/HDF5 headers** are derived from `aux_column_names(sensor)` — the exporter never sees a
   sensor type.
 - The **live readout** renders `f"{label}: {value} {unit}"` per channel.
@@ -68,7 +70,7 @@ class SensorReading:
 class AuxiliarySensor(Protocol):
     def open(self) -> "AuxiliarySensor": ...
     def channels(self) -> list[SensorChannel]: ...   # the self-description
-    def read_latest(self) -> SensorReading: ...       # flush stale, return freshest
+    def read_latest(self) -> SensorReading: ...       # NON-BLOCKING newest-cached read
     def close(self) -> None: ...
 ```
 
@@ -77,9 +79,11 @@ qualifies. A faulted reading is **returned and flagged**, never silently dropped
 
 **Reusable base for the common case** — `SerialLineSensor(VisaInstrument)`: for sensors that stream
 delimited ASCII over serial (ASRL). Subclass declares `CHANNELS` + implements `parse_line()`; the base
-handles connection (inherited → the `--simulate` seam works unchanged), **freshness** (`read_latest`
-drains buffered input then reads the newest line, so the value reflects the read instant), and
-**resync** (skips partial/garbage lines until one parses, bounded by `MAX_READ_ATTEMPTS`).
+handles connection (inherited → the `--simulate` seam works unchanged), a **background reader thread**
+(started at `open()`, it consumes the stream continuously and caches the newest parsed reading, so
+`read_latest()` is a non-blocking cache read — the acquisition loop and GUI never wait on the serial
+link; staleness beyond `AUX_STALE_AFTER_S` raises), and **resync** (the reader skips partial/garbage
+lines). `wait_ready()`/`wait_for_reading()` give threads that *can* block (the worker) a bounded wait.
 
 **Registry** — a plain `name → class` dict mirroring `instrument._MODELS`:
 ```python
@@ -192,7 +196,7 @@ wanted on continuous-resistance / I-V modes too (easy later via the same injecti
 | Risk | Severity | Mitigation |
 |---|---|---|
 | Second-instrument read inside `MeasurementWorker` touches connect/loop/cleanup | Med | Guarded behind the flag; non-sensor path byte-for-byte unchanged; bench-verify 4PP delta on the 2420 |
-| Native-USB auto-reset → partial first line / brief gap on open | Med | `read_latest` drains + bounded resync; parser keys on the record tag |
+| Native-USB auto-reset → partial first line / brief gap on open | Med | reader thread resyncs on the record tag; preview tolerates empty ticks; port kept open across tab switches (no re-reset) |
 | Faulted/unplugged sensor logs a plausible number | Med | Flags returned + `.ok`; flagged columns; faded point |
 | Unconditional column addition would break existing 4PP CSVs | Med | Conditional splice (delta-mode precedent); columns only when logging is on |
 | `pyserial` undeclared → ASRL fails on clean install | **Fixed** | Declared in commit 1 |

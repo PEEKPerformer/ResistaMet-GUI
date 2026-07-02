@@ -4,9 +4,18 @@ These exercise the generic contract — not just the thermocouple. The
 ``DummyFlowSensor`` test is the load-bearing one: it proves a researcher can
 plug in something that is neither a thermocouple nor serial, and have it flow
 through the same registry / column machinery.
+
+Serial drivers run a background reader thread that caches the newest parsed
+line; ``read_latest()`` is a NON-BLOCKING cache read. Tests inject a fake
+``dev`` and start the reader via ``_start_reader()`` (the seam ``open()``
+uses after ``connect()``), then use ``wait_for_reading`` where they need to
+block for the first line.
 """
+import time
+
 import pytest
 
+from resistamet_gui.constants import AUX_STALE_AFTER_S
 from resistamet_gui.sensors import (
     ArduinoThermocouple,
     AuxiliarySensor,
@@ -14,10 +23,10 @@ from resistamet_gui.sensors import (
     SensorError,
     SensorReading,
     SensorReadError,
-    SerialLineSensor,
     StreamSensor,
     available_sensors,
     aux_column_names,
+    format_fault,
     make_sensor,
     parse_stream_data,
     parse_stream_header,
@@ -30,9 +39,11 @@ from resistamet_gui.sensors import (
 # --- A fake VISA resource that yields canned lines -------------------------
 
 class _FakeDev:
+    """Canned-line device: yields each line once, then times out. The reader
+    thread consumes the lines and caches the last valid one."""
+
     def __init__(self, lines):
         self._lines = list(lines)
-        self.flush_count = 0
         self.read_termination = "\n"
         self.write_termination = "\n"
         self.timeout = 0
@@ -42,17 +53,44 @@ class _FakeDev:
             raise TimeoutError("no more lines")
         return self._lines.pop(0)
 
+    @property
+    def exhausted(self):
+        return not self._lines
+
     def flush(self, *_a, **_k):
-        self.flush_count += 1
+        pass
 
     def close(self):
         pass
 
 
+def _start(sensor, lines):
+    """Attach a canned device and start the reader thread (bypasses the VISA
+    connect that open() would do)."""
+    sensor.dev = _FakeDev(lines)
+    sensor._start_reader()
+    return sensor
+
+
 def _arduino_with(lines, t=42.0):
-    s = ArduinoThermocouple("ASRL6::INSTR", clock=lambda: t)
-    s.dev = _FakeDev(lines)
-    return s
+    return _start(ArduinoThermocouple("ASRL6::INSTR", clock=lambda: t), lines)
+
+
+def _wait(cond, timeout=2.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if cond():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+@pytest.fixture
+def _closer():
+    sensors = []
+    yield sensors.append
+    for s in sensors:
+        s.close()
 
 
 # --- parse_thermocouple_line ----------------------------------------------
@@ -64,8 +102,7 @@ def test_parse_valid_line():
     assert r.ok is True
 
 
-def test_parse_strips_nothing_but_matches_clean():
-    # read_latest strips \r\n; parser sees the clean line.
+def test_parse_negative_temperature():
     r = parse_thermocouple_line("DATA,-5.0,20.5,0,0")
     assert r.values["t_sample"] == -5.0
 
@@ -89,32 +126,73 @@ def test_parse_rejects_malformed(bad):
     assert parse_thermocouple_line(bad) is None
 
 
-# --- SerialLineSensor.read_latest: freshness + resync ----------------------
+# --- Background reader: nonblocking read_latest, freshness, staleness ------
 
-def test_read_latest_drains_then_returns_fresh():
+def test_reader_caches_and_read_latest_returns(_closer):
     s = _arduino_with(["DATA,21.227,22.734,0,0"], t=9.0)
-    r = s.read_latest()
+    _closer(s)
+    r = s.wait_for_reading(2.0)
     assert r.values["t_sample"] == 21.227
-    assert r.timestamp == 9.0            # stamped at read instant, not 0.0
-    assert s.dev.flush_count == 1        # buffer drained for freshness
+    assert r.timestamp == 9.0            # stamped when cached, not 0.0
 
 
-def test_read_latest_resyncs_past_partial_line():
-    s = _arduino_with(["227,22.7", "DATA,21.0,22.0,0,0"])
-    r = s.read_latest()
+def test_reader_caches_newest_line(_closer):
+    s = _arduino_with(["DATA,21.0,22.0,0,0", "DATA,23.5,24.0,0,0"])
+    _closer(s)
+    assert _wait(lambda: s.dev.exhausted), "reader did not consume the stream"
+    assert _wait(lambda: _latest_tip(s) == 23.5), "cache does not hold newest line"
+
+
+def _latest_tip(s):
+    try:
+        return s.read_latest().values["t_sample"]
+    except SensorReadError:
+        return None
+
+
+def test_read_latest_is_nonblocking_before_first_line(_closer):
+    s = _arduino_with([])   # device only times out
+    _closer(s)
+    t0 = time.time()
+    with pytest.raises(SensorReadError):
+        s.read_latest()
+    assert time.time() - t0 < 0.5, "read_latest blocked — must be a cache read"
+
+
+def test_read_latest_raises_when_stale(_closer):
+    s = _arduino_with(["DATA,21.0,22.0,0,0"])
+    _closer(s)
+    s.wait_for_reading(2.0)
+    # Stop the reader so nothing re-caches, then age the cache artificially.
+    s._stop_evt.set()
+    real = time.monotonic
+    s._monotonic = lambda: real() + AUX_STALE_AFTER_S + 1.0
+    with pytest.raises(SensorReadError, match="stale"):
+        s.read_latest()
+
+
+def test_reader_resyncs_past_banner_lines(_closer):
+    s = _arduino_with(["maxwelld foam-TC v1", "READY", "DATA,21.0,22.0,0,0"])
+    _closer(s)
+    r = s.wait_for_reading(2.0)
     assert r.values["t_sample"] == 21.0
 
 
-def test_read_latest_raises_after_only_garbage():
-    s = _arduino_with(["junk"] * ArduinoThermocouple.MAX_READ_ATTEMPTS)
-    with pytest.raises(SensorReadError):
-        s.read_latest()
-
-
-def test_read_latest_raises_when_no_data():
+def test_wait_for_reading_times_out(_closer):
     s = _arduino_with([])
+    _closer(s)
     with pytest.raises(SensorReadError):
-        s.read_latest()
+        s.wait_for_reading(0.15)
+
+
+def test_close_stops_reader_thread(_closer):
+    s = _arduino_with(["DATA,21.0,22.0,0,0"])
+    s.wait_for_reading(2.0)
+    reader = s._reader
+    s.close()
+    assert not reader.is_alive(), "reader thread survived close()"
+    with pytest.raises(SensorReadError):
+        s.read_latest()          # cache cleared on close
 
 
 def test_arduino_declares_two_channels():
@@ -144,21 +222,39 @@ def test_arduino_is_registered():
     assert "arduino_thermocouple" in available_sensors()
 
 
-# --- Generic glue ----------------------------------------------------------
+# --- Generic glue: aux_fault provenance schema ------------------------------
 
-def test_reading_to_columns_flattens_with_aux_prefix():
+def test_aux_column_names_include_fault_column():
+    s = ArduinoThermocouple("ASRL6::INSTR")
+    assert aux_column_names(s) == ["aux_t_sample", "aux_t_coldjunction", "aux_fault"]
+
+
+def test_reading_to_columns_clean():
     r = SensorReading(timestamp=1.0,
                       values={"t_sample": 21.0, "t_coldjunction": 22.0},
                       flags={"t_sample": 0, "status": 0})
     cols = reading_to_columns(r)
-    assert cols["aux_t_sample"] == 21.0
-    assert cols["aux_t_coldjunction"] == 22.0
-    assert cols["aux_t_sample_flag"] == 0
+    assert cols == {"aux_t_sample": 21.0, "aux_t_coldjunction": 22.0,
+                    "aux_fault": "0"}
 
 
-def test_aux_column_names_from_channels():
-    s = ArduinoThermocouple("ASRL6::INSTR")
-    assert aux_column_names(s) == ["aux_t_sample", "aux_t_coldjunction"]
+def test_reading_to_columns_preserves_values_when_flagged():
+    """The contract: a faulted reading is recorded AND marked — channel
+    values must survive into the columns, with provenance in aux_fault."""
+    r = SensorReading(timestamp=1.0,
+                      values={"t_sample": 250.4, "t_coldjunction": 23.0},
+                      flags={"t_sample": 1, "status": 2})
+    cols = reading_to_columns(r)
+    assert cols["aux_t_sample"] == 250.4          # NOT NaN'd
+    assert cols["aux_t_coldjunction"] == 23.0
+    assert cols["aux_fault"] == "t_sample=1;status=2"
+
+
+def test_format_fault():
+    assert format_fault({}) == "0"
+    assert format_fault({"a": 0, "b": 0}) == "0"
+    assert format_fault({"a": 3}) == "a=3"
+    assert format_fault({"a": 0, "b": 7}) == "b=7"
 
 
 # --- The point of the whole exercise: a totally different sensor -----------
@@ -201,28 +297,30 @@ def test_arbitrary_sensor_registers_and_flows_through_generic_glue():
     assert sensor.opened
 
     # The exporter/UI would learn the columns purely from channels().
-    assert aux_column_names(sensor) == ["aux_flow"]
+    assert aux_column_names(sensor) == ["aux_flow", "aux_fault"]
 
     reading = sensor.read_latest()
-    assert reading_to_columns(reading) == {"aux_flow": 12.5}
+    assert reading_to_columns(reading) == {"aux_flow": 12.5, "aux_fault": "0"}
 
 
 # --- FakeSerialSensor integration (the --simulate device) ------------------
 
-def test_arduino_reads_fake_serial_sensor():
+def test_arduino_reads_fake_serial_sensor(_closer):
     """The simulator's FakeSerialSensor must parse cleanly through the real
-    ArduinoThermocouple driver (read_latest -> parse_line)."""
+    ArduinoThermocouple driver's reader thread."""
     from resistamet_gui._simulator import FakeSerialSensor
 
     s = ArduinoThermocouple("ASRL6::INSTR", clock=lambda: 1.0)
     s.dev = FakeSerialSensor(sim_temp_c=30.0)
-    r = s.read_latest()
+    s._start_reader()
+    _closer(s)
+    r = s.wait_for_reading(2.0)
     assert abs(r.values["t_sample"] - 30.0) < 0.5
     assert abs(r.values["t_coldjunction"] - 31.5) < 0.5  # cold junction ~1.5 C above tip
     assert r.ok
 
 
-# --- Exporter schema splice (aux columns) ----------------------------------
+# --- Exporter schema splice (aux columns via explicit params) ---------------
 
 def test_get_column_config_aux_splice():
     from resistamet_gui.data_export import get_column_config
@@ -230,47 +328,59 @@ def test_get_column_config_aux_splice():
     baseline, _ = get_column_config("four_point")
     assert not any(c.startswith("aux_") for c in baseline)
 
-    cols, units = get_column_config("four_point", {
-        "aux_log_enabled": True,
-        "_aux_columns": ["aux_t_sample", "aux_t_coldjunction"],
-        "_aux_units": ["°C", "°C"],
-    })
+    aux_cols = ["aux_t_sample", "aux_t_coldjunction", "aux_fault"]
+    aux_units = ["°C", "°C", ""]
+    cols, units = get_column_config("four_point", aux_columns=aux_cols,
+                                    aux_units=aux_units)
     assert len(cols) == len(units)
-    assert cols.index("aux_t_sample") < cols.index("compliance")
-    assert cols.index("aux_t_coldjunction") < cols.index("compliance")
+    for c in aux_cols:
+        assert cols.index(c) < cols.index("compliance")
 
     # With delta mode too, aux columns come AFTER the delta columns.
-    cols2, _ = get_column_config("four_point", {
-        "fpp_delta_mode": True,
-        "aux_log_enabled": True,
-        "_aux_columns": ["aux_t_sample"],
-        "_aux_units": ["°C"],
-    })
+    cols2, _ = get_column_config("four_point", {"fpp_delta_mode": True},
+                                 aux_columns=["aux_t_sample", "aux_fault"],
+                                 aux_units=["°C", ""])
     assert cols2.index("R_r") < cols2.index("aux_t_sample") < cols2.index("compliance")
 
 
 def test_get_column_config_aux_splice_is_mode_agnostic():
     """Aux columns splice into every continuous mode, not just 4PP."""
-    from resistamet_gui.data_export import get_column_config
+    from resistamet_gui.data_export import AUX_LOG_MODES, get_column_config
 
-    for mode in ("resistance", "source_v", "source_i", "four_point"):
+    assert AUX_LOG_MODES == ('resistance', 'source_v', 'source_i', 'four_point')
+
+    for mode in AUX_LOG_MODES:
         base, _ = get_column_config(mode)
         assert not any(c.startswith("aux_") for c in base), mode
-        cols, units = get_column_config(mode, {
-            "aux_log_enabled": True,
-            "_aux_columns": ["aux_flow"],
-            "_aux_units": ["mL/min"],
-        })
+        cols, units = get_column_config(mode, aux_columns=["aux_flow", "aux_fault"],
+                                        aux_units=["mL/min", ""])
         assert len(cols) == len(units), mode
         assert cols.index("aux_flow") < cols.index("compliance"), mode
 
     # sweep is excluded (atomic :READ?, no aux co-logging).
-    sweep_cols, _ = get_column_config("sweep", {
-        "aux_log_enabled": True,
-        "_aux_columns": ["aux_flow"],
-        "_aux_units": ["mL/min"],
-    })
+    sweep_cols, _ = get_column_config("sweep", aux_columns=["aux_flow"],
+                                      aux_units=["mL/min"])
     assert not any(c.startswith("aux_") for c in sweep_cols)
+
+
+def test_splice_before_tail_matches_header_anchor():
+    """The row-side splice helper and the header-side 'compliance' anchor
+    must agree: value lands under its own column for every mode."""
+    from resistamet_gui.data_export import get_column_config, splice_before_tail
+
+    aux_cols = ["aux_x", "aux_fault"]
+    for mode, plain_row in [
+        ("resistance", [0.1, 1.0, 0.01, 100.0, 0.5, "OK", ""]),
+        ("source_v",   [0.1, 1.0, 0.01, 100.0, 1e-6, 0.5, "OK", ""]),
+        ("source_i",   [0.1, 1.0, 0.01, 100.0, 1e-6, 0.5, "OK", ""]),
+    ]:
+        header, _ = get_column_config(mode, aux_columns=aux_cols,
+                                      aux_units=["u", ""])
+        row = splice_before_tail(plain_row, [42.0, "0"])
+        assert len(row) == len(header), mode
+        assert row[header.index("aux_x")] == 42.0, mode
+        assert row[header.index("aux_fault")] == "0", mode
+        assert row[header.index("compliance")] == "OK", mode
 
 
 # --- StreamSensor: dynamic multi-channel discovery -------------------------
@@ -286,6 +396,15 @@ def test_parse_stream_header_rejects(bad):
     assert parse_stream_header(bad) is None
 
 
+def test_parse_stream_header_rejects_duplicate_keys():
+    """Duplicate keys would produce duplicate CSV columns (silent data loss)
+    and abort the HDF5 exporter's compound dtype — reject at the source."""
+    assert parse_stream_header("HDR,t:degC,t:degC") is None
+    assert parse_stream_header("HDR,a:x,b:y,a:z") is None
+    # Distinct keys must not false-positive.
+    assert parse_stream_header("HDR,t1:degC,t2:degC") is not None
+
+
 def test_parse_stream_data_positional():
     chans = [SensorChannel("a", "A", "x"), SensorChannel("b", "B", "y")]
     r = parse_stream_data("DATA,1.5,2.5", chans)
@@ -298,22 +417,34 @@ def test_parse_stream_data_rejects(bad):
     assert parse_stream_data(bad, chans) is None
 
 
-def test_stream_sensor_discovers_channels_and_reads():
+def test_stream_sensor_discovers_channels_and_reads(_closer):
     s = StreamSensor("ASRL7::INSTR", clock=lambda: 5.0)
-    s.dev = _FakeDev(["HDR,pressure:psi,t_sample:degC,force:N",
-                      "DATA,32.5,24.1,0.98"])
-    s._channels = s._read_header()
+    _start(s, ["HDR,pressure:psi,t_sample:degC,force:N",
+               "DATA,32.5,24.1,0.98"])
+    _closer(s)
+    s.wait_ready(2.0)
     assert [c.key for c in s.channels()] == ["pressure", "t_sample", "force"]
     r = s.read_latest()
     assert r.values == {"pressure": 32.5, "t_sample": 24.1, "force": 0.98}
     assert r.timestamp == 5.0
 
 
-def test_stream_sensor_no_header_raises():
+def test_stream_sensor_no_header_raises(_closer):
     s = StreamSensor("ASRL7::INSTR")
-    s.dev = _FakeDev(["DATA,1,2"] * StreamSensor.MAX_READ_ATTEMPTS)
+    _start(s, ["DATA,1,2", "garbage"])
+    _closer(s)
     with pytest.raises(SensorError):
-        s._read_header()
+        s.wait_ready(0.3)
+
+
+def test_stream_sensor_duplicate_header_never_ready(_closer):
+    """A dup-key header is rejected by the parser, so the sensor never
+    reports channels and wait_ready fails with a clear error."""
+    s = StreamSensor("ASRL7::INSTR")
+    _start(s, ["HDR,t:degC,t:degC", "DATA,1,2"])
+    _closer(s)
+    with pytest.raises(SensorError):
+        s.wait_ready(0.3)
 
 
 def test_stream_sensor_satisfies_protocol_and_registered():
@@ -328,10 +459,13 @@ def test_stream_sensor_through_fake_under_sim():
     try:
         enable_simulation(stream_address="ASRL7::INSTR")
         s = make_sensor("stream_sensor", "ASRL7::INSTR").open()
-        keys = [c.key for c in s.channels()]
-        assert "pressure" in keys and "t_sample" in keys
-        r = s.read_latest()
-        assert set(r.values) == set(keys)
-        s.close()
+        try:
+            s.wait_ready(2.0)
+            keys = [c.key for c in s.channels()]
+            assert "pressure" in keys and "t_sample" in keys
+            r = s.read_latest()
+            assert set(r.values) == set(keys)
+        finally:
+            s.close()
     finally:
         pyvisa.ResourceManager = orig

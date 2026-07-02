@@ -16,6 +16,13 @@ USB-serial (ASRL via pyvisa), but it carries no privileged status — it is
 simply one implementation of the contract, and the smallest example of how to
 write another.
 
+Streaming serial drivers run a background reader thread that continuously
+parses lines into a latest-value cache, so :meth:`read_latest` is a
+non-blocking cache read — the acquisition loop and the GUI never wait on the
+stream. Fault provenance is carried per row in a single ``aux_fault`` column
+(see :func:`reading_to_columns`); channel values are preserved even when
+flagged, so fault-time data is recorded *and* marked, never silently dropped.
+
 This module is pure (no Qt). The one concrete serial driver subclasses
 :class:`~resistamet_gui.instrument.VisaInstrument`, so it inherits the
 connection lifecycle and works under ``--simulate`` with no extra harness.
@@ -23,12 +30,12 @@ connection lifecycle and works under ``--simulate`` with no extra harness.
 from __future__ import annotations
 
 import re
+import threading
 import time
 from dataclasses import dataclass, field, replace
 from typing import Callable, Optional, Protocol, runtime_checkable
 
-import pyvisa
-
+from .constants import AUX_STALE_AFTER_S
 from .instrument import VisaInstrument
 
 
@@ -98,24 +105,42 @@ class SerialLineSensor(VisaInstrument):
 
     * connection — inherited from :class:`VisaInstrument`, so the
       ``--simulate`` monkeypatch seam works unchanged;
-    * freshness — :meth:`read_latest` discards buffered (stale) input, then
-      reads the newest line, so the value reflects the read instant;
-    * resync — partial / non-conforming lines are skipped until one parses.
+    * a background reader thread — started by :meth:`open`, it consumes the
+      stream continuously and caches the newest parsed reading, so
+      :meth:`read_latest` is a NON-BLOCKING cache read (the caller never
+      waits on the serial link) and stale data is detected by age;
+    * resync — partial / non-conforming lines are skipped by the reader.
 
-    The device only streams, so :meth:`read_latest` never writes to it.
+    The device only streams; nothing here writes to it.
     """
 
     CHANNELS: list[SensorChannel] = []
-    MAX_READ_ATTEMPTS = 8
 
     def __init__(self, resource: str, timeout_ms: int = 3000,
                  clock: Callable[[], float] = time.time):
         super().__init__(resource, timeout_ms)
         self._clock = clock
+        # Injectable for deterministic staleness tests.
+        self._monotonic: Callable[[], float] = time.monotonic
+        self._latest: Optional[tuple[SensorReading, float]] = None
+        self._lock = threading.Lock()
+        self._stop_evt = threading.Event()
+        self._reader: Optional[threading.Thread] = None
 
     def open(self) -> "SerialLineSensor":
         self.connect()  # VisaInstrument.connect(): opens dev, sets '\n' terminations
+        self._start_reader()
         return self
+
+    def _start_reader(self) -> None:
+        """Start the background reader thread (split from open() so tests can
+        inject a fake ``dev`` and start the loop without a VISA connect)."""
+        self._stop_evt.clear()
+        self._reader = threading.Thread(
+            target=self._read_loop, name=f"aux-reader:{self.resource_str}",
+            daemon=True,
+        )
+        self._reader.start()
 
     def channels(self) -> list[SensorChannel]:
         return list(self.CHANNELS)
@@ -126,31 +151,98 @@ class SerialLineSensor(VisaInstrument):
         Subclasses implement this."""
         raise NotImplementedError
 
-    def _drain(self) -> None:
-        """Best-effort discard of buffered input so the next read is fresh."""
-        try:
-            self.dev.flush(pyvisa.constants.BufferOperation.discard_read_buffer)
-        except Exception:
-            pass
+    def _read_loop(self) -> None:
+        """Background thread: consume the stream, cache the newest reading.
 
-    def read_latest(self) -> SensorReading:
-        self._drain()
-        last_err: Optional[Exception] = None
-        for _ in range(self.MAX_READ_ATTEMPTS):
+        A blocking ``dev.read()`` here is fine — it only ever stalls this
+        thread, never the acquisition loop or the GUI. ``close()`` unblocks
+        it by closing the device underneath.
+        """
+        while not self._stop_evt.is_set():
+            dev = self.dev
+            if dev is None:
+                return
             try:
-                raw = self.dev.read()
-            except Exception as exc:  # timeout / decode / closed port
-                last_err = exc
+                raw = dev.read()
+            except Exception:
+                if self._stop_evt.is_set() or self.dev is None:
+                    return
+                # Timeout / decode hiccup: brief pause so a persistently
+                # failing device can't spin this thread hot.
+                time.sleep(0.005)
                 continue
             line = raw.strip() if isinstance(raw, str) else str(raw).strip()
             reading = self.parse_line(line)
             if reading is not None:
-                return replace(reading, timestamp=self._clock())
-        raise SensorReadError(
-            f"No valid reading from {self.resource_str} after "
-            f"{self.MAX_READ_ATTEMPTS} attempts"
-            + (f": {last_err}" if last_err is not None else "")
-        )
+                stamped = replace(reading, timestamp=self._clock())
+                with self._lock:
+                    self._latest = (stamped, self._monotonic())
+
+    def read_latest(self) -> SensorReading:
+        """Return the newest cached reading. Non-blocking.
+
+        Raises :class:`SensorReadError` when nothing has been cached yet or
+        the cache is older than ``constants.AUX_STALE_AFTER_S`` (stream died,
+        cable bumped, device rebooting).
+        """
+        with self._lock:
+            latest = self._latest
+        if latest is None:
+            raise SensorReadError(
+                f"No reading from {self.resource_str} yet"
+            )
+        reading, cached_at = latest
+        age = self._monotonic() - cached_at
+        if age > AUX_STALE_AFTER_S:
+            raise SensorReadError(
+                f"Reading from {self.resource_str} is stale ({age:.1f}s old)"
+            )
+        return reading
+
+    def wait_for_reading(self, timeout_s: float) -> SensorReading:
+        """Block (politely) until a fresh reading is cached, or raise.
+
+        For callers on threads where blocking is acceptable (the worker
+        thread, tests) — never call from the GUI thread.
+        """
+        deadline = self._monotonic() + timeout_s
+        while True:
+            try:
+                return self.read_latest()
+            except SensorReadError:
+                if self._monotonic() >= deadline:
+                    raise SensorReadError(
+                        f"No valid reading from {self.resource_str} "
+                        f"within {timeout_s:.1f}s"
+                    )
+                time.sleep(0.02)
+
+    def wait_ready(self, timeout_s: float) -> None:
+        """Block until the sensor is fully usable: channels are known AND a
+        first reading is cached. For self-describing drivers (StreamSensor)
+        this also covers header discovery."""
+        deadline = self._monotonic() + timeout_s
+        while not self.channels():
+            if self._monotonic() >= deadline:
+                raise SensorError(
+                    f"{self.resource_str}: no channel description within "
+                    f"{timeout_s:.1f}s — wrong device or driver?"
+                )
+            time.sleep(0.02)
+        remaining = max(0.05, deadline - self._monotonic())
+        self.wait_for_reading(remaining)
+
+    def close(self) -> None:
+        self._stop_evt.set()
+        try:
+            super().close()  # closing dev unblocks a blocked reader read()
+        finally:
+            reader = self._reader
+            if reader is not None and reader.is_alive():
+                reader.join(timeout=1.0)
+            self._reader = None
+            with self._lock:
+                self._latest = None
 
 
 # --- First concrete driver: Arduino K-type thermocouple ---------------------
@@ -166,8 +258,8 @@ def parse_thermocouple_line(line: str) -> Optional[SensorReading]:
     Format: ``DATA,<tip_C>,<coldjunction_C>,<fault>,<status>`` (CRLF on the
     wire; caller strips). Returns None for partial or malformed lines so the
     reader resyncs on the next ``DATA,`` record. The returned reading has
-    ``timestamp=0.0``; :meth:`SerialLineSensor.read_latest` stamps the real
-    time at the read instant.
+    ``timestamp=0.0``; the reader thread stamps the real time at the cache
+    instant.
     """
     if not line:
         return None
@@ -192,8 +284,8 @@ class ArduinoThermocouple(SerialLineSensor):
     fault/status flags (0 == OK).
 
     On open the board emits a one-line banner then ``READY`` before the data
-    stream (e.g. "maxwelld foam-TC v1 MAX31856 K-type CS7"); ``read_latest``
-    resyncs past those non-DATA lines automatically.
+    stream (e.g. "maxwelld foam-TC v1 MAX31856 K-type CS7"); the reader
+    thread resyncs past those non-DATA lines automatically.
     """
 
     CHANNELS = [
@@ -210,22 +302,27 @@ class ArduinoThermocouple(SerialLineSensor):
 def parse_stream_header(line: str) -> Optional[list[SensorChannel]]:
     """Parse a ``HDR,<key>:<unit>,<key>:<unit>,...`` line into channels.
 
-    Returns None for any line that isn't a well-formed header so the reader
-    can keep looking. Units are ASCII wire tokens (e.g. ``degC``, ``uS/cm``)
-    surfaced verbatim; the label is derived from the key.
+    Returns None for any line that isn't a well-formed header — including a
+    header with DUPLICATE keys (duplicate column names would corrupt the CSV
+    and abort the HDF5 exporter, so a dup-key header is rejected outright and
+    the driver reports "no channel description" instead). Units are ASCII
+    wire tokens (e.g. ``degC``, ``uS/cm``) surfaced verbatim; the label is
+    derived from the key.
     """
     if not line.startswith("HDR,"):
         return None
     fields = line.split(",")[1:]
     chans: list[SensorChannel] = []
+    seen: set[str] = set()
     for f in fields:
         if ":" not in f:
             return None
         key, _, unit = f.partition(":")
         key = key.strip()
         unit = unit.strip()
-        if not key:
+        if not key or key in seen:
             return None
+        seen.add(key)
         chans.append(SensorChannel(key, key.replace("_", " ").title(), unit))
     return chans or None
 
@@ -260,10 +357,11 @@ class StreamSensor(SerialLineSensor):
         ...
 
     This is the general case behind the Characterization Bench: one serial link,
-    many channels, declared by the device — not hardcoded here. :meth:`open`
-    captures the header and :meth:`channels` returns the dynamically discovered
-    channels, so the worker / exporter / UI build columns from whatever the
-    device reports.
+    many channels, declared by the device — not hardcoded here. The reader
+    thread captures the header (so :meth:`open` never blocks) and
+    :meth:`channels` returns the dynamically discovered channels; callers use
+    :meth:`wait_ready` to block until discovery completes. The worker /
+    exporter / UI build columns from whatever the device reports.
     """
 
     def __init__(self, resource: str, timeout_ms: int = 3000,
@@ -271,30 +369,18 @@ class StreamSensor(SerialLineSensor):
         super().__init__(resource, timeout_ms, clock)
         self._channels: list[SensorChannel] = []
 
-    def open(self) -> "StreamSensor":
-        self.connect()
-        self._channels = self._read_header()
-        return self
-
-    def _read_header(self) -> list[SensorChannel]:
-        for _ in range(self.MAX_READ_ATTEMPTS):
-            try:
-                raw = self.dev.read()
-            except Exception:
-                continue
-            line = raw.strip() if isinstance(raw, str) else str(raw).strip()
-            chans = parse_stream_header(line)
-            if chans:
-                return chans
-        raise SensorError(
-            f"No HDR line from {self.resource_str} after "
-            f"{self.MAX_READ_ATTEMPTS} attempts; not a stream_sensor?"
-        )
-
     def channels(self) -> list[SensorChannel]:
         return list(self._channels)
 
     def parse_line(self, line: str) -> Optional[SensorReading]:
+        # Header capture happens in the reader thread: until the device has
+        # described itself, every line is tried as a header; afterwards,
+        # rows parse positionally against the discovered channels.
+        if not self._channels:
+            chans = parse_stream_header(line)
+            if chans:
+                self._channels = chans
+            return None
         return parse_stream_data(line, self._channels)
 
 
@@ -337,17 +423,37 @@ def make_sensor(driver: str, address: str, **opts) -> AuxiliarySensor:
 # --- Generic glue used by the worker / exporter -----------------------------
 
 def aux_column_names(sensor: AuxiliarySensor) -> list[str]:
-    """Column names a sensor contributes, derived purely from ``channels()``.
+    """Column names a sensor contributes: one ``aux_<key>`` per channel plus
+    the trailing ``aux_fault`` provenance column.
 
-    Lets the exporter build headers without knowing the sensor type.
+    Derived purely from ``channels()`` so the exporter builds headers without
+    knowing the sensor type.
     """
-    return [f"aux_{ch.key}" for ch in sensor.channels()]
+    return [f"aux_{ch.key}" for ch in sensor.channels()] + ["aux_fault"]
 
 
-def reading_to_columns(reading: SensorReading) -> dict[str, float]:
-    """Flatten a reading into ``aux_<key>`` columns (plus ``aux_<key>_flag``
-    for any flagged channel) for merging into a measurement row dict."""
-    cols: dict[str, float] = {f"aux_{k}": v for k, v in reading.values.items()}
-    for key, flag in reading.flags.items():
-        cols[f"aux_{key}_flag"] = flag
+def format_fault(flags: dict[str, int]) -> str:
+    """Render a reading's flags as the ``aux_fault`` column value.
+
+    ``"0"`` when every flag is zero; otherwise the nonzero flags joined as
+    ``key=value`` pairs (e.g. ``"t_sample=1;status=2"``). The worker writes
+    ``"read_error"`` when no reading was available at all.
+    """
+    nonzero = {k: v for k, v in flags.items() if v != 0}
+    if not nonzero:
+        return "0"
+    return ";".join(f"{k}={v}" for k, v in nonzero.items())
+
+
+def reading_to_columns(reading: SensorReading) -> dict[str, object]:
+    """Flatten a reading into ``aux_<key>`` value columns plus the single
+    ``aux_fault`` provenance column, for merging into a measurement row dict.
+
+    Channel VALUES ARE PRESERVED even when flagged — per the
+    :class:`SensorReading` contract a faulted reading is recorded *and*
+    marked, never silently dropped; downstream analysis decides what to do
+    with fault-time data.
+    """
+    cols: dict[str, object] = {f"aux_{k}": v for k, v in reading.values.items()}
+    cols["aux_fault"] = format_fault(reading.flags)
     return cols
