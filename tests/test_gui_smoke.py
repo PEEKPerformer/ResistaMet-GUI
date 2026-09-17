@@ -553,3 +553,29 @@ class TestSafetyWarningSilence:
         reloaded = ConfigManager(config_file=main_window.config_manager.config_file)
         settings = reloaded.get_user_settings(main_window.current_user)
         assert settings['measurement']['safety_voltage_warn_silenced'] is False
+
+
+class TestOutputSectionDelivered:
+    """The Output section must reach the worker, which reads settings['output']."""
+
+    def test_gathered_for_continuous_mode(self, main_window):
+        main_window.user_settings['output']['format'] = 'hdf5'
+        s = main_window.gather_settings_for_mode('resistance')
+        assert s['output']['format'] == 'hdf5'
+
+    def test_gathered_for_vdp(self, main_window):
+        main_window.user_settings['output']['compression'] = 'always'
+        s = main_window.gather_settings_for_mode('vdp')
+        assert s['output']['compression'] == 'always'
+
+    def test_defaults_when_profile_has_none(self, main_window, tmp_path):
+        main_window.user_settings.pop('output', None)
+        s = main_window.gather_settings_for_mode('resistance')
+        assert s['output'] == {}
+        # An empty dict is what make_exporter already treats as CSV, so a
+        # profile without an Output section behaves exactly as before.
+        from resistamet_gui.data_export import make_exporter, CsvExporter
+        exporter = make_exporter(
+            str(tmp_path / 'probe'), {}, ['t'], ['s'], output_settings=s['output'],
+        )
+        assert isinstance(exporter, CsvExporter)
