@@ -5,6 +5,7 @@ and ``docs/design/tauri_backend_split.md`` section 4 for the design. Importing
 this package must not pull in Qt, pyvisa or matplotlib — ``test_schema_no_qt``
 enforces that, because the headless session and the API depend on it.
 """
+from .resolve import Issue, ResolvedRun, allowed_override_keys, resolve_run_settings
 from .settings_modes import (
     MODE_MODELS,
     CurrentSourceSettings,
@@ -27,6 +28,10 @@ from .settings_common import (
 
 __all__ = [
     'MODE_MODELS',
+    'Issue',
+    'ResolvedRun',
+    'allowed_override_keys',
+    'resolve_run_settings',
     'AuxSensorSettings',
     'CurrentSourceSettings',
     'DisplaySettings',
