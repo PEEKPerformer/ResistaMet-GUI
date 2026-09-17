@@ -844,7 +844,10 @@ run with no report at all.
 - **PR-32c (Add):** `sample.derived/delta` (row builder also returns the F84/legacy values) + test.
 - **PR-33 (Behavior):** the PySide6 4PP panel/table reads `sample.derived` instead of recomputing (D7).
 
-**Phase 4: headless session**
+**Phase 4: headless session** — **landed**, 10 commits, 794 tests green. Deviations: the emptied
+`_QtOutputs` facade was deleted in its own commit before PR-40; PR-41's silence flag is recorded on the
+event stream rather than persisted (persistence belongs with the settings routes, PR-50b); PR-45's lock is
+released on the safety-decline path too, which the plan did not call out.
 - **PR-40 (Add):** `session/manager.py` `MeasurementSession` (thread, state, commands, `identify`, status).
 - **PR-41 (Add):** `safety_voltage_ack` on the run thread, `cancelled`, flag-only silence save.
 - **PR-42a (Behavior):** interruptible settles via `control.sleep` → `RunStopped`; stop checks between
