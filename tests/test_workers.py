@@ -1203,15 +1203,14 @@ class TestInvalidReadingMessage:
         from resistamet_gui.session.configure import ResistanceState
         from resistamet_gui.session.samples import parse_resistance
 
-        messages = []
+        from resistamet_gui.session.emitter import EventEmitter, ListSink
 
-        class _Out:
-            def status_update(self, message):
-                messages.append(message)
-
+        sink = ListSink()
         data, status, kind = parse_resistance(
             ['nan', 'nan', 'nan', '0'], 0, False, {'res_voltage_compliance': 5.0}, 1.0,
-            '2400', ResistanceState(cable_null=0.0), _Out(), reading_str='nan,nan,nan,0',
+            '2400', ResistanceState(cable_null=0.0), EventEmitter(sink),
+            reading_str='nan,nan,nan,0',
         )
+        messages = [e.payload['message'] for e in sink.of_type('log')]
         assert any('nan,nan,nan,0' in m for m in messages)
         assert status == 'OK'

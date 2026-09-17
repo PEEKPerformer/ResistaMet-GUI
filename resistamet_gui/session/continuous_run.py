@@ -125,7 +125,7 @@ class ContinuousRun:
             driver = measurement_settings.get('aux_driver', 'arduino_thermocouple')
             aux_address = measurement_settings.get('aux_address', '')
             try:
-                self._out.status_update(
+                self._events.log('aux_connecting', 
                     f"Connecting to auxiliary sensor ({driver}) at {aux_address}..."
                 )
                 self._aux_sensor = make_sensor(driver, aux_address).open()
@@ -134,12 +134,12 @@ class ContinuousRun:
                 self._aux_channels = self._aux_sensor.channels()
                 self._aux_columns = aux_column_names(self._aux_sensor)
                 self._aux_units = [ch.unit for ch in self._aux_channels] + ['']
-                self._out.status_update(
+                self._events.log('aux_ready', 
                     "Auxiliary sensor ready: "
                     + ", ".join(f"{ch.label} ({ch.unit})" for ch in self._aux_channels)
                 )
             except Exception as e:
-                self._out.error_occurred(
+                self._events.error('aux_connect_failed', 'aux', 
                     "Auxiliary sensor: " + humanize_connection_error(e, aux_address)
                 )
                 return
@@ -169,9 +169,9 @@ class ContinuousRun:
                 on_large_file=self._emit_large_file_status,
             )
             names = ", ".join(p.name for p in self.exporter.output_paths)
-            self._out.status_update(f"Data file: {names}")
+            self._events.log('file_opened', f"Data file: {names}")
         except Exception as e:
-            self._out.error_occurred(f"Error creating output files: {str(e)}")
+            self._events.error('file_create_failed', 'file', f"Error creating output files: {str(e)}")
             return
         return True
 
@@ -179,7 +179,7 @@ class ContinuousRun:
         """Run the instrument's own sweep engine, write the points, report them."""
         # Sweep mode: single atomic operation, then done
         if self.mode == 'sweep':
-            self._out.status_update(f"Running I-V sweep ({self._mode_state.points} points)...")
+            self._events.log('sweep_started', f"Running I-V sweep ({self._mode_state.points} points)...")
             try:
                 self.keithley.write(":OUTP ON")
                 # Increase timeout for long sweeps
@@ -212,7 +212,7 @@ class ContinuousRun:
 
                 # For up_down: run reverse sweep
                 if self._mode_state.up_down:
-                    self._out.status_update("Running reverse sweep...")
+                    self._events.log('sweep_reverse', "Running reverse sweep...")
                     # Swap start/stop for reverse
                     if self._mode_state.source == 'VOLT':
                         start_q = self.keithley.query(":SOUR:VOLT:START?").strip()
@@ -258,9 +258,9 @@ class ContinuousRun:
                         'direction': 'forward', 'voltages': voltages,
                         'currents': currents, 'compliance': comp_list})
 
-                self._out.status_update(f"Sweep complete: {len(voltages)} points acquired")
+                self._events.log('sweep_finished', f"Sweep complete: {len(voltages)} points acquired")
             except Exception as e:
-                self._out.error_occurred(f"Sweep error: {str(e)}")
+                self._events.error('sweep_error', 'smu', f"Sweep error: {str(e)}")
             # Sweep is done — skip to finalization
             self.running = False
             # Fall through to cleanup below
@@ -285,10 +285,10 @@ class ContinuousRun:
 
             # Connect instrument
             try:
-                self._out.status_update(f"Connecting to instrument at {gpib_address}...")
+                self._events.log('connecting', f"Connecting to instrument at {gpib_address}...")
                 self.keithley = Keithley2400(gpib_address).connect()
                 self._instrument_idn = self.keithley.query("*IDN?").strip()
-                self._out.status_update(f"Connected to: {self._instrument_idn}")
+                self._events.log('connected', f"Connected to: {self._instrument_idn}")
                 # Identify model and surface its limits — informational only;
                 # the instrument enforces its own ranges via SCPI errors.
                 self._model_spec = self.keithley.detect_model()
@@ -310,13 +310,13 @@ class ContinuousRun:
                     pass
                 if self._model_spec is not None:
                     spec = self._model_spec
-                    self._out.status_update(
+                    self._events.log('model_detected', 
                         f"Detected: Keithley {spec.model} — "
                         f"max {spec.max_source_v:g}V / {spec.max_source_i:g}A / "
                         f"{spec.max_power_w:g}W"
                     )
                 else:
-                    self._out.status_update(
+                    self._events.warn('model_unknown', 
                         "Warning: instrument model not in known table — proceeding with defaults"
                     )
                 try:
@@ -325,7 +325,7 @@ class ContinuousRun:
                 except Exception:
                     line_freq = 50.0
                     self._events.emit('line_frequency', {'hz': line_freq, 'assumed': True})
-                    self._out.status_update("Warning: Could not query line frequency. Assuming 50Hz.")
+                    self._events.warn('lfr_assumed', "Warning: Could not query line frequency. Assuming 50Hz.")
                 self.keithley.write("*RST"); time.sleep(0.5)
                 self.keithley.write("*CLS")
                 # Auto zero: ON (accurate), ONCE (fast), OFF (fastest)
@@ -339,29 +339,29 @@ class ContinuousRun:
                 self.keithley.write(":OUTP:SMOD HIMP")
                 instrument_ready = True
             except Exception as e:
-                self._out.error_occurred(humanize_connection_error(e, gpib_address))
+                self._events.error('connect_failed', 'smu', humanize_connection_error(e, gpib_address))
                 return
 
             # Configure instrument
-            self._out.status_update(f"Configuring instrument for {self.mode} mode...")
+            self._events.log('configuring', f"Configuring instrument for {self.mode} mode...")
             metadata = {}
             csv_headers = []
             source_value_str = ""
 
             try:
                 if self.mode == 'resistance':
-                    configured = configure_resistance(self.keithley, self._out, measurement_settings, nplc)
+                    configured = configure_resistance(self.keithley, self._events, measurement_settings, nplc)
                 elif self.mode == 'source_v':
-                    configured = configure_source_v(self.keithley, self._out, measurement_settings, nplc)
+                    configured = configure_source_v(self.keithley, self._events, measurement_settings, nplc)
                 elif self.mode == 'source_i':
-                    configured = configure_source_i(self.keithley, self._out, measurement_settings, nplc)
+                    configured = configure_source_i(self.keithley, self._events, measurement_settings, nplc)
                 elif self.mode == 'four_point':
-                    configured = configure_four_point(self.keithley, self._out, measurement_settings, nplc)
+                    configured = configure_four_point(self.keithley, self._events, measurement_settings, nplc)
                     if configured is None:
                         return  # pre-flight refused the power envelope
                     self._fpp_overpower_emitted = False  # debounce: emit once
                 elif self.mode == 'sweep':
-                    configured = configure_sweep(self.keithley, self._out, measurement_settings, nplc)
+                    configured = configure_sweep(self.keithley, self._events, measurement_settings, nplc)
                 else:
                     configured = None
                 if configured is not None:
@@ -374,12 +374,12 @@ class ContinuousRun:
                     self.keithley.write(f":SENS:AVER:TCON {ftype}")
                     self.keithley.write(f":SENS:AVER:COUN {fcount}")
                     self.keithley.write(":SENS:AVER ON")
-                    self._out.status_update(f"Hardware filter: {ftype} x{fcount}")
+                    self._events.log('filter', f"Hardware filter: {ftype} x{fcount}")
 
                 self.keithley.write(":TRIG:DEL 0")
                 self.keithley.write(":SOUR:DEL:AUTO ON")
             except Exception as e:
-                self._out.error_occurred(f"Error configuring instrument: {str(e)}")
+                self._events.error('configure_failed', 'smu', f"Error configuring instrument: {str(e)}")
                 return
 
             if not self._open_aux_sensor(measurement_settings):
@@ -399,13 +399,13 @@ class ContinuousRun:
             # For sweep mode, self.running is already False — skip the polling loop
             if self.mode != 'sweep':
                 # Continuous measurement modes: turn on output and enter polling loop
-                self._out.status_update("Starting measurement...")
+                self._events.log('starting', "Starting measurement...")
                 try:
                     self.keithley.write(":OUTP ON")
-                    self._out.status_update(f"Waiting for settling time ({settling_time}s)...")
+                    self._events.log('settling', f"Waiting for settling time ({settling_time}s)...")
                     time.sleep(settling_time)
                 except Exception as e:
-                    self._out.error_occurred(f"Error turning on output: {str(e)}")
+                    self._events.error('output_on_failed', 'smu', f"Error turning on output: {str(e)}")
                     return
 
             last_save = self.start_time
@@ -453,14 +453,14 @@ class ContinuousRun:
                                 last_measurement_time = time.time()
                                 read_success = True
                                 if retry > 0:
-                                    self._out.status_update(f"Delta read recovered after {retry} retries")
+                                    self._events.log('recovered', f"Delta read recovered after {retry} retries")
                                 consecutive_errors = 0
                                 break
                             except Exception as e:
                                 consecutive_errors += 1
                                 if retry < max_retries - 1:
                                     delay = 0.1 * (2 ** retry)
-                                    self._out.status_update(
+                                    self._events.warn('retry', 
                                         f"Delta read error (retry {retry + 1}/{max_retries}): {str(e)[:50]}... "
                                         f"Retrying in {delay:.1f}s"
                                     )
@@ -470,7 +470,7 @@ class ContinuousRun:
                                     except Exception:
                                         pass
                                 else:
-                                    self._out.error_occurred(
+                                    self._events.error('read_error', 'smu', 
                                         f"Delta read error after {max_retries} retries: {str(e)}. Stopping."
                                     )
                     else:
@@ -480,14 +480,14 @@ class ContinuousRun:
                                 last_measurement_time = time.time()
                                 read_success = True
                                 if retry > 0:
-                                    self._out.status_update(f"Communication recovered after {retry} retries")
+                                    self._events.log('recovered', f"Communication recovered after {retry} retries")
                                 consecutive_errors = 0
                                 break
                             except pyvisa.errors.VisaIOError as e:
                                 consecutive_errors += 1
                                 if retry < max_retries - 1:
                                     delay = 0.1 * (2 ** retry)
-                                    self._out.status_update(
+                                    self._events.warn('retry', 
                                         f"VISA error (retry {retry + 1}/{max_retries}): {str(e)[:50]}... "
                                         f"Retrying in {delay:.1f}s"
                                     )
@@ -497,11 +497,11 @@ class ContinuousRun:
                                     except Exception:
                                         pass
                                 else:
-                                    self._out.error_occurred(
+                                    self._events.error('read_error', 'smu', 
                                         f"VISA Read Error after {max_retries} retries: {str(e)}. Stopping."
                                     )
                             except Exception as e:
-                                self._out.error_occurred(f"Unexpected Read Error: {str(e)}. Stopping.")
+                                self._events.error('read_error', 'smu', f"Unexpected Read Error: {str(e)}. Stopping.")
                                 break
 
                     if not read_success:
@@ -527,19 +527,19 @@ class ContinuousRun:
                     if self.mode == 'resistance':
                         parsed = parse_resistance(
                             parts, stat_word, hw_compliance, measurement_settings, nplc,
-                            self._model_name, self._mode_state, self._out, reading_str)
+                            self._model_name, self._mode_state, self._events, reading_str)
                     elif self.mode == 'source_v':
                         parsed = parse_source_v(
                             parts, stat_word, hw_compliance, measurement_settings, nplc,
-                            self._model_name, self._mode_state, self._out)
+                            self._model_name, self._mode_state, self._events)
                     elif self.mode == 'source_i':
                         parsed = parse_source_i(
                             parts, stat_word, hw_compliance, measurement_settings, nplc,
-                            self._model_name, self._mode_state, self._out)
+                            self._model_name, self._mode_state, self._events)
                     elif self.mode == 'four_point':
                         parsed = parse_four_point(
                             parts, stat_word, hw_compliance, measurement_settings, nplc,
-                            self._model_name, self._mode_state, self._out)
+                            self._model_name, self._mode_state, self._events)
                     else:
                         parsed = ({}, 'OK', None)
                     data_dict, compliance_status, compliance_type = parsed
@@ -566,7 +566,7 @@ class ContinuousRun:
                         fault = aux_cols.get('aux_fault', '0')
                         if fault != self._aux_last_fault:
                             if fault != '0':
-                                self._out.status_update(f"⚠️ Auxiliary sensor: {fault}")
+                                self._events.warn('aux_fault', f"⚠️ Auxiliary sensor: {fault}")
                             self._aux_last_fault = fault
 
                     stop_on_comp = bool(measurement_settings.get('stop_on_compliance', False))
@@ -576,11 +576,11 @@ class ContinuousRun:
                                 'kind': compliance_type,
                                 'stop_on_compliance': stop_on_comp,
                             })
-                            self._out.status_update(f"⚠️ {compliance_type} Compliance Hit!")
+                            self._events.warn('compliance', f"⚠️ {compliance_type} Compliance Hit!")
                         except Exception:
                             pass
                         if stop_on_comp:
-                            self._out.status_update("Stopping due to compliance (per settings).")
+                            self._events.log('compliance_stop', "Stopping due to compliance (per settings).")
                             self.running = False
 
                     # 4PP probe-safety runtime check: measured V*I against the
@@ -603,7 +603,7 @@ class ContinuousRun:
                                             'measured_w': measured_power, 'stop_w': stop_w})
                                     except Exception:
                                         pass
-                                self._out.error_occurred(
+                                self._events.error('overpower', 'run', 
                                     f"4PP overpower: {measured_power*1e3:.1f} mW "
                                     f"exceeds hard stop {stop_w*1e3:.0f} mW. "
                                     f"Stopping to protect probe and sample."
@@ -614,7 +614,7 @@ class ContinuousRun:
                                     pass
                                 self.running = False
                             elif measured_power > warn_w:
-                                self._out.status_update(
+                                self._events.warn('power_envelope', 
                                     f"⚠️ 4PP power {measured_power*1e3:.1f} mW above "
                                     f"warn threshold {warn_w*1e3:.0f} mW"
                                 )
@@ -622,7 +622,7 @@ class ContinuousRun:
                     # Atomically get and clear event marker (thread-safe)
                     event_marker = self.get_and_clear_event_marker()
                     if event_marker:
-                        self._out.status_update(f"Event marked at {elapsed_time:.3f}s: {event_marker}")
+                        self._events.log('event_marked', f"Event marked at {elapsed_time:.3f}s: {event_marker}")
 
                     row_data = build_row(
                         self.mode, elapsed_time, data_dict, compliance_status, event_marker,
@@ -642,11 +642,11 @@ class ContinuousRun:
                     except Exception as e:
                         self._csv_error_count += 1
                         error_msg = f"Error writing data ({self._csv_error_count}/{self._max_csv_errors}): {str(e)}"
-                        self._out.status_update(f"Warning: {error_msg}")
+                        self._events.warn('write_failed', f"Warning: {error_msg}")
 
                         if self._csv_error_count >= self._max_csv_errors:
                             # Escalate: too many consecutive write failures (likely disk full)
-                            self._out.error_occurred(
+                            self._events.error('write_failed', 'file', 
                                 f"CRITICAL: {self._csv_error_count} consecutive write failures. "
                                 f"Possible disk full or write permission issue. Stopping measurement to prevent data loss."
                             )
@@ -665,7 +665,7 @@ class ContinuousRun:
                     if self.mode == 'four_point':
                         sample_count += 1
                         if target_samples > 0 and sample_count >= target_samples:
-                            self._out.status_update(f"Reached target samples: {target_samples}. Stopping.")
+                            self._events.log('target_reached', f"Reached target samples: {target_samples}. Stopping.")
                             self.running = False
 
                     if now - last_save >= auto_save_interval:
@@ -674,7 +674,7 @@ class ContinuousRun:
                                 self.exporter.flush()
                             last_save = now
                         except Exception as e:
-                            self._out.status_update(f"Warning: Auto-save failed - {str(e)}")
+                            self._events.warn('autosave_failed', f"Warning: Auto-save failed - {str(e)}")
 
                     # Periodic instrument health check
                     self._periodic_health_check(now)
@@ -696,20 +696,20 @@ class ContinuousRun:
                         status_msg += (f" | I: {iv:.4e} A" if np.isfinite(iv) else " | I: Invalid")
                     if compliance_status != 'OK':
                         status_msg += f" ({compliance_status})"
-                    self._out.status_update(status_msg)
+                    self._events.log('progress', status_msg)
 
                 time.sleep(0.01 if sample_interval <= 0.001 else max(0.001, sample_interval / 10.0))
 
                 if end_time is not None and time.time() >= end_time:
-                    self._out.status_update("Reached configured duration. Stopping.")
+                    self._events.log('duration_reached', "Reached configured duration. Stopping.")
                     self.running = False
 
             if instrument_ready and self.keithley:
                 try:
                     self.keithley.write(":OUTP OFF")
-                    self._out.status_update("Output turned OFF.")
+                    self._events.log('output_off', "Output turned OFF.")
                 except Exception as e:
-                    self._out.status_update(f"Warning: Could not turn off output - {str(e)}")
+                    self._events.warn('output_off_failed', f"Warning: Could not turn off output - {str(e)}")
 
             final_message = f"Measurement ({self.mode}) stopped."
             if file_ready and self.exporter:
@@ -722,13 +722,13 @@ class ContinuousRun:
                     }
                     self.exporter.finalize(end_metadata)
                 except Exception as e:
-                    self._out.status_update(f"Warning: Error finalizing export - {str(e)}")
+                    self._events.warn('finalize_failed', f"Warning: Error finalizing export - {str(e)}")
                 final_message = f"Measurement ({self.mode}) completed! Data saved to: {self.filename}"
-            self._out.status_update(final_message)
+            self._events.log('completed', final_message)
             self._events.emit('acquisition_finished', {'mode': self.mode})
 
         except Exception as e:
-            self._out.error_occurred(f"Unexpected Worker Error ({self.mode}): {str(e)}")
+            self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self.mode}): {str(e)}")
         finally:
             self._cleanup()
             self.running = False
@@ -736,14 +736,14 @@ class ContinuousRun:
     def _emit_compress_status(self, orig_path: Path, gz_path: Path,
                               orig_mb: float, gz_mb: float) -> None:
         """Status callback fired by CsvExporter after gzip finalize."""
-        self._out.status_update(
+        self._events.log('compress', 
             f"Compressed {orig_path.name} -> {gz_path.name} "
             f"({orig_mb:.1f} MB -> {gz_mb:.1f} MB)"
         )
 
     def _emit_large_file_status(self, path: Path, size_mb: float) -> None:
         """Status callback fired by CsvExporter when an uncompressed run is large."""
-        self._out.status_update(
+        self._events.warn('large_file', 
             f"Run wrote {size_mb:.1f} MB to {path.name}. "
             f"Compression is off — enable in Settings -> Output to gzip future runs."
         )
@@ -754,15 +754,15 @@ class ContinuousRun:
     def pause_measurement(self) -> None:
         if self.running:
             self.paused = True
-            self._out.status_update(f"Measurement ({self.mode}) paused")
+            self._events.log('paused', f"Measurement ({self.mode}) paused")
 
     def resume_measurement(self) -> None:
         if self.running:
             self.paused = False
-            self._out.status_update(f"Measurement ({self.mode}) resumed")
+            self._events.log('resumed', f"Measurement ({self.mode}) resumed")
 
     def stop_measurement(self) -> None:
-        self._out.status_update(f"Stopping measurement ({self.mode})...")
+        self._events.log('stopping', f"Stopping measurement ({self.mode})...")
         self.running = False
 
     def _cleanup(self) -> None:
@@ -773,16 +773,16 @@ class ContinuousRun:
             try:
                 self.keithley.write(":OUTP OFF")
                 self.keithley.close()
-                self._out.status_update("Instrument disconnected.")
+                self._events.log('cleanup', "Instrument disconnected.")
             except Exception as e:
-                self._out.status_update(f"Warning: Error during instrument cleanup: {str(e)}")
+                self._events.warn('cleanup', f"Warning: Error during instrument cleanup: {str(e)}")
             finally:
                 self.keithley = None
         if self._aux_sensor is not None:
             try:
                 self._aux_sensor.close()
             except Exception as e:
-                self._out.status_update(f"Warning: Error during aux-sensor cleanup: {str(e)}")
+                self._events.warn('cleanup', f"Warning: Error during aux-sensor cleanup: {str(e)}")
             finally:
                 self._aux_sensor = None
         if self.exporter:
@@ -827,7 +827,7 @@ class ContinuousRun:
             self._last_error_check = now
             error = self._check_instrument_errors()
             if error:
-                self._out.status_update(f"Warning: {error}")
+                self._events.warn('instrument_error_queue', f"Warning: {error}")
                 logger.warning(f"Instrument error during measurement: {error}")
 
     def _read_delta(self) -> str:

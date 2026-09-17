@@ -28,7 +28,13 @@ class _QtSink:
     def __call__(self, event):
         kind = event.type
         payload = event.payload
-        if kind == 'sample':
+        if kind == 'log':
+            # Message text is unchanged from what the GUI has always logged;
+            # level and code are for clients that want to act on it.
+            self._worker.status_update.emit(payload['message'])
+        elif kind == 'error':
+            self._worker.error_occurred.emit(payload['message'])
+        elif kind == 'sample':
             self._worker.data_point.emit(
                 payload['t_unix'], payload['values'],
                 payload['compliance'], payload['event_marker'],
@@ -57,12 +63,6 @@ class _QtOutputs:
 
     def __init__(self, worker):
         self._worker = worker
-
-    def status_update(self, message):
-        self._worker.status_update.emit(message)
-
-    def error_occurred(self, message):
-        self._worker.error_occurred.emit(message)
 
     def geometry_ready(self, index, geometry):
         self._worker.geometry_ready.emit(index, geometry)

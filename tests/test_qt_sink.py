@@ -88,3 +88,21 @@ def test_line_frequency_has_no_signal():
 def test_unknown_event_is_dropped_quietly():
     worker = _send('run_started', {'mode': 'resistance'})
     assert worker.data_point.emitted == []
+
+
+def test_log_becomes_status_update():
+    worker = _send('log', {'level': 'info', 'code': 'connecting', 'message': 'Connecting...'})
+    assert worker.status_update.emitted == [('Connecting...',)]
+
+
+def test_warning_log_also_goes_to_status_update():
+    """The GUI has one status stream; level and code are for other clients."""
+    worker = _send('log', {'level': 'warning', 'code': 'retry', 'message': 'VISA error (retry 1/5)'})
+    assert worker.status_update.emitted == [('VISA error (retry 1/5)',)]
+    assert worker.error_occurred.emitted == []
+
+
+def test_error_becomes_error_occurred():
+    worker = _send('error', {'code': 'read_error', 'source': 'smu',
+                              'message': 'VISA Read Error. Stopping.', 'fatal': True})
+    assert worker.error_occurred.emitted == [('VISA Read Error. Stopping.',)]
