@@ -15,6 +15,7 @@ from ..data_export import build_metadata, get_column_config, make_exporter
 from ..instrument import Keithley2400, humanize_connection_error
 from ..system_utils import SleepInhibitor
 from .control import RunStopped
+from .instrument_lock import InstrumentBusy, hold_instrument
 from .run_files import create_base_path
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ class VdpRun:
         self._safety_ack = safety_ack
         #: None = wait forever (the GUI has an operator at the bench).
         self._prompt_timeout_s = prompt_timeout_s
+        self._instrument_lock = None
         self._control = control
         self._voltages: Dict[str, float] = {}
         self.keithley = None
@@ -142,8 +144,22 @@ class VdpRun:
 
     def execute(self) -> None:
         self.running = True
+        address = self.settings.get('measurement', {}).get('gpib_address', '')
+        try:
+            self._instrument_lock = hold_instrument(address)
+            self._instrument_lock.__enter__()
+        except InstrumentBusy as exc:
+            self._control.finish('instrument_busy')
+            self._events.error('instrument_busy', 'smu', str(exc))
+            self._events.emit('run_ended', {
+                'reason': 'instrument_busy', 'ok': False, 'samples': 0,
+                'duration_s': 0.0, 'path': None,
+            })
+            return
+
         if self._safety_prompt_declined():
             self._control.finish('cancelled')
+            self._release_instrument_lock()
             self._events.emit('run_ended', {
                 # finish() keeps the first reason, so a timeout reports as one.
                 'reason': self._control.finish_reason, 'ok': False, 'samples': 0,
@@ -447,8 +463,19 @@ class VdpRun:
         except Exception:
             logger.warning("vdP: finalize with result failed", exc_info=True)
 
+    def _release_instrument_lock(self) -> None:
+        manager = getattr(self, '_instrument_lock', None)
+        if manager is not None:
+            self._instrument_lock = None
+            try:
+                manager.__exit__(None, None, None)
+            except Exception:
+                logger.warning("failed to release the instrument lock", exc_info=True)
+
     def _cleanup(self) -> None:
         self._sleep_inhibitor.uninhibit()
+        # Released last, after the instrument is closed.
+        self._release_instrument_lock()
         if self.keithley:
             try:
                 self.keithley.write(":OUTP OFF")
