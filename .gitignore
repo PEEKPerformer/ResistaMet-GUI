@@ -226,3 +226,6 @@ _archive/
 # Live test scripts (not part of the app)
 live_hardware_test.py
 debug_scpi*.py
+
+# Per-address instrument lock files (session/instrument_lock.py)
+locks/
