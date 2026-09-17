@@ -16,7 +16,9 @@ rather than fed a stream with holes in it; it reconnects and resumes.
 """
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional, Set
+import threading
+from collections import deque
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,12 @@ DROPPABLE_HIGH_WATER = 1900
 
 #: Progress logs are cosmetic; a few per second is plenty for any UI.
 PROGRESS_INTERVAL_S = 0.5
+
+#: How much history a reconnecting client can ask for. A dropped connection
+#: over a lunch-length run should be resumable; beyond that the file is the
+#: record, and the client is told there is a gap rather than shown a partial
+#: stream it cannot tell apart from a complete one.
+HISTORY_SIZE = 10000
 
 
 class ClientStream:
@@ -76,6 +84,8 @@ class EventHub:
         self._last_compliance: Dict[str, Optional[str]] = {}
         #: None until the first progress log, so the first one is never eaten.
         self._last_progress: Optional[float] = None
+        self._history: deque = deque(maxlen=HISTORY_SIZE)
+        self._history_lock = threading.Lock()
 
     def bind(self, loop: asyncio.AbstractEventLoop) -> None:
         """Attach to the serving loop. Called once at app startup."""
@@ -106,9 +116,28 @@ class EventHub:
     def _deliver(self, event) -> None:
         if not self._forward(event):
             return
+        with self._history_lock:
+            self._history.append(event)
         for stream in list(self._clients):
             if not stream.offer(event):
                 self.remove_client(stream)
+
+    def history(self, run_id: Optional[str] = None, since_seq: int = 0,
+                 limit: Optional[int] = None) -> Tuple[List[Any], bool]:
+        """Events after ``since_seq``, and whether anything was lost first.
+
+        The second value is True when the client asked to resume from a point
+        the ring no longer holds: it has a gap, and being told so is the
+        difference between an incomplete record and a wrong one.
+        """
+        with self._history_lock:
+            kept = [e for e in self._history if run_id is None or e.run_id == run_id]
+        events = [e for e in kept if e.seq > since_seq]
+        oldest = kept[0].seq if kept else None
+        gap = bool(since_seq and oldest is not None and oldest > since_seq + 1)
+        if limit is not None:
+            events = events[:limit]
+        return events, gap
 
     def _forward(self, event) -> bool:
         """Apply the per-stream filters. False means "do not send"."""
