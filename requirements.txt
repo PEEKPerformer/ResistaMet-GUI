@@ -29,6 +29,11 @@ h5py>=3.0.0
 # and API layer are built on these models.
 pydantic>=2.0
 
+# Localhost API for the headless session (resistamet_gui/api). Optional for
+# the GUI; required by the sidecar the Tauri shell will launch.
+fastapi>=0.110
+uvicorn>=0.27
+
 # Testing (development)
 pytest>=7.0.0
 pytest-cov>=4.0.0
