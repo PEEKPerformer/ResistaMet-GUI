@@ -113,10 +113,11 @@ class MeasurementSession:
             control = RunControl()
             emitter = EventEmitter(self._record, run_id=run_id, clock=self._clock)
             if mode == VDP_MODE:
-                run = VdpRun(sample_name, username, resolved.settings, control, emitter)
+                run = VdpRun(sample_name, username, resolved.settings, control, emitter,
+                              safety_ack='prompt')
             else:
                 run = ContinuousRun(mode, sample_name, username, resolved.settings,
-                                     control, emitter)
+                                     control, emitter, safety_ack='prompt')
             thread = threading.Thread(target=self._execute, args=(run,),
                                        name=f"resistamet-{run_id}", daemon=True)
             self._state = 'running'
@@ -150,10 +151,11 @@ class MeasurementSession:
         control = self._require_control()
         control.mark_event(label)
 
-    def answer_prompt(self, prompt_id: str, choice: str) -> bool:
+    def answer_prompt(self, prompt_id: str, choice: str,
+                       fields: Optional[Dict[str, Any]] = None) -> bool:
         """Answer the pending prompt. False when the id is stale."""
         control = self._require_control()
-        return control.answer_prompt(prompt_id, choice)
+        return control.answer_prompt(prompt_id, choice, fields)
 
     def identify(self, address: str) -> Dict[str, Any]:
         """Ask what is at an address. Refused while a run owns the bus."""
