@@ -1088,7 +1088,9 @@ class TestFourPointDeltaReadRetry:
     @staticmethod
     def _fail_first_delta_reads(monkeypatch, worker, failures):
         """Make the first ``failures`` delta reads raise, then read normally."""
-        real_read_delta = worker._read_delta
+        # The run procedure owns the delta read; the worker is the adapter.
+        run = worker._run
+        real_read_delta = run._read_delta
         state = {'calls': 0}
 
         def flaky():
@@ -1097,7 +1099,7 @@ class TestFourPointDeltaReadRetry:
                 raise OSError(f"simulated delta failure {state['calls']}")
             return real_read_delta()
 
-        monkeypatch.setattr(worker, '_read_delta', flaky)
+        monkeypatch.setattr(run, '_read_delta', flaky)
         monkeypatch.setattr(time, 'sleep', lambda s: None)
         return state
 

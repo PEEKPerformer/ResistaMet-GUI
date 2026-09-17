@@ -94,29 +94,23 @@ class _QtOutputs:
         self._worker.vdp_complete.emit(result)
 
 
-class MeasurementWorker(QThread):
-    """Worker thread for running measurements in different modes."""
-    data_point = Signal(float, dict, str, str)  # timestamp, data dict, compliance, event
-    status_update = Signal(str)
-    measurement_complete = Signal(str)
-    error_occurred = Signal(str)
-    compliance_hit = Signal(str)  # 'Voltage' or 'Current'
-    overpower_hit = Signal(float, float)  # measured_power_w, hard_stop_w (4PP only)
-    sweep_complete = Signal(list, list, list)  # voltages, currents, compliance_list
-    # Short model name ("2400", "2410", ...) once IDN has been parsed. The
-    # GUI caches this for accuracy.py uncertainty lookups after the worker
-    # thread tears down, since per-spot stats are computed post-measurement.
-    instrument_identified = Signal(str)
+class ContinuousRun:
+    """One continuous-mode or sweep run, start to finalize.
 
-    def __init__(self, mode, sample_name, username, settings, parent=None):
-        super().__init__(parent)
+    Owns the instrument session, the exporter and the acquisition loop. It
+    reports through an outputs facade and reads stop/pause from a RunControl,
+    so the same procedure serves the QThread adapter below and the headless
+    session. No Qt here.
+    """
+
+    def __init__(self, mode, sample_name, username, settings, control, out):
         if mode not in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             raise ValueError(f"Invalid measurement mode: {mode}")
         self.mode = mode
         self.sample_name = sample_name
         self.username = username
         self.settings = settings
-        self._out = _QtOutputs(self)
+        self._out = out
         # Set by the configure step: the frozen per-mode state the loop reads.
         self._mode_state = None
         # Set by each delta read: the per-polarity values the row builder logs.
@@ -124,7 +118,7 @@ class MeasurementWorker(QThread):
 
         # Start/stop/pause state and the marker queue, shared with whoever is
         # driving the run.
-        self._control = RunControl()
+        self._control = control
         self._csv_error_count = 0  # Track consecutive CSV write failures
         self._max_csv_errors = 3   # Max consecutive errors before escalation
 
@@ -322,7 +316,7 @@ class MeasurementWorker(QThread):
             self.running = False
             # Fall through to cleanup below
 
-    def run(self):
+    def execute(self):
         self.running = True
         self.paused = False
         instrument_ready = False
@@ -920,6 +914,89 @@ class MeasurementWorker(QThread):
 
         # Return synthetic reading string matching VOLT,CURR,STAT format
         return f"{v_delta},{i_mag},{stat_combined}"
+
+
+class MeasurementWorker(QThread):
+    """Worker thread for running measurements in different modes."""
+    data_point = Signal(float, dict, str, str)  # timestamp, data dict, compliance, event
+    status_update = Signal(str)
+    measurement_complete = Signal(str)
+    error_occurred = Signal(str)
+    compliance_hit = Signal(str)  # 'Voltage' or 'Current'
+    overpower_hit = Signal(float, float)  # measured_power_w, hard_stop_w (4PP only)
+    sweep_complete = Signal(list, list, list)  # voltages, currents, compliance_list
+    # Short model name ("2400", "2410", ...) once IDN has been parsed. The
+    # GUI caches this for accuracy.py uncertainty lookups after the worker
+    # thread tears down, since per-spot stats are computed post-measurement.
+    instrument_identified = Signal(str)
+
+    def __init__(self, mode, sample_name, username, settings, parent=None):
+        super().__init__(parent)
+        self._out = _QtOutputs(self)
+        self._control = RunControl()
+        self._run = ContinuousRun(mode, sample_name, username, settings,
+                                   self._control, self._out)
+
+    # --- the run's identity and state, as the GUI has always read them
+
+    @property
+    def mode(self):
+        return self._run.mode
+
+    @property
+    def settings(self):
+        return self._run.settings
+
+    @property
+    def filename(self) -> str:
+        return self._run.filename
+
+    @property
+    def keithley(self):
+        return self._run.keithley
+
+    @property
+    def exporter(self):
+        return self._run.exporter
+
+    @property
+    def running(self) -> bool:
+        return self._control.running
+
+    @running.setter
+    def running(self, value: bool) -> None:
+        self._control.running = value
+
+    @property
+    def paused(self) -> bool:
+        return self._control.paused
+
+    @paused.setter
+    def paused(self, value: bool) -> None:
+        self._control.paused = value
+
+    @property
+    def event_marker(self) -> str:
+        return self._control.event_marker
+
+    def get_and_clear_event_marker(self) -> str:
+        return self._control.get_and_clear_event_marker()
+
+    def run(self):
+        """QThread entry point."""
+        self._run.execute()
+
+    def mark_event(self, name: str = "MARK") -> None:
+        self._control.mark_event(name)
+
+    def pause_measurement(self) -> None:
+        self._run.pause_measurement()
+
+    def resume_measurement(self) -> None:
+        self._run.resume_measurement()
+
+    def stop_measurement(self) -> None:
+        self._run.stop_measurement()
 
 
 class _VdpAborted(Exception):
