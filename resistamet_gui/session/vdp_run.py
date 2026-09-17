@@ -40,12 +40,14 @@ class VdpRun:
     MODE = 'vdp'
 
     def __init__(self, sample_name, username, settings, control, events,
-                  safety_ack='skip'):
+                  safety_ack='skip', prompt_timeout_s=None):
         self.sample_name = sample_name
         self.username = username
         self.settings = settings
         self._events = events
         self._safety_ack = safety_ack
+        #: None = wait forever (the GUI has an operator at the bench).
+        self._prompt_timeout_s = prompt_timeout_s
         self._control = control
         self._voltages: Dict[str, float] = {}
         self.keithley = None
@@ -123,9 +125,14 @@ class VdpRun:
             'options': prompt.options, 'requires_human': prompt.requires_human,
             'detail': prompt.detail,
         })
-        choice, fields = self._control.wait_for_prompt()
+        choice, fields = self._control.wait_for_prompt(self._prompt_timeout_s)
         self._events.emit('prompt_resolved', {
             'prompt_id': prompt.prompt_id, 'choice': choice})
+        if choice is None and not self._control.stopped():
+            self._control.finish('prompt_timeout')
+            self._events.warn('prompt_timeout',
+                               "No answer to the touch-safety warning; abandoning the run.")
+            return True
         if fields.get('silence_for_profile'):
             # Recorded on the event stream; persisting it belongs to whoever
             # owns the profile file, not to a run.
@@ -138,7 +145,8 @@ class VdpRun:
         if self._safety_prompt_declined():
             self._control.finish('cancelled')
             self._events.emit('run_ended', {
-                'reason': 'cancelled', 'ok': False, 'samples': 0,
+                # finish() keeps the first reason, so a timeout reports as one.
+                'reason': self._control.finish_reason, 'ok': False, 'samples': 0,
                 'duration_s': 0.0, 'path': None,
             })
             return
@@ -314,9 +322,14 @@ class VdpRun:
                 f"Sense HI->C{geom.sense_high}, "
                 f"Sense LO->C{geom.sense_low}; press Measure."
             )
-            choice, _fields = self._control.wait_for_prompt()
+            choice, _fields = self._control.wait_for_prompt(self._prompt_timeout_s)
             self._events.emit('prompt_resolved', {
                 'prompt_id': prompt.prompt_id, 'choice': choice})
+            if choice is None and not self._control.stopped():
+                self._control.finish('prompt_timeout')
+                self._events.warn('prompt_timeout',
+                                   "No answer at this geometry; abandoning the run.")
+                raise _VdpAborted()
             if not self.running or choice == 'abort':
                 raise _VdpAborted()
 

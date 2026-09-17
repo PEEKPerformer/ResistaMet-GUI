@@ -302,3 +302,41 @@ class TestAbort:
     def test_abort_without_a_run_is_harmless(self, session):
         session.abort()
         assert session.state == 'idle'
+
+
+class TestPromptTimeout:
+    """An unanswered prompt must not hold the instrument forever."""
+
+    def _hazardous(self, profile):
+        profile['measurement'].update({
+            'safety_voltage_warn_v': 30.0, 'safety_voltage_warn_silenced': False,
+            'vsource_voltage': 60.0, 'vsource_duration_hours': 0.0,
+        })
+        return profile
+
+    def test_unanswered_safety_prompt_ends_the_run(self, session, sink, fake_rm, profile):
+        session.start(self._hazardous(profile), 'source_v', 'wafer1', 'alice',
+                       prompt_timeout_s=0.2)
+        assert _wait_for(lambda: session.state == 'idle', timeout=5.0)
+
+        assert [e.payload['reason'] for e in sink.of_type('run_ended')] == ['prompt_timeout']
+        assert sink.of_type('instrument_connected') == []
+        assert any(e.payload['code'] == 'prompt_timeout' for e in sink.of_type('log'))
+
+    def test_an_answer_in_time_still_runs(self, session, sink, fake_rm, profile):
+        session.start(self._hazardous(profile), 'source_v', 'wafer1', 'alice',
+                       prompt_timeout_s=30.0)
+        assert _wait_for(lambda: session.status()['pending_prompt'] is not None)
+        prompt = session.status()['pending_prompt']
+        session.answer_prompt(prompt['prompt_id'], 'acknowledge')
+
+        assert _wait_for(lambda: sink.of_type('sample'))
+        session.stop()
+
+    def test_the_qt_path_has_no_timeout(self, fake_rm, tmp_path):
+        """An operator at the bench is allowed to take as long as they like."""
+        from resistamet_gui.workers import VdpMeasurementWorker
+
+        worker = VdpMeasurementWorker('wafer1', 'alice', {'measurement': {}, 'file': {},
+                                                            'display': {}, 'output': {}})
+        assert worker._run._prompt_timeout_s is None
