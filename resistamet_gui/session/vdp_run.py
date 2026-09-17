@@ -69,10 +69,10 @@ class VdpRun:
             self._control.answer_prompt(prompt.prompt_id, 'proceed')
 
     def stop_measurement(self) -> None:
+        self._events.emit('stopping', {'reason': 'user_stop'})
         self._events.log('stopping', "Stopping vdP measurement...")
-        self.running = False
-        # Unblock any wait_for_user pause.
-        self._control.proceed_event.set()
+        # finish() also wakes a geometry wait.
+        self._control.finish('user_stop')
 
     def _emit_compress_status(self, orig_path: Path, gz_path: Path,
                               orig_mb: float, gz_mb: float) -> None:
@@ -96,13 +96,24 @@ class VdpRun:
             self._run_geometries()
             self._compute_and_emit_result()
         except _VdpAborted:
+            self._control.finish('user_stop')
             self._events.log('aborted', "vdP measurement aborted by user")
         except Exception as e:
+            self._control.finish('worker_error')
             logger.exception("vdP measurement failed")
             self._events.error('worker_error', 'run', f"vdP error: {e}")
         finally:
             self.running = False
+            samples = self.exporter.row_count if self.exporter else 0
             self._cleanup()
+            reason = self._control.finish_reason or 'completed'
+            self._events.emit('run_ended', {
+                'reason': reason,
+                'ok': reason in ('completed', 'user_stop'),
+                'samples': samples,
+                'duration_s': time.time() - self._start_time if self._start_time else 0.0,
+                'path': self.filename or None,
+            })
 
     def _connect_and_configure(self) -> None:
         # Lazy imports to avoid a Qt-load-time cost when vdP isn't used.

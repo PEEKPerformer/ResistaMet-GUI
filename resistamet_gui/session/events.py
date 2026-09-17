@@ -215,6 +215,16 @@ class RunStatePayload(EventModel):
     reason: Optional[str] = None
 
 
+class RunEndedPayload(EventModel):
+    """Always the last event of a run, whatever ended it."""
+
+    reason: str
+    ok: bool = True
+    samples: int = 0
+    duration_s: float = 0.0
+    path: Optional[str] = None
+
+
 class Event(EventModel):
     """One thing that happened during a run."""
 
@@ -248,4 +258,5 @@ PAYLOAD_MODELS = {
     'paused': RunStatePayload,
     'resumed': RunStatePayload,
     'stopping': RunStatePayload,
+    'run_ended': RunEndedPayload,
 }

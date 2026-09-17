@@ -41,6 +41,7 @@ class RunControl:
         #: Set when the operator has answered a prompt, and by stop, so a
         #: waiting run always wakes.
         self.proceed_event = threading.Event()
+        self._finish_reason: Optional[str] = None
         self._prompt: Optional[PendingPrompt] = None
         self._answer: Optional[str] = None
         self._prompt_count = 0
@@ -64,6 +65,26 @@ class RunControl:
     def paused(self, value: bool) -> None:
         with self._lock:
             self._paused = value
+
+    @property
+    def finish_reason(self) -> Optional[str]:
+        """Why the run ended, or None while it is still going."""
+        with self._lock:
+            return self._finish_reason
+
+    def finish(self, reason: str) -> None:
+        """End the run, recording why. First writer wins.
+
+        Several things can end a run within milliseconds of each other — a
+        compliance stop the operator also clicked stop on, say. Keeping the
+        first reason means the report says what actually happened rather than
+        whichever code path ran last.
+        """
+        with self._lock:
+            if self._finish_reason is None:
+                self._finish_reason = reason
+            self._running = False
+        self.proceed_event.set()
 
     # --- operator prompts -------------------------------------------------
 

@@ -452,6 +452,48 @@
       "title": "RunStatePayload",
       "type": "object"
     },
+    "run_ended": {
+      "additionalProperties": false,
+      "description": "Always the last event of a run, whatever ended it.",
+      "properties": {
+        "duration_s": {
+          "default": 0.0,
+          "title": "Duration S",
+          "type": "number"
+        },
+        "ok": {
+          "default": true,
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "samples": {
+          "default": 0,
+          "title": "Samples",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "title": "RunEndedPayload",
+      "type": "object"
+    },
     "run_started": {
       "additionalProperties": false,
       "description": "A run is beginning; the settings are exactly what it will use.",
