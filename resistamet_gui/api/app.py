@@ -75,8 +75,25 @@ class ApiState:
         self.hub = hub
         self.token = token
         self.role = role
-        self.config = config if config is not None else _default_config()
-        self.profile_provider = profile_provider or self.config.get_user_settings
+        self._config = config
+        self._profile_provider = profile_provider
+
+    @property
+    def config(self):
+        """The ConfigManager, built on first use.
+
+        Lazily, because constructing one opens (and may migrate) a config file:
+        a caller that supplies its own profiles — a test, or a sidecar told to
+        read a specific file — must not touch the ambient config.json just by
+        creating the app.
+        """
+        if self._config is None:
+            self._config = _default_config()
+        return self._config
+
+    @property
+    def profile_provider(self):
+        return self._profile_provider or self.config.get_user_settings
 
 
 def require_token(request: Request,
