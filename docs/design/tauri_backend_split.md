@@ -776,7 +776,11 @@ Every PR leaves `python resistamet-gui.py` working and the full suite green. Pha
 phase run in order unless marked independent. Kinds: **Move**, **Mech** (word-diff), **Refactor**,
 **Add**, **Behavior**.
 
-**Phase 0: isolated fixes** (independent; land first so goldens don't encode known bugs)
+**Phase 0: isolated fixes** (independent; land first so goldens don't encode known bugs) —
+**landed on `phase0/reviewable-baseline`**, one commit each, full suite green (603 passed).
+- **PR-00 (Tests):** the GUI smoke fixture patched `constants.CONFIG_FILE`, but `ConfigManager` binds it
+  as a default argument at import time, so a full-suite run wrote its test users into the working
+  `config.json`. Found while writing PR-01's test; the fixture now passes the tmp path explicitly.
 - **PR-01 (Behavior):** "Don't show again" persists, saving only the measurement section with
   `res_cable_null` removed.
 - **PR-02 (Behavior):** deliver the `output` section to runs, **plus a one-time reset of every profile's
@@ -928,6 +932,7 @@ MW:2014-2049; widget reads MW:1950-2012 stay). No `api.py` or session god object
 
 | PR | Scope | Est. changed (moved) | Kind | Reviewer checklist |
 |---|---|---|---|---|
+| **00** | `tests/test_gui_smoke.py` fixture patches the `ConfigManager` name `main_window` imports and passes the tmp config path | ~14 test | Tests | Full suite leaves the working `config.json` byte-identical (verified by md5 before/after) |
 | **01** | MW:2106: `m_save = dict(self.user_settings['measurement']); m_save.pop('res_cable_null', None); self.config_manager.update_user_settings(self.current_user, {'measurement': m_save})`; test | ~8 + 50 test | **Behavior**: silence persists, as its UI text promises | Only the `measurement` section is passed; test asserts the flag persists across `ConfigManager` reload **and** `res_cable_null` is absent on disk; tmp config path explicit |
 | **02** | Add `'output': dict(self.user_settings.get('output', {}))` at MW:1940-1944; one-time `output` reset per profile guarded by a `migrations` entry (D6); test | ~3 + 35 + 60 test | **Behavior**: Settings ▸ Output takes effect (`data_export.py:901-915`), and stale pre-1.13 choices are reset once | Migration runs once (second load is a no-op, asserted); reset touches only `output`; CSV default path byte-identical; release note drafted in the PR body |
 | **03** | Move `_confirm_voltage_safety` after gather, pass the gathered dict to `is_potentially_hazardous`; `_running_status_message(mode, settings)` uses the same dict (MW:2059-2072, callers MW:2202, MW:1325) | ~20 + 40 test | **Behavior**: warns on the value actually used; modal and status bar agree | Order: sample name → gather → safety → start; gather `ValueError` still shows the settings error; vdP same |
