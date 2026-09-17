@@ -539,6 +539,11 @@ class ContinuousRun:
 
             # Retry configuration for transient errors (cable wiggle, etc.)
             was_paused = False
+            # Time spent paused, excluded from the duration limit: a run
+            # paused across its own deadline should still get the measuring
+            # time it was asked for.
+            paused_total = 0.0
+            pause_began = 0.0
             max_retries = 5
             consecutive_errors = 0
 
@@ -546,11 +551,13 @@ class ContinuousRun:
                 if self.paused:
                     if not was_paused:
                         was_paused = True
+                        pause_began = time.time()
                         self._events.emit('paused', {'reason': 'user'})
                     time.sleep(0.1)
                     continue
                 if was_paused:
                     was_paused = False
+                    paused_total += time.time() - pause_began
                     self._events.emit('resumed', {'reason': 'user'})
                 now = time.time()
                 if now - last_measurement_time >= sample_interval:
@@ -824,7 +831,7 @@ class ContinuousRun:
 
                 time.sleep(0.01 if sample_interval <= 0.001 else max(0.001, sample_interval / 10.0))
 
-                if end_time is not None and time.time() >= end_time:
+                if end_time is not None and time.time() - paused_total >= end_time:
                     self._events.log('duration_reached', "Reached configured duration. Stopping.")
                     self._control.finish('duration')
 

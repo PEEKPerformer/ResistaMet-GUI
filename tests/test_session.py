@@ -340,3 +340,36 @@ class TestPromptTimeout:
         worker = VdpMeasurementWorker('wafer1', 'alice', {'measurement': {}, 'file': {},
                                                             'display': {}, 'output': {}})
         assert worker._run._prompt_timeout_s is None
+
+
+class TestPauseClock:
+    """A pause must not eat into the run's measuring time."""
+
+    def _timed(self, profile, hours):
+        profile['measurement'].update({
+            'vsource_voltage': 1.0, 'vsource_current_compliance': 0.1,
+            'vsource_duration_hours': hours, 'sampling_rate': 50.0,
+        })
+        return profile
+
+    def test_paused_time_does_not_count_toward_the_duration(self, session, sink,
+                                                              fake_rm, profile):
+        # 1.5 s of measuring time, then pause well past that deadline.
+        session.start(self._timed(profile, 1.5 / 3600.0), 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: sink.of_type('sample'))
+        session.pause()
+        assert _wait_for(lambda: session.state == 'paused')
+        time.sleep(1.8)
+
+        assert session.state == 'paused', "run ended while paused"
+        session.resume()
+        assert _wait_for(lambda: session.state == 'running')
+        # still measuring after the wall-clock deadline has passed
+        before = len(sink.of_type('sample'))
+        assert _wait_for(lambda: len(sink.of_type('sample')) > before)
+        session.stop()
+
+    def test_an_unpaused_run_still_stops_on_time(self, session, sink, fake_rm, profile):
+        session.start(self._timed(profile, 0.5 / 3600.0), 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle', timeout=10.0)
+        assert [e.payload['reason'] for e in sink.of_type('run_ended')] == ['duration']
