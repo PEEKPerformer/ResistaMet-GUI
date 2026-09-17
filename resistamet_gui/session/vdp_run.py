@@ -279,7 +279,8 @@ class VdpRun:
             except Exception:
                 logger.warning("vdP: failed to write export row", exc_info=True)
 
-            self._out.geometry_complete(idx, {
+            self._events.emit('vdp_geometry_complete', {
+                'index': idx,
                 'name': geom.name,
                 'label_pos': geom.label_pos, 'v_pos': v_pos,
                 'label_neg': geom.label_neg, 'v_neg': v_neg,
@@ -345,7 +346,7 @@ class VdpRun:
             'sheet_resistance_uncertainty': u_rs,
             'rho_avg_uncertainty': u_rho,
         }
-        self._out.vdp_complete(result_dict)
+        self._events.emit('vdp_result', result_dict)
         self._events.log('completed', 
             f"vdP done: Rs={result.sheet_resistance:.4g} Ohm/sq, "
             f"rho={result.rho_avg:.4g} Ohm.cm, "

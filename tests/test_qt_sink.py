@@ -30,6 +30,8 @@ class _FakeWorker:
                       'measurement_complete', 'instrument_identified', 'status_update',
                       'error_occurred'):
             setattr(self, name, _FakeSignal())
+        for name in ('geometry_ready', 'geometry_complete', 'vdp_complete'):
+            setattr(self, name, _FakeSignal())
 
 
 def _send(event_type, payload):
@@ -106,3 +108,29 @@ def test_error_becomes_error_occurred():
     worker = _send('error', {'code': 'read_error', 'source': 'smu',
                               'message': 'VISA Read Error. Stopping.', 'fatal': True})
     assert worker.error_occurred.emitted == [('VISA Read Error. Stopping.',)]
+
+
+def test_vdp_geometry_complete_keeps_its_dict_shape():
+    """The GUI reads this dict by key; index travels beside it, as before."""
+    worker = _send('vdp_geometry_complete', {
+        'index': 2, 'name': 'Configuration C', 'group': 'B',
+        'label_pos': 'V_34', 'v_pos': 1.2e-3, 'label_neg': 'V_43', 'v_neg': -1.2e-3,
+        'current_a': 1e-3,
+    })
+    index, geometry = worker.geometry_complete.emitted[0]
+    assert index == 2
+    assert 'index' not in geometry
+    assert geometry['name'] == 'Configuration C'
+    assert geometry['v_pos'] == 1.2e-3
+
+
+def test_vdp_result_reaches_the_panel():
+    payload = {
+        'rho_a': 1.0, 'rho_b': 1.1, 'rho_avg': 1.05, 'sheet_resistance': 5.65e-3,
+        'q_a': 1.01, 'q_b': 1.02, 'f_a': 0.999, 'f_b': 0.998, 'homogeneous': True,
+        'asymmetry_pct': 1.4, 'voltages': {'V_12_43': 1e-3}, 'current_a': 1e-3,
+        'thickness_cm': 0.05, 'sheet_resistance_uncertainty': 1e-5,
+        'rho_avg_uncertainty': 2e-5,
+    }
+    worker = _send('vdp_result', payload)
+    assert worker.vdp_complete.emitted == [(payload,)]
