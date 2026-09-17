@@ -70,8 +70,9 @@ class ApiState:
 
     def __init__(self, session: MeasurementSession, token: str, role: str = UI_ROLE,
                  profile_provider: Optional[Callable[[str], dict]] = None,
-                 config=None):
+                 config=None, hub=None):
         self.session = session
+        self.hub = hub
         self.token = token
         self.role = role
         self.config = config if config is not None else _default_config()
@@ -106,17 +107,28 @@ def _default_config():
 def create_app(session: MeasurementSession, token: Optional[str] = None,
                 role: str = UI_ROLE,
                 profile_provider: Optional[Callable[[str], dict]] = None,
-                config=None) -> FastAPI:
+                config=None, hub=None) -> FastAPI:
     """Build the app around an existing session."""
+    from .event_hub import EventHub
+    from .events_ws import router as events_router
     from .routes_session import router as session_router
     from .routes_settings import router as settings_router
 
     app = FastAPI(title="ResistaMet", version="2.0-dev",
                    default_response_class=NullNanJSONResponse)
     app.state.api = ApiState(session, token or secrets.token_urlsafe(32), role,
-                              profile_provider, config)
+                              profile_provider, config, hub or EventHub())
     app.include_router(session_router)
     app.include_router(settings_router)
+    app.include_router(events_router)
+
+    @app.on_event("startup")
+    async def _bind_hub():  # noqa: D401 - FastAPI hook
+        # The hub needs the serving loop to hand events over from the run
+        # thread; it only exists once the app is running.
+        import asyncio
+
+        app.state.api.hub.bind(asyncio.get_running_loop())
 
     @app.get("/health")
     def health():
