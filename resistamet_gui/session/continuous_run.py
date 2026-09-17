@@ -657,7 +657,7 @@ class ContinuousRun:
                     if event_marker:
                         self._events.log('event_marked', f"Event marked at {elapsed_time:.3f}s: {event_marker}")
 
-                    row_data = build_row(
+                    row_data, derived = build_row(
                         self.mode, elapsed_time, data_dict, compliance_status, event_marker,
                         measurement_settings, nplc, use_delta, self._model_name,
                         self._last_delta)
@@ -686,13 +686,18 @@ class ContinuousRun:
                             self._control.finish('write_error')
                             break
 
-                    self._events.emit('sample', {
+                    sample_payload = {
                         't_unix': now,
                         'elapsed_s': elapsed_time,
                         'compliance': compliance_status,
                         'event_marker': event_marker,
                         'values': data_dict,
-                    })
+                    }
+                    if derived:
+                        sample_payload['derived'] = derived
+                    if use_delta and self._last_delta:
+                        sample_payload['delta'] = dict(self._last_delta)
+                    self._events.emit('sample', sample_payload)
 
                     # Increment sample count for 4PP and stop if target reached
                     if self.mode == 'four_point':

@@ -161,12 +161,19 @@ def parse_four_point(parts, stat_word, hw_compliance, measurement_settings, nplc
 
 def build_row(mode, elapsed_time, data_dict, compliance_status, event_marker,
                measurement_settings, nplc, use_delta, model_name, last_delta):
-    """The CSV row for one sample, in this mode's column order.
+    """The CSV row for one sample, plus the values derived alongside it.
 
-    Column order matches get_column_config(); the aux splice happens at
-    the call site, where the sensor state lives.
+    Returns ``(row_data, derived)``. Column order matches
+    get_column_config(); the aux splice happens at the call site, where the
+    sensor state lives.
+
+    ``derived`` is the 4PP sheet resistance, resistivity and conductivity the
+    row already carries, named rather than positional, so a UI shows the same
+    numbers the CSV holds instead of recomputing them from the raw dict and
+    drifting. Empty for the other modes, which derive nothing.
     """
     row_data = []
+    derived = {}
     # Build row data with raw values (exporter handles formatting)
     if mode == 'resistance':
         v = data_dict.get('voltage', float('nan'))
@@ -251,6 +258,11 @@ def build_row(mode, elapsed_time, data_dict, compliance_status, event_marker,
                 v_sigma, i_sigma,
                 compliance_status, event_marker
             ]
+            derived = {
+                'ratio': ratio_for_calc, 'rs': rs_val, 'rho': rho_report,
+                'sigma': sigma, 'v_unc': v_sigma, 'i_unc': i_sigma,
+                'method': 'f84',
+            }
         else:
             # Legacy path: K * alpha * t * (V/I).
             if compliance_status != 'OK':
@@ -275,6 +287,12 @@ def build_row(mode, elapsed_time, data_dict, compliance_status, event_marker,
                 v_sigma, i_sigma,
                 compliance_status, event_marker
             ]
+            derived = {
+                'ratio': result.ratio, 'rs': result.sheet_resistance,
+                'rho': result.resistivity, 'sigma': result.conductivity,
+                'v_unc': v_sigma, 'i_unc': i_sigma,
+                'method': 'legacy',
+            }
 
         # Splice per-polarity columns when delta mode produced
         # the reading. splice_before_tail lands them just
@@ -299,4 +317,4 @@ def build_row(mode, elapsed_time, data_dict, compliance_status, event_marker,
             v_unc = data_dict.get('voltage_unc', float('nan'))
             row_data = [elapsed_time, v, i, r, v_unc, r_unc, compliance_status, event_marker]
 
-    return row_data
+    return row_data, derived
