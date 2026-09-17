@@ -500,3 +500,56 @@ class TestSpotManagement:
         s = main_window.gather_settings_for_mode('four_point')
         assert s['measurement']['fpp_delta_mode'] is True
         assert s['measurement']['fpp_delta_settling'] == 0.2
+
+
+class TestSafetyWarningSilence:
+    """The safety-warning 'don't show again' checkbox must survive a restart."""
+
+    @staticmethod
+    def _hazardous(main_window, username):
+        # A profile of its own per test: the module's ConfigManager binds one
+        # config path for the whole module, so profiles leak between tests.
+        main_window.config_manager.add_user(username)
+        main_window.current_user = username
+        main_window.user_settings = main_window.config_manager.get_user_settings(username)
+        m = main_window.user_settings['measurement']
+        m['safety_voltage_warn_v'] = 30.0
+        m['safety_voltage_warn_silenced'] = False
+        m['vsource_voltage'] = 60.0
+        m['res_cable_null'] = 1.234
+
+    @staticmethod
+    def _silence(main_window, monkeypatch, checked=True):
+        from PySide6.QtWidgets import QCheckBox, QMessageBox
+        monkeypatch.setattr(QMessageBox, 'exec', lambda self: QMessageBox.Ok)
+        monkeypatch.setattr(QCheckBox, 'isChecked', lambda self: checked)
+        return main_window._confirm_voltage_safety('source_v')
+
+    def test_silence_persists_across_reload(self, main_window, monkeypatch):
+        from resistamet_gui.config import ConfigManager
+        self._hazardous(main_window, 'silence_persists_user')
+        assert self._silence(main_window, monkeypatch) is True
+
+        reloaded = ConfigManager(config_file=main_window.config_manager.config_file)
+        settings = reloaded.get_user_settings(main_window.current_user)
+        assert settings['measurement']['safety_voltage_warn_silenced'] is True
+
+    def test_cable_null_not_persisted(self, main_window, monkeypatch):
+        import json
+        self._hazardous(main_window, 'cable_null_user')
+        self._silence(main_window, monkeypatch)
+
+        with open(main_window.config_manager.config_file) as f:
+            on_disk = json.load(f)
+        stored = on_disk['user_settings'][main_window.current_user]['measurement']
+        assert stored['safety_voltage_warn_silenced'] is True
+        assert 'res_cable_null' not in stored
+
+    def test_unchecked_box_persists_nothing(self, main_window, monkeypatch):
+        from resistamet_gui.config import ConfigManager
+        self._hazardous(main_window, 'unchecked_user')
+        self._silence(main_window, monkeypatch, checked=False)
+
+        reloaded = ConfigManager(config_file=main_window.config_manager.config_file)
+        settings = reloaded.get_user_settings(main_window.current_user)
+        assert settings['measurement']['safety_voltage_warn_silenced'] is False
