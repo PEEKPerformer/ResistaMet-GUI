@@ -45,7 +45,7 @@ class ContinuousRun:
     session. No Qt here.
     """
 
-    def __init__(self, mode, sample_name, username, settings, control, out):
+    def __init__(self, mode, sample_name, username, settings, control, out, events):
         if mode not in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             raise ValueError(f"Invalid measurement mode: {mode}")
         self.mode = mode
@@ -53,6 +53,7 @@ class ContinuousRun:
         self.username = username
         self.settings = settings
         self._out = out
+        self._events = events
         # Set by the configure step: the frozen per-mode state the loop reads.
         self._mode_state = None
         # Set by each delta read: the per-polarity values the row builder logs.
@@ -245,11 +246,17 @@ class ContinuousRun:
                             self.exporter.write_row(row_data)
                         except Exception:
                             pass
-                    # Emit both sweeps
-                    self._out.sweep_complete(voltages, currents, comp_list)
-                    self._out.sweep_complete(rev_v, rev_i, rev_comp)
+                    # Report both directions
+                    self._events.emit('sweep_segment', {
+                        'direction': 'forward', 'voltages': voltages,
+                        'currents': currents, 'compliance': comp_list})
+                    self._events.emit('sweep_segment', {
+                        'direction': 'reverse', 'voltages': rev_v,
+                        'currents': rev_i, 'compliance': rev_comp})
                 else:
-                    self._out.sweep_complete(voltages, currents, comp_list)
+                    self._events.emit('sweep_segment', {
+                        'direction': 'forward', 'voltages': voltages,
+                        'currents': currents, 'compliance': comp_list})
 
                 self._out.status_update(f"Sweep complete: {len(voltages)} points acquired")
             except Exception as e:
@@ -290,7 +297,15 @@ class ContinuousRun:
                 # the most conservative baseline.
                 self._model_name = self._model_spec.model if self._model_spec else "2400"
                 try:
-                    self._out.instrument_identified(self._model_name)
+                    spec = self._model_spec
+                    self._events.emit('instrument_connected', {
+                        'address': gpib_address,
+                        'idn': self._instrument_idn,
+                        'model': self._model_name,
+                        'max_source_v': spec.max_source_v if spec else None,
+                        'max_source_i': spec.max_source_i if spec else None,
+                        'max_power_w': spec.max_power_w if spec else None,
+                    })
                 except Exception:
                     pass
                 if self._model_spec is not None:
@@ -306,8 +321,10 @@ class ContinuousRun:
                     )
                 try:
                     line_freq = float(self.keithley.query(":SYST:LFR?"))
+                    self._events.emit('line_frequency', {'hz': line_freq, 'assumed': False})
                 except Exception:
                     line_freq = 50.0
+                    self._events.emit('line_frequency', {'hz': line_freq, 'assumed': True})
                     self._out.status_update("Warning: Could not query line frequency. Assuming 50Hz.")
                 self.keithley.write("*RST"); time.sleep(0.5)
                 self.keithley.write("*CLS")
@@ -555,7 +572,10 @@ class ContinuousRun:
                     stop_on_comp = bool(measurement_settings.get('stop_on_compliance', False))
                     if compliance_status != 'OK' and compliance_type:
                         try:
-                            self._out.compliance_hit(compliance_type)
+                            self._events.emit('compliance', {
+                                'kind': compliance_type,
+                                'stop_on_compliance': stop_on_comp,
+                            })
                             self._out.status_update(f"⚠️ {compliance_type} Compliance Hit!")
                         except Exception:
                             pass
@@ -579,7 +599,8 @@ class ContinuousRun:
                                 if not self._fpp_overpower_emitted:
                                     self._fpp_overpower_emitted = True
                                     try:
-                                        self._out.overpower_hit(measured_power, stop_w)
+                                        self._events.emit('overpower_trip', {
+                                            'measured_w': measured_power, 'stop_w': stop_w})
                                     except Exception:
                                         pass
                                 self._out.error_occurred(
@@ -632,7 +653,13 @@ class ContinuousRun:
                             self.running = False
                             break
 
-                    self._out.data_point(now, data_dict, compliance_status, event_marker)
+                    self._events.emit('sample', {
+                        't_unix': now,
+                        'elapsed_s': elapsed_time,
+                        'compliance': compliance_status,
+                        'event_marker': event_marker,
+                        'values': data_dict,
+                    })
 
                     # Increment sample count for 4PP and stop if target reached
                     if self.mode == 'four_point':
@@ -698,7 +725,7 @@ class ContinuousRun:
                     self._out.status_update(f"Warning: Error finalizing export - {str(e)}")
                 final_message = f"Measurement ({self.mode}) completed! Data saved to: {self.filename}"
             self._out.status_update(final_message)
-            self._out.measurement_complete(self.mode)
+            self._events.emit('acquisition_finished', {'mode': self.mode})
 
         except Exception as e:
             self._out.error_occurred(f"Unexpected Worker Error ({self.mode}): {str(e)}")

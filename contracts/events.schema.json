@@ -48,6 +48,45 @@
     "type": "object"
   },
   "payloads": {
+    "acquisition_finished": {
+      "additionalProperties": false,
+      "description": "The acquisition loop ended; cleanup and finalize still follow.",
+      "properties": {
+        "mode": {
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "AcquisitionFinishedPayload",
+      "type": "object"
+    },
+    "compliance": {
+      "additionalProperties": false,
+      "description": "The source is in compliance on this sample.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "Voltage",
+            "Current"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "stop_on_compliance": {
+          "default": false,
+          "title": "Stop On Compliance",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "CompliancePayload",
+      "type": "object"
+    },
     "error": {
       "additionalProperties": false,
       "description": "Something failed. ``source`` says which subsystem.\n\n``source`` replaces the substring matching the UI does today to decide\nwhether an error came from the instrument, the aux sensor or the file.\n``fatal`` marks the errors that end the run.",
@@ -84,6 +123,87 @@
       "title": "ErrorPayload",
       "type": "object"
     },
+    "instrument_connected": {
+      "additionalProperties": false,
+      "description": "The SMU answered *IDN? and its limits are known.",
+      "properties": {
+        "address": {
+          "title": "Address",
+          "type": "string"
+        },
+        "idn": {
+          "title": "Idn",
+          "type": "string"
+        },
+        "max_power_w": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Power W"
+        },
+        "max_source_i": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Source I"
+        },
+        "max_source_v": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Source V"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        }
+      },
+      "required": [
+        "address",
+        "idn",
+        "model"
+      ],
+      "title": "InstrumentConnectedPayload",
+      "type": "object"
+    },
+    "line_frequency": {
+      "additionalProperties": false,
+      "description": "Mains frequency, queried or assumed. Continuous modes only.",
+      "properties": {
+        "assumed": {
+          "default": false,
+          "title": "Assumed",
+          "type": "boolean"
+        },
+        "hz": {
+          "title": "Hz",
+          "type": "number"
+        }
+      },
+      "required": [
+        "hz"
+      ],
+      "title": "LineFrequencyPayload",
+      "type": "object"
+    },
     "log": {
       "additionalProperties": false,
       "description": "Human-readable progress, one per current ``status_update`` site.\n\n``code`` is a short closed set so a client can act on an event without\nparsing prose; ``message`` stays the exact text the GUI shows today.",
@@ -112,6 +232,104 @@
         "message"
       ],
       "title": "LogPayload",
+      "type": "object"
+    },
+    "overpower_trip": {
+      "additionalProperties": false,
+      "description": "Measured V*I crossed the 4PP probe-safety hard stop.",
+      "properties": {
+        "measured_w": {
+          "title": "Measured W",
+          "type": "number"
+        },
+        "stop_w": {
+          "title": "Stop W",
+          "type": "number"
+        }
+      },
+      "required": [
+        "measured_w",
+        "stop_w"
+      ],
+      "title": "OverpowerPayload",
+      "type": "object"
+    },
+    "sample": {
+      "additionalProperties": false,
+      "description": "One acquired point.\n\n``values`` is the mode's data dict exactly as the parse produced it, with\nno coercion \u2014 the aux-fault column is a string, and a client that wants\nnumbers must say which key it means.",
+      "properties": {
+        "compliance": {
+          "default": "OK",
+          "enum": [
+            "OK",
+            "V_COMP",
+            "I_COMP"
+          ],
+          "title": "Compliance",
+          "type": "string"
+        },
+        "elapsed_s": {
+          "title": "Elapsed S",
+          "type": "number"
+        },
+        "event_marker": {
+          "default": "",
+          "title": "Event Marker",
+          "type": "string"
+        },
+        "t_unix": {
+          "title": "T Unix",
+          "type": "number"
+        },
+        "values": {
+          "additionalProperties": true,
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "t_unix",
+        "elapsed_s"
+      ],
+      "title": "SamplePayload",
+      "type": "object"
+    },
+    "sweep_segment": {
+      "additionalProperties": false,
+      "description": "One completed sweep direction, returned by the instrument in bulk.",
+      "properties": {
+        "compliance": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Compliance",
+          "type": "array"
+        },
+        "currents": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Currents",
+          "type": "array"
+        },
+        "direction": {
+          "default": "forward",
+          "enum": [
+            "forward",
+            "reverse"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "voltages": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Voltages",
+          "type": "array"
+        }
+      },
+      "title": "SweepSegmentPayload",
       "type": "object"
     }
   },

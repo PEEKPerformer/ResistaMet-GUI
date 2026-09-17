@@ -38,11 +38,12 @@ class VdpRun:
 
     MODE = 'vdp'
 
-    def __init__(self, sample_name, username, settings, control, out):
+    def __init__(self, sample_name, username, settings, control, out, events):
         self.sample_name = sample_name
         self.username = username
         self.settings = settings
         self._out = out
+        self._events = events
         self._control = control
         self._voltages: Dict[str, float] = {}
         self.keithley = None
@@ -119,7 +120,14 @@ class VdpRun:
         spec = self.keithley.detect_model()
         self._model_name = spec.model if spec else "2400"
         try:
-            self._out.instrument_identified(self._model_name)
+            self._events.emit('instrument_connected', {
+                'address': gpib,
+                'idn': self._instrument_idn,
+                'model': self._model_name,
+                'max_source_v': spec.max_source_v if spec else None,
+                'max_source_i': spec.max_source_i if spec else None,
+                'max_power_w': spec.max_power_w if spec else None,
+            })
         except Exception:
             pass
 
@@ -251,7 +259,8 @@ class VdpRun:
             self.keithley.write(":OUTP OFF")
 
             if (stat_pos | stat_neg) & _STAT_BIT_COMPLIANCE:
-                self._out.compliance_hit("Voltage")
+                self._events.emit('compliance', {'kind': 'Voltage',
+                                                  'stop_on_compliance': False})
 
             self._voltages[geom.label_pos] = v_pos
             self._voltages[geom.label_neg] = v_neg

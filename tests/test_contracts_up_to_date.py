@@ -41,5 +41,8 @@ def test_every_mode_has_a_definition():
 
 
 def test_event_payloads_are_exported():
+    """Every modelled event type reaches the exported contract."""
+    from resistamet_gui.session.events import PAYLOAD_MODELS
+
     schema = json.loads((REPO_ROOT / "contracts" / "events.schema.json").read_text())
-    assert set(schema['payloads']) == {'log', 'error'}
+    assert set(schema['payloads']) == set(PAYLOAD_MODELS)
