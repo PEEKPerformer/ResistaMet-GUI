@@ -20,6 +20,7 @@ from ..data_export import AUX_LOG_MODES, splice_before_tail
 from ..instrument import Keithley2400, humanize_connection_error
 from ..sensors import aux_column_names, make_sensor, reading_to_columns
 from ..system_utils import SleepInhibitor
+from .control import RunStopped
 from .configure import (
     configure_four_point, configure_resistance, configure_source_i,
     configure_source_v, configure_sweep,
@@ -477,7 +478,7 @@ class ContinuousRun:
                 try:
                     self.keithley.write(":OUTP ON")
                     self._events.log('settling', f"Waiting for settling time ({settling_time}s)...")
-                    time.sleep(settling_time)
+                    self._control.sleep(settling_time)
                 except Exception as e:
                     self._events.error('output_on_failed', 'smu', f"Error turning on output: {str(e)}")
                     self._control.finish('output_on_failed')
@@ -546,7 +547,7 @@ class ContinuousRun:
                                         f"Delta read error (retry {retry + 1}/{max_retries}): {str(e)[:50]}... "
                                         f"Retrying in {delay:.1f}s"
                                     )
-                                    time.sleep(delay)
+                                    self._control.sleep(delay)
                                     try:
                                         self.keithley.write("*CLS")
                                     except Exception:
@@ -573,7 +574,7 @@ class ContinuousRun:
                                         f"VISA error (retry {retry + 1}/{max_retries}): {str(e)[:50]}... "
                                         f"Retrying in {delay:.1f}s"
                                     )
-                                    time.sleep(delay)
+                                    self._control.sleep(delay)
                                     try:
                                         self.keithley.write("*CLS")
                                     except Exception:
@@ -586,6 +587,8 @@ class ContinuousRun:
                                 self._events.error('read_error', 'smu', f"Unexpected Read Error: {str(e)}. Stopping.")
                                 break
 
+                    if self._control.stopped():
+                        break
                     if not read_success:
                         self._control.finish('read_error')
                         break
@@ -819,6 +822,9 @@ class ContinuousRun:
 
         except Exception as e:
             self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self.mode}): {str(e)}")
+        except RunStopped:
+            # A stop landed during a settle; the normal shutdown path follows.
+            pass
         except Exception:
             self._control.finish('worker_error')
             raise
@@ -950,7 +956,7 @@ class ContinuousRun:
 
         # +I reading
         self.keithley.write(f":SOUR:CURR {i_mag}")
-        time.sleep(settling)
+        self._control.sleep(settling)
         raw_plus = self.keithley.query(":READ?").strip()
         parts_plus = [p.strip() for p in raw_plus.split(',')]
         v_plus = float(parts_plus[0])
@@ -958,7 +964,7 @@ class ContinuousRun:
 
         # -I reading
         self.keithley.write(f":SOUR:CURR {-i_mag}")
-        time.sleep(settling)
+        self._control.sleep(settling)
         raw_minus = self.keithley.query(":READ?").strip()
         parts_minus = [p.strip() for p in raw_minus.split(',')]
         v_minus = float(parts_minus[0])

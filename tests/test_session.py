@@ -231,3 +231,49 @@ class TestSafetyPrompt:
         assert _wait_for(lambda: any(e.payload['code'] == 'safety_silenced'
                                       for e in sink.of_type('log')))
         session.stop()
+
+
+class TestStopLatency:
+    """A stop must interrupt the wait, not queue behind it."""
+
+    def test_stop_during_a_long_settle_returns_quickly(self, session, sink, fake_rm, profile):
+        profile['measurement'].update({
+            'settling_time': 10.0, 'vsource_voltage': 1.0,
+            'vsource_current_compliance': 0.1, 'vsource_duration_hours': 0.0,
+        })
+        session.start(profile, 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: sink.of_type('instrument_connected'))
+
+        began = time.time()
+        session.stop()
+        assert _wait_for(lambda: session.state == 'idle', timeout=5.0)
+        assert time.time() - began < 3.0, "stop waited out the settle"
+
+    def test_interrupted_settle_produces_no_sample(self, session, sink, fake_rm, profile):
+        """The read after an unfinished settle would be unsettled data."""
+        profile['measurement'].update({
+            'settling_time': 10.0, 'vsource_voltage': 1.0,
+            'vsource_current_compliance': 0.1, 'vsource_duration_hours': 0.0,
+        })
+        session.start(profile, 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: sink.of_type('instrument_connected'))
+        session.stop()
+        assert _wait_for(lambda: session.state == 'idle', timeout=5.0)
+
+        assert sink.of_type('sample') == []
+        assert [e.payload['reason'] for e in sink.of_type('run_ended')] == ['user_stop']
+
+    def test_output_is_still_turned_off(self, session, sink, fake_rm, profile):
+        """Unwinding early must not skip the shutdown."""
+        profile['measurement'].update({
+            'settling_time': 10.0, 'vsource_voltage': 1.0,
+            'vsource_current_compliance': 0.1, 'vsource_duration_hours': 0.0,
+        })
+        session.start(profile, 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: sink.of_type('instrument_connected'))
+        session.stop()
+        assert _wait_for(lambda: session.state == 'idle', timeout=5.0)
+
+        fake = fake_rm.opened[-1]
+        assert any(cmd.upper().startswith(':OUTP OFF')
+                    for op, cmd in fake.command_log if op == 'write')

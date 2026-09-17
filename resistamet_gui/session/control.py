@@ -30,6 +30,16 @@ class PendingPrompt:
     detail: Dict[str, Any] = field(default_factory=dict)
 
 
+class RunStopped(Exception):
+    """Raised inside a run when a stop lands during a wait.
+
+    Settling delays are the longest thing a run does between stop checks, so
+    interrupting them is what makes a stop feel immediate. Unwinding by
+    exception also means the read and the row that would have followed an
+    unsettled wait are skipped rather than recorded.
+    """
+
+
 class RunControl:
     """Start/stop/pause state plus the operator's proceed gate."""
 
@@ -41,6 +51,8 @@ class RunControl:
         #: Set when the operator has answered a prompt, and by stop, so a
         #: waiting run always wakes.
         self.proceed_event = threading.Event()
+        #: Set by finish(); what the interruptible sleep waits on.
+        self.stop_event = threading.Event()
         self._finish_reason: Optional[str] = None
         self._prompt: Optional[PendingPrompt] = None
         self._answer: Optional[str] = None
@@ -85,7 +97,21 @@ class RunControl:
             if self._finish_reason is None:
                 self._finish_reason = reason
             self._running = False
+        self.stop_event.set()
         self.proceed_event.set()
+
+    def stopped(self) -> bool:
+        return self.stop_event.is_set()
+
+    def sleep(self, seconds: float) -> None:
+        """Wait, unless the run is stopped first.
+
+        Raises :class:`RunStopped` instead of returning when a stop lands, so
+        the caller unwinds rather than carrying on with a wait it did not
+        finish.
+        """
+        if self.stop_event.wait(max(0.0, seconds)):
+            raise RunStopped()
 
     # --- operator prompts -------------------------------------------------
 
