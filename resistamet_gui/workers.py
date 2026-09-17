@@ -35,6 +35,11 @@ class _QtSink:
         elif kind == 'error':
             self._worker.error_occurred.emit(payload['message'])
         elif kind == 'sample':
+            if payload.get('derived'):
+                # Same numbers the CSV row carries, so the 4PP panel does not
+                # recompute them from the raw dict and drift. Emitted before
+                # data_point so the handler for that sample already has them.
+                self._worker.sample_derived.emit(payload['t_unix'], payload['derived'])
             self._worker.data_point.emit(
                 payload['t_unix'], payload['values'],
                 payload['compliance'], payload['event_marker'],
@@ -85,6 +90,8 @@ class MeasurementWorker(QThread):
     compliance_hit = Signal(str)  # 'Voltage' or 'Current'
     overpower_hit = Signal(float, float)  # measured_power_w, hard_stop_w (4PP only)
     sweep_complete = Signal(list, list, list)  # voltages, currents, compliance_list
+    # 4PP only: the derived Rs / rho / sigma written to this sample's CSV row.
+    sample_derived = Signal(float, dict)
     # Short model name ("2400", "2410", ...) once IDN has been parsed. The
     # GUI caches this for accuracy.py uncertainty lookups after the worker
     # thread tears down, since per-spot stats are computed post-measurement.
