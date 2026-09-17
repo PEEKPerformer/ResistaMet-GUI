@@ -18,6 +18,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from resistamet_gui.schema.settings_modes import (
     CurrentSourceSettings,
+    FourPointSettings,
     ResistanceSettings,
     SweepSettings,
     VdpSettings,
@@ -39,6 +40,20 @@ FIELD_WIDGETS = [
         'isource_current': 'isource_current',
         'isource_voltage_compliance': 'isource_voltage_compliance',
         'isource_duration_hours': 'isource_duration',
+    }),
+    (FourPointSettings, 'tab_four_point', {
+        'fpp_current': 'fpp_current',
+        'fpp_voltage_compliance': 'fpp_voltage_compliance',
+        'fpp_spacing_cm': 'fpp_spacing_cm',
+        'fpp_thickness_um': 'fpp_thickness_um',
+        'fpp_alpha': 'fpp_alpha',
+        'fpp_k_factor': 'fpp_k_factor',
+        'fpp_samples': 'fpp_samples',
+        'fpp_diameter_cm': 'fpp_diameter_cm',
+        'fpp_temperature_c': 'fpp_temperature_c',
+        'fpp_delta_settling': 'fpp_delta_settling',
+        'fpp_power_warn_w': 'fpp_power_warn_w',
+        'fpp_power_stop_w': 'fpp_power_stop_w',
     }),
     (SweepSettings, 'tab_sweep', {
         'sweep_start': 'sweep_start',
