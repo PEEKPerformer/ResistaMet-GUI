@@ -1,0 +1,656 @@
+{
+  "definitions": {
+    "AuxSensorSettings": {
+      "additionalProperties": true,
+      "description": "Auxiliary-sensor co-logging. Serialized inside ``measurement``.\n\nCo-logging is only wired into the continuous modes\n(``data_export.AUX_LOG_MODES``); the resolver reports an issue when a\nrequest asks for it on a sweep or vdP run.",
+      "properties": {
+        "aux_address": {
+          "default": "ASRL6::INSTR",
+          "minLength": 1,
+          "title": "Aux Address",
+          "type": "string"
+        },
+        "aux_driver": {
+          "default": "arduino_thermocouple",
+          "minLength": 1,
+          "title": "Aux Driver",
+          "type": "string"
+        },
+        "aux_log_enabled": {
+          "default": false,
+          "title": "Aux Log Enabled",
+          "type": "boolean"
+        }
+      },
+      "title": "AuxSensorSettings",
+      "type": "object"
+    },
+    "CurrentSourceSettings": {
+      "additionalProperties": true,
+      "description": "Source I, measure V. ``isource_duration_hours`` of 0 runs until stopped.",
+      "properties": {
+        "isource_current": {
+          "default": 0.001,
+          "maximum": 3.0,
+          "minimum": -3.0,
+          "title": "Isource Current",
+          "type": "number"
+        },
+        "isource_duration_hours": {
+          "default": 0.0,
+          "maximum": 168.0,
+          "minimum": 0.0,
+          "title": "Isource Duration Hours",
+          "type": "number"
+        },
+        "isource_voltage_compliance": {
+          "default": 5.0,
+          "maximum": 200.0,
+          "minimum": 0.1,
+          "title": "Isource Voltage Compliance",
+          "type": "number"
+        },
+        "isource_voltage_range_auto": {
+          "default": true,
+          "title": "Isource Voltage Range Auto",
+          "type": "boolean"
+        }
+      },
+      "title": "CurrentSourceSettings",
+      "type": "object"
+    },
+    "DisplaySettings": {
+      "additionalProperties": true,
+      "description": "Plot appearance. Frontend-only, modelled so a profile round-trips.",
+      "properties": {
+        "buffer_size": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0,
+          "title": "Buffer Size"
+        },
+        "enable_plot": {
+          "default": true,
+          "title": "Enable Plot",
+          "type": "boolean"
+        },
+        "plot_color_i": {
+          "default": "#009E73",
+          "title": "Plot Color I",
+          "type": "string"
+        },
+        "plot_color_r": {
+          "default": "#D55E00",
+          "title": "Plot Color R",
+          "type": "string"
+        },
+        "plot_color_v": {
+          "default": "#0072B2",
+          "title": "Plot Color V",
+          "type": "string"
+        },
+        "plot_figsize": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Plot Figsize",
+          "type": "array"
+        },
+        "plot_update_interval": {
+          "default": 16,
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Plot Update Interval",
+          "type": "integer"
+        }
+      },
+      "title": "DisplaySettings",
+      "type": "object"
+    },
+    "FileSettings": {
+      "additionalProperties": true,
+      "description": "Where rows are written and how often they are flushed.",
+      "properties": {
+        "auto_save_interval": {
+          "default": 60,
+          "maximum": 3600,
+          "minimum": 1,
+          "title": "Auto Save Interval",
+          "type": "integer"
+        },
+        "data_directory": {
+          "default": "measurement_data",
+          "minLength": 1,
+          "title": "Data Directory",
+          "type": "string"
+        }
+      },
+      "title": "FileSettings",
+      "type": "object"
+    },
+    "FourPointSettings": {
+      "additionalProperties": true,
+      "description": "Four-point probe, with the ASTM F84 correction-factor inputs.\n\n``fpp_temperature_c`` is ``None`` when the temperature was not measured.\nThe UI carries that as a -50 C sentinel on its spin box (the widget's\n\"not measured\" special value) and the worker as NaN; the resolver converts\nbetween the two, and neither representation reaches this model.",
+      "properties": {
+        "fpp_alpha": {
+          "default": 1.0,
+          "maximum": 10.0,
+          "minimum": 0.0,
+          "title": "Fpp Alpha",
+          "type": "number"
+        },
+        "fpp_current": {
+          "default": 0.0001,
+          "maximum": 3.0,
+          "minimum": -3.0,
+          "title": "Fpp Current",
+          "type": "number"
+        },
+        "fpp_delta_mode": {
+          "default": false,
+          "title": "Fpp Delta Mode",
+          "type": "boolean"
+        },
+        "fpp_delta_settling": {
+          "default": 0.1,
+          "maximum": 5.0,
+          "minimum": 0.01,
+          "title": "Fpp Delta Settling",
+          "type": "number"
+        },
+        "fpp_diameter_cm": {
+          "default": 0.0,
+          "maximum": 100.0,
+          "minimum": 0.0,
+          "title": "Fpp Diameter Cm",
+          "type": "number"
+        },
+        "fpp_dopant_type": {
+          "default": "none",
+          "enum": [
+            "none",
+            "n",
+            "p"
+          ],
+          "title": "Fpp Dopant Type",
+          "type": "string"
+        },
+        "fpp_geometry": {
+          "default": "circle",
+          "enum": [
+            "circle",
+            "square",
+            "rectangle_2",
+            "rectangle_3",
+            "rectangle_4"
+          ],
+          "title": "Fpp Geometry",
+          "type": "string"
+        },
+        "fpp_k_factor": {
+          "default": 4.532,
+          "maximum": 50.0,
+          "minimum": 0.1,
+          "title": "Fpp K Factor",
+          "type": "number"
+        },
+        "fpp_model": {
+          "default": "thin_film",
+          "enum": [
+            "thin_film",
+            "semi_infinite",
+            "finite_thin",
+            "finite_alpha"
+          ],
+          "title": "Fpp Model",
+          "type": "string"
+        },
+        "fpp_power_stop_w": {
+          "default": 0.1,
+          "maximum": 22.0,
+          "minimum": 0.0001,
+          "title": "Fpp Power Stop W",
+          "type": "number"
+        },
+        "fpp_power_warn_w": {
+          "default": 0.01,
+          "maximum": 10.0,
+          "minimum": 0.0001,
+          "title": "Fpp Power Warn W",
+          "type": "number"
+        },
+        "fpp_samples": {
+          "default": 20,
+          "maximum": 1000000,
+          "minimum": 0,
+          "title": "Fpp Samples",
+          "type": "integer"
+        },
+        "fpp_spacing_cm": {
+          "default": 0.1016,
+          "maximum": 5.0,
+          "minimum": 0.001,
+          "title": "Fpp Spacing Cm",
+          "type": "number"
+        },
+        "fpp_stop_on_overpower": {
+          "default": true,
+          "title": "Fpp Stop On Overpower",
+          "type": "boolean"
+        },
+        "fpp_temperature_c": {
+          "anyOf": [
+            {
+              "maximum": 200.0,
+              "minimum": -50.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fpp Temperature C"
+        },
+        "fpp_thickness_um": {
+          "default": 0.0,
+          "maximum": 5000.0,
+          "minimum": 0.0,
+          "title": "Fpp Thickness Um",
+          "type": "number"
+        },
+        "fpp_voltage_compliance": {
+          "default": 5.0,
+          "maximum": 200.0,
+          "minimum": 0.1,
+          "title": "Fpp Voltage Compliance",
+          "type": "number"
+        },
+        "fpp_voltage_range_auto": {
+          "default": true,
+          "title": "Fpp Voltage Range Auto",
+          "type": "boolean"
+        }
+      },
+      "title": "FourPointSettings",
+      "type": "object"
+    },
+    "InstrumentSettings": {
+      "additionalProperties": true,
+      "description": "Knobs that apply to every mode, wherever the value comes from.\n\n``gpib_address`` is machine-local \u2014 ``ConfigManager`` keeps it under\n``machines[hostname]`` and injects it into the profile on read, so it is\nnever stored per user (``config.py``).",
+      "properties": {
+        "auto_zero": {
+          "default": "once",
+          "enum": [
+            "on",
+            "once",
+            "off"
+          ],
+          "title": "Auto Zero",
+          "type": "string"
+        },
+        "filter_count": {
+          "default": 5,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Filter Count",
+          "type": "integer"
+        },
+        "filter_enabled": {
+          "default": true,
+          "title": "Filter Enabled",
+          "type": "boolean"
+        },
+        "filter_type": {
+          "default": "repeat",
+          "enum": [
+            "repeat",
+            "moving"
+          ],
+          "title": "Filter Type",
+          "type": "string"
+        },
+        "gpib_address": {
+          "default": "GPIB0::24::INSTR",
+          "minLength": 1,
+          "title": "Gpib Address",
+          "type": "string"
+        },
+        "nplc": {
+          "default": 1,
+          "maximum": 10.0,
+          "minimum": 0.01,
+          "title": "Nplc",
+          "type": "number"
+        },
+        "sampling_rate": {
+          "default": 10.0,
+          "maximum": 100.0,
+          "minimum": 0.1,
+          "title": "Sampling Rate",
+          "type": "number"
+        },
+        "settling_time": {
+          "default": 0.2,
+          "maximum": 10.0,
+          "minimum": 0.0,
+          "title": "Settling Time",
+          "type": "number"
+        },
+        "stop_on_compliance": {
+          "default": false,
+          "title": "Stop On Compliance",
+          "type": "boolean"
+        }
+      },
+      "title": "InstrumentSettings",
+      "type": "object"
+    },
+    "OutputSettings": {
+      "additionalProperties": true,
+      "description": "Exporter selection; consumed by ``data_export.make_exporter``.",
+      "properties": {
+        "compression": {
+          "default": "never",
+          "enum": [
+            "never",
+            "always",
+            "auto"
+          ],
+          "title": "Compression",
+          "type": "string"
+        },
+        "compression_threshold_mb": {
+          "default": 5,
+          "minimum": 0.0,
+          "title": "Compression Threshold Mb",
+          "type": "number"
+        },
+        "format": {
+          "default": "csv",
+          "enum": [
+            "csv",
+            "hdf5",
+            "csv+legacy_json"
+          ],
+          "title": "Format",
+          "type": "string"
+        }
+      },
+      "title": "OutputSettings",
+      "type": "object"
+    },
+    "ResistanceSettings": {
+      "additionalProperties": true,
+      "description": "Source I, measure R. 2-wire or 4-wire, optional cable null.",
+      "properties": {
+        "res_auto_range": {
+          "default": true,
+          "title": "Res Auto Range",
+          "type": "boolean"
+        },
+        "res_cable_null": {
+          "default": 0.0,
+          "minimum": 0.0,
+          "title": "Res Cable Null",
+          "type": "number"
+        },
+        "res_measurement_type": {
+          "default": "2-wire",
+          "enum": [
+            "2-wire",
+            "4-wire"
+          ],
+          "title": "Res Measurement Type",
+          "type": "string"
+        },
+        "res_offset_comp": {
+          "default": true,
+          "title": "Res Offset Comp",
+          "type": "boolean"
+        },
+        "res_test_current": {
+          "default": 0.001,
+          "maximum": 3.0,
+          "minimum": 1e-07,
+          "title": "Res Test Current",
+          "type": "number"
+        },
+        "res_voltage_compliance": {
+          "default": 5.0,
+          "maximum": 200.0,
+          "minimum": 0.1,
+          "title": "Res Voltage Compliance",
+          "type": "number"
+        }
+      },
+      "title": "ResistanceSettings",
+      "type": "object"
+    },
+    "RunRequest": {
+      "additionalProperties": false,
+      "description": "What a client asks for. Never persisted.\n\n``overrides`` is flat measurement keys, the same shape the tabs produce\ntoday, so one request format serves the UI, a script and the MCP layer.\nStrict validation of the keys happens in the resolver, which knows which\nones the profile owns.",
+      "properties": {
+        "mode": {
+          "enum": [
+            "resistance",
+            "source_v",
+            "source_i",
+            "four_point",
+            "sweep",
+            "vdp"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "overrides": {
+          "additionalProperties": true,
+          "title": "Overrides",
+          "type": "object"
+        },
+        "prompt_timeout_s": {
+          "default": 900.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Prompt Timeout S",
+          "type": "number"
+        },
+        "sample_name": {
+          "minLength": 1,
+          "title": "Sample Name",
+          "type": "string"
+        },
+        "username": {
+          "minLength": 1,
+          "title": "Username",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "username",
+        "sample_name"
+      ],
+      "title": "RunRequest",
+      "type": "object"
+    },
+    "SafetySettings": {
+      "additionalProperties": true,
+      "description": "Touch-safety warning threshold. Serialized inside ``measurement``.\n\n``safety_voltage_warn_silenced`` is the sticky per-profile flag behind the\nwarning dialog's \"don't show again\" checkbox.",
+      "properties": {
+        "safety_voltage_warn_silenced": {
+          "default": false,
+          "title": "Safety Voltage Warn Silenced",
+          "type": "boolean"
+        },
+        "safety_voltage_warn_v": {
+          "default": 30.0,
+          "maximum": 200.0,
+          "minimum": 0.0,
+          "title": "Safety Voltage Warn V",
+          "type": "number"
+        }
+      },
+      "title": "SafetySettings",
+      "type": "object"
+    },
+    "SweepSettings": {
+      "additionalProperties": true,
+      "description": "Bulk linear sweep, run by the instrument's own sweep engine.\n\nStart/stop keep the +/-200 V bounds for both source types, as the widgets\ndo today; source-aware bounds are a follow-up.",
+      "properties": {
+        "sweep_compliance": {
+          "default": 0.1,
+          "maximum": 3.0,
+          "minimum": 1e-07,
+          "title": "Sweep Compliance",
+          "type": "number"
+        },
+        "sweep_delay": {
+          "default": 0.01,
+          "maximum": 10.0,
+          "minimum": 0.0,
+          "title": "Sweep Delay",
+          "type": "number"
+        },
+        "sweep_direction": {
+          "default": "up",
+          "enum": [
+            "up",
+            "down",
+            "up_down"
+          ],
+          "title": "Sweep Direction",
+          "type": "string"
+        },
+        "sweep_source": {
+          "default": "voltage",
+          "enum": [
+            "voltage",
+            "current"
+          ],
+          "title": "Sweep Source",
+          "type": "string"
+        },
+        "sweep_start": {
+          "default": 0.0,
+          "maximum": 200.0,
+          "minimum": -200.0,
+          "title": "Sweep Start",
+          "type": "number"
+        },
+        "sweep_step": {
+          "default": 0.05,
+          "exclusiveMinimum": 0.0,
+          "maximum": 200.0,
+          "title": "Sweep Step",
+          "type": "number"
+        },
+        "sweep_stop": {
+          "default": 1.0,
+          "maximum": 200.0,
+          "minimum": -200.0,
+          "title": "Sweep Stop",
+          "type": "number"
+        }
+      },
+      "title": "SweepSettings",
+      "type": "object"
+    },
+    "VdpSettings": {
+      "additionalProperties": true,
+      "description": "van der Pauw, ASTM F76 Method A.\n\nThickness stays >= 0 here because a stored profile legitimately holds 0 for\n\"never entered\"; a run request needs > 0, which the resolver enforces in\nstrict mode (the UI prompts for it on Start).",
+      "properties": {
+        "vdp_current": {
+          "default": 0.001,
+          "exclusiveMinimum": 0.0,
+          "maximum": 1.0,
+          "title": "Vdp Current",
+          "type": "number"
+        },
+        "vdp_readings_per_polarity": {
+          "default": 5,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Vdp Readings Per Polarity",
+          "type": "integer"
+        },
+        "vdp_settling_s": {
+          "default": 0.2,
+          "maximum": 10.0,
+          "minimum": 0.0,
+          "title": "Vdp Settling S",
+          "type": "number"
+        },
+        "vdp_thickness_cm": {
+          "default": 0.0,
+          "maximum": 10.0,
+          "minimum": 0.0,
+          "title": "Vdp Thickness Cm",
+          "type": "number"
+        },
+        "vdp_voltage_compliance": {
+          "default": 5.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 200.0,
+          "title": "Vdp Voltage Compliance",
+          "type": "number"
+        },
+        "vdp_voltage_range_auto": {
+          "default": true,
+          "title": "Vdp Voltage Range Auto",
+          "type": "boolean"
+        }
+      },
+      "title": "VdpSettings",
+      "type": "object"
+    },
+    "VoltageSourceSettings": {
+      "additionalProperties": true,
+      "description": "Source V, measure I. ``vsource_duration_hours`` of 0 runs until stopped.",
+      "properties": {
+        "vsource_current_compliance": {
+          "default": 0.1,
+          "maximum": 3.0,
+          "minimum": 1e-07,
+          "title": "Vsource Current Compliance",
+          "type": "number"
+        },
+        "vsource_current_range_auto": {
+          "default": true,
+          "title": "Vsource Current Range Auto",
+          "type": "boolean"
+        },
+        "vsource_duration_hours": {
+          "default": 0.0,
+          "maximum": 168.0,
+          "minimum": 0.0,
+          "title": "Vsource Duration Hours",
+          "type": "number"
+        },
+        "vsource_voltage": {
+          "default": 1.0,
+          "maximum": 200.0,
+          "minimum": -200.0,
+          "title": "Vsource Voltage",
+          "type": "number"
+        }
+      },
+      "title": "VoltageSourceSettings",
+      "type": "object"
+    }
+  },
+  "modes": {
+    "four_point": "FourPointSettings",
+    "resistance": "ResistanceSettings",
+    "source_i": "CurrentSourceSettings",
+    "source_v": "VoltageSourceSettings",
+    "sweep": "SweepSettings",
+    "vdp": "VdpSettings"
+  }
+}
