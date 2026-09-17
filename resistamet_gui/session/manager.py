@@ -26,6 +26,7 @@ from ..schema.resolve import resolve_run_settings
 from .continuous_run import ContinuousRun
 from .control import RunControl
 from .emitter import EventEmitter
+from .instrument_lock import hold_instrument
 from .vdp_run import VdpRun
 
 logger = logging.getLogger(__name__)
@@ -184,12 +185,13 @@ class MeasurementSession:
                 raise SessionBusy(f"session is {self._state}")
             self._state = 'identifying'
         try:
-            instrument = Keithley2400(address).connect()
-            try:
-                idn = instrument.query("*IDN?").strip()
-                spec = instrument.detect_model()
-            finally:
-                instrument.close()
+            with hold_instrument(address):
+                instrument = Keithley2400(address).connect()
+                try:
+                    idn = instrument.query("*IDN?").strip()
+                    spec = instrument.detect_model()
+                finally:
+                    instrument.close()
             return {
                 'address': address,
                 'idn': idn,

@@ -21,6 +21,7 @@ from ..instrument import Keithley2400, humanize_connection_error
 from ..sensors import aux_column_names, make_sensor, reading_to_columns
 from ..system_utils import SleepInhibitor
 from .control import RunStopped
+from .instrument_lock import InstrumentBusy, hold_instrument
 from .configure import (
     configure_four_point, configure_resistance, configure_source_i,
     configure_source_v, configure_sweep,
@@ -58,6 +59,7 @@ class ContinuousRun:
         self._safety_ack = safety_ack
         #: None = wait forever (the GUI has an operator at the bench).
         self._prompt_timeout_s = prompt_timeout_s
+        self._instrument_lock = None
         # Set by the configure step: the frozen per-mode state the loop reads.
         self._mode_state = None
         # Set by each delta read: the per-polarity values the row builder logs.
@@ -284,6 +286,16 @@ class ContinuousRun:
             # Fall through to cleanup below
 
 
+    def _enter_instrument_lock(self, address):
+        """Hold the address for this run; released in _cleanup.
+
+        Taken before anything is opened, so a second process is refused rather
+        than allowed to interleave SCPI on the same bus.
+        """
+        manager = hold_instrument(address)
+        manager.__enter__()
+        return manager
+
     def _safety_prompt_declined(self) -> bool:
         """Ask before a hazardous voltage reaches the leads. True = cancel.
 
@@ -340,8 +352,21 @@ class ContinuousRun:
             'settings': self.settings,
             'started_at': time.time(),
         })
+        address = self.settings.get('measurement', {}).get('gpib_address', '')
+        try:
+            self._instrument_lock = self._enter_instrument_lock(address)
+        except InstrumentBusy as exc:
+            self._control.finish('instrument_busy')
+            self._events.error('instrument_busy', 'smu', str(exc))
+            self._events.emit('run_ended', {
+                'reason': 'instrument_busy', 'ok': False, 'samples': 0,
+                'duration_s': 0.0, 'path': None,
+            })
+            return
+
         if self._safety_prompt_declined():
             self._control.finish('cancelled')
+            self._release_instrument_lock()
             self._events.emit('run_ended', {
                 # finish() keeps the first reason, so a timeout reports as one.
                 'reason': self._control.finish_reason, 'ok': False, 'samples': 0,
@@ -883,9 +908,20 @@ class ContinuousRun:
         self._events.log('stopping', f"Stopping measurement ({self.mode})...")
         self._control.finish('user_stop')
 
+    def _release_instrument_lock(self) -> None:
+        manager = getattr(self, '_instrument_lock', None)
+        if manager is not None:
+            self._instrument_lock = None
+            try:
+                manager.__exit__(None, None, None)
+            except Exception:
+                logger.warning("failed to release the instrument lock", exc_info=True)
+
     def _cleanup(self) -> None:
         # Re-enable system sleep
         self._sleep_inhibitor.uninhibit()
+        # Released last, after the instrument and aux ports are closed.
+        self._release_instrument_lock()
 
         if self.keithley:
             try:
