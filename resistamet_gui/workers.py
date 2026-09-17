@@ -650,21 +650,32 @@ class MeasurementWorker(QThread):
                                  self.keithley is not None)
 
                     if use_delta:
-                        try:
-                            reading_str = self._read_delta()
-                            last_measurement_time = time.time()
-                            read_success = True
-                            consecutive_errors = 0
-                        except Exception as e:
-                            consecutive_errors += 1
-                            if consecutive_errors >= max_retries:
-                                self.error_occurred.emit(f"Delta read error after {consecutive_errors} failures: {str(e)}. Stopping.")
-                            else:
-                                self.status_update.emit(f"Delta read error (attempt {consecutive_errors}): {str(e)[:50]}")
-                                try:
-                                    self.keithley.write("*CLS")
-                                except Exception:
-                                    pass
+                        for retry in range(max_retries):
+                            try:
+                                reading_str = self._read_delta()
+                                last_measurement_time = time.time()
+                                read_success = True
+                                if retry > 0:
+                                    self.status_update.emit(f"Delta read recovered after {retry} retries")
+                                consecutive_errors = 0
+                                break
+                            except Exception as e:
+                                consecutive_errors += 1
+                                if retry < max_retries - 1:
+                                    delay = 0.1 * (2 ** retry)
+                                    self.status_update.emit(
+                                        f"Delta read error (retry {retry + 1}/{max_retries}): {str(e)[:50]}... "
+                                        f"Retrying in {delay:.1f}s"
+                                    )
+                                    time.sleep(delay)
+                                    try:
+                                        self.keithley.write("*CLS")
+                                    except Exception:
+                                        pass
+                                else:
+                                    self.error_occurred.emit(
+                                        f"Delta read error after {max_retries} retries: {str(e)}. Stopping."
+                                    )
                     else:
                         for retry in range(max_retries):
                             try:
