@@ -1170,3 +1170,25 @@ class TestEventMarkerQueue:
 
         assert marked == ["ONE; TWO"]
         assert spies.error_occurred == []
+
+
+class TestRunControlQueueing:
+    """Marker queue semantics live in RunControl now; the worker delegates."""
+
+    def _worker(self, tmp_path):
+        return MeasurementWorker("resistance", "wafer1", "alice",
+                                 _resistance_settings(tmp_path))
+
+    def test_worker_delegates_to_control(self, tmp_path):
+        worker = self._worker(tmp_path)
+        worker.mark_event("A")
+        assert worker._control.event_marker == "A"
+        assert worker.event_marker == "A"
+
+    def test_running_and_paused_delegate(self, tmp_path):
+        worker = self._worker(tmp_path)
+        worker.running = True
+        worker.paused = True
+        assert (worker._control.running, worker._control.paused) == (True, True)
+        worker._control.paused = False
+        assert worker.paused is False
