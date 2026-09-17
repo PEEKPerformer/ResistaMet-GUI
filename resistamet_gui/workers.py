@@ -448,6 +448,166 @@ class MeasurementWorker(QThread):
     def get_and_clear_event_marker(self) -> str:
         return self._control.get_and_clear_event_marker()
 
+    def _open_aux_sensor(self, measurement_settings):
+        """Open the auxiliary sensor, if this run co-logs one. False on failure."""
+        # Optional auxiliary sensor (co-logging on any continuous mode,
+        # anchored to the Keithley run). Opened here, before the exporter,
+        # so its declared channels() drive the CSV column schema. A failure
+        # to open aborts the run the same way an instrument-connect failure
+        # does — but the message is prefixed so the GUI never routes it to
+        # the SMU's GPIB-address remediation. wait_ready blocks (worker
+        # thread, safe) until the reader thread has the channel description
+        # and a first cached reading.
+        if (self.mode in AUX_LOG_MODES
+                and measurement_settings.get('aux_log_enabled')):
+            driver = measurement_settings.get('aux_driver', 'arduino_thermocouple')
+            aux_address = measurement_settings.get('aux_address', '')
+            try:
+                self._out.status_update(
+                    f"Connecting to auxiliary sensor ({driver}) at {aux_address}..."
+                )
+                self._aux_sensor = make_sensor(driver, aux_address).open()
+                if hasattr(self._aux_sensor, 'wait_ready'):
+                    self._aux_sensor.wait_ready(AUX_READY_TIMEOUT_S)
+                self._aux_channels = self._aux_sensor.channels()
+                self._aux_columns = aux_column_names(self._aux_sensor)
+                self._aux_units = [ch.unit for ch in self._aux_channels] + ['']
+                self._out.status_update(
+                    "Auxiliary sensor ready: "
+                    + ", ".join(f"{ch.label} ({ch.unit})" for ch in self._aux_channels)
+                )
+            except Exception as e:
+                self._out.error_occurred(
+                    "Auxiliary sensor: " + humanize_connection_error(e, aux_address)
+                )
+                return
+        return True
+
+    def _open_output_file(self, measurement_settings, source_value_str):
+        """Create the exporter for this run. False on failure."""
+        # File setup via the configured exporter (csv / hdf5 / csv+legacy_json).
+        self.start_time = time.time()
+        try:
+            base_path = self._create_base_path(source_value_str)
+
+            columns, units = get_column_config(
+                self.mode, measurement_settings,
+                aux_columns=self._aux_columns or None,
+                aux_units=self._aux_units or None,
+            )
+            export_metadata = build_metadata(
+                user=self.username,
+                sample_name=self.sample_name,
+                mode=self.mode,
+                settings=self.settings,
+                instrument_idn=self._instrument_idn,
+                start_time=datetime.fromtimestamp(self.start_time),
+                aux_columns=self._aux_columns or None,
+            )
+
+            self.exporter = make_exporter(
+                base_path=base_path,
+                metadata=export_metadata,
+                columns=columns,
+                units=units,
+                output_settings=self.settings.get('output'),
+                on_compress=self._emit_compress_status,
+                on_large_file=self._emit_large_file_status,
+            )
+            # Primary filename for downstream UI/log references.
+            primary_paths = self.exporter.output_paths
+            self.filename = str(primary_paths[0]) if primary_paths else str(base_path)
+            names = ", ".join(p.name for p in primary_paths)
+            self._out.status_update(f"Data file: {names}")
+        except Exception as e:
+            self._out.error_occurred(f"Error creating output files: {str(e)}")
+            return
+        return True
+
+    def _run_sweep(self):
+        """Run the instrument's own sweep engine, write the points, report them."""
+        # Sweep mode: single atomic operation, then done
+        if self.mode == 'sweep':
+            self._out.status_update(f"Running I-V sweep ({self._mode_state.points} points)...")
+            try:
+                self.keithley.write(":OUTP ON")
+                # Increase timeout for long sweeps
+                if self.keithley.dev:
+                    self.keithley.dev.timeout = max(10000, self._mode_state.points * 1000)
+                response = self.keithley.query(":READ?").strip()
+                self.keithley.write(":OUTP OFF")
+
+                # Parse bulk response: every 3 values = (V, I, STAT)
+                parts = [p.strip() for p in response.split(',') if p.strip()]
+                voltages, currents, comp_list = [], [], []
+                for i in range(0, len(parts), 3):
+                    try:
+                        v = float(parts[i])
+                        c = float(parts[i + 1]) if i + 1 < len(parts) else float('nan')
+                        stat = int(float(parts[i + 2])) if i + 2 < len(parts) else 0
+                    except (ValueError, IndexError):
+                        v, c, stat = float('nan'), float('nan'), 0
+                    voltages.append(v)
+                    currents.append(c)
+                    comp_status = 'COMP' if (stat & _STAT_BIT_COMPLIANCE) else 'OK'
+                    comp_list.append(comp_status)
+
+                    # Write each point to export
+                    row_data = [i // 3, v, c, comp_status]
+                    try:
+                        self.exporter.write_row(row_data)
+                    except Exception:
+                        pass
+
+                # For up_down: run reverse sweep
+                if self._mode_state.up_down:
+                    self._out.status_update("Running reverse sweep...")
+                    # Swap start/stop for reverse
+                    if self._mode_state.source == 'VOLT':
+                        start_q = self.keithley.query(":SOUR:VOLT:START?").strip()
+                        stop_q = self.keithley.query(":SOUR:VOLT:STOP?").strip()
+                        self.keithley.write(f":SOUR:VOLT:START {stop_q}")
+                        self.keithley.write(f":SOUR:VOLT:STOP {start_q}")
+                    else:
+                        start_q = self.keithley.query(":SOUR:CURR:START?").strip()
+                        stop_q = self.keithley.query(":SOUR:CURR:STOP?").strip()
+                        self.keithley.write(f":SOUR:CURR:START {stop_q}")
+                        self.keithley.write(f":SOUR:CURR:STOP {start_q}")
+                    self.keithley.write(":OUTP ON")
+                    response2 = self.keithley.query(":READ?").strip()
+                    self.keithley.write(":OUTP OFF")
+
+                    parts2 = [p.strip() for p in response2.split(',') if p.strip()]
+                    rev_v, rev_i, rev_comp = [], [], []
+                    for i in range(0, len(parts2), 3):
+                        try:
+                            v = float(parts2[i])
+                            c = float(parts2[i + 1]) if i + 1 < len(parts2) else float('nan')
+                            stat = int(float(parts2[i + 2])) if i + 2 < len(parts2) else 0
+                        except (ValueError, IndexError):
+                            v, c, stat = float('nan'), float('nan'), 0
+                        rev_v.append(v)
+                        rev_i.append(c)
+                        comp_status = 'COMP' if (stat & _STAT_BIT_COMPLIANCE) else 'OK'
+                        rev_comp.append(comp_status)
+                        row_data = [len(voltages) + i // 3, v, c, comp_status]
+                        try:
+                            self.exporter.write_row(row_data)
+                        except Exception:
+                            pass
+                    # Emit both sweeps
+                    self._out.sweep_complete(voltages, currents, comp_list)
+                    self._out.sweep_complete(rev_v, rev_i, rev_comp)
+                else:
+                    self._out.sweep_complete(voltages, currents, comp_list)
+
+                self._out.status_update(f"Sweep complete: {len(voltages)} points acquired")
+            except Exception as e:
+                self._out.error_occurred(f"Sweep error: {str(e)}")
+            # Sweep is done — skip to finalization
+            self.running = False
+            # Fall through to cleanup below
+
     def run(self):
         self.running = True
         self.paused = False
@@ -555,161 +715,19 @@ class MeasurementWorker(QThread):
                 self._out.error_occurred(f"Error configuring instrument: {str(e)}")
                 return
 
-            # Optional auxiliary sensor (co-logging on any continuous mode,
-            # anchored to the Keithley run). Opened here, before the exporter,
-            # so its declared channels() drive the CSV column schema. A failure
-            # to open aborts the run the same way an instrument-connect failure
-            # does — but the message is prefixed so the GUI never routes it to
-            # the SMU's GPIB-address remediation. wait_ready blocks (worker
-            # thread, safe) until the reader thread has the channel description
-            # and a first cached reading.
-            if (self.mode in AUX_LOG_MODES
-                    and measurement_settings.get('aux_log_enabled')):
-                driver = measurement_settings.get('aux_driver', 'arduino_thermocouple')
-                aux_address = measurement_settings.get('aux_address', '')
-                try:
-                    self._out.status_update(
-                        f"Connecting to auxiliary sensor ({driver}) at {aux_address}..."
-                    )
-                    self._aux_sensor = make_sensor(driver, aux_address).open()
-                    if hasattr(self._aux_sensor, 'wait_ready'):
-                        self._aux_sensor.wait_ready(AUX_READY_TIMEOUT_S)
-                    self._aux_channels = self._aux_sensor.channels()
-                    self._aux_columns = aux_column_names(self._aux_sensor)
-                    self._aux_units = [ch.unit for ch in self._aux_channels] + ['']
-                    self._out.status_update(
-                        "Auxiliary sensor ready: "
-                        + ", ".join(f"{ch.label} ({ch.unit})" for ch in self._aux_channels)
-                    )
-                except Exception as e:
-                    self._out.error_occurred(
-                        "Auxiliary sensor: " + humanize_connection_error(e, aux_address)
-                    )
-                    return
-
-            # File setup via the configured exporter (csv / hdf5 / csv+legacy_json).
-            self.start_time = time.time()
-            try:
-                base_path = self._create_base_path(source_value_str)
-
-                columns, units = get_column_config(
-                    self.mode, measurement_settings,
-                    aux_columns=self._aux_columns or None,
-                    aux_units=self._aux_units or None,
-                )
-                export_metadata = build_metadata(
-                    user=self.username,
-                    sample_name=self.sample_name,
-                    mode=self.mode,
-                    settings=self.settings,
-                    instrument_idn=self._instrument_idn,
-                    start_time=datetime.fromtimestamp(self.start_time),
-                    aux_columns=self._aux_columns or None,
-                )
-
-                self.exporter = make_exporter(
-                    base_path=base_path,
-                    metadata=export_metadata,
-                    columns=columns,
-                    units=units,
-                    output_settings=self.settings.get('output'),
-                    on_compress=self._emit_compress_status,
-                    on_large_file=self._emit_large_file_status,
-                )
-                # Primary filename for downstream UI/log references.
-                primary_paths = self.exporter.output_paths
-                self.filename = str(primary_paths[0]) if primary_paths else str(base_path)
-                file_ready = True
-                names = ", ".join(p.name for p in primary_paths)
-                self._out.status_update(f"Data file: {names}")
-            except Exception as e:
-                self._out.error_occurred(f"Error creating output files: {str(e)}")
+            if not self._open_aux_sensor(measurement_settings):
                 return
+
+            if not self._open_output_file(measurement_settings, source_value_str):
+                return
+            file_ready = True
 
             # Prevent system sleep during measurement
             self._sleep_inhibitor.inhibit(f"ResistaMet: {self.mode} measurement on {self.sample_name}")
 
-            # Sweep mode: single atomic operation, then done
+            # Sweep mode: one atomic operation, then straight to finalization
             if self.mode == 'sweep':
-                self._out.status_update(f"Running I-V sweep ({self._mode_state.points} points)...")
-                try:
-                    self.keithley.write(":OUTP ON")
-                    # Increase timeout for long sweeps
-                    if self.keithley.dev:
-                        self.keithley.dev.timeout = max(10000, self._mode_state.points * 1000)
-                    response = self.keithley.query(":READ?").strip()
-                    self.keithley.write(":OUTP OFF")
-
-                    # Parse bulk response: every 3 values = (V, I, STAT)
-                    parts = [p.strip() for p in response.split(',') if p.strip()]
-                    voltages, currents, comp_list = [], [], []
-                    for i in range(0, len(parts), 3):
-                        try:
-                            v = float(parts[i])
-                            c = float(parts[i + 1]) if i + 1 < len(parts) else float('nan')
-                            stat = int(float(parts[i + 2])) if i + 2 < len(parts) else 0
-                        except (ValueError, IndexError):
-                            v, c, stat = float('nan'), float('nan'), 0
-                        voltages.append(v)
-                        currents.append(c)
-                        comp_status = 'COMP' if (stat & _STAT_BIT_COMPLIANCE) else 'OK'
-                        comp_list.append(comp_status)
-
-                        # Write each point to export
-                        row_data = [i // 3, v, c, comp_status]
-                        try:
-                            self.exporter.write_row(row_data)
-                        except Exception:
-                            pass
-
-                    # For up_down: run reverse sweep
-                    if self._mode_state.up_down:
-                        self._out.status_update("Running reverse sweep...")
-                        # Swap start/stop for reverse
-                        if self._mode_state.source == 'VOLT':
-                            start_q = self.keithley.query(":SOUR:VOLT:START?").strip()
-                            stop_q = self.keithley.query(":SOUR:VOLT:STOP?").strip()
-                            self.keithley.write(f":SOUR:VOLT:START {stop_q}")
-                            self.keithley.write(f":SOUR:VOLT:STOP {start_q}")
-                        else:
-                            start_q = self.keithley.query(":SOUR:CURR:START?").strip()
-                            stop_q = self.keithley.query(":SOUR:CURR:STOP?").strip()
-                            self.keithley.write(f":SOUR:CURR:START {stop_q}")
-                            self.keithley.write(f":SOUR:CURR:STOP {start_q}")
-                        self.keithley.write(":OUTP ON")
-                        response2 = self.keithley.query(":READ?").strip()
-                        self.keithley.write(":OUTP OFF")
-
-                        parts2 = [p.strip() for p in response2.split(',') if p.strip()]
-                        rev_v, rev_i, rev_comp = [], [], []
-                        for i in range(0, len(parts2), 3):
-                            try:
-                                v = float(parts2[i])
-                                c = float(parts2[i + 1]) if i + 1 < len(parts2) else float('nan')
-                                stat = int(float(parts2[i + 2])) if i + 2 < len(parts2) else 0
-                            except (ValueError, IndexError):
-                                v, c, stat = float('nan'), float('nan'), 0
-                            rev_v.append(v)
-                            rev_i.append(c)
-                            comp_status = 'COMP' if (stat & _STAT_BIT_COMPLIANCE) else 'OK'
-                            rev_comp.append(comp_status)
-                            row_data = [len(voltages) + i // 3, v, c, comp_status]
-                            try:
-                                self.exporter.write_row(row_data)
-                            except Exception:
-                                pass
-                        # Emit both sweeps
-                        self._out.sweep_complete(voltages, currents, comp_list)
-                        self._out.sweep_complete(rev_v, rev_i, rev_comp)
-                    else:
-                        self._out.sweep_complete(voltages, currents, comp_list)
-
-                    self._out.status_update(f"Sweep complete: {len(voltages)} points acquired")
-                except Exception as e:
-                    self._out.error_occurred(f"Sweep error: {str(e)}")
-                # Sweep is done — skip to finalization
-                self.running = False
-                # Fall through to cleanup below
+                self._run_sweep()
 
             # For sweep mode, self.running is already False — skip the polling loop
             if self.mode != 'sweep':
