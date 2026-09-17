@@ -1080,3 +1080,46 @@ class TestVdpStop:
             qapp.processEvents()
             time.sleep(0.01)
         assert not worker.isRunning()
+
+
+class TestFourPointDeltaReadRetry:
+    """A transient delta read error must retry, not end the run."""
+
+    @staticmethod
+    def _fail_first_delta_reads(monkeypatch, worker, failures):
+        """Make the first ``failures`` delta reads raise, then read normally."""
+        real_read_delta = worker._read_delta
+        state = {'calls': 0}
+
+        def flaky():
+            state['calls'] += 1
+            if state['calls'] <= failures:
+                raise OSError(f"simulated delta failure {state['calls']}")
+            return real_read_delta()
+
+        monkeypatch.setattr(worker, '_read_delta', flaky)
+        monkeypatch.setattr(time, 'sleep', lambda s: None)
+        return state
+
+    def test_transient_failure_retries_and_completes(self, qapp, fake_rm, tmp_path, monkeypatch):
+        settings = _four_point_settings(tmp_path, samples=2, delta_mode=True)
+        worker = MeasurementWorker("four_point", "wafer1", "alice", settings)
+        self._fail_first_delta_reads(monkeypatch, worker, failures=1)
+
+        spies = _drive_worker(qapp, worker, timeout_s=10.0)
+
+        assert spies.error_occurred == []
+        assert len(spies.data_point) == 2
+        assert spies.measurement_complete == ["four_point"]
+        assert any("recovered" in m for m in spies.status_update)
+
+    def test_persistent_failure_reports_an_error(self, qapp, fake_rm, tmp_path, monkeypatch):
+        settings = _four_point_settings(tmp_path, samples=2, delta_mode=True)
+        worker = MeasurementWorker("four_point", "wafer1", "alice", settings)
+        self._fail_first_delta_reads(monkeypatch, worker, failures=99)
+
+        spies = _drive_worker(qapp, worker, timeout_s=10.0)
+
+        assert len(spies.error_occurred) == 1
+        assert "after 5 retries" in spies.error_occurred[0]
+        assert spies.data_point == []
