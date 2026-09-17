@@ -9,56 +9,7 @@ import pytest
 # Skip entire module if PySide6 is not available
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
-
-
-@pytest.fixture(scope="module")
-def app():
-    """Create a QApplication for the test session."""
-    # Use offscreen platform to avoid needing a display
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    application = QApplication.instance() or QApplication(sys.argv)
-    yield application
-
-
-@pytest.fixture
-def main_window(app, tmp_path, monkeypatch):
-    """Create a ResistanceMeterApp with a temp config directory."""
-    from resistamet_gui import constants
-    original_config = constants.CONFIG_FILE
-    constants.CONFIG_FILE = str(tmp_path / "config.json")
-
-    from resistamet_gui.config import ConfigManager
-    from resistamet_gui.ui import main_window as main_window_module
-    from resistamet_gui.ui.main_window import ResistanceMeterApp
-
-    # Patching constants.CONFIG_FILE is not enough: ConfigManager binds it as
-    # a default argument at import time, so whichever path was live when
-    # resistamet_gui.config was first imported wins for the whole session —
-    # the real config.json when another test module imported it first.
-    config_path = str(tmp_path / "config.json")
-    monkeypatch.setattr(
-        main_window_module, 'ConfigManager',
-        lambda *args, **kwargs: ConfigManager(config_file=config_path),
-    )
-
-    # Bypass the modal user selection dialog in __init__
-    monkeypatch.setattr(ResistanceMeterApp, 'select_user', lambda self: None)
-
-    window = ResistanceMeterApp()
-
-    # Simulate user selection manually
-    window.config_manager.add_user("test_user")
-    window.current_user = "test_user"
-    window.user_label.setText("User: test_user")
-    window.user_settings = window.config_manager.get_user_settings("test_user")
-    window.update_ui_from_settings()
-
-    yield window
-
-    constants.CONFIG_FILE = original_config
-    window.close()
 
 
 class TestTabCreation:

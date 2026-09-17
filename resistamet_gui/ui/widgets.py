@@ -290,6 +290,14 @@ class EngineeringSpinBox(QWidget):
         """Return current value in base units."""
         return self._value
 
+    def minimum(self) -> float:
+        """Lowest accepted value, in base units (QSpinBox naming)."""
+        return self._min
+
+    def maximum(self) -> float:
+        """Highest accepted value, in base units (QSpinBox naming)."""
+        return self._max
+
     def setValue(self, val: float) -> None:
         """Set value in base units."""
         val = self._clamp(val)
