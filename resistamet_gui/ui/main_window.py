@@ -2103,7 +2103,12 @@ class ResistanceMeterApp(QMainWindow):
         if dont_show.isChecked():
             m['safety_voltage_warn_silenced'] = True
             try:
-                self.config_manager.set_user_settings(self.current_user, self.user_settings)
+                # Measurement section only. res_cable_null is a per-session
+                # bench reference (set live at _do_cable_null), not a profile
+                # setting, so it must not ride along into config.json.
+                m_save = dict(m)
+                m_save.pop('res_cable_null', None)
+                self.config_manager.update_user_settings(self.current_user, {'measurement': m_save})
             except Exception:
                 # Persistence is best-effort; in-memory flag is already set
                 # so the rest of this session is silenced.
