@@ -67,6 +67,85 @@ class SweepState:
     up_down: bool
 
 
+# --- run output files -------------------------------------------------------
+
+MODE_FILE_TAGS = {
+    'resistance': 'R',
+    'source_v': 'VSRC',
+    'source_i': 'ISRC',
+    'four_point': '4PP',
+    'vdp': 'vdP',
+}
+
+
+def sanitize_path_component(name: str) -> str:
+    """Sanitize a string for safe use in file paths.
+
+    Removes path traversal characters and special characters that could
+    cause security issues or file system problems.
+    """
+    # Remove path traversal sequences
+    sanitized = re.sub(r'\.\.+', '', name)
+    sanitized = re.sub(r'[/\\]', '', sanitized)
+    # Replace non-alphanumeric characters with underscores
+    sanitized = ''.join(c if c.isalnum() or c in '-_' else '_' for c in sanitized)
+    # Remove leading/trailing underscores and collapse multiple underscores
+    sanitized = re.sub(r'_+', '_', sanitized).strip('_')
+    return sanitized or 'unnamed'
+
+
+def create_base_path(data_directory, username, sample_name, mode, source_value_str,
+                      timestamp=None) -> Path:
+    """Base path for one run's data files, without an extension.
+
+    Username and sample name are sanitized against path traversal and
+    cross-platform filename rules; the exporter adds the extension(s).
+    """
+    base_dir = Path(data_directory)
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    user_dir = base_dir / sanitize_path_component(username)
+    user_dir.mkdir(exist_ok=True)
+
+    stamp = int(time.time()) if timestamp is None else int(timestamp)
+    mode_tag = MODE_FILE_TAGS.get(mode, 'DATA')
+    base_name = f"{stamp}_{sanitize_path_component(sample_name)}_{mode_tag}_{source_value_str}"
+    return user_dir / base_name
+
+
+def open_exporter(base_path, mode, settings, measurement_settings, username, sample_name,
+                   instrument_idn, start_time, aux_columns, aux_units,
+                   on_compress=None, on_large_file=None):
+    """Build the run's exporter. Returns (exporter, primary filename)."""
+    columns, units = get_column_config(
+        mode, measurement_settings,
+        aux_columns=aux_columns or None,
+        aux_units=aux_units or None,
+    )
+    export_metadata = build_metadata(
+        user=username,
+        sample_name=sample_name,
+        mode=mode,
+        settings=settings,
+        instrument_idn=instrument_idn,
+        start_time=datetime.fromtimestamp(start_time),
+        aux_columns=aux_columns or None,
+    )
+
+    exporter = make_exporter(
+        base_path=base_path,
+        metadata=export_metadata,
+        columns=columns,
+        units=units,
+        output_settings=settings.get('output'),
+        on_compress=on_compress,
+        on_large_file=on_large_file,
+    )
+    primary_paths = exporter.output_paths
+    filename = str(primary_paths[0]) if primary_paths else str(base_path)
+    return exporter, filename
+
+
 # --- per-mode instrument configuration -------------------------------------
 # Called by MeasurementWorker.run() before the acquisition loop starts. They
 # take the instrument and an outputs facade explicitly, so nothing here needs a
@@ -488,36 +567,25 @@ class MeasurementWorker(QThread):
         # File setup via the configured exporter (csv / hdf5 / csv+legacy_json).
         self.start_time = time.time()
         try:
-            base_path = self._create_base_path(source_value_str)
-
-            columns, units = get_column_config(
-                self.mode, measurement_settings,
-                aux_columns=self._aux_columns or None,
-                aux_units=self._aux_units or None,
+            base_path = create_base_path(
+                self.settings['file']['data_directory'], self.username,
+                self.sample_name, self.mode, source_value_str,
             )
-            export_metadata = build_metadata(
-                user=self.username,
-                sample_name=self.sample_name,
+            self.exporter, self.filename = open_exporter(
+                base_path=base_path,
                 mode=self.mode,
                 settings=self.settings,
+                measurement_settings=measurement_settings,
+                username=self.username,
+                sample_name=self.sample_name,
                 instrument_idn=self._instrument_idn,
-                start_time=datetime.fromtimestamp(self.start_time),
-                aux_columns=self._aux_columns or None,
-            )
-
-            self.exporter = make_exporter(
-                base_path=base_path,
-                metadata=export_metadata,
-                columns=columns,
-                units=units,
-                output_settings=self.settings.get('output'),
+                start_time=self.start_time,
+                aux_columns=self._aux_columns,
+                aux_units=self._aux_units,
                 on_compress=self._emit_compress_status,
                 on_large_file=self._emit_large_file_status,
             )
-            # Primary filename for downstream UI/log references.
-            primary_paths = self.exporter.output_paths
-            self.filename = str(primary_paths[0]) if primary_paths else str(base_path)
-            names = ", ".join(p.name for p in primary_paths)
+            names = ", ".join(p.name for p in self.exporter.output_paths)
             self._out.status_update(f"Data file: {names}")
         except Exception as e:
             self._out.error_occurred(f"Error creating output files: {str(e)}")
@@ -1260,22 +1328,6 @@ class MeasurementWorker(QThread):
             self._cleanup()
             self.running = False
 
-    def _sanitize_path_component(self, name: str) -> str:
-        """Sanitize a string for safe use in file paths.
-
-        Removes path traversal characters and special characters that could
-        cause security issues or file system problems.
-        """
-        # Remove path traversal sequences
-        sanitized = re.sub(r'\.\.+', '', name)
-        sanitized = re.sub(r'[/\\]', '', sanitized)
-        # Replace non-alphanumeric characters with underscores
-        sanitized = ''.join(c if c.isalnum() or c in '-_' else '_' for c in sanitized)
-        # Remove leading/trailing underscores and collapse multiple underscores
-        sanitized = re.sub(r'_+', '_', sanitized).strip('_')
-        # Ensure non-empty result
-        return sanitized if sanitized else 'unnamed'
-
     def _emit_compress_status(self, orig_path: Path, gz_path: Path,
                               orig_mb: float, gz_mb: float) -> None:
         """Status callback fired by CsvExporter after gzip finalize."""
@@ -1290,34 +1342,6 @@ class MeasurementWorker(QThread):
             f"Run wrote {size_mb:.1f} MB to {path.name}. "
             f"Compression is off — enable in Settings -> Output to gzip future runs."
         )
-
-    def _create_base_path(self, source_value_str: str) -> Path:
-        """Create a safe base path for measurement data (without extension).
-
-        Sanitizes username and sample name to prevent path traversal attacks
-        and ensure cross-platform compatibility. The exporter chosen via the
-        ``output.format`` setting adds the final extension(s).
-        """
-        base_dir = Path(self.settings['file']['data_directory'])
-        base_dir.mkdir(parents=True, exist_ok=True)
-
-        # Sanitize username to prevent path traversal (e.g., "../" attacks)
-        sanitized_username = self._sanitize_path_component(self.username)
-        user_dir = base_dir / sanitized_username
-        user_dir.mkdir(exist_ok=True)
-
-        timestamp = int(time.time())
-        sanitized_name = self._sanitize_path_component(self.sample_name)
-
-        mode_tags = {
-            'resistance': 'R',
-            'source_v': 'VSRC',
-            'source_i': 'ISRC',
-            'four_point': '4PP'
-        }
-        mode_tag = mode_tags.get(self.mode, 'DATA')
-        base_name = f"{timestamp}_{sanitized_name}_{mode_tag}_{source_value_str}"
-        return user_dir / base_name
 
     def mark_event(self, name: str = "MARK") -> None:
         self._control.mark_event(name)
@@ -1458,15 +1482,6 @@ class MeasurementWorker(QThread):
 
 class _VdpAborted(Exception):
     """Internal: worker was stopped via stop_measurement()."""
-
-
-def _sanitize_for_path(name: str) -> str:
-    """Path-safe name; mirrors MeasurementWorker._sanitize_path_component."""
-    sanitized = re.sub(r'\.\.+', '', name)
-    sanitized = re.sub(r'[/\\]', '', sanitized)
-    sanitized = ''.join(c if c.isalnum() or c in '-_' else '_' for c in sanitized)
-    sanitized = re.sub(r'_+', '_', sanitized).strip('_')
-    return sanitized if sanitized else 'unnamed'
 
 
 class VdpMeasurementWorker(QThread):
@@ -1635,14 +1650,10 @@ class VdpMeasurementWorker(QThread):
         self._i_mag = i_mag
 
         # Output data file via the configured exporter.
-        base_dir = Path(self.settings['file']['data_directory'])
-        base_dir.mkdir(parents=True, exist_ok=True)
-        user_dir = base_dir / _sanitize_for_path(self.username)
-        user_dir.mkdir(exist_ok=True)
-        timestamp = int(time.time())
-        sample = _sanitize_for_path(self.sample_name)
-        base_name = f"{timestamp}_{sample}_vdP_{i_mag*1000:.2f}mA"
-        base_path = user_dir / base_name
+        base_path = create_base_path(
+            self.settings['file']['data_directory'], self.username,
+            self.sample_name, self.MODE, f"{i_mag*1000:.2f}mA",
+        )
 
         columns, units = get_column_config(self.MODE, measurement)
         export_metadata = build_metadata(
