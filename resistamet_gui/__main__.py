@@ -72,13 +72,34 @@ def _parse_args(argv):
              "meaningful with --simulate.",
     )
     parser.add_argument(
+        "--self-test", action="store_true",
+        help="Import the settings schema and the main window, then exit 0. "
+             "Frozen-build check: --version never imports either, so a "
+             "PyInstaller build can ship missing a dependency and still pass "
+             "a --version smoke test.",
+    )
+    parser.add_argument(
         "--version", action="version", version=f"ResistaMet GUI {__version__}",
     )
     return parser.parse_args(argv)
 
 
+def _self_test():
+    """Import what the GUI actually needs, report, and exit."""
+    import importlib
+
+    for module in ("resistamet_gui.schema", "resistamet_gui.ui.main_window"):
+        importlib.import_module(module)
+        print(f"ok: {module}")
+    print(f"ResistaMet GUI {__version__} self-test passed")
+
+
 def main():
     args = _parse_args(sys.argv[1:])
+
+    if args.self_test:
+        _self_test()
+        return
 
     if args.simulate:
         from resistamet_gui.simulator import enable_simulation

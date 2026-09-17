@@ -24,6 +24,11 @@ pyqtgraph>=0.13.0
 # no pip-install escape hatch.
 h5py>=3.0.0
 
+# Typed settings / event contract (resistamet_gui/schema). Required by the
+# frozen build too: --self-test imports the schema, and the headless session
+# and API layer are built on these models.
+pydantic>=2.0
+
 # Testing (development)
 pytest>=7.0.0
 pytest-cov>=4.0.0
