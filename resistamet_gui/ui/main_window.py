@@ -1940,7 +1940,8 @@ class ResistanceMeterApp(QMainWindow):
         effective_settings = {
             'measurement': dict(self.user_settings['measurement']),
             'display': dict(self.user_settings['display']),
-            'file': dict(self.user_settings['file'])
+            'file': dict(self.user_settings['file']),
+            'output': dict(self.user_settings.get('output', {})),
         }
         m_cfg = effective_settings['measurement']
         widget = self.get_widget_for_mode(mode)
