@@ -3,6 +3,7 @@ import os
 import re
 import time
 import threading
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
@@ -35,6 +36,35 @@ from .instrument import Keithley2400, humanize_connection_error
 from .session.control import RunControl
 from .sensors import aux_column_names, make_sensor, reading_to_columns
 from .system_utils import SleepInhibitor
+
+
+@dataclass(frozen=True)
+class ResistanceState:
+    """What the resistance configure step decided, read back by the loop."""
+
+    cable_null: float = 0.0
+
+
+@dataclass(frozen=True)
+class FourPointState:
+    """What the 4PP configure step decided: delta mode and the power envelope."""
+
+    source_current: float
+    delta_mode: bool
+    delta_settling: float
+    power_warn_w: float
+    power_stop_w: float
+    stop_on_overpower: bool
+
+
+@dataclass(frozen=True)
+class SweepState:
+    """What the sweep configure step handed to the instrument's sweep engine."""
+
+    points: int
+    source: str
+    direction: str
+    up_down: bool
 
 
 class _QtOutputs:
@@ -107,6 +137,8 @@ class MeasurementWorker(QThread):
         self.username = username
         self.settings = settings
         self._out = _QtOutputs(self)
+        # Set by the configure step: the frozen per-mode state the loop reads.
+        self._mode_state = None
 
         # Start/stop/pause state and the marker queue, shared with whoever is
         # driving the run.
@@ -162,7 +194,7 @@ class MeasurementWorker(QThread):
     def _configure_resistance(self, measurement_settings, nplc):
         """Source I, measure R. 2-wire or 4-wire, optional offset compensation.
 
-        Returns (metadata, csv_headers, source_value_str).
+        Returns (state, metadata, csv_headers, source_value_str).
         """
         test_current = measurement_settings['res_test_current']
         voltage_compliance = measurement_settings['res_voltage_compliance']
@@ -189,7 +221,8 @@ class MeasurementWorker(QThread):
         if measurement_settings.get('res_offset_comp', False):
             self.keithley.write(":SENS:RES:OCOM ON")
         # Cable null: software subtraction (2400 series lacks :SENS:RES:REL)
-        self._cable_null = float(measurement_settings.get('res_cable_null', 0.0))
+        state = ResistanceState(
+            cable_null=float(measurement_settings.get('res_cable_null', 0.0)))
         # Pull raw V and I alongside R so accuracy.py can propagate
         # the per-range V and I uncertainties into σ_R. The 2400's
         # ohms function senses V and I internally regardless of
@@ -208,13 +241,15 @@ class MeasurementWorker(QThread):
         csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Voltage (V)', 'Current (A)', 'Resistance (Ohms)', 'Compliance Status', 'Event']
         source_value_str = f"{test_current*1000:.2f}mA"
 
-        return metadata, csv_headers, source_value_str
+        return state, metadata, csv_headers, source_value_str
 
     def _configure_source_v(self, measurement_settings, nplc):
         """Source V, measure I.
 
-        Returns (metadata, csv_headers, source_value_str).
+        Returns (state, metadata, csv_headers, source_value_str); this mode
+        keeps no per-run state beyond the settings dict.
         """
+        state = None
         source_voltage = measurement_settings['vsource_voltage']
         current_compliance = measurement_settings['vsource_current_compliance']
         auto_range_curr = measurement_settings['vsource_current_range_auto']
@@ -243,13 +278,15 @@ class MeasurementWorker(QThread):
         csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Voltage (V)', 'Current (A)', 'Resistance (Ohms)', 'Compliance Status', 'Event']
         source_value_str = f"{source_voltage:.3f}V"
 
-        return metadata, csv_headers, source_value_str
+        return state, metadata, csv_headers, source_value_str
 
     def _configure_source_i(self, measurement_settings, nplc):
         """Source I, measure V.
 
-        Returns (metadata, csv_headers, source_value_str).
+        Returns (state, metadata, csv_headers, source_value_str); this mode
+        keeps no per-run state beyond the settings dict.
         """
+        state = None
         source_current = measurement_settings['isource_current']
         voltage_compliance = measurement_settings['isource_voltage_compliance']
         auto_range_volt = measurement_settings['isource_voltage_range_auto']
@@ -275,12 +312,12 @@ class MeasurementWorker(QThread):
         csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Voltage (V)', 'Current (A)', 'Resistance (Ohms)', 'Compliance Status', 'Event']
         source_value_str = f"{source_current*1000:.2f}mA"
 
-        return metadata, csv_headers, source_value_str
+        return state, metadata, csv_headers, source_value_str
 
     def _configure_four_point(self, measurement_settings, nplc):
         """Four-point probe. Returns None when the pre-flight refuses the power envelope.
 
-        Returns (metadata, csv_headers, source_value_str).
+        Returns (state, metadata, csv_headers, source_value_str).
         """
         # Use I-source and measure V (like source_i), but compute derived quantities for 4-pt probe
         source_current = measurement_settings.get('fpp_current')
@@ -305,22 +342,16 @@ class MeasurementWorker(QThread):
         self.keithley.write(f":SENS:VOLT:NPLC {nplc}")
         self.keithley.write(":FORM:ELEM VOLT,CURR,STAT")
 
-        # Delta mode settings
-        self._fpp_delta_mode = bool(measurement_settings.get('fpp_delta_mode', False))
-        self._fpp_delta_settling = float(measurement_settings.get('fpp_delta_settling', 0.1))
-        self._fpp_source_current = source_current
-
-        # Probe-safety thresholds (4PP only). The pre-flight check
-        # below uses the configured worst-case I*V_compliance; the
-        # runtime monitor uses measured V*I per sample.
-        self._fpp_power_warn_w = float(
-            measurement_settings.get('fpp_power_warn_w', 1.0e-2)
-        )
-        self._fpp_power_stop_w = float(
-            measurement_settings.get('fpp_power_stop_w', 1.0e-1)
-        )
-        self._fpp_stop_on_overpower = bool(
-            measurement_settings.get('fpp_stop_on_overpower', True)
+        # Delta mode and the probe-safety thresholds. The pre-flight check
+        # below uses the configured worst-case I*V_compliance; the runtime
+        # monitor uses measured V*I per sample.
+        state = FourPointState(
+            source_current=source_current,
+            delta_mode=bool(measurement_settings.get('fpp_delta_mode', False)),
+            delta_settling=float(measurement_settings.get('fpp_delta_settling', 0.1)),
+            power_warn_w=float(measurement_settings.get('fpp_power_warn_w', 1.0e-2)),
+            power_stop_w=float(measurement_settings.get('fpp_power_stop_w', 1.0e-1)),
+            stop_on_overpower=bool(measurement_settings.get('fpp_stop_on_overpower', True)),
         )
         self._fpp_overpower_emitted = False  # debounce: emit once
 
@@ -328,21 +359,21 @@ class MeasurementWorker(QThread):
         # asking for the full source current at the full compliance
         # voltage, i.e. probe sees I_source * V_compliance.
         worst_case_power = abs(source_current) * abs(voltage_compliance)
-        if worst_case_power > self._fpp_power_stop_w:
+        if worst_case_power > state.power_stop_w:
             self._out.error_occurred(
                 f"Configured 4PP power ({worst_case_power*1e3:.1f} mW = "
                 f"{abs(source_current)*1e3:.3g} mA × {abs(voltage_compliance):.3g} V) "
                 f"exceeds the probe-safety hard stop "
-                f"({self._fpp_power_stop_w*1e3:.0f} mW). Lower the source "
+                f"({state.power_stop_w*1e3:.0f} mW). Lower the source "
                 f"current or the voltage compliance, or raise fpp_power_stop_w "
                 f"in settings if you've reviewed the probe spec."
             )
             return
-        if worst_case_power > self._fpp_power_warn_w:
+        if worst_case_power > state.power_warn_w:
             self._out.status_update(
                 f"⚠️ 4PP power envelope: up to {worst_case_power*1e3:.1f} mW "
                 f"(I × V_comp). Above warning threshold "
-                f"{self._fpp_power_warn_w*1e3:.0f} mW — proceed with care."
+                f"{state.power_warn_w*1e3:.0f} mW — proceed with care."
             )
 
         metadata = {
@@ -354,19 +385,19 @@ class MeasurementWorker(QThread):
             'Alpha': measurement_settings.get('fpp_alpha'),
             'K Factor': measurement_settings.get('fpp_k_factor'),
             'Model': measurement_settings.get('fpp_model'),
-            'Delta Mode': self._fpp_delta_mode,
+            'Delta Mode': state.delta_mode,
         }
         csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Voltage (V)', 'Current (A)', 'V/I (Ohms)', 'Sheet Rs (Ohms/sq)', 'Resistivity (Ohm*cm)', 'Conductivity (S/cm)', 'Compliance Status', 'Event']
         source_value_str = f"{source_current*1000:.2f}mA"
-        if self._fpp_delta_mode:
+        if state.delta_mode:
             source_value_str += "_delta"
 
-        return metadata, csv_headers, source_value_str
+        return state, metadata, csv_headers, source_value_str
 
     def _configure_sweep(self, measurement_settings, nplc):
         """Bulk linear sweep, set up on the instrument's own sweep engine.
 
-        Returns (metadata, csv_headers, source_value_str).
+        Returns (state, metadata, csv_headers, source_value_str).
         """
         sweep_source = measurement_settings.get('sweep_source', 'voltage')
         sweep_start = float(measurement_settings.get('sweep_start', 0.0))
@@ -381,19 +412,19 @@ class MeasurementWorker(QThread):
         if sweep_direction == 'down':
             sweep_start, sweep_stop = sweep_stop, sweep_start
 
-        self._sweep_points = self.keithley.setup_sweep(
+        points = self.keithley.setup_sweep(
             src_func, sweep_start, sweep_stop, sweep_step,
             sweep_compliance, nplc, sweep_delay
         )
-        self._sweep_source = src_func
-        self._sweep_direction = sweep_direction
         # For up_down: double the points (forward + reverse)
         if sweep_direction == 'up_down':
             self.keithley.write(":SOUR:SWE:DIR UP")
             # We'll do two separate sweeps
-            self._sweep_up_down = True
+            up_down = True
         else:
-            self._sweep_up_down = False
+            up_down = False
+        state = SweepState(points=points, source=src_func,
+                            direction=sweep_direction, up_down=up_down)
 
         metadata = {
             'Mode': 'I-V Sweep',
@@ -404,12 +435,12 @@ class MeasurementWorker(QThread):
             'Compliance': sweep_compliance,
             'Delay (s)': sweep_delay,
             'Direction': sweep_direction,
-            'Points': self._sweep_points,
+            'Points': state.points,
         }
         csv_headers = ['Point', 'Voltage (V)', 'Current (A)', 'Compliance Status']
         source_value_str = f"sweep_{sweep_start}to{sweep_stop}"
 
-        return metadata, csv_headers, source_value_str
+        return state, metadata, csv_headers, source_value_str
 
     def run(self):
         self.running = True
@@ -500,7 +531,7 @@ class MeasurementWorker(QThread):
                 else:
                     configured = None
                 if configured is not None:
-                    metadata, csv_headers, source_value_str = configured
+                    self._mode_state, metadata, csv_headers, source_value_str = configured
 
                 # Hardware averaging filter (2400 series uses :SENS:AVER, not per-function paths)
                 if measurement_settings.get('filter_enabled', False):
@@ -593,12 +624,12 @@ class MeasurementWorker(QThread):
 
             # Sweep mode: single atomic operation, then done
             if self.mode == 'sweep':
-                self._out.status_update(f"Running I-V sweep ({self._sweep_points} points)...")
+                self._out.status_update(f"Running I-V sweep ({self._mode_state.points} points)...")
                 try:
                     self.keithley.write(":OUTP ON")
                     # Increase timeout for long sweeps
                     if self.keithley.dev:
-                        self.keithley.dev.timeout = max(10000, self._sweep_points * 1000)
+                        self.keithley.dev.timeout = max(10000, self._mode_state.points * 1000)
                     response = self.keithley.query(":READ?").strip()
                     self.keithley.write(":OUTP OFF")
 
@@ -625,10 +656,10 @@ class MeasurementWorker(QThread):
                             pass
 
                     # For up_down: run reverse sweep
-                    if getattr(self, '_sweep_up_down', False):
+                    if self._mode_state.up_down:
                         self._out.status_update("Running reverse sweep...")
                         # Swap start/stop for reverse
-                        if self._sweep_source == 'VOLT':
+                        if self._mode_state.source == 'VOLT':
                             start_q = self.keithley.query(":SOUR:VOLT:START?").strip()
                             stop_q = self.keithley.query(":SOUR:VOLT:STOP?").strip()
                             self.keithley.write(f":SOUR:VOLT:START {stop_q}")
@@ -720,7 +751,7 @@ class MeasurementWorker(QThread):
 
                     # Delta mode: alternating +I/-I for 4PP thermoelectric cancellation
                     use_delta = (self.mode == 'four_point' and
-                                 getattr(self, '_fpp_delta_mode', False) and
+                                 self._mode_state.delta_mode and
                                  self.keithley is not None)
 
                     if use_delta:
@@ -818,7 +849,7 @@ class MeasurementWorker(QThread):
                             self._out.status_update(f"Invalid value detected ({reading_str})")
                         # Apply software cable null if set (R only — V and I
                         # are reported as-measured by the instrument).
-                        cable_null = getattr(self, '_cable_null', 0.0)
+                        cable_null = self._mode_state.cable_null
                         if cable_null != 0.0 and np.isfinite(value):
                             value -= cable_null
                         sigma_r = resistance_uncertainty(
@@ -943,10 +974,10 @@ class MeasurementWorker(QThread):
                         i_meas = data_dict.get('current', float('nan'))
                         if np.isfinite(v_meas) and np.isfinite(i_meas):
                             measured_power = abs(v_meas * i_meas)
-                            stop_w = getattr(self, '_fpp_power_stop_w', 1.0e-1)
-                            warn_w = getattr(self, '_fpp_power_warn_w', 1.0e-2)
+                            stop_w = self._mode_state.power_stop_w
+                            warn_w = self._mode_state.power_warn_w
                             if (measured_power > stop_w
-                                    and getattr(self, '_fpp_stop_on_overpower', True)):
+                                    and self._mode_state.stop_on_overpower):
                                 if not self._fpp_overpower_emitted:
                                     self._fpp_overpower_emitted = True
                                     try:
@@ -1356,8 +1387,8 @@ class MeasurementWorker(QThread):
         self._last_delta so the main loop can log per-polarity values per
         F84 §13.1 (forward/reverse resistances kept separate).
         """
-        i_mag = abs(self._fpp_source_current)
-        settling = self._fpp_delta_settling
+        i_mag = abs(self._mode_state.source_current)
+        settling = self._mode_state.delta_settling
 
         # +I reading
         self.keithley.write(f":SOUR:CURR {i_mag}")
