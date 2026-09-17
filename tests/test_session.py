@@ -277,3 +277,28 @@ class TestStopLatency:
         fake = fake_rm.opened[-1]
         assert any(cmd.upper().startswith(':OUTP OFF')
                     for op, cmd in fake.command_log if op == 'write')
+
+
+class TestAbort:
+    def test_abort_ends_a_running_measurement(self, session, sink, fake_rm, profile):
+        session.start(_four_point(profile, samples=0), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: sink.of_type('sample'))
+        session.abort()
+        assert _wait_for(lambda: session.state == 'idle')
+        assert [e.payload['reason'] for e in sink.of_type('run_ended')] == ['aborted']
+
+    def test_abort_releases_a_pending_prompt(self, session, sink, fake_rm, profile):
+        profile['measurement'].update({
+            'safety_voltage_warn_v': 30.0, 'safety_voltage_warn_silenced': False,
+            'vsource_voltage': 60.0, 'vsource_duration_hours': 0.0,
+        })
+        session.start(profile, 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.status()['pending_prompt'] is not None)
+
+        session.abort()
+        assert _wait_for(lambda: session.state == 'idle')
+        assert sink.of_type('instrument_connected') == []
+
+    def test_abort_without_a_run_is_harmless(self, session):
+        session.abort()
+        assert session.state == 'idle'

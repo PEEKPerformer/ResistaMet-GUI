@@ -137,6 +137,22 @@ class MeasurementSession:
                 self._state = 'stopping'
         self._run.stop_measurement()
 
+    def abort(self) -> None:
+        """Stop now, including out of a prompt the run is parked on.
+
+        stop() asks the loop to wind down; abort() also releases a run waiting
+        on an operator decision, which stop already does by design — the
+        difference is the reason reported, so an operator-driven stop and a
+        client giving up are distinguishable afterwards.
+        """
+        control = self._control
+        if control is None:
+            return
+        with self._lock:
+            if self._state == 'running':
+                self._state = 'stopping'
+        control.finish('aborted')
+
     def pause(self) -> None:
         run = self._require_run()
         if hasattr(run, 'pause_measurement'):
