@@ -18,7 +18,7 @@ Non-finite floats (NaN sigma, an unmeasured temperature) serialize as ``null``;
 in-process sinks receive the real float. JSON has no NaN, and a client that
 must special-case a non-standard token is a client that will get it wrong.
 """
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -58,6 +58,68 @@ class ErrorPayload(EventModel):
     fatal: bool = True
 
 
+class InstrumentConnectedPayload(EventModel):
+    """The SMU answered *IDN? and its limits are known."""
+
+    address: str
+    idn: str
+    model: str
+    max_source_v: Optional[float] = None
+    max_source_i: Optional[float] = None
+    max_power_w: Optional[float] = None
+
+
+class LineFrequencyPayload(EventModel):
+    """Mains frequency, queried or assumed. Continuous modes only."""
+
+    hz: float
+    assumed: bool = False
+
+
+class SamplePayload(EventModel):
+    """One acquired point.
+
+    ``values`` is the mode's data dict exactly as the parse produced it, with
+    no coercion — the aux-fault column is a string, and a client that wants
+    numbers must say which key it means.
+    """
+
+    t_unix: float
+    elapsed_s: float
+    compliance: Literal['OK', 'V_COMP', 'I_COMP'] = 'OK'
+    event_marker: str = ''
+    values: Dict[str, Any] = Field(default_factory=dict)
+
+
+class CompliancePayload(EventModel):
+    """The source is in compliance on this sample."""
+
+    kind: Literal['Voltage', 'Current']
+    stop_on_compliance: bool = False
+
+
+class OverpowerPayload(EventModel):
+    """Measured V*I crossed the 4PP probe-safety hard stop."""
+
+    measured_w: float
+    stop_w: float
+
+
+class SweepSegmentPayload(EventModel):
+    """One completed sweep direction, returned by the instrument in bulk."""
+
+    direction: Literal['forward', 'reverse'] = 'forward'
+    voltages: List[float] = Field(default_factory=list)
+    currents: List[float] = Field(default_factory=list)
+    compliance: List[str] = Field(default_factory=list)
+
+
+class AcquisitionFinishedPayload(EventModel):
+    """The acquisition loop ended; cleanup and finalize still follow."""
+
+    mode: str
+
+
 class Event(EventModel):
     """One thing that happened during a run."""
 
@@ -73,4 +135,11 @@ class Event(EventModel):
 PAYLOAD_MODELS = {
     'log': LogPayload,
     'error': ErrorPayload,
+    'instrument_connected': InstrumentConnectedPayload,
+    'line_frequency': LineFrequencyPayload,
+    'sample': SamplePayload,
+    'compliance': CompliancePayload,
+    'overpower_trip': OverpowerPayload,
+    'sweep_segment': SweepSegmentPayload,
+    'acquisition_finished': AcquisitionFinishedPayload,
 }

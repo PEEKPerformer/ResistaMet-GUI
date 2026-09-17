@@ -4,6 +4,7 @@ from PySide6.QtCore import QThread, Signal
 
 from .session.continuous_run import ContinuousRun
 from .session.control import RunControl
+from .session.emitter import EventEmitter
 from .session.vdp_run import VdpRun
 
 logger = logging.getLogger(__name__)
@@ -13,42 +14,55 @@ logger = logging.getLogger(__name__)
 _STAT_BIT_COMPLIANCE = 1 << 3
 
 
-class _QtOutputs:
-    """Call-shaped facade over a worker's Qt Signals.
+class _QtSink:
+    """Event -> Qt Signal. The transition's whole Qt surface for run events.
 
-    The run code reports through plain method calls, so it stops naming Qt at
-    every site. Each method maps one-to-one onto the Signal of the same name;
-    a worker only ever calls the ones it declares. When the run procedures move
-    out of this file, this class stays behind as the adapter and gains an
-    event-to-Signal table instead.
+    An explicit if/elif chain on purpose: a reviewer can see every event that
+    reaches the GUI and what it turns into. Events without a Signal — the ones
+    the API needs and the Qt UI never asked for — are dropped here.
     """
 
     def __init__(self, worker):
         self._worker = worker
 
-    def data_point(self, timestamp, data, compliance_status, event_marker):
-        self._worker.data_point.emit(timestamp, data, compliance_status, event_marker)
+    def __call__(self, event):
+        kind = event.type
+        payload = event.payload
+        if kind == 'sample':
+            self._worker.data_point.emit(
+                payload['t_unix'], payload['values'],
+                payload['compliance'], payload['event_marker'],
+            )
+        elif kind == 'compliance':
+            self._worker.compliance_hit.emit(payload['kind'])
+        elif kind == 'overpower_trip':
+            self._worker.overpower_hit.emit(payload['measured_w'], payload['stop_w'])
+        elif kind == 'sweep_segment':
+            self._worker.sweep_complete.emit(
+                payload['voltages'], payload['currents'], payload['compliance'])
+        elif kind == 'acquisition_finished':
+            self._worker.measurement_complete.emit(payload['mode'])
+        elif kind == 'instrument_connected':
+            self._worker.instrument_identified.emit(payload['model'])
+        # line_frequency has no Signal: the GUI reads it from the status log.
+
+
+class _QtOutputs:
+    """Call-shaped facade over a worker's Qt Signals.
+
+    The run code reports through plain method calls, so it stops naming Qt at
+    every site. Calls that have become events go through :class:`_QtSink`
+    instead; what is left here is the not-yet-converted remainder.
+    """
+
+    def __init__(self, worker):
+        self._worker = worker
 
     def status_update(self, message):
         self._worker.status_update.emit(message)
 
-    def measurement_complete(self, mode):
-        self._worker.measurement_complete.emit(mode)
-
     def error_occurred(self, message):
         self._worker.error_occurred.emit(message)
-
-    def compliance_hit(self, kind):
-        self._worker.compliance_hit.emit(kind)
-
-    def overpower_hit(self, measured_w, stop_w):
-        self._worker.overpower_hit.emit(measured_w, stop_w)
-
-    def sweep_complete(self, voltages, currents, compliance):
-        self._worker.sweep_complete.emit(voltages, currents, compliance)
-
-    def instrument_identified(self, model_name):
-        self._worker.instrument_identified.emit(model_name)
 
     def geometry_ready(self, index, geometry):
         self._worker.geometry_ready.emit(index, geometry)
@@ -79,7 +93,7 @@ class MeasurementWorker(QThread):
         self._out = _QtOutputs(self)
         self._control = RunControl()
         self._run = ContinuousRun(mode, sample_name, username, settings,
-                                   self._control, self._out)
+                                   self._control, self._out, EventEmitter(_QtSink(self)))
 
     # --- the run's identity and state, as the GUI has always read them
 
@@ -177,7 +191,8 @@ class VdpMeasurementWorker(QThread):
         super().__init__(parent)
         self._out = _QtOutputs(self)
         self._control = RunControl()
-        self._run = VdpRun(sample_name, username, settings, self._control, self._out)
+        self._run = VdpRun(sample_name, username, settings, self._control, self._out,
+                            EventEmitter(_QtSink(self)))
 
     # --- the run's identity and state, as the GUI has always read them
 

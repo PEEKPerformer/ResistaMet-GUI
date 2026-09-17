@@ -96,5 +96,8 @@ class TestWireForm:
         assert on_wire['payload']['r'] == 100.0
 
     def test_in_process_sinks_still_see_the_float(self, emitter, sink):
-        emitter.emit('sample', {'temperature_c': float('nan')})
-        assert math.isnan(sink.events[0].payload['temperature_c'])
+        emitter.emit('sample', {
+            't_unix': 1.0, 'elapsed_s': 1.0, 'compliance': 'OK', 'event_marker': '',
+            'values': {'aux_temperature_c': float('nan')},
+        })
+        assert math.isnan(sink.events[0].payload['values']['aux_temperature_c'])
