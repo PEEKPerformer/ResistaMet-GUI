@@ -176,6 +176,45 @@ class PromptResolvedPayload(EventModel):
     answered_by: Optional[str] = None
 
 
+class RunStartedPayload(EventModel):
+    """A run is beginning; the settings are exactly what it will use."""
+
+    mode: str
+    sample_name: str
+    username: str
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    started_at: float
+
+
+class AuxConnectedPayload(EventModel):
+    """The auxiliary sensor is open and has declared its channels."""
+
+    driver: str
+    address: str
+    channels: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class FileOpenedPayload(EventModel):
+    """The run's output file exists and its column schema is fixed."""
+
+    path: str
+    columns: List[str] = Field(default_factory=list)
+    units: List[str] = Field(default_factory=list)
+
+
+class FileFinalizedPayload(EventModel):
+    """The run's file is closed, with its end metadata written."""
+
+    path: str
+    end_metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RunStatePayload(EventModel):
+    """Paused, resumed or stopping, as observed by the acquisition thread."""
+
+    reason: Optional[str] = None
+
+
 class Event(EventModel):
     """One thing that happened during a run."""
 
@@ -202,4 +241,11 @@ PAYLOAD_MODELS = {
     'vdp_result': VdpResultPayload,
     'prompt': PromptPayload,
     'prompt_resolved': PromptResolvedPayload,
+    'run_started': RunStartedPayload,
+    'aux_connected': AuxConnectedPayload,
+    'file_opened': FileOpenedPayload,
+    'file_finalized': FileFinalizedPayload,
+    'paused': RunStatePayload,
+    'resumed': RunStatePayload,
+    'stopping': RunStatePayload,
 }

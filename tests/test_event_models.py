@@ -101,3 +101,34 @@ class TestWireForm:
             'values': {'aux_temperature_c': float('nan')},
         })
         assert math.isnan(sink.events[0].payload['values']['aux_temperature_c'])
+
+
+class TestLifecycleEvents:
+    """Events with no Qt Signal still have to be well-formed."""
+
+    def test_run_started_carries_the_resolved_settings(self, emitter, sink):
+        emitter.emit('run_started', {
+            'mode': 'resistance', 'sample_name': 'wafer1', 'username': 'alice',
+            'settings': {'measurement': {'nplc': 1.0}}, 'started_at': 1000.0,
+        })
+        payload = sink.events[0].payload
+        assert payload['settings']['measurement']['nplc'] == 1.0
+
+    def test_aux_connected_lists_channels(self, emitter, sink):
+        emitter.emit('aux_connected', {
+            'driver': 'arduino_thermocouple', 'address': 'ASRL6::INSTR',
+            'channels': [{'key': 'temperature_c', 'label': 'Temperature', 'unit': 'C'}],
+        })
+        assert sink.events[0].payload['channels'][0]['unit'] == 'C'
+
+    def test_file_events_carry_the_path(self, emitter, sink):
+        emitter.emit('file_opened', {'path': '/tmp/run.csv', 'columns': ['t'], 'units': ['s']})
+        emitter.emit('file_finalized', {'path': '/tmp/run.csv',
+                                         'end_metadata': {'total_samples': 10}})
+        assert [e.payload['path'] for e in sink.events] == ['/tmp/run.csv', '/tmp/run.csv']
+
+    def test_state_events_take_a_reason(self, emitter, sink):
+        emitter.emit('paused', {'reason': 'user'})
+        emitter.emit('resumed', {'reason': 'user'})
+        emitter.emit('stopping', {'reason': 'user_stop'})
+        assert sink.types() == ['paused', 'resumed', 'stopping']
