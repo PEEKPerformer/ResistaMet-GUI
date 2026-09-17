@@ -191,3 +191,62 @@ class TestEarlyExitReasons:
 
         assert _reasons(sink) == ['power_envelope']
         assert sink.of_type('run_ended')[0].payload['ok'] is False
+
+
+class TestDerivedValues:
+    """A sample must carry the same 4PP numbers its CSV row does."""
+
+    def _four_point(self, tmp_path, **overrides):
+        settings = dict(fpp_current=1e-4, fpp_voltage_compliance=5.0,
+                         fpp_voltage_range_auto=True, fpp_spacing_cm=0.1,
+                         fpp_thickness_um=1.0, fpp_alpha=1.0, fpp_k_factor=4.532,
+                         fpp_samples=2, fpp_model='thin_film', fpp_delta_mode=False,
+                         fpp_power_warn_w=1.0, fpp_power_stop_w=2.0,
+                         fpp_stop_on_overpower=True, fpp_diameter_cm=0.0,
+                         fpp_geometry='circle', fpp_dopant_type='none')
+        settings.update(overrides)
+        return _run(tmp_path, mode='four_point', **settings)
+
+    def _csv_rows(self, path):
+        import csv
+        with open(path) as handle:
+            rows = [r for r in csv.reader(handle) if r and not r[0].startswith('#')]
+        return rows[0], rows[1:]
+
+    def test_derived_matches_the_csv_row(self, fake_rm, tmp_path):
+        run, control, sink = self._four_point(tmp_path)
+        run.execute()
+
+        samples = sink.of_type('sample')
+        assert samples, "no samples"
+        header, rows = self._csv_rows(sink.of_type('run_ended')[0].payload['path'])
+        for sample, row in zip(samples, rows):
+            derived = sample.payload['derived']
+            assert float(row[header.index('Rs_ohm_sq')]) == pytest.approx(derived['rs'])
+            assert float(row[header.index('rho_ohm_cm')]) == pytest.approx(derived['rho'])
+            assert float(row[header.index('sigma_S_cm')]) == pytest.approx(derived['sigma'])
+
+    def test_method_names_the_correction_path(self, fake_rm, tmp_path):
+        run, control, sink = self._four_point(tmp_path)
+        run.execute()
+        assert {s.payload['derived']['method'] for s in sink.of_type('sample')} == {'legacy'}
+
+    def test_f84_path_is_labelled(self, fake_rm, tmp_path):
+        run, control, sink = self._four_point(tmp_path, fpp_diameter_cm=5.0)
+        run.execute()
+        assert {s.payload['derived']['method'] for s in sink.of_type('sample')} == {'f84'}
+
+    def test_other_modes_derive_nothing(self, fake_rm, tmp_path, monkeypatch):
+        run, control, sink = _run(tmp_path, mode='source_v', vsource_voltage=0.1,
+                                   vsource_current_compliance=0.1,
+                                   vsource_current_range_auto=True,
+                                   vsource_duration_hours=0.0)
+        import threading
+        stopper = threading.Timer(0.6, lambda: control.finish('user_stop'))
+        stopper.start()
+        run.execute()
+        stopper.cancel()
+
+        samples = sink.of_type('sample')
+        assert samples, "no samples"
+        assert all(s.payload.get('derived') is None for s in samples)

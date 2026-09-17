@@ -530,6 +530,87 @@
       "type": "object"
     },
     "sample": {
+      "$defs": {
+        "DeltaPayload": {
+          "additionalProperties": false,
+          "description": "Per-polarity values from a current-reversal (delta) reading.",
+          "properties": {
+            "r_f": {
+              "title": "R F",
+              "type": "number"
+            },
+            "r_r": {
+              "title": "R R",
+              "type": "number"
+            },
+            "v_minus": {
+              "title": "V Minus",
+              "type": "number"
+            },
+            "v_plus": {
+              "title": "V Plus",
+              "type": "number"
+            }
+          },
+          "required": [
+            "v_plus",
+            "v_minus",
+            "r_f",
+            "r_r"
+          ],
+          "title": "DeltaPayload",
+          "type": "object"
+        },
+        "DerivedPayload": {
+          "additionalProperties": false,
+          "description": "The 4PP quantities computed for this sample, as written to the row.\n\n``method`` says which correction path produced them: the ASTM F84\ndecomposition or the legacy K*alpha form.",
+          "properties": {
+            "i_unc": {
+              "title": "I Unc",
+              "type": "number"
+            },
+            "method": {
+              "enum": [
+                "f84",
+                "legacy"
+              ],
+              "title": "Method",
+              "type": "string"
+            },
+            "ratio": {
+              "title": "Ratio",
+              "type": "number"
+            },
+            "rho": {
+              "title": "Rho",
+              "type": "number"
+            },
+            "rs": {
+              "title": "Rs",
+              "type": "number"
+            },
+            "sigma": {
+              "title": "Sigma",
+              "type": "number"
+            },
+            "v_unc": {
+              "title": "V Unc",
+              "type": "number"
+            }
+          },
+          "required": [
+            "ratio",
+            "rs",
+            "rho",
+            "sigma",
+            "v_unc",
+            "i_unc",
+            "method"
+          ],
+          "title": "DerivedPayload",
+          "type": "object"
+        }
+      },
       "additionalProperties": false,
       "description": "One acquired point.\n\n``values`` is the mode's data dict exactly as the parse produced it, with\nno coercion \u2014 the aux-fault column is a string, and a client that wants\nnumbers must say which key it means.",
       "properties": {
@@ -542,6 +623,28 @@
           ],
           "title": "Compliance",
           "type": "string"
+        },
+        "delta": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DeltaPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "derived": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DerivedPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "elapsed_s": {
           "title": "Elapsed S",

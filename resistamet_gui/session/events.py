@@ -76,6 +76,31 @@ class LineFrequencyPayload(EventModel):
     assumed: bool = False
 
 
+class DerivedPayload(EventModel):
+    """The 4PP quantities computed for this sample, as written to the row.
+
+    ``method`` says which correction path produced them: the ASTM F84
+    decomposition or the legacy K*alpha form.
+    """
+
+    ratio: float
+    rs: float
+    rho: float
+    sigma: float
+    v_unc: float
+    i_unc: float
+    method: Literal['f84', 'legacy']
+
+
+class DeltaPayload(EventModel):
+    """Per-polarity values from a current-reversal (delta) reading."""
+
+    v_plus: float
+    v_minus: float
+    r_f: float
+    r_r: float
+
+
 class SamplePayload(EventModel):
     """One acquired point.
 
@@ -89,6 +114,10 @@ class SamplePayload(EventModel):
     compliance: Literal['OK', 'V_COMP', 'I_COMP'] = 'OK'
     event_marker: str = ''
     values: Dict[str, Any] = Field(default_factory=dict)
+    #: 4PP only; absent for modes that derive nothing.
+    derived: Optional[DerivedPayload] = None
+    #: 4PP delta mode only.
+    delta: Optional[DeltaPayload] = None
 
 
 class CompliancePayload(EventModel):
