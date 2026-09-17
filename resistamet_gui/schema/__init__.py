@@ -5,6 +5,13 @@ and ``docs/design/tauri_backend_split.md`` section 4 for the design. Importing
 this package must not pull in Qt, pyvisa or matplotlib — ``test_schema_no_qt``
 enforces that, because the headless session and the API depend on it.
 """
+from .settings_modes import (
+    CurrentSourceSettings,
+    ResistanceSettings,
+    SweepSettings,
+    VdpSettings,
+    VoltageSourceSettings,
+)
 from .settings_common import (
     AuxSensorSettings,
     DisplaySettings,
@@ -17,10 +24,15 @@ from .settings_common import (
 
 __all__ = [
     'AuxSensorSettings',
+    'CurrentSourceSettings',
     'DisplaySettings',
     'FileSettings',
     'InstrumentSettings',
     'OutputSettings',
+    'ResistanceSettings',
     'SafetySettings',
     'SettingsModel',
+    'SweepSettings',
+    'VdpSettings',
+    'VoltageSourceSettings',
 ]

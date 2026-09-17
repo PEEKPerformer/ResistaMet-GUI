@@ -70,6 +70,49 @@ def app():
 
 
 @pytest.fixture
+def main_window(app, tmp_path, monkeypatch):
+    """A ResistanceMeterApp on a temp config, with no instrument involved.
+
+    The widget-level counterpart to ``sim_window``: no simulator, no run, just
+    the window and its tabs. One copy lives here so the config isolation below
+    is not reimplemented per module.
+    """
+    pytest.importorskip("PySide6")
+    from resistamet_gui import constants
+    monkeypatch.setattr(constants, "CONFIG_FILE", str(tmp_path / "config.json"))
+
+    from resistamet_gui.config import ConfigManager
+    from resistamet_gui.ui import main_window as main_window_module
+    from resistamet_gui.ui.main_window import ResistanceMeterApp
+
+    # Patching constants.CONFIG_FILE is not enough: ConfigManager binds it as
+    # a default argument at import time, so whichever path was live when
+    # resistamet_gui.config was first imported wins for the whole session —
+    # the real config.json when another test module imported it first.
+    config_path = str(tmp_path / "config.json")
+    monkeypatch.setattr(
+        main_window_module, 'ConfigManager',
+        lambda *args, **kwargs: ConfigManager(config_file=config_path),
+    )
+
+    # Bypass the modal user selection dialog in __init__
+    monkeypatch.setattr(ResistanceMeterApp, 'select_user', lambda self: None)
+
+    window = ResistanceMeterApp()
+
+    # Simulate user selection manually
+    window.config_manager.add_user("test_user")
+    window.current_user = "test_user"
+    window.user_label.setText("User: test_user")
+    window.user_settings = window.config_manager.get_user_settings("test_user")
+    window.update_ui_from_settings()
+
+    yield window
+
+    window.close()
+
+
+@pytest.fixture
 def sim_window_factory(app, tmp_path, monkeypatch):
     """Factory for a ResistanceMeterApp wired to the in-package simulator.
 
