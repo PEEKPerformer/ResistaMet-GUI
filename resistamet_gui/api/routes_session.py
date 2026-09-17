@@ -40,6 +40,17 @@ def read_status(session: MeasurementSession = Depends(get_session),
     return session.status()
 
 
+@router.post("/shutdown")
+def shutdown(request: Request, session: MeasurementSession = Depends(get_session),
+              role: str = Depends(require_token)):
+    """Ask the sidecar to stop. The run gets its grace period first."""
+    session.stop()
+    server = getattr(request.app.state.api, 'server', None)
+    if server is not None:
+        server.should_exit = True
+    return {"status": "stopping"}
+
+
 @router.get("/events")
 def read_events(request: Request, since_seq: int = 0, run_id: str = "",
                  limit: int = 500, role: str = Depends(require_token)):
