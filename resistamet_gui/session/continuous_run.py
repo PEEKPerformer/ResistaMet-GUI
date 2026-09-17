@@ -134,6 +134,12 @@ class ContinuousRun:
                 self._aux_channels = self._aux_sensor.channels()
                 self._aux_columns = aux_column_names(self._aux_sensor)
                 self._aux_units = [ch.unit for ch in self._aux_channels] + ['']
+                self._events.emit('aux_connected', {
+                    'driver': driver,
+                    'address': aux_address,
+                    'channels': [{'key': ch.key, 'label': ch.label, 'unit': ch.unit}
+                                  for ch in self._aux_channels],
+                })
                 self._events.log('aux_ready', 
                     "Auxiliary sensor ready: "
                     + ", ".join(f"{ch.label} ({ch.unit})" for ch in self._aux_channels)
@@ -168,6 +174,12 @@ class ContinuousRun:
                 on_compress=self._emit_compress_status,
                 on_large_file=self._emit_large_file_status,
             )
+            # Hdf5Exporter does not expose them; the schema is still known
+            # to the caller, so an empty list means "ask get_column_config".
+            columns = getattr(self.exporter, 'columns', [])
+            units = getattr(self.exporter, 'units', [])
+            self._events.emit('file_opened', {
+                'path': self.filename, 'columns': list(columns), 'units': list(units)})
             names = ", ".join(p.name for p in self.exporter.output_paths)
             self._events.log('file_opened', f"Data file: {names}")
         except Exception as e:
@@ -268,6 +280,13 @@ class ContinuousRun:
     def execute(self):
         self.running = True
         self.paused = False
+        self._events.emit('run_started', {
+            'mode': self.mode,
+            'sample_name': self.sample_name,
+            'username': self.username,
+            'settings': self.settings,
+            'started_at': time.time(),
+        })
         instrument_ready = False
         file_ready = False
 
@@ -429,13 +448,20 @@ class ContinuousRun:
                     end_time = None
 
             # Retry configuration for transient errors (cable wiggle, etc.)
+            was_paused = False
             max_retries = 5
             consecutive_errors = 0
 
             while self.running:
                 if self.paused:
+                    if not was_paused:
+                        was_paused = True
+                        self._events.emit('paused', {'reason': 'user'})
                     time.sleep(0.1)
                     continue
+                if was_paused:
+                    was_paused = False
+                    self._events.emit('resumed', {'reason': 'user'})
                 now = time.time()
                 if now - last_measurement_time >= sample_interval:
                     reading_str = None
@@ -721,6 +747,8 @@ class ContinuousRun:
                         'duration_s': time.time() - self.start_time
                     }
                     self.exporter.finalize(end_metadata)
+                    self._events.emit('file_finalized', {
+                        'path': self.filename, 'end_metadata': end_metadata})
                 except Exception as e:
                     self._events.warn('finalize_failed', f"Warning: Error finalizing export - {str(e)}")
                 final_message = f"Measurement ({self.mode}) completed! Data saved to: {self.filename}"
@@ -762,6 +790,7 @@ class ContinuousRun:
             self._events.log('resumed', f"Measurement ({self.mode}) resumed")
 
     def stop_measurement(self) -> None:
+        self._events.emit('stopping', {'reason': 'user_stop'})
         self._events.log('stopping', f"Stopping measurement ({self.mode})...")
         self.running = False
 

@@ -63,6 +63,34 @@
       "title": "AcquisitionFinishedPayload",
       "type": "object"
     },
+    "aux_connected": {
+      "additionalProperties": false,
+      "description": "The auxiliary sensor is open and has declared its channels.",
+      "properties": {
+        "address": {
+          "title": "Address",
+          "type": "string"
+        },
+        "channels": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Channels",
+          "type": "array"
+        },
+        "driver": {
+          "title": "Driver",
+          "type": "string"
+        }
+      },
+      "required": [
+        "driver",
+        "address"
+      ],
+      "title": "AuxConnectedPayload",
+      "type": "object"
+    },
     "compliance": {
       "additionalProperties": false,
       "description": "The source is in compliance on this sample.",
@@ -121,6 +149,55 @@
         "message"
       ],
       "title": "ErrorPayload",
+      "type": "object"
+    },
+    "file_finalized": {
+      "additionalProperties": false,
+      "description": "The run's file is closed, with its end metadata written.",
+      "properties": {
+        "end_metadata": {
+          "additionalProperties": true,
+          "title": "End Metadata",
+          "type": "object"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "FileFinalizedPayload",
+      "type": "object"
+    },
+    "file_opened": {
+      "additionalProperties": false,
+      "description": "The run's output file exists and its column schema is fixed.",
+      "properties": {
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "units": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Units",
+          "type": "array"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "FileOpenedPayload",
       "type": "object"
     },
     "instrument_connected": {
@@ -254,6 +331,26 @@
       "title": "OverpowerPayload",
       "type": "object"
     },
+    "paused": {
+      "additionalProperties": false,
+      "description": "Paused, resumed or stopping, as observed by the acquisition thread.",
+      "properties": {
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "title": "RunStatePayload",
+      "type": "object"
+    },
     "prompt": {
       "additionalProperties": false,
       "description": "The run is blocked until someone answers.",
@@ -335,6 +432,61 @@
       "title": "PromptResolvedPayload",
       "type": "object"
     },
+    "resumed": {
+      "additionalProperties": false,
+      "description": "Paused, resumed or stopping, as observed by the acquisition thread.",
+      "properties": {
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "title": "RunStatePayload",
+      "type": "object"
+    },
+    "run_started": {
+      "additionalProperties": false,
+      "description": "A run is beginning; the settings are exactly what it will use.",
+      "properties": {
+        "mode": {
+          "title": "Mode",
+          "type": "string"
+        },
+        "sample_name": {
+          "title": "Sample Name",
+          "type": "string"
+        },
+        "settings": {
+          "additionalProperties": true,
+          "title": "Settings",
+          "type": "object"
+        },
+        "started_at": {
+          "title": "Started At",
+          "type": "number"
+        },
+        "username": {
+          "title": "Username",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "sample_name",
+        "username",
+        "started_at"
+      ],
+      "title": "RunStartedPayload",
+      "type": "object"
+    },
     "sample": {
       "additionalProperties": false,
       "description": "One acquired point.\n\n``values`` is the mode's data dict exactly as the parse produced it, with\nno coercion \u2014 the aux-fault column is a string, and a client that wants\nnumbers must say which key it means.",
@@ -373,6 +525,26 @@
         "elapsed_s"
       ],
       "title": "SamplePayload",
+      "type": "object"
+    },
+    "stopping": {
+      "additionalProperties": false,
+      "description": "Paused, resumed or stopping, as observed by the acquisition thread.",
+      "properties": {
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "title": "RunStatePayload",
       "type": "object"
     },
     "sweep_segment": {
