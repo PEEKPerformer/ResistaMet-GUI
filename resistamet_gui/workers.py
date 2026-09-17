@@ -36,6 +36,53 @@ from .sensors import aux_column_names, make_sensor, reading_to_columns
 from .system_utils import SleepInhibitor
 
 
+class _QtOutputs:
+    """Call-shaped facade over a worker's Qt Signals.
+
+    The run code reports through plain method calls, so it stops naming Qt at
+    every site. Each method maps one-to-one onto the Signal of the same name;
+    a worker only ever calls the ones it declares. When the run procedures move
+    out of this file, this class stays behind as the adapter and gains an
+    event-to-Signal table instead.
+    """
+
+    def __init__(self, worker):
+        self._worker = worker
+
+    def data_point(self, timestamp, data, compliance_status, event_marker):
+        self._worker.data_point.emit(timestamp, data, compliance_status, event_marker)
+
+    def status_update(self, message):
+        self._worker.status_update.emit(message)
+
+    def measurement_complete(self, mode):
+        self._worker.measurement_complete.emit(mode)
+
+    def error_occurred(self, message):
+        self._worker.error_occurred.emit(message)
+
+    def compliance_hit(self, kind):
+        self._worker.compliance_hit.emit(kind)
+
+    def overpower_hit(self, measured_w, stop_w):
+        self._worker.overpower_hit.emit(measured_w, stop_w)
+
+    def sweep_complete(self, voltages, currents, compliance):
+        self._worker.sweep_complete.emit(voltages, currents, compliance)
+
+    def instrument_identified(self, model_name):
+        self._worker.instrument_identified.emit(model_name)
+
+    def geometry_ready(self, index, geometry):
+        self._worker.geometry_ready.emit(index, geometry)
+
+    def geometry_complete(self, index, result):
+        self._worker.geometry_complete.emit(index, result)
+
+    def vdp_complete(self, result):
+        self._worker.vdp_complete.emit(result)
+
+
 class MeasurementWorker(QThread):
     """Worker thread for running measurements in different modes."""
     data_point = Signal(float, dict, str, str)  # timestamp, data dict, compliance, event
@@ -58,6 +105,7 @@ class MeasurementWorker(QThread):
         self.sample_name = sample_name
         self.username = username
         self.settings = settings
+        self._out = _QtOutputs(self)
 
         # Thread-safe state management
         self._state_lock = threading.Lock()
@@ -146,10 +194,10 @@ class MeasurementWorker(QThread):
 
             # Connect instrument
             try:
-                self.status_update.emit(f"Connecting to instrument at {gpib_address}...")
+                self._out.status_update(f"Connecting to instrument at {gpib_address}...")
                 self.keithley = Keithley2400(gpib_address).connect()
                 self._instrument_idn = self.keithley.query("*IDN?").strip()
-                self.status_update.emit(f"Connected to: {self._instrument_idn}")
+                self._out.status_update(f"Connected to: {self._instrument_idn}")
                 # Identify model and surface its limits — informational only;
                 # the instrument enforces its own ranges via SCPI errors.
                 self._model_spec = self.keithley.detect_model()
@@ -158,25 +206,25 @@ class MeasurementWorker(QThread):
                 # the most conservative baseline.
                 self._model_name = self._model_spec.model if self._model_spec else "2400"
                 try:
-                    self.instrument_identified.emit(self._model_name)
+                    self._out.instrument_identified(self._model_name)
                 except Exception:
                     pass
                 if self._model_spec is not None:
                     spec = self._model_spec
-                    self.status_update.emit(
+                    self._out.status_update(
                         f"Detected: Keithley {spec.model} — "
                         f"max {spec.max_source_v:g}V / {spec.max_source_i:g}A / "
                         f"{spec.max_power_w:g}W"
                     )
                 else:
-                    self.status_update.emit(
+                    self._out.status_update(
                         "Warning: instrument model not in known table — proceeding with defaults"
                     )
                 try:
                     line_freq = float(self.keithley.query(":SYST:LFR?"))
                 except Exception:
                     line_freq = 50.0
-                    self.status_update.emit("Warning: Could not query line frequency. Assuming 50Hz.")
+                    self._out.status_update("Warning: Could not query line frequency. Assuming 50Hz.")
                 self.keithley.write("*RST"); time.sleep(0.5)
                 self.keithley.write("*CLS")
                 # Auto zero: ON (accurate), ONCE (fast), OFF (fastest)
@@ -190,11 +238,11 @@ class MeasurementWorker(QThread):
                 self.keithley.write(":OUTP:SMOD HIMP")
                 instrument_ready = True
             except Exception as e:
-                self.error_occurred.emit(humanize_connection_error(e, gpib_address))
+                self._out.error_occurred(humanize_connection_error(e, gpib_address))
                 return
 
             # Configure instrument
-            self.status_update.emit(f"Configuring instrument for {self.mode} mode...")
+            self._out.status_update(f"Configuring instrument for {self.mode} mode...")
             metadata = {}
             csv_headers = []
             source_value_str = ""
@@ -348,7 +396,7 @@ class MeasurementWorker(QThread):
                     # voltage, i.e. probe sees I_source * V_compliance.
                     worst_case_power = abs(source_current) * abs(voltage_compliance)
                     if worst_case_power > self._fpp_power_stop_w:
-                        self.error_occurred.emit(
+                        self._out.error_occurred(
                             f"Configured 4PP power ({worst_case_power*1e3:.1f} mW = "
                             f"{abs(source_current)*1e3:.3g} mA × {abs(voltage_compliance):.3g} V) "
                             f"exceeds the probe-safety hard stop "
@@ -358,7 +406,7 @@ class MeasurementWorker(QThread):
                         )
                         return
                     if worst_case_power > self._fpp_power_warn_w:
-                        self.status_update.emit(
+                        self._out.status_update(
                             f"⚠️ 4PP power envelope: up to {worst_case_power*1e3:.1f} mW "
                             f"(I × V_comp). Above warning threshold "
                             f"{self._fpp_power_warn_w*1e3:.0f} mW — proceed with care."
@@ -429,12 +477,12 @@ class MeasurementWorker(QThread):
                     self.keithley.write(f":SENS:AVER:TCON {ftype}")
                     self.keithley.write(f":SENS:AVER:COUN {fcount}")
                     self.keithley.write(":SENS:AVER ON")
-                    self.status_update.emit(f"Hardware filter: {ftype} x{fcount}")
+                    self._out.status_update(f"Hardware filter: {ftype} x{fcount}")
 
                 self.keithley.write(":TRIG:DEL 0")
                 self.keithley.write(":SOUR:DEL:AUTO ON")
             except Exception as e:
-                self.error_occurred.emit(f"Error configuring instrument: {str(e)}")
+                self._out.error_occurred(f"Error configuring instrument: {str(e)}")
                 return
 
             # Optional auxiliary sensor (co-logging on any continuous mode,
@@ -450,7 +498,7 @@ class MeasurementWorker(QThread):
                 driver = measurement_settings.get('aux_driver', 'arduino_thermocouple')
                 aux_address = measurement_settings.get('aux_address', '')
                 try:
-                    self.status_update.emit(
+                    self._out.status_update(
                         f"Connecting to auxiliary sensor ({driver}) at {aux_address}..."
                     )
                     self._aux_sensor = make_sensor(driver, aux_address).open()
@@ -459,12 +507,12 @@ class MeasurementWorker(QThread):
                     self._aux_channels = self._aux_sensor.channels()
                     self._aux_columns = aux_column_names(self._aux_sensor)
                     self._aux_units = [ch.unit for ch in self._aux_channels] + ['']
-                    self.status_update.emit(
+                    self._out.status_update(
                         "Auxiliary sensor ready: "
                         + ", ".join(f"{ch.label} ({ch.unit})" for ch in self._aux_channels)
                     )
                 except Exception as e:
-                    self.error_occurred.emit(
+                    self._out.error_occurred(
                         "Auxiliary sensor: " + humanize_connection_error(e, aux_address)
                     )
                     return
@@ -503,9 +551,9 @@ class MeasurementWorker(QThread):
                 self.filename = str(primary_paths[0]) if primary_paths else str(base_path)
                 file_ready = True
                 names = ", ".join(p.name for p in primary_paths)
-                self.status_update.emit(f"Data file: {names}")
+                self._out.status_update(f"Data file: {names}")
             except Exception as e:
-                self.error_occurred.emit(f"Error creating output files: {str(e)}")
+                self._out.error_occurred(f"Error creating output files: {str(e)}")
                 return
 
             # Prevent system sleep during measurement
@@ -513,7 +561,7 @@ class MeasurementWorker(QThread):
 
             # Sweep mode: single atomic operation, then done
             if self.mode == 'sweep':
-                self.status_update.emit(f"Running I-V sweep ({self._sweep_points} points)...")
+                self._out.status_update(f"Running I-V sweep ({self._sweep_points} points)...")
                 try:
                     self.keithley.write(":OUTP ON")
                     # Increase timeout for long sweeps
@@ -546,7 +594,7 @@ class MeasurementWorker(QThread):
 
                     # For up_down: run reverse sweep
                     if getattr(self, '_sweep_up_down', False):
-                        self.status_update.emit("Running reverse sweep...")
+                        self._out.status_update("Running reverse sweep...")
                         # Swap start/stop for reverse
                         if self._sweep_source == 'VOLT':
                             start_q = self.keithley.query(":SOUR:VOLT:START?").strip()
@@ -581,14 +629,14 @@ class MeasurementWorker(QThread):
                             except Exception:
                                 pass
                         # Emit both sweeps
-                        self.sweep_complete.emit(voltages, currents, comp_list)
-                        self.sweep_complete.emit(rev_v, rev_i, rev_comp)
+                        self._out.sweep_complete(voltages, currents, comp_list)
+                        self._out.sweep_complete(rev_v, rev_i, rev_comp)
                     else:
-                        self.sweep_complete.emit(voltages, currents, comp_list)
+                        self._out.sweep_complete(voltages, currents, comp_list)
 
-                    self.status_update.emit(f"Sweep complete: {len(voltages)} points acquired")
+                    self._out.status_update(f"Sweep complete: {len(voltages)} points acquired")
                 except Exception as e:
-                    self.error_occurred.emit(f"Sweep error: {str(e)}")
+                    self._out.error_occurred(f"Sweep error: {str(e)}")
                 # Sweep is done — skip to finalization
                 self.running = False
                 # Fall through to cleanup below
@@ -596,13 +644,13 @@ class MeasurementWorker(QThread):
             # For sweep mode, self.running is already False — skip the polling loop
             if self.mode != 'sweep':
                 # Continuous measurement modes: turn on output and enter polling loop
-                self.status_update.emit("Starting measurement...")
+                self._out.status_update("Starting measurement...")
                 try:
                     self.keithley.write(":OUTP ON")
-                    self.status_update.emit(f"Waiting for settling time ({settling_time}s)...")
+                    self._out.status_update(f"Waiting for settling time ({settling_time}s)...")
                     time.sleep(settling_time)
                 except Exception as e:
-                    self.error_occurred.emit(f"Error turning on output: {str(e)}")
+                    self._out.error_occurred(f"Error turning on output: {str(e)}")
                     return
 
             last_save = self.start_time
@@ -650,14 +698,14 @@ class MeasurementWorker(QThread):
                                 last_measurement_time = time.time()
                                 read_success = True
                                 if retry > 0:
-                                    self.status_update.emit(f"Delta read recovered after {retry} retries")
+                                    self._out.status_update(f"Delta read recovered after {retry} retries")
                                 consecutive_errors = 0
                                 break
                             except Exception as e:
                                 consecutive_errors += 1
                                 if retry < max_retries - 1:
                                     delay = 0.1 * (2 ** retry)
-                                    self.status_update.emit(
+                                    self._out.status_update(
                                         f"Delta read error (retry {retry + 1}/{max_retries}): {str(e)[:50]}... "
                                         f"Retrying in {delay:.1f}s"
                                     )
@@ -667,7 +715,7 @@ class MeasurementWorker(QThread):
                                     except Exception:
                                         pass
                                 else:
-                                    self.error_occurred.emit(
+                                    self._out.error_occurred(
                                         f"Delta read error after {max_retries} retries: {str(e)}. Stopping."
                                     )
                     else:
@@ -677,14 +725,14 @@ class MeasurementWorker(QThread):
                                 last_measurement_time = time.time()
                                 read_success = True
                                 if retry > 0:
-                                    self.status_update.emit(f"Communication recovered after {retry} retries")
+                                    self._out.status_update(f"Communication recovered after {retry} retries")
                                 consecutive_errors = 0
                                 break
                             except pyvisa.errors.VisaIOError as e:
                                 consecutive_errors += 1
                                 if retry < max_retries - 1:
                                     delay = 0.1 * (2 ** retry)
-                                    self.status_update.emit(
+                                    self._out.status_update(
                                         f"VISA error (retry {retry + 1}/{max_retries}): {str(e)[:50]}... "
                                         f"Retrying in {delay:.1f}s"
                                     )
@@ -694,11 +742,11 @@ class MeasurementWorker(QThread):
                                     except Exception:
                                         pass
                                 else:
-                                    self.error_occurred.emit(
+                                    self._out.error_occurred(
                                         f"VISA Read Error after {max_retries} retries: {str(e)}. Stopping."
                                     )
                             except Exception as e:
-                                self.error_occurred.emit(f"Unexpected Read Error: {str(e)}. Stopping.")
+                                self._out.error_occurred(f"Unexpected Read Error: {str(e)}. Stopping.")
                                 break
 
                     if not read_success:
@@ -735,7 +783,7 @@ class MeasurementWorker(QThread):
                             compliance_status = 'V_COMP'
                         if not np.isfinite(value):
                             value = float('nan')
-                            self.status_update.emit(f"Invalid value detected ({reading_str})")
+                            self._out.status_update(f"Invalid value detected ({reading_str})")
                         # Apply software cable null if set (R only — V and I
                         # are reported as-measured by the instrument).
                         cable_null = getattr(self, '_cable_null', 0.0)
@@ -840,18 +888,18 @@ class MeasurementWorker(QThread):
                         fault = aux_cols.get('aux_fault', '0')
                         if fault != self._aux_last_fault:
                             if fault != '0':
-                                self.status_update.emit(f"⚠️ Auxiliary sensor: {fault}")
+                                self._out.status_update(f"⚠️ Auxiliary sensor: {fault}")
                             self._aux_last_fault = fault
 
                     stop_on_comp = bool(measurement_settings.get('stop_on_compliance', False))
                     if compliance_status != 'OK' and compliance_type:
                         try:
-                            self.compliance_hit.emit(compliance_type)
-                            self.status_update.emit(f"⚠️ {compliance_type} Compliance Hit!")
+                            self._out.compliance_hit(compliance_type)
+                            self._out.status_update(f"⚠️ {compliance_type} Compliance Hit!")
                         except Exception:
                             pass
                         if stop_on_comp:
-                            self.status_update.emit("Stopping due to compliance (per settings).")
+                            self._out.status_update("Stopping due to compliance (per settings).")
                             self.running = False
 
                     # 4PP probe-safety runtime check: measured V*I against the
@@ -870,10 +918,10 @@ class MeasurementWorker(QThread):
                                 if not self._fpp_overpower_emitted:
                                     self._fpp_overpower_emitted = True
                                     try:
-                                        self.overpower_hit.emit(measured_power, stop_w)
+                                        self._out.overpower_hit(measured_power, stop_w)
                                     except Exception:
                                         pass
-                                self.error_occurred.emit(
+                                self._out.error_occurred(
                                     f"4PP overpower: {measured_power*1e3:.1f} mW "
                                     f"exceeds hard stop {stop_w*1e3:.0f} mW. "
                                     f"Stopping to protect probe and sample."
@@ -884,7 +932,7 @@ class MeasurementWorker(QThread):
                                     pass
                                 self.running = False
                             elif measured_power > warn_w:
-                                self.status_update.emit(
+                                self._out.status_update(
                                     f"⚠️ 4PP power {measured_power*1e3:.1f} mW above "
                                     f"warn threshold {warn_w*1e3:.0f} mW"
                                 )
@@ -892,7 +940,7 @@ class MeasurementWorker(QThread):
                     # Atomically get and clear event marker (thread-safe)
                     event_marker = self.get_and_clear_event_marker()
                     if event_marker:
-                        self.status_update.emit(f"Event marked at {elapsed_time:.3f}s: {event_marker}")
+                        self._out.status_update(f"Event marked at {elapsed_time:.3f}s: {event_marker}")
 
                     # Build row data with raw values (exporter handles formatting)
                     if self.mode == 'resistance':
@@ -1039,24 +1087,24 @@ class MeasurementWorker(QThread):
                     except Exception as e:
                         self._csv_error_count += 1
                         error_msg = f"Error writing data ({self._csv_error_count}/{self._max_csv_errors}): {str(e)}"
-                        self.status_update.emit(f"Warning: {error_msg}")
+                        self._out.status_update(f"Warning: {error_msg}")
 
                         if self._csv_error_count >= self._max_csv_errors:
                             # Escalate: too many consecutive write failures (likely disk full)
-                            self.error_occurred.emit(
+                            self._out.error_occurred(
                                 f"CRITICAL: {self._csv_error_count} consecutive write failures. "
                                 f"Possible disk full or write permission issue. Stopping measurement to prevent data loss."
                             )
                             self.running = False
                             break
 
-                    self.data_point.emit(now, data_dict, compliance_status, event_marker)
+                    self._out.data_point(now, data_dict, compliance_status, event_marker)
 
                     # Increment sample count for 4PP and stop if target reached
                     if self.mode == 'four_point':
                         sample_count += 1
                         if target_samples > 0 and sample_count >= target_samples:
-                            self.status_update.emit(f"Reached target samples: {target_samples}. Stopping.")
+                            self._out.status_update(f"Reached target samples: {target_samples}. Stopping.")
                             self.running = False
 
                     if now - last_save >= auto_save_interval:
@@ -1065,7 +1113,7 @@ class MeasurementWorker(QThread):
                                 self.exporter.flush()
                             last_save = now
                         except Exception as e:
-                            self.status_update.emit(f"Warning: Auto-save failed - {str(e)}")
+                            self._out.status_update(f"Warning: Auto-save failed - {str(e)}")
 
                     # Periodic instrument health check
                     self._periodic_health_check(now)
@@ -1087,20 +1135,20 @@ class MeasurementWorker(QThread):
                         status_msg += (f" | I: {iv:.4e} A" if np.isfinite(iv) else " | I: Invalid")
                     if compliance_status != 'OK':
                         status_msg += f" ({compliance_status})"
-                    self.status_update.emit(status_msg)
+                    self._out.status_update(status_msg)
 
                 time.sleep(0.01 if sample_interval <= 0.001 else max(0.001, sample_interval / 10.0))
 
                 if end_time is not None and time.time() >= end_time:
-                    self.status_update.emit("Reached configured duration. Stopping.")
+                    self._out.status_update("Reached configured duration. Stopping.")
                     self.running = False
 
             if instrument_ready and self.keithley:
                 try:
                     self.keithley.write(":OUTP OFF")
-                    self.status_update.emit("Output turned OFF.")
+                    self._out.status_update("Output turned OFF.")
                 except Exception as e:
-                    self.status_update.emit(f"Warning: Could not turn off output - {str(e)}")
+                    self._out.status_update(f"Warning: Could not turn off output - {str(e)}")
 
             final_message = f"Measurement ({self.mode}) stopped."
             if file_ready and self.exporter:
@@ -1113,13 +1161,13 @@ class MeasurementWorker(QThread):
                     }
                     self.exporter.finalize(end_metadata)
                 except Exception as e:
-                    self.status_update.emit(f"Warning: Error finalizing export - {str(e)}")
+                    self._out.status_update(f"Warning: Error finalizing export - {str(e)}")
                 final_message = f"Measurement ({self.mode}) completed! Data saved to: {self.filename}"
-            self.status_update.emit(final_message)
-            self.measurement_complete.emit(self.mode)
+            self._out.status_update(final_message)
+            self._out.measurement_complete(self.mode)
 
         except Exception as e:
-            self.error_occurred.emit(f"Unexpected Worker Error ({self.mode}): {str(e)}")
+            self._out.error_occurred(f"Unexpected Worker Error ({self.mode}): {str(e)}")
         finally:
             self._cleanup()
             self.running = False
@@ -1143,14 +1191,14 @@ class MeasurementWorker(QThread):
     def _emit_compress_status(self, orig_path: Path, gz_path: Path,
                               orig_mb: float, gz_mb: float) -> None:
         """Status callback fired by CsvExporter after gzip finalize."""
-        self.status_update.emit(
+        self._out.status_update(
             f"Compressed {orig_path.name} -> {gz_path.name} "
             f"({orig_mb:.1f} MB -> {gz_mb:.1f} MB)"
         )
 
     def _emit_large_file_status(self, path: Path, size_mb: float) -> None:
         """Status callback fired by CsvExporter when an uncompressed run is large."""
-        self.status_update.emit(
+        self._out.status_update(
             f"Run wrote {size_mb:.1f} MB to {path.name}. "
             f"Compression is off — enable in Settings -> Output to gzip future runs."
         )
@@ -1196,15 +1244,15 @@ class MeasurementWorker(QThread):
     def pause_measurement(self) -> None:
         if self.running:
             self.paused = True
-            self.status_update.emit(f"Measurement ({self.mode}) paused")
+            self._out.status_update(f"Measurement ({self.mode}) paused")
 
     def resume_measurement(self) -> None:
         if self.running:
             self.paused = False
-            self.status_update.emit(f"Measurement ({self.mode}) resumed")
+            self._out.status_update(f"Measurement ({self.mode}) resumed")
 
     def stop_measurement(self) -> None:
-        self.status_update.emit(f"Stopping measurement ({self.mode})...")
+        self._out.status_update(f"Stopping measurement ({self.mode})...")
         self.running = False
 
     def _cleanup(self) -> None:
@@ -1215,16 +1263,16 @@ class MeasurementWorker(QThread):
             try:
                 self.keithley.write(":OUTP OFF")
                 self.keithley.close()
-                self.status_update.emit("Instrument disconnected.")
+                self._out.status_update("Instrument disconnected.")
             except Exception as e:
-                self.status_update.emit(f"Warning: Error during instrument cleanup: {str(e)}")
+                self._out.status_update(f"Warning: Error during instrument cleanup: {str(e)}")
             finally:
                 self.keithley = None
         if self._aux_sensor is not None:
             try:
                 self._aux_sensor.close()
             except Exception as e:
-                self.status_update.emit(f"Warning: Error during aux-sensor cleanup: {str(e)}")
+                self._out.status_update(f"Warning: Error during aux-sensor cleanup: {str(e)}")
             finally:
                 self._aux_sensor = None
         if self.exporter:
@@ -1269,7 +1317,7 @@ class MeasurementWorker(QThread):
             self._last_error_check = now
             error = self._check_instrument_errors()
             if error:
-                self.status_update.emit(f"Warning: {error}")
+                self._out.status_update(f"Warning: {error}")
                 logger.warning(f"Instrument error during measurement: {error}")
 
     def _read_delta(self) -> str:
@@ -1375,6 +1423,7 @@ class VdpMeasurementWorker(QThread):
         self.sample_name = sample_name
         self.username = username
         self.settings = settings
+        self._out = _QtOutputs(self)
         self._state_lock = threading.Lock()
         self._running = False
         self._proceed_event = threading.Event()
@@ -1402,7 +1451,7 @@ class VdpMeasurementWorker(QThread):
         self._proceed_event.set()
 
     def stop_measurement(self) -> None:
-        self.status_update.emit("Stopping vdP measurement...")
+        self._out.status_update("Stopping vdP measurement...")
         self.running = False
         # Unblock any wait_for_user pause.
         self._proceed_event.set()
@@ -1410,14 +1459,14 @@ class VdpMeasurementWorker(QThread):
     def _emit_compress_status(self, orig_path: Path, gz_path: Path,
                               orig_mb: float, gz_mb: float) -> None:
         """Status callback fired by CsvExporter after gzip finalize."""
-        self.status_update.emit(
+        self._out.status_update(
             f"Compressed {orig_path.name} -> {gz_path.name} "
             f"({orig_mb:.1f} MB -> {gz_mb:.1f} MB)"
         )
 
     def _emit_large_file_status(self, path: Path, size_mb: float) -> None:
         """Status callback fired by CsvExporter when an uncompressed run is large."""
-        self.status_update.emit(
+        self._out.status_update(
             f"Run wrote {size_mb:.1f} MB to {path.name}. "
             f"Compression is off — enable in Settings -> Output to gzip future runs."
         )
@@ -1429,10 +1478,10 @@ class VdpMeasurementWorker(QThread):
             self._run_geometries()
             self._compute_and_emit_result()
         except _VdpAborted:
-            self.status_update.emit("vdP measurement aborted by user")
+            self._out.status_update("vdP measurement aborted by user")
         except Exception as e:
             logger.exception("vdP measurement failed")
-            self.error_occurred.emit(f"vdP error: {e}")
+            self._out.error_occurred(f"vdP error: {e}")
         finally:
             self.running = False
             self._cleanup()
@@ -1443,7 +1492,7 @@ class VdpMeasurementWorker(QThread):
 
         measurement = self.settings['measurement']
         gpib = measurement['gpib_address']
-        self.status_update.emit(f"Connecting to instrument at {gpib}...")
+        self._out.status_update(f"Connecting to instrument at {gpib}...")
         try:
             self.keithley = Keithley2400(gpib).connect()
         except Exception as e:
@@ -1451,11 +1500,11 @@ class VdpMeasurementWorker(QThread):
             # the user can actually act on.
             raise RuntimeError(humanize_connection_error(e, gpib)) from e
         self._instrument_idn = self.keithley.query("*IDN?").strip()
-        self.status_update.emit(f"Connected to: {self._instrument_idn}")
+        self._out.status_update(f"Connected to: {self._instrument_idn}")
         spec = self.keithley.detect_model()
         self._model_name = spec.model if spec else "2400"
         try:
-            self.instrument_identified.emit(self._model_name)
+            self._out.instrument_identified(self._model_name)
         except Exception:
             pass
 
@@ -1539,7 +1588,7 @@ class VdpMeasurementWorker(QThread):
         primary_paths = self.exporter.output_paths
         self.filename = str(primary_paths[0]) if primary_paths else str(base_path)
         names = ", ".join(p.name for p in primary_paths)
-        self.status_update.emit(f"Data file: {names}")
+        self._out.status_update(f"Data file: {names}")
 
         self._sleep_inhibitor.inhibit(f"ResistaMet: vdP on {self.sample_name}")
         self._start_time = time.time()
@@ -1556,7 +1605,7 @@ class VdpMeasurementWorker(QThread):
                 raise _VdpAborted()
 
             self._proceed_event.clear()
-            self.geometry_ready.emit(idx, {
+            self._out.geometry_ready(idx, {
                 'name': geom.name,
                 'source_high': geom.source_high,
                 'source_low': geom.source_low,
@@ -1566,7 +1615,7 @@ class VdpMeasurementWorker(QThread):
                 'label_neg': geom.label_neg,
                 'group': geom.group,
             })
-            self.status_update.emit(
+            self._out.status_update(
                 f"{geom.name}: connect Force HI->C{geom.source_high}, "
                 f"Force LO->C{geom.source_low}, "
                 f"Sense HI->C{geom.sense_high}, "
@@ -1591,7 +1640,7 @@ class VdpMeasurementWorker(QThread):
             self.keithley.write(":OUTP OFF")
 
             if (stat_pos | stat_neg) & _STAT_BIT_COMPLIANCE:
-                self.compliance_hit.emit("Voltage")
+                self._out.compliance_hit("Voltage")
 
             self._voltages[geom.label_pos] = v_pos
             self._voltages[geom.label_neg] = v_neg
@@ -1610,7 +1659,7 @@ class VdpMeasurementWorker(QThread):
             except Exception:
                 logger.warning("vdP: failed to write export row", exc_info=True)
 
-            self.geometry_complete.emit(idx, {
+            self._out.geometry_complete(idx, {
                 'name': geom.name,
                 'label_pos': geom.label_pos, 'v_pos': v_pos,
                 'label_neg': geom.label_neg, 'v_neg': v_neg,
@@ -1676,8 +1725,8 @@ class VdpMeasurementWorker(QThread):
             'sheet_resistance_uncertainty': u_rs,
             'rho_avg_uncertainty': u_rho,
         }
-        self.vdp_complete.emit(result_dict)
-        self.status_update.emit(
+        self._out.vdp_complete(result_dict)
+        self._out.status_update(
             f"vdP done: Rs={result.sheet_resistance:.4g} Ohm/sq, "
             f"rho={result.rho_avg:.4g} Ohm.cm, "
             f"asym={result.asymmetry_pct:.2f}% "
@@ -1694,9 +1743,9 @@ class VdpMeasurementWorker(QThread):
             try:
                 self.keithley.write(":OUTP OFF")
                 self.keithley.close()
-                self.status_update.emit("Instrument disconnected.")
+                self._out.status_update("Instrument disconnected.")
             except Exception as e:
-                self.status_update.emit(f"Warning: cleanup error: {e}")
+                self._out.status_update(f"Warning: cleanup error: {e}")
             finally:
                 self.keithley = None
         if self.exporter:
