@@ -254,6 +254,87 @@
       "title": "OverpowerPayload",
       "type": "object"
     },
+    "prompt": {
+      "additionalProperties": false,
+      "description": "The run is blocked until someone answers.",
+      "properties": {
+        "detail": {
+          "additionalProperties": true,
+          "title": "Detail",
+          "type": "object"
+        },
+        "kind": {
+          "enum": [
+            "vdp_geometry",
+            "safety_voltage_ack",
+            "cable_null_shorted"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "prompt_id": {
+          "title": "Prompt Id",
+          "type": "string"
+        },
+        "requires_human": {
+          "default": true,
+          "title": "Requires Human",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "kind"
+      ],
+      "title": "PromptPayload",
+      "type": "object"
+    },
+    "prompt_resolved": {
+      "additionalProperties": false,
+      "description": "How a prompt ended: answered, or released by a stop.",
+      "properties": {
+        "answered_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Answered By"
+        },
+        "choice": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Choice"
+        },
+        "prompt_id": {
+          "title": "Prompt Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prompt_id"
+      ],
+      "title": "PromptResolvedPayload",
+      "type": "object"
+    },
     "sample": {
       "additionalProperties": false,
       "description": "One acquired point.\n\n``values`` is the mode's data dict exactly as the parse produced it, with\nno coercion \u2014 the aux-fault column is a string, and a client that wants\nnumbers must say which key it means.",

@@ -134,3 +134,25 @@ def test_vdp_result_reaches_the_panel():
     }
     worker = _send('vdp_result', payload)
     assert worker.vdp_complete.emitted == [(payload,)]
+
+
+def test_vdp_geometry_prompt_becomes_geometry_ready():
+    worker = _send('prompt', {
+        'prompt_id': 'vdp_geometry-1', 'kind': 'vdp_geometry',
+        'options': ['proceed', 'abort'], 'requires_human': True,
+        'detail': {'index': 0, 'name': 'Configuration A', 'source_high': 1,
+                   'source_low': 2, 'sense_high': 3, 'sense_low': 4,
+                   'label_pos': 'V_43', 'label_neg': 'V_34', 'group': 'A'},
+    })
+    index, geometry = worker.geometry_ready.emitted[0]
+    assert index == 0
+    assert 'index' not in geometry
+    assert geometry['name'] == 'Configuration A'
+
+
+def test_other_prompt_kinds_do_not_reach_the_vdp_signal():
+    worker = _send('prompt', {
+        'prompt_id': 'safety_voltage_ack-1', 'kind': 'safety_voltage_ack',
+        'options': ['acknowledge', 'cancel'], 'requires_human': True, 'detail': {},
+    })
+    assert worker.geometry_ready.emitted == []
