@@ -1123,3 +1123,50 @@ class TestFourPointDeltaReadRetry:
         assert len(spies.error_occurred) == 1
         assert "after 5 retries" in spies.error_occurred[0]
         assert spies.data_point == []
+
+
+class TestEventMarkerQueue:
+    """Marks queue between samples; the next sample consumes all of them."""
+
+    def _worker(self, tmp_path):
+        return MeasurementWorker("resistance", "wafer1", "alice",
+                                 _resistance_settings(tmp_path))
+
+    def test_marks_accumulate(self, tmp_path):
+        worker = self._worker(tmp_path)
+        worker.mark_event("PROBE_MOVED")
+        worker.mark_event("LIGHT_ON")
+        assert worker.event_marker == "PROBE_MOVED; LIGHT_ON"
+        assert worker.get_and_clear_event_marker() == "PROBE_MOVED; LIGHT_ON"
+
+    def test_queue_empties_after_consumption(self, tmp_path):
+        worker = self._worker(tmp_path)
+        worker.mark_event("A")
+        worker.get_and_clear_event_marker()
+        assert worker.event_marker == ""
+        assert worker.get_and_clear_event_marker() == ""
+
+    def test_default_label(self, tmp_path):
+        worker = self._worker(tmp_path)
+        worker.mark_event()
+        assert worker.get_and_clear_event_marker() == "MARK"
+
+    def test_mark_lands_in_the_csv_row(self, qapp, fake_rm, tmp_path):
+        settings = _resistance_settings(tmp_path)
+        worker = MeasurementWorker("resistance", "marked", "alice", settings)
+        worker.data_point.connect(lambda *a: None)
+
+        marked = []
+
+        def mark_once(timestamp, data, compliance, event):
+            if event:
+                marked.append(event)
+            elif not marked:
+                worker.mark_event("ONE")
+                worker.mark_event("TWO")
+
+        worker.data_point.connect(mark_once)
+        spies = _drive_worker(qapp, worker, timeout_s=10.0, stop_after_n_points=6)
+
+        assert marked == ["ONE; TWO"]
+        assert spies.error_occurred == []
