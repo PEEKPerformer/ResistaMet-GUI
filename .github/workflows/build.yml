@@ -55,6 +55,18 @@ jobs:
             exit 1
           }
 
+      - name: Self-test the .exe (imports the schema and the main window)
+        shell: pwsh
+        run: |
+          # --version returns before importing Qt or pydantic, so it cannot
+          # catch a dependency the frozen build missed. --self-test imports
+          # both and exits.
+          $proc = Start-Process -FilePath "dist\ResistaMet.exe" -ArgumentList "--self-test" -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "ResistaMet.exe --self-test exited with code $($proc.ExitCode)"
+            exit 1
+          }
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
