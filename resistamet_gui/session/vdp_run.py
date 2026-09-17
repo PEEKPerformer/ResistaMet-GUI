@@ -14,6 +14,7 @@ from typing import Dict
 from ..data_export import build_metadata, get_column_config, make_exporter
 from ..instrument import Keithley2400, humanize_connection_error
 from ..system_utils import SleepInhibitor
+from .control import RunStopped
 from .run_files import create_base_path
 
 logger = logging.getLogger(__name__)
@@ -145,6 +146,9 @@ class VdpRun:
             self._connect_and_configure()
             self._run_geometries()
             self._compute_and_emit_result()
+        except RunStopped:
+            self._control.finish('user_stop')
+            self._events.log('aborted', "vdP measurement aborted by user")
         except _VdpAborted:
             self._control.finish('user_stop')
             self._events.log('aborted', "vdP measurement aborted by user")
@@ -318,11 +322,11 @@ class VdpRun:
 
             self.keithley.write(":OUTP ON")
             self.keithley.write(f":SOUR:CURR {self._i_mag}")
-            time.sleep(settling)
+            self._control.sleep(settling)
             v_pos, stat_pos = self._read_averaged(n_avg)
 
             self.keithley.write(f":SOUR:CURR {-self._i_mag}")
-            time.sleep(settling)
+            self._control.sleep(settling)
             v_neg, stat_neg = self._read_averaged(n_avg)
 
             # Return polarity to +I and disable output so the user can
