@@ -93,7 +93,8 @@ class MeasurementSession:
     # --- commands ---------------------------------------------------------
 
     def start(self, profile: Dict[str, Any], mode: str, sample_name: str, username: str,
-              overrides: Optional[Dict[str, Any]] = None) -> str:
+              overrides: Optional[Dict[str, Any]] = None,
+              prompt_timeout_s: float = 900.0) -> str:
         """Resolve settings, then run them. Returns the run id immediately.
 
         Raises ``SessionBusy`` unless idle and ``ValueError`` when the strict
@@ -114,10 +115,11 @@ class MeasurementSession:
             emitter = EventEmitter(self._record, run_id=run_id, clock=self._clock)
             if mode == VDP_MODE:
                 run = VdpRun(sample_name, username, resolved.settings, control, emitter,
-                              safety_ack='prompt')
+                              safety_ack='prompt', prompt_timeout_s=prompt_timeout_s)
             else:
                 run = ContinuousRun(mode, sample_name, username, resolved.settings,
-                                     control, emitter, safety_ack='prompt')
+                                     control, emitter, safety_ack='prompt',
+                                     prompt_timeout_s=prompt_timeout_s)
             thread = threading.Thread(target=self._execute, args=(run,),
                                        name=f"resistamet-{run_id}", daemon=True)
             self._state = 'running'

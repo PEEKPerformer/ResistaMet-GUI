@@ -152,13 +152,15 @@ class RunControl:
         self.proceed_event.set()
         return True
 
-    def wait_for_prompt(self) -> Tuple[Optional[str], Dict[str, Any]]:
-        """Block until the prompt is answered or the run is stopped.
+    def wait_for_prompt(self, timeout: Optional[float] = None
+                         ) -> Tuple[Optional[str], Dict[str, Any]]:
+        """Block until the prompt is answered, the run stops, or time runs out.
 
-        Returns ``(choice, fields)``; the choice is None when stop woke the
-        wait instead — the caller decides what abandoning the run means for it.
+        Returns ``(choice, fields)``; the choice is None when stop or the
+        timeout woke the wait instead — the caller decides what abandoning the
+        run means for it, and can tell the two apart with ``stopped()``.
         """
-        self.proceed_event.wait()
+        self.proceed_event.wait(timeout)
         with self._lock:
             answer = self._answer
             fields = self._answer_fields

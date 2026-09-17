@@ -47,7 +47,7 @@ class ContinuousRun:
     """
 
     def __init__(self, mode, sample_name, username, settings, control, events,
-                  safety_ack='skip'):
+                  safety_ack='skip', prompt_timeout_s=None):
         if mode not in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             raise ValueError(f"Invalid measurement mode: {mode}")
         self.mode = mode
@@ -56,6 +56,8 @@ class ContinuousRun:
         self.settings = settings
         self._events = events
         self._safety_ack = safety_ack
+        #: None = wait forever (the GUI has an operator at the bench).
+        self._prompt_timeout_s = prompt_timeout_s
         # Set by the configure step: the frozen per-mode state the loop reads.
         self._mode_state = None
         # Set by each delta read: the per-polarity values the row builder logs.
@@ -313,9 +315,14 @@ class ContinuousRun:
             'options': prompt.options, 'requires_human': prompt.requires_human,
             'detail': prompt.detail,
         })
-        choice, fields = self._control.wait_for_prompt()
+        choice, fields = self._control.wait_for_prompt(self._prompt_timeout_s)
         self._events.emit('prompt_resolved', {
             'prompt_id': prompt.prompt_id, 'choice': choice})
+        if choice is None and not self._control.stopped():
+            self._control.finish('prompt_timeout')
+            self._events.warn('prompt_timeout',
+                               "No answer to the touch-safety warning; abandoning the run.")
+            return True
         if fields.get('silence_for_profile'):
             # Recorded on the event stream; persisting it belongs to whoever
             # owns the profile file, not to a run.
@@ -336,7 +343,8 @@ class ContinuousRun:
         if self._safety_prompt_declined():
             self._control.finish('cancelled')
             self._events.emit('run_ended', {
-                'reason': 'cancelled', 'ok': False, 'samples': 0,
+                # finish() keeps the first reason, so a timeout reports as one.
+                'reason': self._control.finish_reason, 'ok': False, 'samples': 0,
                 'duration_s': 0.0, 'path': None,
             })
             return
