@@ -73,7 +73,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         # -rs so a skipped API suite (missing fastapi) is visible rather than
         # passing silently, which would hide the layer the sidecar depends on.
-        run: pytest tests/test_session.py tests/test_session_e2e.py tests/test_api_session.py -v -rs
+        run: pytest tests/test_session.py tests/test_session_e2e.py tests/test_api_session.py tests/test_api_settings.py tests/test_api_events.py tests/test_api_sidecar.py -v -rs
 
       - name: Smoke-test the screenshot generator
         # Catches "generator broke" early — e.g. if format_readout_html
