@@ -860,7 +860,13 @@ released on the safety-decline path too, which the plan did not call out.
   start path and the session (D8).
 - **PR-46 (Behavior):** the duration limit counts active time, excluding paused time (D1).
 
-**Phase 5: API validation**
+**Phase 5: API validation** — **landed**, 4 commits, 858 tests green. Deviations: a `NullNanJSONResponse`
+was needed (settings legitimately carry NaN and JSON has no NaN, so the routes match the event contract's
+null); the WebSocket handler watches the client socket as well as the hub, without which a disconnect was
+only noticed at shutdown; the sidecar binds its own socket before serving so the handshake can name an
+OS-chosen port.
+
+**Status: step 1 is complete.** `docs/design/tauri_backend_split_status.md` has the summary.
 - **PR-50a (Add):** `api/app.py` factory + token auth + session routes + API CI job.
 - **PR-50b (Add):** settings/profiles/users/instruments routes with 409 guards.
 - **PR-51a (Add):** WS stream + `event_hub.py` hand-off and drop policy (no replay).
