@@ -160,3 +160,74 @@ class TestStatus:
         assert _wait_for(lambda: sink.of_type('sample'))
         session.close(timeout=5.0)
         assert session.state == 'idle'
+
+
+class TestSafetyPrompt:
+    """A headless client has no modal, so the run itself must ask."""
+
+    def _hazardous(self, profile):
+        profile['measurement'].update({
+            'safety_voltage_warn_v': 30.0, 'safety_voltage_warn_silenced': False,
+            'vsource_voltage': 60.0, 'vsource_current_compliance': 0.1,
+            'vsource_duration_hours': 0.0,
+        })
+        return profile
+
+    def _pending(self, session):
+        return session.status()['pending_prompt']
+
+    def test_run_waits_for_acknowledgement(self, session, sink, fake_rm, profile):
+        session.start(self._hazardous(profile), 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: self._pending(session) is not None)
+
+        prompt = self._pending(session)
+        assert prompt['kind'] == 'safety_voltage_ack'
+        assert prompt['requires_human'] is True
+        assert prompt['detail']['voltage_v'] == 60.0
+        assert session.state == 'awaiting_prompt'
+        # nothing has been energised yet
+        assert sink.of_type('instrument_connected') == []
+
+        session.answer_prompt(prompt['prompt_id'], 'acknowledge')
+        assert _wait_for(lambda: sink.of_type('sample'))
+        session.stop()
+
+    def test_cancel_ends_the_run_before_the_instrument_opens(self, session, sink, fake_rm, profile):
+        session.start(self._hazardous(profile), 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: self._pending(session) is not None)
+        prompt = self._pending(session)
+
+        session.answer_prompt(prompt['prompt_id'], 'cancel')
+        assert _wait_for(lambda: session.state == 'idle')
+
+        assert [e.payload['reason'] for e in sink.of_type('run_ended')] == ['cancelled']
+        assert sink.of_type('instrument_connected') == []
+        assert sink.of_type('file_opened') == []
+
+    def test_safe_voltage_asks_nothing(self, session, sink, fake_rm, profile):
+        profile['measurement'].update({'safety_voltage_warn_v': 30.0,
+                                        'vsource_voltage': 1.0,
+                                        'vsource_duration_hours': 0.0})
+        session.start(profile, 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: sink.of_type('sample'))
+        assert sink.of_type('prompt') == []
+        session.stop()
+
+    def test_silenced_profile_asks_nothing(self, session, sink, fake_rm, profile):
+        profile = self._hazardous(profile)
+        profile['measurement']['safety_voltage_warn_silenced'] = True
+        session.start(profile, 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: sink.of_type('sample'))
+        assert sink.of_type('prompt') == []
+        session.stop()
+
+    def test_silence_request_is_recorded(self, session, sink, fake_rm, profile):
+        session.start(self._hazardous(profile), 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: self._pending(session) is not None)
+        prompt = self._pending(session)
+
+        session.answer_prompt(prompt['prompt_id'], 'acknowledge',
+                               fields={'silence_for_profile': True})
+        assert _wait_for(lambda: any(e.payload['code'] == 'safety_silenced'
+                                      for e in sink.of_type('log')))
+        session.stop()

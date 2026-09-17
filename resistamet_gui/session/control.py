@@ -11,7 +11,7 @@ slow instrument read can never block whoever is trying to stop the run.
 """
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -44,6 +44,7 @@ class RunControl:
         self._finish_reason: Optional[str] = None
         self._prompt: Optional[PendingPrompt] = None
         self._answer: Optional[str] = None
+        self._answer_fields: Dict[str, Any] = {}
         self._prompt_count = 0
 
     @property
@@ -109,28 +110,36 @@ class RunControl:
         self.proceed_event.clear()
         return prompt
 
-    def answer_prompt(self, prompt_id: str, choice: str) -> bool:
-        """Answer the pending prompt. First valid answer wins; stale ids lose."""
+    def answer_prompt(self, prompt_id: str, choice: str,
+                       fields: Optional[Dict[str, Any]] = None) -> bool:
+        """Answer the pending prompt. First valid answer wins; stale ids lose.
+
+        ``fields`` carries anything the answer needs beyond the choice — the
+        safety dialog's "don't show again", for instance.
+        """
         with self._lock:
             prompt = self._prompt
             if prompt is None or prompt.prompt_id != prompt_id or self._answer is not None:
                 return False
             self._answer = choice
+            self._answer_fields = dict(fields or {})
         self.proceed_event.set()
         return True
 
-    def wait_for_prompt(self) -> Optional[str]:
+    def wait_for_prompt(self) -> Tuple[Optional[str], Dict[str, Any]]:
         """Block until the prompt is answered or the run is stopped.
 
-        Returns the choice, or None when stop woke the wait instead — the
-        caller decides what abandoning the run means for it.
+        Returns ``(choice, fields)``; the choice is None when stop woke the
+        wait instead — the caller decides what abandoning the run means for it.
         """
         self.proceed_event.wait()
         with self._lock:
             answer = self._answer
+            fields = self._answer_fields
             self._prompt = None
             self._answer = None
-        return answer
+            self._answer_fields = {}
+        return answer, fields
 
     @property
     def event_marker(self) -> str:

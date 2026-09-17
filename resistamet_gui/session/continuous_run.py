@@ -45,7 +45,8 @@ class ContinuousRun:
     session. No Qt here.
     """
 
-    def __init__(self, mode, sample_name, username, settings, control, events):
+    def __init__(self, mode, sample_name, username, settings, control, events,
+                  safety_ack='skip'):
         if mode not in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             raise ValueError(f"Invalid measurement mode: {mode}")
         self.mode = mode
@@ -53,6 +54,7 @@ class ContinuousRun:
         self.username = username
         self.settings = settings
         self._events = events
+        self._safety_ack = safety_ack
         # Set by the configure step: the frozen per-mode state the loop reads.
         self._mode_state = None
         # Set by each delta read: the per-polarity values the row builder logs.
@@ -278,6 +280,48 @@ class ContinuousRun:
             self._control.finish('completed')
             # Fall through to cleanup below
 
+
+    def _safety_prompt_declined(self) -> bool:
+        """Ask before a hazardous voltage reaches the leads. True = cancel.
+
+        The GUI asks in its own modal before starting, so it constructs runs
+        with safety_ack='skip'; a headless client has no dialog, so the run
+        itself must raise the question rather than silently energise leads at
+        60 V.
+        """
+        if self._safety_ack != 'prompt':
+            return False
+        from ..safety import is_potentially_hazardous, warning_message
+
+        measurement = self.settings.get('measurement', {})
+        if bool(measurement.get('safety_voltage_warn_silenced', False)):
+            return False
+        check = is_potentially_hazardous(self.settings, self.mode)
+        if not check.hazardous:
+            return False
+
+        prompt = self._control.raise_prompt(
+            'safety_voltage_ack', ['acknowledge', 'cancel'], detail={
+                'voltage_v': check.voltage_v,
+                'threshold_v': check.threshold_v,
+                'reason': check.reason,
+                'message': warning_message(check),
+            })
+        self._events.emit('prompt', {
+            'prompt_id': prompt.prompt_id, 'kind': prompt.kind,
+            'options': prompt.options, 'requires_human': prompt.requires_human,
+            'detail': prompt.detail,
+        })
+        choice, fields = self._control.wait_for_prompt()
+        self._events.emit('prompt_resolved', {
+            'prompt_id': prompt.prompt_id, 'choice': choice})
+        if fields.get('silence_for_profile'):
+            # Recorded on the event stream; persisting it belongs to whoever
+            # owns the profile file, not to a run.
+            self._events.log('safety_silenced',
+                              "Touch-safety warning silenced for this profile.")
+        return choice != 'acknowledge'
+
     def execute(self):
         self.running = True
         self.paused = False
@@ -288,6 +332,13 @@ class ContinuousRun:
             'settings': self.settings,
             'started_at': time.time(),
         })
+        if self._safety_prompt_declined():
+            self._control.finish('cancelled')
+            self._events.emit('run_ended', {
+                'reason': 'cancelled', 'ok': False, 'samples': 0,
+                'duration_s': 0.0, 'path': None,
+            })
+            return
         instrument_ready = False
         file_ready = False
 
