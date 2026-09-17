@@ -40,6 +40,23 @@ def read_status(session: MeasurementSession = Depends(get_session),
     return session.status()
 
 
+@router.get("/events")
+def read_events(request: Request, since_seq: int = 0, run_id: str = "",
+                 limit: int = 500, role: str = Depends(require_token)):
+    """Poll for events. The same stream the WebSocket carries.
+
+    Request/response clients — the MCP layer among them — should not have to
+    hold a socket open to follow a run.
+    """
+    hub = request.app.state.api.hub
+    events, gap = hub.history(run_id or None, since_seq, limit)
+    return {
+        'events': [event.model_dump() for event in events],
+        'gap': gap,
+        'last_seq': events[-1].seq if events else since_seq,
+    }
+
+
 @router.post("/start", status_code=status.HTTP_202_ACCEPTED)
 def start(body: StartRequest, request: Request,
            session: MeasurementSession = Depends(get_session),
