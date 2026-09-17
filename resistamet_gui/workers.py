@@ -812,6 +812,148 @@ class MeasurementWorker(QThread):
 
         return data_dict, compliance_status, compliance_type
 
+    def _build_row(self, elapsed_time, data_dict, compliance_status, event_marker,
+                    measurement_settings, nplc, use_delta):
+        """The CSV row for one sample, in this mode's column order.
+
+        Column order matches get_column_config(); the aux splice happens at
+        the call site, where the sensor state lives.
+        """
+        row_data = []
+        # Build row data with raw values (exporter handles formatting)
+        if self.mode == 'resistance':
+            v = data_dict.get('voltage', float('nan'))
+            i = data_dict.get('current', float('nan'))
+            r = data_dict.get('resistance', float('nan'))
+            r_unc = data_dict.get('resistance_unc', float('nan'))
+            row_data = [elapsed_time, v, i, r, r_unc, compliance_status, event_marker]
+        elif self.mode == 'four_point':
+            v = data_dict.get('voltage', float('nan'))
+            i = data_dict.get('current', float('nan'))
+
+            # Decide F84-decomposed path vs legacy K*alpha path.
+            # F84 is selected if the user supplied any F84-only
+            # input (finite D, non-circle geometry, or a T+dopant
+            # combo). Defaults keep the legacy path active so
+            # existing config.json users see identical numbers.
+            diameter_cm = float(measurement_settings.get('fpp_diameter_cm') or 0.0)
+            geometry = str(measurement_settings.get('fpp_geometry') or 'circle')
+            temp_raw = measurement_settings.get('fpp_temperature_c')
+            try:
+                temp_c_val: Optional[float] = float(temp_raw)
+                if not np.isfinite(temp_c_val):
+                    temp_c_val = None
+            except (TypeError, ValueError):
+                temp_c_val = None
+            dopant = str(measurement_settings.get('fpp_dopant_type') or 'none').lower()
+            use_f84 = (diameter_cm > 0
+                       or geometry != 'circle'
+                       or (temp_c_val is not None and dopant in ('n', 'p')))
+
+            # Common kwargs for the legacy path.
+            fpp_kwargs = dict(
+                spacing_cm=float(measurement_settings.get('fpp_spacing_cm') or 0.1016),
+                thickness_um=float(measurement_settings.get('fpp_thickness_um') or 0.0),
+                k_factor=float(measurement_settings.get('fpp_k_factor') or 4.532),
+                alpha=float(measurement_settings.get('fpp_alpha') or 1.0),
+                model=str(measurement_settings.get('fpp_model') or 'thin_film'),
+            )
+
+            if use_f84:
+                # F84 path: F2·w·F(w/S)·F_sp [·F_T].
+                from .calculations import (
+                    calculate_four_point_probe_f84, calculate_conductivity,
+                    calculate_ratio, estimate_current_floor,
+                )
+                spacing_cm = fpp_kwargs['spacing_cm']
+                thickness_um = fpp_kwargs['thickness_um']
+                thickness_cm = thickness_um * 1e-4
+                v_for_calc = v
+                i_for_calc = i
+                ratio_for_calc = calculate_ratio(v, i)
+                if compliance_status != 'OK':
+                    src_i = float(measurement_settings.get('fpp_current') or 1e-3)
+                    v_comp = float(measurement_settings.get('fpp_voltage_compliance') or 5.0)
+                    i_floor = estimate_current_floor(src_i)
+                    i_eff = max(abs(i), i_floor) if np.isfinite(i) else i_floor
+                    ratio_for_calc = abs(v_comp) / i_eff if i_eff > 0 else float('nan')
+                    v_for_calc = abs(v_comp)
+                    i_for_calc = i_eff
+                f84 = calculate_four_point_probe_f84(
+                    voltage=v_for_calc, current=i_for_calc,
+                    spacing_cm=spacing_cm, thickness_um=thickness_um,
+                    diameter_cm=diameter_cm if diameter_cm > 0 else None,
+                    geometry=geometry,
+                    temperature_c=temp_c_val,
+                    dopant_type=dopant if dopant in ('n', 'p') else None,
+                )
+                rs_val = (
+                    f84.rho_T / thickness_cm
+                    if (thickness_cm > 0 and np.isfinite(f84.rho_T))
+                    else float('nan')
+                )
+                # Use rho_23 when available; otherwise rho_T.
+                rho_report = f84.rho_23 if f84.rho_23 is not None else f84.rho_T
+                sigma = calculate_conductivity(rho_report)
+                v_sigma = voltage_uncertainty(v, model=self._model_name, nplc=nplc)
+                i_sigma = current_uncertainty(i, model=self._model_name, nplc=nplc)
+                row_data = [
+                    elapsed_time, v, i,
+                    ratio_for_calc, rs_val,
+                    rho_report, sigma,
+                    v_sigma, i_sigma,
+                    compliance_status, event_marker
+                ]
+            else:
+                # Legacy path: K * alpha * t * (V/I).
+                if compliance_status != 'OK':
+                    from .calculations import calculate_four_point_probe_bound
+                    result = calculate_four_point_probe_bound(
+                        v_compliance=float(measurement_settings.get('fpp_voltage_compliance') or 5.0),
+                        measured_current=i,
+                        source_current=float(measurement_settings.get('fpp_current') or 1e-3),
+                        **fpp_kwargs,
+                    )
+                else:
+                    from .calculations import calculate_four_point_probe
+                    result = calculate_four_point_probe(
+                        voltage=v, current=i, **fpp_kwargs,
+                    )
+                v_sigma = voltage_uncertainty(v, model=self._model_name, nplc=nplc)
+                i_sigma = current_uncertainty(i, model=self._model_name, nplc=nplc)
+                row_data = [
+                    elapsed_time, v, i,
+                    result.ratio, result.sheet_resistance,
+                    result.resistivity, result.conductivity,
+                    v_sigma, i_sigma,
+                    compliance_status, event_marker
+                ]
+
+            # Splice per-polarity columns when delta mode produced
+            # the reading. splice_before_tail lands them just
+            # before compliance/event, mirroring
+            # get_column_config()'s 'compliance' anchor.
+            if use_delta and getattr(self, '_last_delta', None):
+                ld = self._last_delta
+                row_data = splice_before_tail(
+                    row_data,
+                    [ld['v_plus'], ld['v_minus'], ld['r_f'], ld['r_r']],
+                )
+        else:
+            # source_v or source_i
+            v = data_dict.get('voltage', float('nan'))
+            i = data_dict.get('current', float('nan'))
+            r = (v / i) if (np.isfinite(v) and np.isfinite(i) and i != 0) else float('nan')
+            r_unc = data_dict.get('resistance_unc', float('nan'))
+            if self.mode == 'source_v':
+                i_unc = data_dict.get('current_unc', float('nan'))
+                row_data = [elapsed_time, v, i, r, i_unc, r_unc, compliance_status, event_marker]
+            else:
+                v_unc = data_dict.get('voltage_unc', float('nan'))
+                row_data = [elapsed_time, v, i, r, v_unc, r_unc, compliance_status, event_marker]
+
+        return row_data
+
     def run(self):
         self.running = True
         self.paused = False
@@ -1153,137 +1295,9 @@ class MeasurementWorker(QThread):
                     if event_marker:
                         self._out.status_update(f"Event marked at {elapsed_time:.3f}s: {event_marker}")
 
-                    # Build row data with raw values (exporter handles formatting)
-                    if self.mode == 'resistance':
-                        v = data_dict.get('voltage', float('nan'))
-                        i = data_dict.get('current', float('nan'))
-                        r = data_dict.get('resistance', float('nan'))
-                        r_unc = data_dict.get('resistance_unc', float('nan'))
-                        row_data = [elapsed_time, v, i, r, r_unc, compliance_status, event_marker]
-                    elif self.mode == 'four_point':
-                        v = data_dict.get('voltage', float('nan'))
-                        i = data_dict.get('current', float('nan'))
-
-                        # Decide F84-decomposed path vs legacy K*alpha path.
-                        # F84 is selected if the user supplied any F84-only
-                        # input (finite D, non-circle geometry, or a T+dopant
-                        # combo). Defaults keep the legacy path active so
-                        # existing config.json users see identical numbers.
-                        diameter_cm = float(measurement_settings.get('fpp_diameter_cm') or 0.0)
-                        geometry = str(measurement_settings.get('fpp_geometry') or 'circle')
-                        temp_raw = measurement_settings.get('fpp_temperature_c')
-                        try:
-                            temp_c_val: Optional[float] = float(temp_raw)
-                            if not np.isfinite(temp_c_val):
-                                temp_c_val = None
-                        except (TypeError, ValueError):
-                            temp_c_val = None
-                        dopant = str(measurement_settings.get('fpp_dopant_type') or 'none').lower()
-                        use_f84 = (diameter_cm > 0
-                                   or geometry != 'circle'
-                                   or (temp_c_val is not None and dopant in ('n', 'p')))
-
-                        # Common kwargs for the legacy path.
-                        fpp_kwargs = dict(
-                            spacing_cm=float(measurement_settings.get('fpp_spacing_cm') or 0.1016),
-                            thickness_um=float(measurement_settings.get('fpp_thickness_um') or 0.0),
-                            k_factor=float(measurement_settings.get('fpp_k_factor') or 4.532),
-                            alpha=float(measurement_settings.get('fpp_alpha') or 1.0),
-                            model=str(measurement_settings.get('fpp_model') or 'thin_film'),
-                        )
-
-                        if use_f84:
-                            # F84 path: F2·w·F(w/S)·F_sp [·F_T].
-                            from .calculations import (
-                                calculate_four_point_probe_f84, calculate_conductivity,
-                                calculate_ratio, estimate_current_floor,
-                            )
-                            spacing_cm = fpp_kwargs['spacing_cm']
-                            thickness_um = fpp_kwargs['thickness_um']
-                            thickness_cm = thickness_um * 1e-4
-                            v_for_calc = v
-                            i_for_calc = i
-                            ratio_for_calc = calculate_ratio(v, i)
-                            if compliance_status != 'OK':
-                                src_i = float(measurement_settings.get('fpp_current') or 1e-3)
-                                v_comp = float(measurement_settings.get('fpp_voltage_compliance') or 5.0)
-                                i_floor = estimate_current_floor(src_i)
-                                i_eff = max(abs(i), i_floor) if np.isfinite(i) else i_floor
-                                ratio_for_calc = abs(v_comp) / i_eff if i_eff > 0 else float('nan')
-                                v_for_calc = abs(v_comp)
-                                i_for_calc = i_eff
-                            f84 = calculate_four_point_probe_f84(
-                                voltage=v_for_calc, current=i_for_calc,
-                                spacing_cm=spacing_cm, thickness_um=thickness_um,
-                                diameter_cm=diameter_cm if diameter_cm > 0 else None,
-                                geometry=geometry,
-                                temperature_c=temp_c_val,
-                                dopant_type=dopant if dopant in ('n', 'p') else None,
-                            )
-                            rs_val = (
-                                f84.rho_T / thickness_cm
-                                if (thickness_cm > 0 and np.isfinite(f84.rho_T))
-                                else float('nan')
-                            )
-                            # Use rho_23 when available; otherwise rho_T.
-                            rho_report = f84.rho_23 if f84.rho_23 is not None else f84.rho_T
-                            sigma = calculate_conductivity(rho_report)
-                            v_sigma = voltage_uncertainty(v, model=self._model_name, nplc=nplc)
-                            i_sigma = current_uncertainty(i, model=self._model_name, nplc=nplc)
-                            row_data = [
-                                elapsed_time, v, i,
-                                ratio_for_calc, rs_val,
-                                rho_report, sigma,
-                                v_sigma, i_sigma,
-                                compliance_status, event_marker
-                            ]
-                        else:
-                            # Legacy path: K * alpha * t * (V/I).
-                            if compliance_status != 'OK':
-                                from .calculations import calculate_four_point_probe_bound
-                                result = calculate_four_point_probe_bound(
-                                    v_compliance=float(measurement_settings.get('fpp_voltage_compliance') or 5.0),
-                                    measured_current=i,
-                                    source_current=float(measurement_settings.get('fpp_current') or 1e-3),
-                                    **fpp_kwargs,
-                                )
-                            else:
-                                from .calculations import calculate_four_point_probe
-                                result = calculate_four_point_probe(
-                                    voltage=v, current=i, **fpp_kwargs,
-                                )
-                            v_sigma = voltage_uncertainty(v, model=self._model_name, nplc=nplc)
-                            i_sigma = current_uncertainty(i, model=self._model_name, nplc=nplc)
-                            row_data = [
-                                elapsed_time, v, i,
-                                result.ratio, result.sheet_resistance,
-                                result.resistivity, result.conductivity,
-                                v_sigma, i_sigma,
-                                compliance_status, event_marker
-                            ]
-
-                        # Splice per-polarity columns when delta mode produced
-                        # the reading. splice_before_tail lands them just
-                        # before compliance/event, mirroring
-                        # get_column_config()'s 'compliance' anchor.
-                        if use_delta and getattr(self, '_last_delta', None):
-                            ld = self._last_delta
-                            row_data = splice_before_tail(
-                                row_data,
-                                [ld['v_plus'], ld['v_minus'], ld['r_f'], ld['r_r']],
-                            )
-                    else:
-                        # source_v or source_i
-                        v = data_dict.get('voltage', float('nan'))
-                        i = data_dict.get('current', float('nan'))
-                        r = (v / i) if (np.isfinite(v) and np.isfinite(i) and i != 0) else float('nan')
-                        r_unc = data_dict.get('resistance_unc', float('nan'))
-                        if self.mode == 'source_v':
-                            i_unc = data_dict.get('current_unc', float('nan'))
-                            row_data = [elapsed_time, v, i, r, i_unc, r_unc, compliance_status, event_marker]
-                        else:
-                            v_unc = data_dict.get('voltage_unc', float('nan'))
-                            row_data = [elapsed_time, v, i, r, v_unc, r_unc, compliance_status, event_marker]
+                    row_data = self._build_row(
+                        elapsed_time, data_dict, compliance_status, event_marker,
+                        measurement_settings, nplc, use_delta)
 
                     # Splice auxiliary-sensor values (+ aux_fault) for any mode
                     # that opened a sensor — after any delta columns, before
