@@ -676,6 +676,142 @@ class MeasurementWorker(QThread):
             self.running = False
             # Fall through to cleanup below
 
+    def _parse_resistance(self, parts, stat_word, hw_compliance, measurement_settings, nplc):
+        """Parse a resistance reading: V, I, R, plus sigma_R and the cable null.
+
+        Returns (data_dict, compliance_status, compliance_type).
+        """
+        compliance_status = 'OK'
+        compliance_type = None
+        data_dict = {}
+        # Fixed-order output: VOLT, CURR, RES, [TIME], STAT.
+        # We requested VOLT,CURR,RES,STAT so parts is V, I, R, STAT.
+        try:
+            voltage = float(parts[0])
+            current = float(parts[1]) if len(parts) > 1 else float('nan')
+            value = float(parts[2]) if len(parts) > 2 else float('nan')
+        except Exception:
+            voltage = float('nan'); current = float('nan'); value = float('nan')
+        compliance_type = 'Voltage'
+        if hw_compliance:
+            compliance_status = 'V_COMP'
+        if not np.isfinite(value):
+            value = float('nan')
+            self._out.status_update(f"Invalid value detected ({reading_str})")
+        # Apply software cable null if set (R only — V and I
+        # are reported as-measured by the instrument).
+        cable_null = self._mode_state.cable_null
+        if cable_null != 0.0 and np.isfinite(value):
+            value -= cable_null
+        sigma_r = resistance_uncertainty(
+            voltage, current, model=self._model_name, nplc=nplc,
+            enhanced=bool(measurement_settings.get('res_offset_comp', False)),
+        )
+        data_dict = {
+            'voltage': voltage, 'current': current, 'resistance': value,
+            'resistance_unc': sigma_r,
+        }
+
+        return data_dict, compliance_status, compliance_type
+
+    def _parse_source_v(self, parts, stat_word, hw_compliance, measurement_settings, nplc):
+        """Parse a source-V reading: sourced V, measured I.
+
+        Returns (data_dict, compliance_status, compliance_type).
+        """
+        compliance_status = 'OK'
+        compliance_type = None
+        data_dict = {}
+        # Keithley 2400 series returns elements in fixed order:
+        # VOLT, CURR, STAT. In source_v mode the VOLT
+        # element echoes the source setpoint (V_set), so
+        # it's the right input for the source-accuracy spec.
+        try:
+            voltage = float(parts[0])
+            current = float(parts[1]) if len(parts) > 1 else float('nan')
+        except Exception:
+            voltage = float('nan'); current = float('nan')
+        compliance_type = 'Current'
+        comp_limit_i = measurement_settings.get('vsource_current_compliance')
+        if hw_compliance or (np.isfinite(current) and abs(current) >= comp_limit_i * 0.99):
+            compliance_status = 'I_COMP'
+        sigma_v_src = voltage_source_uncertainty(voltage, model=self._model_name)
+        sigma_i_meas = current_uncertainty(current, model=self._model_name, nplc=nplc)
+        # σ on R = V_set / I_meas: RSS of relative uncertainties.
+        # NaN-safe — current_unc inherits NaN when current is 0
+        # and we already gate that below.
+        if np.isfinite(voltage) and np.isfinite(current) and current != 0 and voltage != 0:
+            r_calc = voltage / current
+            rel = (sigma_v_src / voltage) ** 2 + (sigma_i_meas / current) ** 2
+            sigma_r = abs(r_calc) * np.sqrt(rel)
+        else:
+            sigma_r = float('nan')
+        data_dict = {
+            'current': current, 'voltage': voltage,
+            'voltage_unc': sigma_v_src,
+            'current_unc': sigma_i_meas,
+            'resistance_unc': sigma_r,
+        }
+
+        return data_dict, compliance_status, compliance_type
+
+    def _parse_source_i(self, parts, stat_word, hw_compliance, measurement_settings, nplc):
+        """Parse a source-I reading: sourced I, measured V.
+
+        Returns (data_dict, compliance_status, compliance_type).
+        """
+        compliance_status = 'OK'
+        compliance_type = None
+        data_dict = {}
+        # CURR element echoes I_set in source_i mode; VOLT
+        # is the sense reading.
+        try:
+            voltage = float(parts[0])
+            current = float(parts[1]) if len(parts) > 1 else float('nan')
+        except Exception:
+            voltage = float('nan'); current = float('nan')
+        compliance_type = 'Voltage'
+        comp_limit_v = measurement_settings.get('isource_voltage_compliance')
+        if hw_compliance or (np.isfinite(voltage) and abs(voltage) >= comp_limit_v * 0.99):
+            compliance_status = 'V_COMP'
+        sigma_v_meas = voltage_uncertainty(voltage, model=self._model_name, nplc=nplc)
+        sigma_i_src = current_source_uncertainty(current, model=self._model_name)
+        if np.isfinite(voltage) and np.isfinite(current) and current != 0 and voltage != 0:
+            r_calc = voltage / current
+            rel = (sigma_v_meas / voltage) ** 2 + (sigma_i_src / current) ** 2
+            sigma_r = abs(r_calc) * np.sqrt(rel)
+        else:
+            sigma_r = float('nan')
+        data_dict = {
+            'voltage': voltage, 'current': current,
+            'voltage_unc': sigma_v_meas,
+            'current_unc': sigma_i_src,
+            'resistance_unc': sigma_r,
+        }
+
+        return data_dict, compliance_status, compliance_type
+
+    def _parse_four_point(self, parts, stat_word, hw_compliance, measurement_settings, nplc):
+        """Parse a 4PP reading: measured V at the sourced I.
+
+        Returns (data_dict, compliance_status, compliance_type).
+        """
+        compliance_status = 'OK'
+        compliance_type = None
+        data_dict = {}
+        try:
+            voltage = float(parts[0])
+            current = float(parts[1]) if len(parts) > 1 else float('nan')
+        except Exception:
+            voltage = float('nan'); current = float('nan')
+        compliance_type = 'Voltage'
+        comp_limit_v = measurement_settings.get('fpp_voltage_compliance')
+        if hw_compliance or (np.isfinite(voltage) and abs(voltage) >= comp_limit_v * 0.99):
+            compliance_status = 'V_COMP'
+        data_dict = {'voltage': voltage, 'current': current}
+
+        return data_dict, compliance_status, compliance_type
+
     def run(self):
         self.running = True
         self.paused = False
@@ -926,101 +1062,20 @@ class MeasurementWorker(QThread):
                     hw_compliance = bool(stat_word & _STAT_BIT_COMPLIANCE)
 
                     if self.mode == 'resistance':
-                        # Fixed-order output: VOLT, CURR, RES, [TIME], STAT.
-                        # We requested VOLT,CURR,RES,STAT so parts is V, I, R, STAT.
-                        try:
-                            voltage = float(parts[0])
-                            current = float(parts[1]) if len(parts) > 1 else float('nan')
-                            value = float(parts[2]) if len(parts) > 2 else float('nan')
-                        except Exception:
-                            voltage = float('nan'); current = float('nan'); value = float('nan')
-                        compliance_type = 'Voltage'
-                        if hw_compliance:
-                            compliance_status = 'V_COMP'
-                        if not np.isfinite(value):
-                            value = float('nan')
-                            self._out.status_update(f"Invalid value detected ({reading_str})")
-                        # Apply software cable null if set (R only — V and I
-                        # are reported as-measured by the instrument).
-                        cable_null = self._mode_state.cable_null
-                        if cable_null != 0.0 and np.isfinite(value):
-                            value -= cable_null
-                        sigma_r = resistance_uncertainty(
-                            voltage, current, model=self._model_name, nplc=nplc,
-                            enhanced=bool(measurement_settings.get('res_offset_comp', False)),
-                        )
-                        data_dict = {
-                            'voltage': voltage, 'current': current, 'resistance': value,
-                            'resistance_unc': sigma_r,
-                        }
+                        parsed = self._parse_resistance(
+                            parts, stat_word, hw_compliance, measurement_settings, nplc)
                     elif self.mode == 'source_v':
-                        # Keithley 2400 series returns elements in fixed order:
-                        # VOLT, CURR, STAT. In source_v mode the VOLT
-                        # element echoes the source setpoint (V_set), so
-                        # it's the right input for the source-accuracy spec.
-                        try:
-                            voltage = float(parts[0])
-                            current = float(parts[1]) if len(parts) > 1 else float('nan')
-                        except Exception:
-                            voltage = float('nan'); current = float('nan')
-                        compliance_type = 'Current'
-                        comp_limit_i = measurement_settings.get('vsource_current_compliance')
-                        if hw_compliance or (np.isfinite(current) and abs(current) >= comp_limit_i * 0.99):
-                            compliance_status = 'I_COMP'
-                        sigma_v_src = voltage_source_uncertainty(voltage, model=self._model_name)
-                        sigma_i_meas = current_uncertainty(current, model=self._model_name, nplc=nplc)
-                        # σ on R = V_set / I_meas: RSS of relative uncertainties.
-                        # NaN-safe — current_unc inherits NaN when current is 0
-                        # and we already gate that below.
-                        if np.isfinite(voltage) and np.isfinite(current) and current != 0 and voltage != 0:
-                            r_calc = voltage / current
-                            rel = (sigma_v_src / voltage) ** 2 + (sigma_i_meas / current) ** 2
-                            sigma_r = abs(r_calc) * np.sqrt(rel)
-                        else:
-                            sigma_r = float('nan')
-                        data_dict = {
-                            'current': current, 'voltage': voltage,
-                            'voltage_unc': sigma_v_src,
-                            'current_unc': sigma_i_meas,
-                            'resistance_unc': sigma_r,
-                        }
+                        parsed = self._parse_source_v(
+                            parts, stat_word, hw_compliance, measurement_settings, nplc)
                     elif self.mode == 'source_i':
-                        # CURR element echoes I_set in source_i mode; VOLT
-                        # is the sense reading.
-                        try:
-                            voltage = float(parts[0])
-                            current = float(parts[1]) if len(parts) > 1 else float('nan')
-                        except Exception:
-                            voltage = float('nan'); current = float('nan')
-                        compliance_type = 'Voltage'
-                        comp_limit_v = measurement_settings.get('isource_voltage_compliance')
-                        if hw_compliance or (np.isfinite(voltage) and abs(voltage) >= comp_limit_v * 0.99):
-                            compliance_status = 'V_COMP'
-                        sigma_v_meas = voltage_uncertainty(voltage, model=self._model_name, nplc=nplc)
-                        sigma_i_src = current_source_uncertainty(current, model=self._model_name)
-                        if np.isfinite(voltage) and np.isfinite(current) and current != 0 and voltage != 0:
-                            r_calc = voltage / current
-                            rel = (sigma_v_meas / voltage) ** 2 + (sigma_i_src / current) ** 2
-                            sigma_r = abs(r_calc) * np.sqrt(rel)
-                        else:
-                            sigma_r = float('nan')
-                        data_dict = {
-                            'voltage': voltage, 'current': current,
-                            'voltage_unc': sigma_v_meas,
-                            'current_unc': sigma_i_src,
-                            'resistance_unc': sigma_r,
-                        }
+                        parsed = self._parse_source_i(
+                            parts, stat_word, hw_compliance, measurement_settings, nplc)
                     elif self.mode == 'four_point':
-                        try:
-                            voltage = float(parts[0])
-                            current = float(parts[1]) if len(parts) > 1 else float('nan')
-                        except Exception:
-                            voltage = float('nan'); current = float('nan')
-                        compliance_type = 'Voltage'
-                        comp_limit_v = measurement_settings.get('fpp_voltage_compliance')
-                        if hw_compliance or (np.isfinite(voltage) and abs(voltage) >= comp_limit_v * 0.99):
-                            compliance_status = 'V_COMP'
-                        data_dict = {'voltage': voltage, 'current': current}
+                        parsed = self._parse_four_point(
+                            parts, stat_word, hw_compliance, measurement_settings, nplc)
+                    else:
+                        parsed = ({}, 'OK', None)
+                    data_dict, compliance_status, compliance_type = parsed
 
                     # Auxiliary-sensor sample at the measurement instant —
                     # shared across every mode that opened a sensor
