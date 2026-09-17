@@ -19,7 +19,11 @@ import logging
 import secrets
 from typing import Callable, Optional
 
+import json
+import math
+
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..session.manager import MeasurementSession, SessionBusy
@@ -31,6 +35,31 @@ UI_ROLE = 'ui'
 _bearer = HTTPBearer(auto_error=True)
 
 
+def _json_safe(value):
+    """Replace non-finite floats with null, recursively.
+
+    Settings and results legitimately carry NaN — an unmeasured temperature, a
+    sigma that could not be computed — and JSON has no NaN. The event contract
+    already serializes them as null; the HTTP routes match, so a client sees
+    one representation of "no value" everywhere.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+class NullNanJSONResponse(JSONResponse):
+    """JSONResponse that renders non-finite floats as null."""
+
+    def render(self, content) -> bytes:
+        return json.dumps(_json_safe(content), allow_nan=False,
+                           separators=(",", ":")).encode("utf-8")
+
+
 class ApiState:
     """What the routes share: the session, the token, its role, the profiles.
 
@@ -40,11 +69,13 @@ class ApiState:
     """
 
     def __init__(self, session: MeasurementSession, token: str, role: str = UI_ROLE,
-                 profile_provider: Optional[Callable[[str], dict]] = None):
+                 profile_provider: Optional[Callable[[str], dict]] = None,
+                 config=None):
         self.session = session
         self.token = token
         self.role = role
-        self.profile_provider = profile_provider or _config_profiles
+        self.config = config if config is not None else _default_config()
+        self.profile_provider = profile_provider or self.config.get_user_settings
 
 
 def require_token(request: Request,
@@ -65,23 +96,27 @@ def busy_as_conflict(exc: SessionBusy) -> HTTPException:
     return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
 
-def _config_profiles(username: str) -> dict:
-    """Default provider: the profile ConfigManager has on disk."""
+def _default_config():
+    """The config file the sidecar was pointed at."""
     from ..config import ConfigManager
 
-    return ConfigManager().get_user_settings(username)
+    return ConfigManager()
 
 
 def create_app(session: MeasurementSession, token: Optional[str] = None,
                 role: str = UI_ROLE,
-                profile_provider: Optional[Callable[[str], dict]] = None) -> FastAPI:
+                profile_provider: Optional[Callable[[str], dict]] = None,
+                config=None) -> FastAPI:
     """Build the app around an existing session."""
     from .routes_session import router as session_router
+    from .routes_settings import router as settings_router
 
-    app = FastAPI(title="ResistaMet", version="2.0-dev")
+    app = FastAPI(title="ResistaMet", version="2.0-dev",
+                   default_response_class=NullNanJSONResponse)
     app.state.api = ApiState(session, token or secrets.token_urlsafe(32), role,
-                              profile_provider)
+                              profile_provider, config)
     app.include_router(session_router)
+    app.include_router(settings_router)
 
     @app.get("/health")
     def health():
