@@ -48,6 +48,11 @@ class _QtSink:
                 payload['voltages'], payload['currents'], payload['compliance'])
         elif kind == 'acquisition_finished':
             self._worker.measurement_complete.emit(payload['mode'])
+        elif kind == 'prompt':
+            if payload['kind'] == 'vdp_geometry':
+                detail = payload['detail']
+                self._worker.geometry_ready.emit(
+                    detail['index'], {k: v for k, v in detail.items() if k != 'index'})
         elif kind == 'vdp_geometry_complete':
             index = payload['index']
             self._worker.geometry_complete.emit(index, {
@@ -69,9 +74,6 @@ class _QtOutputs:
 
     def __init__(self, worker):
         self._worker = worker
-
-    def geometry_ready(self, index, geometry):
-        self._worker.geometry_ready.emit(index, geometry)
 
 
 class MeasurementWorker(QThread):

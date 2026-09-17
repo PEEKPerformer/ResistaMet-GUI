@@ -158,6 +158,24 @@ class VdpResultPayload(EventModel):
     rho_avg_uncertainty: Optional[float] = None
 
 
+class PromptPayload(EventModel):
+    """The run is blocked until someone answers."""
+
+    prompt_id: str
+    kind: Literal['vdp_geometry', 'safety_voltage_ack', 'cable_null_shorted']
+    options: List[str] = Field(default_factory=list)
+    requires_human: bool = True
+    detail: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PromptResolvedPayload(EventModel):
+    """How a prompt ended: answered, or released by a stop."""
+
+    prompt_id: str
+    choice: Optional[str] = None
+    answered_by: Optional[str] = None
+
+
 class Event(EventModel):
     """One thing that happened during a run."""
 
@@ -182,4 +200,6 @@ PAYLOAD_MODELS = {
     'acquisition_finished': AcquisitionFinishedPayload,
     'vdp_geometry_complete': VdpGeometryCompletePayload,
     'vdp_result': VdpResultPayload,
+    'prompt': PromptPayload,
+    'prompt_resolved': PromptResolvedPayload,
 }

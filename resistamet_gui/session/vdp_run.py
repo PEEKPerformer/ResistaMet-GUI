@@ -64,7 +64,9 @@ class VdpRun:
 
     def proceed(self) -> None:
         """UI slot: user has reconnected leads; take this geometry's reading."""
-        self._control.proceed_event.set()
+        prompt = self._control.pending_prompt
+        if prompt is not None:
+            self._control.answer_prompt(prompt.prompt_id, 'proceed')
 
     def stop_measurement(self) -> None:
         self._events.log('stopping', "Stopping vdP measurement...")
@@ -223,8 +225,8 @@ class VdpRun:
             if not self.running:
                 raise _VdpAborted()
 
-            self._control.proceed_event.clear()
-            self._out.geometry_ready(idx, {
+            prompt = self._control.raise_prompt('vdp_geometry', ['proceed', 'abort'], detail={
+                'index': idx,
                 'name': geom.name,
                 'source_high': geom.source_high,
                 'source_low': geom.source_low,
@@ -234,14 +236,23 @@ class VdpRun:
                 'label_neg': geom.label_neg,
                 'group': geom.group,
             })
+            self._events.emit('prompt', {
+                'prompt_id': prompt.prompt_id,
+                'kind': prompt.kind,
+                'options': prompt.options,
+                'requires_human': prompt.requires_human,
+                'detail': prompt.detail,
+            })
             self._events.log('geometry_prompt', 
                 f"{geom.name}: connect Force HI->C{geom.source_high}, "
                 f"Force LO->C{geom.source_low}, "
                 f"Sense HI->C{geom.sense_high}, "
                 f"Sense LO->C{geom.sense_low}; press Measure."
             )
-            self._control.proceed_event.wait()
-            if not self.running:
+            choice = self._control.wait_for_prompt()
+            self._events.emit('prompt_resolved', {
+                'prompt_id': prompt.prompt_id, 'choice': choice})
+            if not self.running or choice == 'abort':
                 raise _VdpAborted()
 
             self.keithley.write(":OUTP ON")
