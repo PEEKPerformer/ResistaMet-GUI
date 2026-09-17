@@ -67,7 +67,7 @@ class VdpRun:
         self._control.proceed_event.set()
 
     def stop_measurement(self) -> None:
-        self._out.status_update("Stopping vdP measurement...")
+        self._events.log('stopping', "Stopping vdP measurement...")
         self.running = False
         # Unblock any wait_for_user pause.
         self._control.proceed_event.set()
@@ -75,14 +75,14 @@ class VdpRun:
     def _emit_compress_status(self, orig_path: Path, gz_path: Path,
                               orig_mb: float, gz_mb: float) -> None:
         """Status callback fired by CsvExporter after gzip finalize."""
-        self._out.status_update(
+        self._events.log('compress', 
             f"Compressed {orig_path.name} -> {gz_path.name} "
             f"({orig_mb:.1f} MB -> {gz_mb:.1f} MB)"
         )
 
     def _emit_large_file_status(self, path: Path, size_mb: float) -> None:
         """Status callback fired by CsvExporter when an uncompressed run is large."""
-        self._out.status_update(
+        self._events.warn('large_file', 
             f"Run wrote {size_mb:.1f} MB to {path.name}. "
             f"Compression is off — enable in Settings -> Output to gzip future runs."
         )
@@ -94,10 +94,10 @@ class VdpRun:
             self._run_geometries()
             self._compute_and_emit_result()
         except _VdpAborted:
-            self._out.status_update("vdP measurement aborted by user")
+            self._events.log('aborted', "vdP measurement aborted by user")
         except Exception as e:
             logger.exception("vdP measurement failed")
-            self._out.error_occurred(f"vdP error: {e}")
+            self._events.error('worker_error', 'run', f"vdP error: {e}")
         finally:
             self.running = False
             self._cleanup()
@@ -108,7 +108,7 @@ class VdpRun:
 
         measurement = self.settings['measurement']
         gpib = measurement['gpib_address']
-        self._out.status_update(f"Connecting to instrument at {gpib}...")
+        self._events.log('connecting', f"Connecting to instrument at {gpib}...")
         try:
             self.keithley = Keithley2400(gpib).connect()
         except Exception as e:
@@ -116,7 +116,7 @@ class VdpRun:
             # the user can actually act on.
             raise RuntimeError(humanize_connection_error(e, gpib)) from e
         self._instrument_idn = self.keithley.query("*IDN?").strip()
-        self._out.status_update(f"Connected to: {self._instrument_idn}")
+        self._events.log('connected', f"Connected to: {self._instrument_idn}")
         spec = self.keithley.detect_model()
         self._model_name = spec.model if spec else "2400"
         try:
@@ -207,7 +207,7 @@ class VdpRun:
         primary_paths = self.exporter.output_paths
         self.filename = str(primary_paths[0]) if primary_paths else str(base_path)
         names = ", ".join(p.name for p in primary_paths)
-        self._out.status_update(f"Data file: {names}")
+        self._events.log('file_opened', f"Data file: {names}")
 
         self._sleep_inhibitor.inhibit(f"ResistaMet: vdP on {self.sample_name}")
         self._start_time = time.time()
@@ -234,7 +234,7 @@ class VdpRun:
                 'label_neg': geom.label_neg,
                 'group': geom.group,
             })
-            self._out.status_update(
+            self._events.log('geometry_prompt', 
                 f"{geom.name}: connect Force HI->C{geom.source_high}, "
                 f"Force LO->C{geom.source_low}, "
                 f"Sense HI->C{geom.sense_high}, "
@@ -346,7 +346,7 @@ class VdpRun:
             'rho_avg_uncertainty': u_rho,
         }
         self._out.vdp_complete(result_dict)
-        self._out.status_update(
+        self._events.log('completed', 
             f"vdP done: Rs={result.sheet_resistance:.4g} Ohm/sq, "
             f"rho={result.rho_avg:.4g} Ohm.cm, "
             f"asym={result.asymmetry_pct:.2f}% "
@@ -363,9 +363,9 @@ class VdpRun:
             try:
                 self.keithley.write(":OUTP OFF")
                 self.keithley.close()
-                self._out.status_update("Instrument disconnected.")
+                self._events.log('cleanup', "Instrument disconnected.")
             except Exception as e:
-                self._out.status_update(f"Warning: cleanup error: {e}")
+                self._events.warn('cleanup', f"Warning: cleanup error: {e}")
             finally:
                 self.keithley = None
         if self.exporter:

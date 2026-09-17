@@ -20,7 +20,7 @@ _STAT_BIT_COMPLIANCE = 1 << 3
 
 
 def parse_resistance(parts, stat_word, hw_compliance, measurement_settings, nplc,
-                  model_name, mode_state, out, reading_str=''):
+                  model_name, mode_state, events, reading_str=''):
     """Parse a resistance reading: V, I, R, plus sigma_R and the cable null.
 
     Returns (data_dict, compliance_status, compliance_type).
@@ -41,7 +41,7 @@ def parse_resistance(parts, stat_word, hw_compliance, measurement_settings, nplc
         compliance_status = 'V_COMP'
     if not np.isfinite(value):
         value = float('nan')
-        out.status_update(f"Invalid value detected ({reading_str})")
+        events.warn('invalid_reading', f"Invalid value detected ({reading_str})")
     # Apply software cable null if set (R only — V and I
     # are reported as-measured by the instrument).
     cable_null = mode_state.cable_null

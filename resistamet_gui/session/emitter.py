@@ -59,6 +59,9 @@ class EventEmitter:
     def log(self, code: str, message: str, level: str = 'info') -> Event:
         return self.emit('log', {'level': level, 'code': code, 'message': message})
 
+    def warn(self, code: str, message: str) -> Event:
+        return self.log(code, message, level='warning')
+
     def error(self, code: str, source: str, message: str, fatal: bool = True) -> Event:
         return self.emit('error', {'code': code, 'source': source,
                                     'message': message, 'fatal': fatal})
