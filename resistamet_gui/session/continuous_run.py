@@ -45,14 +45,13 @@ class ContinuousRun:
     session. No Qt here.
     """
 
-    def __init__(self, mode, sample_name, username, settings, control, out, events):
+    def __init__(self, mode, sample_name, username, settings, control, events):
         if mode not in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             raise ValueError(f"Invalid measurement mode: {mode}")
         self.mode = mode
         self.sample_name = sample_name
         self.username = username
         self.settings = settings
-        self._out = out
         self._events = events
         # Set by the configure step: the frozen per-mode state the loop reads.
         self._mode_state = None

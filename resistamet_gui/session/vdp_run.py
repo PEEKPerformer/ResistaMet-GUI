@@ -38,11 +38,10 @@ class VdpRun:
 
     MODE = 'vdp'
 
-    def __init__(self, sample_name, username, settings, control, out, events):
+    def __init__(self, sample_name, username, settings, control, events):
         self.sample_name = sample_name
         self.username = username
         self.settings = settings
-        self._out = out
         self._events = events
         self._control = control
         self._voltages: Dict[str, float] = {}

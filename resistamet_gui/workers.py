@@ -69,18 +69,6 @@ class _QtSink:
         # line_frequency has no Signal: the GUI reads it from the status log.
 
 
-class _QtOutputs:
-    """Call-shaped facade over a worker's Qt Signals.
-
-    The run code reports through plain method calls, so it stops naming Qt at
-    every site. Calls that have become events go through :class:`_QtSink`
-    instead; what is left here is the not-yet-converted remainder.
-    """
-
-    def __init__(self, worker):
-        self._worker = worker
-
-
 class MeasurementWorker(QThread):
     """Worker thread for running measurements in different modes."""
     data_point = Signal(float, dict, str, str)  # timestamp, data dict, compliance, event
@@ -99,10 +87,9 @@ class MeasurementWorker(QThread):
 
     def __init__(self, mode, sample_name, username, settings, parent=None):
         super().__init__(parent)
-        self._out = _QtOutputs(self)
         self._control = RunControl()
         self._run = ContinuousRun(mode, sample_name, username, settings,
-                                   self._control, self._out, EventEmitter(_QtSink(self)))
+                                   self._control, EventEmitter(_QtSink(self)))
 
     # --- the run's identity and state, as the GUI has always read them
 
@@ -198,9 +185,8 @@ class VdpMeasurementWorker(QThread):
 
     def __init__(self, sample_name, username, settings, parent=None):
         super().__init__(parent)
-        self._out = _QtOutputs(self)
         self._control = RunControl()
-        self._run = VdpRun(sample_name, username, settings, self._control, self._out,
+        self._run = VdpRun(sample_name, username, settings, self._control,
                             EventEmitter(_QtSink(self)))
 
     # --- the run's identity and state, as the GUI has always read them

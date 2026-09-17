@@ -15,13 +15,6 @@ from resistamet_gui.session.control import RunControl
 from resistamet_gui.session.emitter import EventEmitter, ListSink
 
 
-class _Outputs:
-    """The remaining call-shaped facade; nothing routes through it any more."""
-
-    def __getattr__(self, name):
-        return lambda *args, **kwargs: None
-
-
 def _settings(tmp_path, **measurement):
     base = {
         "measurement": {
@@ -45,7 +38,7 @@ def _run(tmp_path, mode='resistance', **measurement):
     control = RunControl()
     sink = ListSink()
     run = ContinuousRun(mode, "wafer1", "alice", _settings(tmp_path, **measurement),
-                         control, _Outputs(), EventEmitter(sink))
+                         control, EventEmitter(sink))
     return run, control, sink
 
 
