@@ -331,6 +331,157 @@
       },
       "title": "SweepSegmentPayload",
       "type": "object"
+    },
+    "vdp_geometry_complete": {
+      "additionalProperties": false,
+      "description": "One F76 geometry measured: the +I and -I voltages at this wiring.",
+      "properties": {
+        "current_a": {
+          "title": "Current A",
+          "type": "number"
+        },
+        "group": {
+          "title": "Group",
+          "type": "string"
+        },
+        "index": {
+          "title": "Index",
+          "type": "integer"
+        },
+        "label_neg": {
+          "title": "Label Neg",
+          "type": "string"
+        },
+        "label_pos": {
+          "title": "Label Pos",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "v_neg": {
+          "title": "V Neg",
+          "type": "number"
+        },
+        "v_pos": {
+          "title": "V Pos",
+          "type": "number"
+        }
+      },
+      "required": [
+        "index",
+        "name",
+        "group",
+        "label_pos",
+        "v_pos",
+        "label_neg",
+        "v_neg",
+        "current_a"
+      ],
+      "title": "VdpGeometryCompletePayload",
+      "type": "object"
+    },
+    "vdp_result": {
+      "additionalProperties": false,
+      "description": "The finished van der Pauw result, ASTM F76.\n\nField for field what the GUI result panel has always received, including\nthe f(Q) homogeneity check and the combined uncertainties, so the panel\nreads the same numbers the CSV metadata carries.",
+      "properties": {
+        "asymmetry_pct": {
+          "title": "Asymmetry Pct",
+          "type": "number"
+        },
+        "current_a": {
+          "title": "Current A",
+          "type": "number"
+        },
+        "f_a": {
+          "title": "F A",
+          "type": "number"
+        },
+        "f_b": {
+          "title": "F B",
+          "type": "number"
+        },
+        "homogeneous": {
+          "title": "Homogeneous",
+          "type": "boolean"
+        },
+        "q_a": {
+          "title": "Q A",
+          "type": "number"
+        },
+        "q_b": {
+          "title": "Q B",
+          "type": "number"
+        },
+        "rho_a": {
+          "title": "Rho A",
+          "type": "number"
+        },
+        "rho_avg": {
+          "title": "Rho Avg",
+          "type": "number"
+        },
+        "rho_avg_uncertainty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rho Avg Uncertainty"
+        },
+        "rho_b": {
+          "title": "Rho B",
+          "type": "number"
+        },
+        "sheet_resistance": {
+          "title": "Sheet Resistance",
+          "type": "number"
+        },
+        "sheet_resistance_uncertainty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Resistance Uncertainty"
+        },
+        "thickness_cm": {
+          "title": "Thickness Cm",
+          "type": "number"
+        },
+        "voltages": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Voltages",
+          "type": "object"
+        }
+      },
+      "required": [
+        "rho_a",
+        "rho_b",
+        "rho_avg",
+        "sheet_resistance",
+        "q_a",
+        "q_b",
+        "f_a",
+        "f_b",
+        "homogeneous",
+        "asymmetry_pct",
+        "current_a",
+        "thickness_cm"
+      ],
+      "title": "VdpResultPayload",
+      "type": "object"
     }
   },
   "version": 1

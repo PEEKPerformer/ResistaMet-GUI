@@ -48,6 +48,12 @@ class _QtSink:
                 payload['voltages'], payload['currents'], payload['compliance'])
         elif kind == 'acquisition_finished':
             self._worker.measurement_complete.emit(payload['mode'])
+        elif kind == 'vdp_geometry_complete':
+            index = payload['index']
+            self._worker.geometry_complete.emit(index, {
+                k: v for k, v in payload.items() if k != 'index'})
+        elif kind == 'vdp_result':
+            self._worker.vdp_complete.emit(dict(payload))
         elif kind == 'instrument_connected':
             self._worker.instrument_identified.emit(payload['model'])
         # line_frequency has no Signal: the GUI reads it from the status log.
@@ -66,12 +72,6 @@ class _QtOutputs:
 
     def geometry_ready(self, index, geometry):
         self._worker.geometry_ready.emit(index, geometry)
-
-    def geometry_complete(self, index, result):
-        self._worker.geometry_complete.emit(index, result)
-
-    def vdp_complete(self, result):
-        self._worker.vdp_complete.emit(result)
 
 
 class MeasurementWorker(QThread):

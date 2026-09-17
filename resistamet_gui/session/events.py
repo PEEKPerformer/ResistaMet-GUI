@@ -120,6 +120,44 @@ class AcquisitionFinishedPayload(EventModel):
     mode: str
 
 
+class VdpGeometryCompletePayload(EventModel):
+    """One F76 geometry measured: the +I and -I voltages at this wiring."""
+
+    index: int
+    name: str
+    group: str
+    label_pos: str
+    v_pos: float
+    label_neg: str
+    v_neg: float
+    current_a: float
+
+
+class VdpResultPayload(EventModel):
+    """The finished van der Pauw result, ASTM F76.
+
+    Field for field what the GUI result panel has always received, including
+    the f(Q) homogeneity check and the combined uncertainties, so the panel
+    reads the same numbers the CSV metadata carries.
+    """
+
+    rho_a: float
+    rho_b: float
+    rho_avg: float
+    sheet_resistance: float
+    q_a: float
+    q_b: float
+    f_a: float
+    f_b: float
+    homogeneous: bool
+    asymmetry_pct: float
+    voltages: Dict[str, float] = Field(default_factory=dict)
+    current_a: float
+    thickness_cm: float
+    sheet_resistance_uncertainty: Optional[float] = None
+    rho_avg_uncertainty: Optional[float] = None
+
+
 class Event(EventModel):
     """One thing that happened during a run."""
 
@@ -142,4 +180,6 @@ PAYLOAD_MODELS = {
     'overpower_trip': OverpowerPayload,
     'sweep_segment': SweepSegmentPayload,
     'acquisition_finished': AcquisitionFinishedPayload,
+    'vdp_geometry_complete': VdpGeometryCompletePayload,
+    'vdp_result': VdpResultPayload,
 }
