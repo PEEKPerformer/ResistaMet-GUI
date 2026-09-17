@@ -334,3 +334,56 @@ class TestOutputResetMigration:
         with open(temp_config_file) as f:
             on_disk = json.load(f)
         assert on_disk['migrations'] == [OUTPUT_RESET_MIGRATION]
+
+
+class TestConcurrentWrites:
+    """Two writers must not be able to lose the file between them."""
+
+    def test_save_is_atomic(self, temp_config_file):
+        """A reader never sees a truncated file, only old or new."""
+        manager = ConfigManager(config_file=temp_config_file)
+        manager.add_user('alice')
+
+        import threading
+
+        errors = []
+
+        def hammer(name):
+            try:
+                for _ in range(20):
+                    manager.add_user(name)
+                    manager.update_user_settings(name, {'measurement': {'nplc': 2.0}})
+                    with open(temp_config_file) as handle:
+                        json.load(handle)  # must always parse
+            except Exception as exc:  # pragma: no cover - failure detail
+                errors.append(exc)
+
+        threads = [threading.Thread(target=hammer, args=(f"user{i}",)) for i in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert errors == []
+        reloaded = ConfigManager(config_file=temp_config_file)
+        assert {'alice', 'user0', 'user1', 'user2', 'user3'} <= set(reloaded.config['users'])
+
+    def test_no_temp_files_left_behind(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file)
+        manager.add_user('alice')
+
+        directory = Path(temp_config_file).parent
+        assert list(directory.glob('.config-*.tmp')) == []
+
+    def test_failed_write_keeps_the_old_file(self, temp_config_file, monkeypatch):
+        manager = ConfigManager(config_file=temp_config_file)
+        manager.add_user('alice')
+        before = Path(temp_config_file).read_text()
+
+        def boom(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(json, 'dump', boom)
+        manager.add_user('bob')  # logged, not raised
+
+        assert Path(temp_config_file).read_text() == before
