@@ -5,7 +5,7 @@ import time
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import numpy as np
 import pyvisa
@@ -32,6 +32,7 @@ from .data_export import (
     splice_before_tail,
 )
 from .instrument import Keithley2400, humanize_connection_error
+from .session.control import RunControl
 from .sensors import aux_column_names, make_sensor, reading_to_columns
 from .system_utils import SleepInhibitor
 
@@ -107,11 +108,9 @@ class MeasurementWorker(QThread):
         self.settings = settings
         self._out = _QtOutputs(self)
 
-        # Thread-safe state management
-        self._state_lock = threading.Lock()
-        self._running = False
-        self._paused = False
-        self._event_markers: List[str] = []
+        # Start/stop/pause state and the marker queue, shared with whoever is
+        # driving the run.
+        self._control = RunControl()
         self._csv_error_count = 0  # Track consecutive CSV write failures
         self._max_csv_errors = 3   # Max consecutive errors before escalation
 
@@ -139,40 +138,26 @@ class MeasurementWorker(QThread):
 
     @property
     def running(self) -> bool:
-        """Thread-safe access to running state."""
-        with self._state_lock:
-            return self._running
+        return self._control.running
 
     @running.setter
     def running(self, value: bool) -> None:
-        """Thread-safe setter for running state."""
-        with self._state_lock:
-            self._running = value
+        self._control.running = value
 
     @property
     def paused(self) -> bool:
-        """Thread-safe access to paused state."""
-        with self._state_lock:
-            return self._paused
+        return self._control.paused
 
     @paused.setter
     def paused(self, value: bool) -> None:
-        """Thread-safe setter for paused state."""
-        with self._state_lock:
-            self._paused = value
+        self._control.paused = value
 
     @property
     def event_marker(self) -> str:
-        """Thread-safe view of the marks waiting for the next sample."""
-        with self._state_lock:
-            return "; ".join(self._event_markers)
+        return self._control.event_marker
 
     def get_and_clear_event_marker(self) -> str:
-        """Atomically take every pending mark, joined in arrival order."""
-        with self._state_lock:
-            marker = "; ".join(self._event_markers)
-            self._event_markers = []
-            return marker
+        return self._control.get_and_clear_event_marker()
 
     def run(self):
         self.running = True
@@ -1232,14 +1217,7 @@ class MeasurementWorker(QThread):
         return user_dir / base_name
 
     def mark_event(self, name: str = "MARK") -> None:
-        """Queue a mark for the next sample.
-
-        Marks queue rather than overwrite: two keystrokes between samples
-        are two things the operator did, and dropping the first loses a
-        record the run cannot reconstruct.
-        """
-        with self._state_lock:
-            self._event_markers.append(name)
+        self._control.mark_event(name)
 
     def pause_measurement(self) -> None:
         if self.running:
@@ -1424,9 +1402,7 @@ class VdpMeasurementWorker(QThread):
         self.username = username
         self.settings = settings
         self._out = _QtOutputs(self)
-        self._state_lock = threading.Lock()
-        self._running = False
-        self._proceed_event = threading.Event()
+        self._control = RunControl()
         self._voltages: Dict[str, float] = {}
         self.keithley = None
         self.exporter = None
@@ -1438,23 +1414,21 @@ class VdpMeasurementWorker(QThread):
 
     @property
     def running(self) -> bool:
-        with self._state_lock:
-            return self._running
+        return self._control.running
 
     @running.setter
     def running(self, value: bool) -> None:
-        with self._state_lock:
-            self._running = value
+        self._control.running = value
 
     def proceed(self) -> None:
         """UI slot: user has reconnected leads; take this geometry's reading."""
-        self._proceed_event.set()
+        self._control.proceed_event.set()
 
     def stop_measurement(self) -> None:
         self._out.status_update("Stopping vdP measurement...")
         self.running = False
         # Unblock any wait_for_user pause.
-        self._proceed_event.set()
+        self._control.proceed_event.set()
 
     def _emit_compress_status(self, orig_path: Path, gz_path: Path,
                               orig_mb: float, gz_mb: float) -> None:
@@ -1604,7 +1578,7 @@ class VdpMeasurementWorker(QThread):
             if not self.running:
                 raise _VdpAborted()
 
-            self._proceed_event.clear()
+            self._control.proceed_event.clear()
             self._out.geometry_ready(idx, {
                 'name': geom.name,
                 'source_high': geom.source_high,
@@ -1621,7 +1595,7 @@ class VdpMeasurementWorker(QThread):
                 f"Sense HI->C{geom.sense_high}, "
                 f"Sense LO->C{geom.sense_low}; press Measure."
             )
-            self._proceed_event.wait()
+            self._control.proceed_event.wait()
             if not self.running:
                 raise _VdpAborted()
 
