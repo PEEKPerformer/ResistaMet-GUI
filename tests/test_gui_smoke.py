@@ -29,7 +29,19 @@ def main_window(app, tmp_path, monkeypatch):
     original_config = constants.CONFIG_FILE
     constants.CONFIG_FILE = str(tmp_path / "config.json")
 
+    from resistamet_gui.config import ConfigManager
+    from resistamet_gui.ui import main_window as main_window_module
     from resistamet_gui.ui.main_window import ResistanceMeterApp
+
+    # Patching constants.CONFIG_FILE is not enough: ConfigManager binds it as
+    # a default argument at import time, so whichever path was live when
+    # resistamet_gui.config was first imported wins for the whole session —
+    # the real config.json when another test module imported it first.
+    config_path = str(tmp_path / "config.json")
+    monkeypatch.setattr(
+        main_window_module, 'ConfigManager',
+        lambda *args, **kwargs: ConfigManager(config_file=config_path),
+    )
 
     # Bypass the modal user selection dialog in __init__
     monkeypatch.setattr(ResistanceMeterApp, 'select_user', lambda self: None)
