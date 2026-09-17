@@ -148,6 +148,7 @@ class ContinuousRun:
                 self._events.error('aux_connect_failed', 'aux', 
                     "Auxiliary sensor: " + humanize_connection_error(e, aux_address)
                 )
+                self._control.finish('aux_connect_failed')
                 return
         return True
 
@@ -184,6 +185,7 @@ class ContinuousRun:
             self._events.log('file_opened', f"Data file: {names}")
         except Exception as e:
             self._events.error('file_create_failed', 'file', f"Error creating output files: {str(e)}")
+            self._control.finish('file_create_failed')
             return
         return True
 
@@ -274,7 +276,7 @@ class ContinuousRun:
             except Exception as e:
                 self._events.error('sweep_error', 'smu', f"Sweep error: {str(e)}")
             # Sweep is done — skip to finalization
-            self.running = False
+            self._control.finish('completed')
             # Fall through to cleanup below
 
     def execute(self):
@@ -359,6 +361,7 @@ class ContinuousRun:
                 instrument_ready = True
             except Exception as e:
                 self._events.error('connect_failed', 'smu', humanize_connection_error(e, gpib_address))
+                self._control.finish('connect_failed')
                 return
 
             # Configure instrument
@@ -377,6 +380,7 @@ class ContinuousRun:
                 elif self.mode == 'four_point':
                     configured = configure_four_point(self.keithley, self._events, measurement_settings, nplc)
                     if configured is None:
+                        self._control.finish('power_envelope')
                         return  # pre-flight refused the power envelope
                     self._fpp_overpower_emitted = False  # debounce: emit once
                 elif self.mode == 'sweep':
@@ -399,6 +403,7 @@ class ContinuousRun:
                 self.keithley.write(":SOUR:DEL:AUTO ON")
             except Exception as e:
                 self._events.error('configure_failed', 'smu', f"Error configuring instrument: {str(e)}")
+                self._control.finish('configure_failed')
                 return
 
             if not self._open_aux_sensor(measurement_settings):
@@ -425,6 +430,7 @@ class ContinuousRun:
                     time.sleep(settling_time)
                 except Exception as e:
                     self._events.error('output_on_failed', 'smu', f"Error turning on output: {str(e)}")
+                    self._control.finish('output_on_failed')
                     return
 
             last_save = self.start_time
@@ -531,6 +537,7 @@ class ContinuousRun:
                                 break
 
                     if not read_success:
+                        self._control.finish('read_error')
                         break
 
                     elapsed_time = now - self.start_time
@@ -607,7 +614,7 @@ class ContinuousRun:
                             pass
                         if stop_on_comp:
                             self._events.log('compliance_stop', "Stopping due to compliance (per settings).")
-                            self.running = False
+                            self._control.finish('compliance_stop')
 
                     # 4PP probe-safety runtime check: measured V*I against the
                     # configured warn / hard-stop thresholds. Hard stop also
@@ -638,7 +645,7 @@ class ContinuousRun:
                                     self.keithley.write(":OUTP OFF")
                                 except Exception:
                                     pass
-                                self.running = False
+                                self._control.finish('overpower')
                             elif measured_power > warn_w:
                                 self._events.warn('power_envelope', 
                                     f"⚠️ 4PP power {measured_power*1e3:.1f} mW above "
@@ -676,7 +683,7 @@ class ContinuousRun:
                                 f"CRITICAL: {self._csv_error_count} consecutive write failures. "
                                 f"Possible disk full or write permission issue. Stopping measurement to prevent data loss."
                             )
-                            self.running = False
+                            self._control.finish('write_error')
                             break
 
                     self._events.emit('sample', {
@@ -692,7 +699,7 @@ class ContinuousRun:
                         sample_count += 1
                         if target_samples > 0 and sample_count >= target_samples:
                             self._events.log('target_reached', f"Reached target samples: {target_samples}. Stopping.")
-                            self.running = False
+                            self._control.finish('target_samples')
 
                     if now - last_save >= auto_save_interval:
                         try:
@@ -728,7 +735,7 @@ class ContinuousRun:
 
                 if end_time is not None and time.time() >= end_time:
                     self._events.log('duration_reached', "Reached configured duration. Stopping.")
-                    self.running = False
+                    self._control.finish('duration')
 
             if instrument_ready and self.keithley:
                 try:
@@ -757,8 +764,21 @@ class ContinuousRun:
 
         except Exception as e:
             self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self.mode}): {str(e)}")
+        except Exception:
+            self._control.finish('worker_error')
+            raise
         finally:
+            # Read the counters before cleanup releases the exporter.
+            samples = self.exporter.row_count if self.exporter else 0
             self._cleanup()
+            reason = self._control.finish_reason or 'completed'
+            self._events.emit('run_ended', {
+                'reason': reason,
+                'ok': reason in ('completed', 'target_samples', 'duration', 'user_stop'),
+                'samples': samples,
+                'duration_s': time.time() - self.start_time if self.start_time else 0.0,
+                'path': self.filename or None,
+            })
             self.running = False
 
     def _emit_compress_status(self, orig_path: Path, gz_path: Path,
@@ -792,7 +812,7 @@ class ContinuousRun:
     def stop_measurement(self) -> None:
         self._events.emit('stopping', {'reason': 'user_stop'})
         self._events.log('stopping', f"Stopping measurement ({self.mode})...")
-        self.running = False
+        self._control.finish('user_stop')
 
     def _cleanup(self) -> None:
         # Re-enable system sleep
