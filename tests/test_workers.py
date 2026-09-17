@@ -1194,3 +1194,24 @@ class TestRunControlQueueing:
         assert (worker._control.running, worker._control.paused) == (True, True)
         worker._control.paused = False
         assert worker.paused is False
+
+
+class TestInvalidReadingMessage:
+    """A malformed reading must report the reading, not raise."""
+
+    def test_message_quotes_the_reading(self):
+        from resistamet_gui.session.configure import ResistanceState
+        from resistamet_gui.session.samples import parse_resistance
+
+        messages = []
+
+        class _Out:
+            def status_update(self, message):
+                messages.append(message)
+
+        data, status, kind = parse_resistance(
+            ['nan', 'nan', 'nan', '0'], 0, False, {'res_voltage_compliance': 5.0}, 1.0,
+            '2400', ResistanceState(cable_null=0.0), _Out(), reading_str='nan,nan,nan,0',
+        )
+        assert any('nan,nan,nan,0' in m for m in messages)
+        assert status == 'OK'

@@ -4,6 +4,8 @@ Split out of ``workers.py`` unchanged. Called once per sample by the
 acquisition loop: parse the reading for this mode, then build the row in the
 column order ``data_export.get_column_config`` declares.
 """
+from typing import Optional
+
 import numpy as np
 
 from ..accuracy import (
@@ -18,7 +20,7 @@ _STAT_BIT_COMPLIANCE = 1 << 3
 
 
 def parse_resistance(parts, stat_word, hw_compliance, measurement_settings, nplc,
-                  model_name, mode_state, out):
+                  model_name, mode_state, out, reading_str=''):
     """Parse a resistance reading: V, I, R, plus sigma_R and the cable null.
 
     Returns (data_dict, compliance_status, compliance_type).
