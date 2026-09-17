@@ -154,43 +154,23 @@ class _VdpAborted(Exception):
     """Internal: worker was stopped via stop_measurement()."""
 
 
-class VdpMeasurementWorker(QThread):
-    """Van der Pauw measurement worker per ASTM F76-08 Method A.
+class VdpRun:
+    """One van der Pauw run: ASTM F76 Method A, four manual geometries.
 
-    State machine over F76's 4 physical cabling configurations. For each
-    geometry the worker emits ``geometry_ready``, waits for the UI to call
-    ``proceed()`` (after the user has reconnected leads), then takes +I
-    and -I voltage readings (current reversal cancels thermal offsets per
-    F76 sec. 11.1) and emits ``geometry_complete``. After 4 geometries it
-    computes the vdP result and emits ``vdp_complete``.
-
-    Signals:
-        geometry_ready(int, dict): index 0..3, instruction dict
-            (name, source_high, source_low, sense_high, sense_low,
-            label_pos, label_neg, group).
-        geometry_complete(int, dict): readings dict
-            (name, label_pos, v_pos, label_neg, v_neg, current_a, group).
-        vdp_complete(dict): final VdpResult fields + raw voltages.
-        status_update(str), error_occurred(str), compliance_hit(str).
+    Inherently human-in-loop — the operator rewires the leads between
+    geometries — so the procedure waits on the control's proceed gate rather
+    than owning any UI. Like ContinuousRun, it reports through an outputs
+    facade and contains no Qt.
     """
-
-    geometry_ready = Signal(int, dict)
-    geometry_complete = Signal(int, dict)
-    vdp_complete = Signal(dict)
-    status_update = Signal(str)
-    error_occurred = Signal(str)
-    compliance_hit = Signal(str)
-    instrument_identified = Signal(str)  # see MeasurementWorker
 
     MODE = 'vdp'
 
-    def __init__(self, sample_name, username, settings, parent=None):
-        super().__init__(parent)
+    def __init__(self, sample_name, username, settings, control, out):
         self.sample_name = sample_name
         self.username = username
         self.settings = settings
-        self._out = _QtOutputs(self)
-        self._control = RunControl()
+        self._out = out
+        self._control = control
         self._voltages: Dict[str, float] = {}
         self.keithley = None
         self.exporter = None
@@ -233,7 +213,7 @@ class VdpMeasurementWorker(QThread):
             f"Compression is off — enable in Settings -> Output to gzip future runs."
         )
 
-    def run(self) -> None:
+    def execute(self) -> None:
         self.running = True
         try:
             self._connect_and_configure()
@@ -513,3 +493,81 @@ class VdpMeasurementWorker(QThread):
             except Exception:
                 pass
             self.exporter = None
+
+
+class VdpMeasurementWorker(QThread):
+    """Van der Pauw measurement worker per ASTM F76-08 Method A.
+
+    State machine over F76's 4 physical cabling configurations. For each
+    geometry the worker emits ``geometry_ready``, waits for the UI to call
+    ``proceed()`` (after the user has reconnected leads), then takes +I
+    and -I voltage readings (current reversal cancels thermal offsets per
+    F76 sec. 11.1) and emits ``geometry_complete``. After 4 geometries it
+    computes the vdP result and emits ``vdp_complete``.
+
+    Signals:
+        geometry_ready(int, dict): index 0..3, instruction dict
+            (name, source_high, source_low, sense_high, sense_low,
+            label_pos, label_neg, group).
+        geometry_complete(int, dict): readings dict
+            (name, label_pos, v_pos, label_neg, v_neg, current_a, group).
+        vdp_complete(dict): final VdpResult fields + raw voltages.
+        status_update(str), error_occurred(str), compliance_hit(str).
+    """
+
+    geometry_ready = Signal(int, dict)
+    geometry_complete = Signal(int, dict)
+    vdp_complete = Signal(dict)
+    status_update = Signal(str)
+    error_occurred = Signal(str)
+    compliance_hit = Signal(str)
+    instrument_identified = Signal(str)  # see MeasurementWorker
+
+    MODE = 'vdp'
+
+    def __init__(self, sample_name, username, settings, parent=None):
+        super().__init__(parent)
+        self._out = _QtOutputs(self)
+        self._control = RunControl()
+        self._run = VdpRun(sample_name, username, settings, self._control, self._out)
+
+    # --- the run's identity and state, as the GUI has always read them
+
+    @property
+    def sample_name(self):
+        return self._run.sample_name
+
+    @property
+    def settings(self):
+        return self._run.settings
+
+    @property
+    def filename(self) -> str:
+        return self._run.filename
+
+    @property
+    def keithley(self):
+        return self._run.keithley
+
+    @property
+    def exporter(self):
+        return self._run.exporter
+
+    @property
+    def running(self) -> bool:
+        return self._control.running
+
+    @running.setter
+    def running(self, value: bool) -> None:
+        self._control.running = value
+
+    def run(self) -> None:
+        """QThread entry point."""
+        self._run.execute()
+
+    def proceed(self) -> None:
+        """UI slot: user has reconnected leads; take this geometry's reading."""
+        self._run.proceed()
+
+    def stop_measurement(self) -> None:
+        self._run.stop_measurement()
