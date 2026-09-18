@@ -26,6 +26,8 @@ export interface TraceSpec {
 
 interface Props {
   traces: TraceSpec[];
+  /** Only draw samples from a run of this mode; others show an empty plot. */
+  mode?: string | undefined;
   /** Seconds of history to show; 0 shows the whole run. */
   windowS?: number;
   /** Compliance markers: shade samples not "OK". */
@@ -34,7 +36,7 @@ interface Props {
   fps?: number;
 }
 
-export function LivePlot({ traces, windowS = 0, fps = 30 }: Props) {
+export function LivePlot({ traces, mode, windowS = 0, fps = 30 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
   const lastVersion = useRef(-1);
@@ -146,6 +148,10 @@ export function LivePlot({ traces, windowS = 0, fps = 30 }: Props) {
       lastDraw = now;
 
       const series = getSeries();
+      if (mode !== undefined && series.mode !== mode) {
+        plot.setData([[], ...traces.map(() => [])] as AlignedData);
+        return;
+      }
       let t = series.t;
       let start = 0;
       if (windowS > 0 && t.length > 0) {
@@ -177,7 +183,7 @@ export function LivePlot({ traces, windowS = 0, fps = 30 }: Props) {
       plotRef.current = null;
     };
     // traces/windowS/fps changes rebuild the plot; that is intended.
-  }, [traces, windowS, fps]);
+  }, [traces, mode, windowS, fps]);
 
   return <div className={styles.host} ref={hostRef} />;
 }

@@ -232,7 +232,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
             </div>
           }
         >
-          <LivePlot traces={TRACES[mode]} windowS={windowS} />
+          <LivePlot traces={TRACES[mode]} mode={mode} windowS={windowS} />
         </Panel>
       </div>
 
@@ -280,7 +280,8 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
 
 function RunState({ mode }: { mode: Mode }) {
   const { status, lastRunEnded } = useSession();
-  const latest = useLatestSample();
+  const sample = useLatestSample();
+  const latest = sample && sample.mode === mode ? sample : null;
   if (status && status.state !== "idle" && status.mode === mode) {
     const tone = status.state === "paused" ? "warn" : status.state === "stopping" ? "warn" : "ok";
     return (
@@ -305,7 +306,9 @@ function RunState({ mode }: { mode: Mode }) {
 }
 
 function Readout({ mode }: { mode: ContinuousMode }) {
-  const latest = useLatestSample();
+  const sample = useLatestSample();
+  // Another mode's samples are not this view's numbers.
+  const latest = sample && sample.mode === mode ? sample : null;
   const specs = READOUTS[mode];
   const derived = mode === "four_point" ? latest?.derived : null;
   return (

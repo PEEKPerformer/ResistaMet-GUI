@@ -76,7 +76,9 @@ export function AppProvider({ children, fallback }: ProviderProps) {
           setGap(true);
           return;
         case "event":
-          if (message.event.type === "run_started") resetSamples();
+          if (message.event.type === "run_started") {
+            resetSamples(message.event.payload.mode, message.event.run_id ?? null);
+          }
           if (message.event.type === "sample") applySample(message.event);
           applyEvent(message.event);
           return;
