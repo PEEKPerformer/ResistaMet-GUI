@@ -37,17 +37,23 @@ class TestResourceManager:
         visa_backend.resource_manager('/opt/visa/libvisa.so')
         assert recording_rm == [('@py',), ('/opt/visa/libvisa.so',)]
 
-    def test_py_extensions_run_before_a_pyvisa_py_manager(self, recording_rm, monkeypatch):
+    def test_py_extensions_run_when_pyvisa_py_may_answer(self, recording_rm, monkeypatch):
         ran = []
         monkeypatch.setattr(visa_backend, '_PY_EXTENSIONS', [])
         visa_backend.register_py_extension(lambda: ran.append('hook'))
         visa_backend.register_py_extension(lambda: ran.append('hook'))
 
-        visa_backend.resource_manager('')
-        assert ran == []  # only pyvisa-py gets extensions
+        visa_backend.resource_manager('@ivi')
+        assert ran == []  # a vendor library never consults pyvisa-py
 
         visa_backend.resource_manager('@py')
         assert ran == ['hook', 'hook']
+
+        visa_backend.resource_manager('')  # automatic may resolve to pyvisa-py
+        assert ran == ['hook'] * 4
+
+    def test_the_ni_usb_driver_is_a_registered_extension(self):
+        assert visa_backend._install_ni_usb in visa_backend._PY_EXTENSIONS
 
     def test_registering_the_same_hook_twice_runs_it_once(self, recording_rm, monkeypatch):
         ran = []
