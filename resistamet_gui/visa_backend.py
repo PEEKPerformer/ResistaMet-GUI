@@ -34,13 +34,18 @@ CHOICES: Dict[str, str] = {
     PY: 'pyvisa-py',
 }
 
-#: Hooks run once per pyvisa-py ResourceManager, before it is handed out.
+#: Hooks run before a ResourceManager that may be pyvisa-py is handed out.
 #: Used to register sessions pyvisa-py does not ship (see ``gpib_usb``).
 _PY_EXTENSIONS: List[Callable[[], None]] = []
 
 
 def register_py_extension(hook: Callable[[], None]) -> None:
-    """Run ``hook`` before every pyvisa-py ResourceManager is created."""
+    """Run ``hook`` before every ResourceManager that may be pyvisa-py.
+
+    That is ``@py`` and also the automatic choice, which pyvisa resolves to
+    pyvisa-py when no vendor library is installed (the usual Mac). Hooks
+    must be idempotent and must not touch any bus.
+    """
     if hook not in _PY_EXTENSIONS:
         _PY_EXTENSIONS.append(hook)
 
@@ -52,7 +57,7 @@ def resource_manager(visa_library: str = AUTO) -> Any:
     and the test fakes, which replace it, keep working.
     """
     library = (visa_library or AUTO).strip()
-    if library == PY:
+    if library in (AUTO, PY):
         for hook in _PY_EXTENSIONS:
             hook()
     if library:
@@ -103,3 +108,12 @@ def _ivi_version(rm: Any) -> Optional[str]:
         return f"{(raw >> 20) & 0xFFF}.{(raw >> 8) & 0xFFF}.{raw & 0xFF}"
     except Exception:
         return None
+
+
+def _install_ni_usb() -> None:
+    """The NI GPIB-USB user-space driver; a no-op without pyusb and libusb."""
+    from . import gpib_usb
+    gpib_usb.install()
+
+
+register_py_extension(_install_ni_usb)
