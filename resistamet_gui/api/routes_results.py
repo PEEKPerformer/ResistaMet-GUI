@@ -66,7 +66,9 @@ def list_results(request: Request, user: Optional[str] = Query(default=None),
         if user and owner != user:
             continue
         info = path.stat()
-        files.append(ResultFile(path=str(relative), name=path.name, user=owner,
+        # Forward slashes on every platform: the path is a key the client hands
+        # back, and Path accepts either separator when resolving it.
+        files.append(ResultFile(path=relative.as_posix(), name=path.name, user=owner,
                                 size=info.st_size, modified=info.st_mtime))
     files.sort(key=lambda f: f.modified, reverse=True)
     return {"root": str(root), "files": [f.model_dump() for f in files[:limit]]}
