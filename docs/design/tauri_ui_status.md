@@ -1,6 +1,6 @@
 # Tauri Desktop UI — Status (steps 2 and 3)
 
-**Status:** On `phase0/reviewable-baseline`, pushed, CI green
+**Status:** On `phase0/reviewable-baseline`, pushed, CI green; backend bench-checked on the lab 2420 and on a 2400 over the NI USB driver; UI bench report's three blockers and five majors fixed (see `tauri_ui_bench_2026-09-18.md`)
 **Date:** 2026-09-17
 **Depends on:** step 1 (`tauri_backend_split.md`, `tauri_backend_split_status.md`)
 
@@ -111,9 +111,13 @@ Auto-range is on.
 - **The Tauri UI itself on the lab PC.** The backend paths above are
   proven; the installer has not been run on the PC and the React UI has
   not driven the 2420 yet.
-- **The NI USB driver on a real adapter.** Proven only against scripted
-  fakes. Needs the GPIB-USB-HS from laptop2 on a Mac with a 2400: attach,
-  `*IDN?`, a resistance run, a stop mid-settle, Scan while idle.
+- **The NI USB driver on a real adapter: done 2026-09-18.** GPIB-USB-HS
+  01CEE482 with a Keithley 2400 on this Mac: the first contact found the
+  read reply's tail shorter than the specification derived and an
+  instrument-side race after take control that wedged the adapter; both
+  fixed on the bench (`bc74095`, `beb1db1`). Three consecutive resistance
+  runs, stop mid-settle, immediate restart and shutdown mid-run all pass
+  through the driver; compliance detection verified on it too.
 - **Prologix / AR488 adapters** need their `PRLGX-ASRL::…::INTFC` resource
   opened before the instrument address resolves; the app does not do that.
 - **Backend items step 2 depends on** but works around for now: the 4PP spot
