@@ -90,6 +90,18 @@ VISA backend chooses: *Automatic* takes NI-VISA when installed (right on the
 lab's Windows PCs), *pyvisa-py* is the Mac route. The frozen macOS backend
 bundles libusb; a source checkout needs `brew install libusb`.
 
+To ask an installed build what it can see, without a GUI:
+
+```bash
+resistamet-api --check-visa            # which VISA library, and can libusb load
+resistamet-api --check-visa bus        # also enumerate resources (touches the bus)
+resistamet-api --check-visa --visa-library @py
+```
+
+One JSON line, exit 1 when no VISA implementation opened. This is the
+diagnostic for "the app sees no instruments": a vendor library can be present
+and still have no GPIB driver behind it.
+
 Routes pyvisa-py can reach: the NI GPIB-USB-HS (`GPIB0::24::INSTR`), a
 Keithley over RS-232 (`ASRL/dev/cu.…::INSTR`), or a 2450 over Ethernet
 (`TCPIP::…::INSTR`). A Prologix GPIB-USB or AR488 adapter is supported by
