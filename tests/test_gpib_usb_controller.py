@@ -14,7 +14,8 @@ import pytest
 from resistamet_gui.gpib_usb import device_ops as ops
 from resistamet_gui.gpib_usb import protocol as p
 from resistamet_gui.gpib_usb import tables as t
-from resistamet_gui.gpib_usb.controller import DRAIN_WAIT_S, RECOVERY_WAIT_S, SHORT_WAIT_S, Controller
+from resistamet_gui.gpib_usb.controller import (DRAIN_WAIT_S, IFC_SETTLE_S, RECOVERY_WAIT_S, SHORT_WAIT_S,
+                                                 Controller)
 from resistamet_gui.gpib_usb.protocol import AdapterNotReady, GpibError, GpibTimeout, NoListener, ProtocolError
 from resistamet_gui.gpib_usb.transport import TransportError, TransportTimeout
 
@@ -200,7 +201,41 @@ class TestAttach:
         script += [('ctrl', (0x40, 0, 0, 16), READY)] + attach_script()[2:]
         controller = Controller(ScriptedTransport(script), t.PID_HS, sleep=naps.append)
         controller.attach()
-        assert naps == [0.1] * 4
+        assert naps == [0.1] * 4 + [IFC_SETTLE_S]
+
+    def test_attach_settles_after_ifc_and_ren_before_any_addressing(self):
+        # Bench: a Keithley 2400 dropped command bytes sent within ~1 ms of IFC/REN.
+        events: List[str] = []
+        transport = ScriptedTransport(attach_script() + address_listener() + [
+            ('out', p.write_message(b'A', T3S, True)), ('in', status_reply(0x0D)),
+        ])
+        original_out = transport.bulk_out
+
+        def bulk_out(data, timeout_ms):
+            events.append('out 0x%02x' % data[0])
+            original_out(data, timeout_ms)
+        transport.bulk_out = bulk_out  # type: ignore[assignment]
+        controller = Controller(transport, t.PID_HS, sleep=lambda s: events.append('sleep %.1f' % s))
+        controller.attach()
+        controller.write(22, b'A', timeout_s=3.0)
+        assert events == ['out 0x09', 'out 0x0f', 'out 0x09', 'out 0x01', 'sleep 0.1', 'out 0x0c', 'out 0x0d']
+
+    def test_no_settle_when_not_system_controller(self):
+        naps: List[float] = []
+        script = attach_script()[:4]
+        script[2] = ('out', p.register_write_message(t.register_init_writes(system_controller=False)))
+        Controller(ScriptedTransport(script), t.PID_HS, sleep=naps.append).attach(system_controller=False)
+        assert naps == []
+
+    def test_public_interface_clear_settles_too(self):
+        naps: List[float] = []
+        transport = ScriptedTransport(attach_script() + [
+            ('out', p.interface_clear_message()), ('in', status_reply(0x0F)),
+        ])
+        controller = Controller(transport, t.PID_HS, sleep=naps.append)
+        controller.attach()
+        controller.interface_clear()
+        assert naps == [IFC_SETTLE_S, IFC_SETTLE_S]
 
     def test_hung_adapter_is_reported_with_the_replug_message(self):
         # Seen on the bench: control requests answered, init accepted, no bulk reply ever.

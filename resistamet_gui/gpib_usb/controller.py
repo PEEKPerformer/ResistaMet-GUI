@@ -20,7 +20,10 @@ without it reliable), so attach skips the interrupt-monitor-mask steps 4 and
 
 Bench notes (GPIB-USB-HS 01CEE482, Keithley 2400 at PAD 3, 2026-09-18): the
 attach sequence, addressing, write, read, serial poll and the presence probe
-all work as written. The read reply's trailer is 16 bytes, not the 28 the
+all work as written. Instruments need a moment after IFC and REN before the
+first addressed command (``IFC_SETTLE_S``); without it the 2400 silently
+dropped the first query after a close-then-attach, and the adapter hung once
+under the backend at exactly that point. The read reply's trailer is 16 bytes, not the 28 the
 specification derived (see ``protocol``). The count field of a status reply
 is only meaningful after 0x0a/0x0c/0x0d; other replies carry stale or marker
 bytes there, which is why nothing here reads it elsewhere.
@@ -52,6 +55,13 @@ RECOVERY_WAIT_S = 2.0
 DRAIN_WAIT_S = 0.2
 #: Device timeout for bus housekeeping that has no session timeout of its own.
 DEFAULT_TIMEOUT_S = 3.0
+#: Pause after an IFC pulse / REN change before the first addressed command.
+#: Observed on the bench: a Keithley 2400 that was in remote state, then saw
+#: REN drop at shutdown and IFC + REN at the next attach, handshakes command
+#: and data bytes arriving within ~1 ms in hardware but never parses them
+#: (it later reports -420 Query UNTERMINATED); 20 ms was already enough.
+#: This is five times that.
+IFC_SETTLE_S = 0.1
 #: spec gap: with the device timeout disabled (code 0xf0) §7.2 leaves the
 #: host wait to the application. Ten minutes; on expiry the operation is
 #: stopped (§5.11) and reported as a timeout.
@@ -153,6 +163,7 @@ class Controller:
                 # Error 5 here just means nothing is on the bus yet (§8.12).
                 self._status_exchange(p.take_control_message(True), SHORT_WAIT_S,
                                       'take control', tolerate=(t.ERR_NO_ACCEPTOR,))
+                self._sleep(IFC_SETTLE_S)  # let the instruments finish reacting to IFC/REN
             self._attached = True
             self._resync_pending = False
 
@@ -210,6 +221,7 @@ class Controller:
         with self._guard():
             self._ensure_attached()
             self._interface_clear()
+            self._sleep(IFC_SETTLE_S)
 
     def remote_enable(self, on: bool) -> None:
         with self._guard():

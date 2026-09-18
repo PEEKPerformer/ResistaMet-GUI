@@ -28,6 +28,7 @@ from pyvisa_py.sessions import OpenError, Session  # noqa: E402
 import resistamet_gui.gpib_usb as gpib_usb  # noqa: E402
 from resistamet_gui.gpib_usb import protocol as p  # noqa: E402
 from resistamet_gui.gpib_usb import tables as t  # noqa: E402
+from resistamet_gui.gpib_usb import controller as controller_module  # noqa: E402
 from resistamet_gui.gpib_usb import transport, visa_session  # noqa: E402
 from resistamet_gui.gpib_usb.boards import BoardRegistry  # noqa: E402
 from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportError  # noqa: E402
@@ -247,6 +248,7 @@ def adapter(monkeypatch, session_registry, enumeration):
     """One fake HS at GPIB0 with a Keithley-like instrument at address 24, installed."""
     sim = SimulatedAdapter({24: FakeInstrument('KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30')})
     monkeypatch.setattr(gpib_usb, 'available', lambda: True)
+    monkeypatch.setattr(controller_module, 'IFC_SETTLE_S', 0.0)  # the fake needs no settle
     monkeypatch.setattr(visa_session, '_REGISTRY',
                         BoardRegistry(open_transport=lambda i: sim, first_board=0))
     session_registry[GPIB_INSTR] = Sentinel
