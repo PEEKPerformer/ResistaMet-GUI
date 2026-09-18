@@ -384,6 +384,7 @@ class ContinuousRun:
             nplc = measurement_settings['nplc']
             settling_time = measurement_settings['settling_time']
             gpib_address = measurement_settings['gpib_address']
+            visa_library = measurement_settings.get('visa_library', '')
             auto_save_interval = file_settings['auto_save_interval']
 
             sample_interval = 1.0 / sampling_rate if sampling_rate > 0 else 0.1
@@ -391,7 +392,7 @@ class ContinuousRun:
             # Connect instrument
             try:
                 self._events.log('connecting', f"Connecting to instrument at {gpib_address}...")
-                self.keithley = Keithley2400(gpib_address).connect()
+                self.keithley = Keithley2400(gpib_address, visa_library=visa_library).connect()
                 self._instrument_idn = self.keithley.query("*IDN?").strip()
                 self._events.log('connected', f"Connected to: {self._instrument_idn}")
                 # Identify model and surface its limits — informational only;

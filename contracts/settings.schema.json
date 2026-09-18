@@ -284,7 +284,7 @@
     },
     "InstrumentSettings": {
       "additionalProperties": true,
-      "description": "Knobs that apply to every mode, wherever the value comes from.\n\n``gpib_address`` is machine-local \u2014 ``ConfigManager`` keeps it under\n``machines[hostname]`` and injects it into the profile on read, so it is\nnever stored per user (``config.py``).",
+      "description": "Knobs that apply to every mode, wherever the value comes from.\n\n``gpib_address`` and ``visa_library`` are machine-local \u2014 ``ConfigManager``\nkeeps them under ``machines[hostname]`` and injects them into the profile\non read, so they are never stored per user (``config.py``).",
       "properties": {
         "auto_zero": {
           "default": "once",
@@ -348,6 +348,11 @@
           "default": false,
           "title": "Stop On Compliance",
           "type": "boolean"
+        },
+        "visa_library": {
+          "default": "",
+          "title": "Visa Library",
+          "type": "string"
         }
       },
       "title": "InstrumentSettings",

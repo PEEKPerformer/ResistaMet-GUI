@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from .. import visa_backend
 from ..schema.resolve import allowed_override_keys, resolve_run_settings
 from ..schema.settings_modes import MODE_MODELS
 from ..session.manager import MeasurementSession, SessionBusy
@@ -20,7 +21,7 @@ from .app import busy_as_conflict, get_session, require_token
 router = APIRouter(tags=["settings"])
 
 #: Keys that describe this machine rather than this profile.
-MACHINE_LOCAL_KEYS = ('gpib_address',)
+MACHINE_LOCAL_KEYS = ('gpib_address', 'visa_library')
 
 
 class ResolveRequest(BaseModel):
@@ -42,6 +43,8 @@ class ProfilePatch(BaseModel):
 
 class IdentifyRequest(BaseModel):
     address: str = Field(min_length=1)
+    #: None = this machine's configured backend.
+    visa_library: Optional[str] = None
 
 
 def _config(request: Request):
@@ -132,27 +135,39 @@ def resolve(body: ResolveRequest, request: Request, role: str = Depends(require_
 
 
 @router.get("/instruments/resources")
-def list_resources(session: MeasurementSession = Depends(get_session),
+def list_resources(request: Request, visa_library: Optional[str] = None,
+                    session: MeasurementSession = Depends(get_session),
                     role: str = Depends(require_token)):
-    """What VISA can see. Refused during a run: enumerating touches the bus."""
+    """What VISA can see. Refused during a run: enumerating touches the bus.
+
+    Uses this machine's configured VISA backend unless ``visa_library`` is
+    given, so a client can try a backend before saving it. The reply says
+    which implementation actually answered.
+    """
     if session.state != 'idle':
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                              detail=f"session is {session.state}")
-    import pyvisa
-
+    if visa_library is None:
+        visa_library = _config(request).get_visa_library()
     try:
-        resources = list(pyvisa.ResourceManager().list_resources())
+        rm = visa_backend.resource_manager(visa_library)
+        resources = list(rm.list_resources())
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                              detail=f"VISA unavailable: {exc}")
-    return {"resources": resources}
+    return {"resources": resources,
+            "backend": visa_backend.describe(rm, visa_library)}
 
 
 @router.post("/instruments/identify")
-def identify(body: IdentifyRequest, session: MeasurementSession = Depends(get_session),
+def identify(body: IdentifyRequest, request: Request,
+              session: MeasurementSession = Depends(get_session),
               role: str = Depends(require_token)):
+    visa_library = body.visa_library
+    if visa_library is None:
+        visa_library = _config(request).get_visa_library()
     try:
-        return session.identify(body.address)
+        return session.identify(body.address, visa_library)
     except SessionBusy as exc:
         raise busy_as_conflict(exc)
     except Exception as exc:

@@ -78,9 +78,9 @@ export interface FourPointSettings {
 /**
  * Knobs that apply to every mode, wherever the value comes from.
  *
- * ``gpib_address`` is machine-local — ``ConfigManager`` keeps it under
- * ``machines[hostname]`` and injects it into the profile on read, so it is
- * never stored per user (``config.py``).
+ * ``gpib_address`` and ``visa_library`` are machine-local — ``ConfigManager``
+ * keeps them under ``machines[hostname]`` and injects them into the profile
+ * on read, so they are never stored per user (``config.py``).
  */
 export interface InstrumentSettings {
   auto_zero?: "on" | "once" | "off";
@@ -92,6 +92,7 @@ export interface InstrumentSettings {
   sampling_rate?: number;
   settling_time?: number;
   stop_on_compliance?: boolean;
+  visa_library?: string;
 }
 
 /**
@@ -474,6 +475,10 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
     "stop_on_compliance": {
       "type": "boolean",
       "default": false
+    },
+    "visa_library": {
+      "type": "string",
+      "default": ""
     }
   },
   "OutputSettings": {
