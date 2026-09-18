@@ -97,8 +97,13 @@ export function VdpView() {
     run(() => api.start({ mode: MODE, sample_name: ui.sampleName.trim(), username: ui.username!, overrides }));
   const measure = (p: PendingPrompt) => run(() => api.answerPrompt(p.prompt_id, "proceed"));
 
-  const done = vdp.geometries.length;
-  const result = vdp.result;
+  // What the store holds is only this run's if the run ids agree: between
+  // pressing Start and the run_started event, and after a replay, the store
+  // can still describe the previous run.
+  const current = status === null || status.run_id === null || vdp.runId === null || vdp.runId === status.run_id;
+  const geometries = current ? vdp.geometries : [];
+  const done = geometries.length;
+  const result = current ? vdp.result : null;
 
   return (
     <div className={styles.view}>
@@ -181,7 +186,7 @@ export function VdpView() {
           </Panel>
 
           <Panel title="Readings" bodyClassName={own.readingsBody}>
-            {vdp.geometries.length === 0 ? (
+            {geometries.length === 0 ? (
               <div className={own.muted}>None yet.</div>
             ) : (
               <table className={own.readings}>
@@ -194,7 +199,7 @@ export function VdpView() {
                   </tr>
                 </thead>
                 <tbody>
-                  {vdp.geometries.map((g) => (
+                  {geometries.map((g) => (
                     <tr key={g.index}>
                       <td>
                         {g.name} <span className={own.group}>{g.group}</span>

@@ -41,6 +41,8 @@ export function resetSweep(runId: string | null): void {
 
 export function applySweepSegment(event: Event<"sweep_segment">): void {
   const { payload } = event;
+  // A replayed segment from an earlier run must not join this run's curve.
+  if (result.runId !== null && event.run_id && event.run_id !== result.runId) return;
   publish({
     runId: event.run_id ?? null,
     segments: [
