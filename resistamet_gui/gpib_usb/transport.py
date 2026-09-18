@@ -120,6 +120,15 @@ def _bundled_libusb() -> Optional[str]:
     return None
 
 
+def libusb_library_path() -> Optional[str]:
+    """The libusb the frozen app ships, if that is the one in use.
+
+    For diagnostics: ``None`` means pyusb's own discovery is being used (a
+    system libusb), which is the normal source checkout case.
+    """
+    return _bundled_libusb()
+
+
 def libusb_backend() -> Any:
     """A pyusb libusb-1.0 backend, or None when no libusb can be loaded."""
     usb = _import_usb()

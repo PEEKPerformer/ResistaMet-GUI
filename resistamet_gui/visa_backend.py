@@ -110,6 +110,49 @@ def _ivi_version(rm: Any) -> Optional[str]:
         return None
 
 
+def report(visa_library: str = AUTO, probe_bus: bool = False) -> Dict[str, Any]:
+    """What VISA this machine has, for a diagnostic that runs without a GUI.
+
+    Answers the question a frozen install fails on: is there a VISA
+    implementation here at all, which one, and can the NI USB driver load
+    libusb. Touches no instrument unless ``probe_bus`` is set — enumerating
+    resources puts traffic on the bus and can disturb another process's run.
+    """
+    info: Dict[str, Any] = {'requested': visa_library, 'ni_usb': _ni_usb_report()}
+    try:
+        rm = resource_manager(visa_library)
+    except Exception as exc:
+        info['ok'] = False
+        info['error'] = f"{type(exc).__name__}: {exc}"
+        return info
+    info['ok'] = True
+    info['backend'] = describe(rm, visa_library)
+    if probe_bus:
+        try:
+            info['resources'] = list(rm.list_resources())
+        except Exception as exc:
+            info['resources_error'] = f"{type(exc).__name__}: {exc}"
+    return info
+
+
+def _ni_usb_report() -> Dict[str, Any]:
+    """The NI GPIB-USB driver's own view of itself. Never raises."""
+    try:
+        from . import gpib_usb
+        from .gpib_usb import transport
+        adapters = [
+            {'model': a.model, 'serial': a.serial, 'bus': a.bus,
+             'address': a.address, 'needs_firmware': a.needs_firmware}
+            for a in gpib_usb.find_adapters()
+        ]
+        return {'available': gpib_usb.available(),
+                'libusb': transport.libusb_library_path(),
+                'adapters': adapters}
+    except Exception as exc:
+        return {'available': False, 'error': f"{type(exc).__name__}: {exc}",
+                'adapters': []}
+
+
 def _install_ni_usb() -> None:
     """The NI GPIB-USB user-space driver; a no-op without pyusb and libusb."""
     from . import gpib_usb
