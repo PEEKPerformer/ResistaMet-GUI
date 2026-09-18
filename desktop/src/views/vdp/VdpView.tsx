@@ -130,15 +130,6 @@ export function VdpView() {
         {error ? <Notice tone="danger">{error}</Notice> : null}
         {running && !thisRunning ? <Notice tone="info">Another run is in progress.</Notice> : null}
         {ui.sampleName.trim() === "" && !running ? <Notice tone="info">Name the sample in the top bar to enable Start.</Notice> : null}
-        {resolved && !resolved.ok && !running
-          ? resolved.issues
-              .filter((i) => i.severity === "error")
-              .map((i) => (
-                <Notice key={i.key} tone="warn">
-                  {i.message}
-                </Notice>
-              ))
-          : null}
 
         <div className={own.body}>
           <Panel className={own.wizard} bodyClassName={own.wizardBody} title={<Stepper done={done} active={geometry?.index ?? null} running={thisRunning} />}>
@@ -168,7 +159,7 @@ export function VdpView() {
                     </tbody>
                   </table>
                   <Button variant="primary" size="lg" disabled={busy} onClick={() => void measure(geometryPrompt!)}>
-                    <Icons.check /> Measure this configuration
+                    <Icons.check /> Measure
                   </Button>
                   <div className={own.muted}>Output is off while you rewire.</div>
                 </div>
