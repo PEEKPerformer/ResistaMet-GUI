@@ -1,0 +1,48 @@
+.host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 160px;
+}
+
+/* uPlot's default legend is a table under the plot; restyle it to a quiet
+   strip that matches the panel. */
+.host :global(.u-legend) {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  text-align: left;
+  padding: 2px 8px;
+}
+
+.host :global(.u-legend .u-series) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 16px;
+}
+
+.host :global(.u-legend .u-series th) {
+  font-weight: 500;
+}
+
+.host :global(.u-legend .u-marker) {
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.host :global(.u-legend .u-value) {
+  min-width: 90px;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.host :global(.u-select) {
+  background: var(--accent-muted);
+}
+
+.host :global(.u-cursor-x),
+.host :global(.u-cursor-y) {
+  border-color: var(--fg-faint);
+}

@@ -16,8 +16,8 @@ import styles from "./ui.module.css";
 // --- Button ----------------------------------------------------------------
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "default" | "primary" | "danger" | "ghost";
-  size?: "sm" | "md" | "lg";
+  variant?: "default" | "primary" | "danger" | "ghost" | undefined;
+  size?: "sm" | "md" | "lg" | undefined;
 };
 
 export function Button({ variant = "default", size = "md", className, ...rest }: ButtonProps) {
@@ -46,9 +46,9 @@ export function IconButton({ className, ...rest }: ButtonHTMLAttributes<HTMLButt
 
 interface FieldProps {
   label: ReactNode;
-  hint?: ReactNode;
-  error?: ReactNode;
-  stacked?: boolean;
+  hint?: ReactNode | undefined;
+  error?: ReactNode | undefined;
+  stacked?: boolean | undefined;
   children: ReactNode;
 }
 
@@ -65,7 +65,10 @@ export function Field({ label, hint, error, stacked = false, children }: FieldPr
   );
 }
 
-type InputProps = InputHTMLAttributes<HTMLInputElement> & { invalid?: boolean; unit?: string };
+type InputProps = InputHTMLAttributes<HTMLInputElement> & {
+  invalid?: boolean | undefined;
+  unit?: string | undefined;
+};
 
 export function Input({ invalid, unit, className, ...rest }: InputProps) {
   const control = (
@@ -115,8 +118,8 @@ export function Toggle({ checked, onChange, disabled, label }: ToggleProps) {
 interface PanelProps {
   title?: ReactNode;
   actions?: ReactNode;
-  className?: string;
-  bodyClassName?: string;
+  className?: string | undefined;
+  bodyClassName?: string | undefined;
   children: ReactNode;
 }
 
@@ -198,7 +201,13 @@ export function Dialog({ title, onClose, footer, size = "md", dismissable = true
 
 // --- Badge / Notice --------------------------------------------------------
 
-export function Badge({ tone, children }: { tone?: "ok" | "warn" | "danger" | "accent"; children: ReactNode }) {
+export function Badge({
+  tone,
+  children,
+}: {
+  tone?: "ok" | "warn" | "danger" | "accent" | undefined;
+  children: ReactNode;
+}) {
   return (
     <span className={styles.badge} data-tone={tone}>
       {children}

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AppProvider } from "./app/AppContext";
 import { Shell } from "./components/shell/Shell";
 import { UserPicker } from "./components/dialogs/UserPicker";
+import { ContinuousView } from "./views/continuous/ContinuousView";
 import { useUi } from "./state/ui";
 import styles from "./App.module.css";
 
@@ -37,7 +38,7 @@ function Workspace() {
   return (
     <>
       <Shell onOpenSettings={() => setDialog("settings")} onOpenUser={() => setDialog("user")}>
-        <Placeholder view={ui.view} />
+        <View view={ui.view} />
       </Shell>
       {showUserPicker ? <UserPicker onClose={() => setDialog(null)} /> : null}
     </>
@@ -64,6 +65,16 @@ function Startup({ error }: { error: string | null }) {
   );
 }
 
-function Placeholder({ view }: { view: string }) {
-  return <div className={styles.placeholder}>{view}</div>;
+function View({ view }: { view: string }) {
+  switch (view) {
+    case "resistance":
+    case "source_v":
+    case "source_i":
+    case "four_point":
+      // One component per continuous mode instance, keyed so switching modes
+      // remounts the plot with the right traces.
+      return <ContinuousView key={view} mode={view} />;
+    default:
+      return <div className={styles.placeholder}>{view}</div>;
+  }
 }
