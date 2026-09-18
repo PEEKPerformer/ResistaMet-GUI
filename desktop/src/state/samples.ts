@@ -11,6 +11,9 @@ import { useSyncExternalStore } from "react";
 import type { Event } from "../generated/events";
 
 export interface SampleSeries {
+  /** Which mode produced these samples; a view for another mode shows none. */
+  mode: string | null;
+  runId: string | null;
   /** Elapsed seconds since run start, one per sample. */
   t: number[];
   /** Per-key value arrays, same length as t. Missing values are NaN. */
@@ -20,6 +23,7 @@ export interface SampleSeries {
 }
 
 export interface LatestSample {
+  mode: string | null;
   elapsedS: number;
   values: Record<string, unknown>;
   compliance: string;
@@ -27,7 +31,7 @@ export interface LatestSample {
   count: number;
 }
 
-let series: SampleSeries = { t: [], values: {}, compliance: [], marks: [] };
+let series: SampleSeries = { mode: null, runId: null, t: [], values: {}, compliance: [], marks: [] };
 let latest: LatestSample | null = null;
 let version = 0;
 
@@ -47,8 +51,8 @@ export function getLatest(): LatestSample | null {
   return latest;
 }
 
-export function resetSamples(): void {
-  series = { t: [], values: {}, compliance: [], marks: [] };
+export function resetSamples(mode: string | null = null, runId: string | null = null): void {
+  series = { mode, runId, t: [], values: {}, compliance: [], marks: [] };
   latest = null;
   notify();
 }
@@ -77,6 +81,7 @@ export function applySample(event: Event<"sample">): void {
     series.marks.push({ t: payload.elapsed_s, label: payload.event_marker });
   }
   latest = {
+    mode: series.mode,
     elapsedS: payload.elapsed_s,
     values,
     compliance: payload.compliance ?? "OK",
