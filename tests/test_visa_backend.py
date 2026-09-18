@@ -1,4 +1,6 @@
 """Choosing the VISA implementation that opens the bus."""
+import sys
+
 import pyvisa
 import pytest
 
@@ -107,3 +109,43 @@ class TestInstrumentUsesTheChoice:
         with pytest.raises(RuntimeError):
             Keithley2400('GPIB0::24::INSTR', visa_library='@py').connect()
         assert recording_rm == [('@py',)]
+
+
+class TestNiUsbExtensionDegrades:
+    """Opening a ResourceManager must not depend on the NI USB driver loading.
+
+    pyvisa-py 0.8 requires Python 3.10; on 3.9 pip resolves an older release
+    whose Session API the session module is not written against, and a lab PC
+    may have no libusb at all. Either way the app still opens a bus.
+    """
+
+    def test_install_survives_a_session_module_that_cannot_import(self, monkeypatch):
+        import resistamet_gui.gpib_usb as gpib_usb
+
+        monkeypatch.setattr(gpib_usb, 'available', lambda: True)
+        # None in sys.modules makes the import inside install() raise ImportError,
+        # which is what an old pyvisa-py looks like.
+        monkeypatch.setitem(sys.modules, 'resistamet_gui.gpib_usb.visa_session', None)
+        visa_backend._install_ni_usb()
+
+    def test_install_is_skipped_without_libusb(self, monkeypatch):
+        import resistamet_gui.gpib_usb as gpib_usb
+
+        monkeypatch.setattr(gpib_usb, 'available', lambda: False)
+        called = []
+        monkeypatch.setitem(sys.modules, 'resistamet_gui.gpib_usb.visa_session',
+                            type(sys)('stub'))
+        sys.modules['resistamet_gui.gpib_usb.visa_session'].install = lambda: called.append(1)
+        visa_backend._install_ni_usb()
+        assert called == []
+
+    def test_a_pyvisa_py_manager_still_opens_when_the_driver_is_absent(self, monkeypatch):
+        import resistamet_gui.gpib_usb as gpib_usb
+
+        monkeypatch.setattr(gpib_usb, 'available', lambda: True)
+        monkeypatch.setitem(sys.modules, 'resistamet_gui.gpib_usb.visa_session', None)
+        rm = visa_backend.resource_manager(visa_backend.PY)
+        try:
+            assert visa_backend.describe(rm, visa_backend.PY)['kind'] == 'py'
+        finally:
+            rm.close()

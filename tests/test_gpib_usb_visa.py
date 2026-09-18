@@ -12,6 +12,13 @@ from typing import Dict, List, Optional
 import pytest
 
 pyvisa_py = pytest.importorskip('pyvisa_py')
+# pyvisa-py 0.8 requires Python 3.10, so a 3.9 run resolves to a release whose
+# Session API predates what the session is written against. The driver itself
+# degrades (install() catches the ImportError and registers nothing); there is
+# nothing here to test on such a run.
+if not hasattr(pytest.importorskip('pyvisa_py.sessions'), 'OpenError'):
+    pytest.skip('pyvisa-py predates the Session API this needs (0.8+)',
+                allow_module_level=True)
 
 import pyvisa  # noqa: E402
 from pyvisa import constants  # noqa: E402
