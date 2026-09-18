@@ -15,6 +15,10 @@ Three things a parent process needs, and gets here:
 * **An ordered shutdown.** Stop the run, wait for it to turn the output off and
   finalize the file, then exit — with a grace period long enough for a stop to
   land during a slow VISA operation.
+
+``--check-visa`` serves nothing: it prints what VISA this machine has as one
+JSON line and exits, which is how a frozen install is diagnosed on a PC with
+no development tools.
 """
 import argparse
 import json
@@ -57,6 +61,14 @@ def _parse_args(argv):
     parser.add_argument("--sim-resistance", type=float, default=100.0, metavar="OHMS")
     parser.add_argument("--no-watchdog", action="store_true",
                          help="Do not exit when stdin closes (for interactive use).")
+    parser.add_argument("--check-visa", nargs="?", const="quiet", default=None,
+                         choices=["quiet", "bus"], metavar="quiet|bus",
+                         help="Print what VISA this machine has as JSON and exit, "
+                              "instead of serving. 'bus' also enumerates resources, "
+                              "which puts traffic on the instrument bus.")
+    parser.add_argument("--visa-library", default=None, metavar="'' | @ivi | @py | PATH",
+                         help="Override the machine's configured VISA backend, for "
+                              "--check-visa.")
     return parser.parse_args(argv)
 
 
@@ -86,10 +98,33 @@ def build(args):
     return app, session, token
 
 
+def check_visa(args) -> int:
+    """Print this machine's VISA situation as one JSON line. Serves nothing.
+
+    The diagnostic a frozen install needs: a VISA library can be present and
+    still be unable to open a bus (NI-VISA without the GPIB driver behind it
+    is the case that has cost the lab an afternoon). Exit status is 0 when a
+    ResourceManager opened, 1 when none could.
+    """
+    from .. import visa_backend
+
+    if args.visa_library is not None:
+        library = args.visa_library
+    else:
+        config = ConfigManager(config_file=args.config) if args.config else ConfigManager()
+        library = config.get_visa_library()
+    report = visa_backend.report(library, probe_bus=(args.check_visa == 'bus'))
+    print(json.dumps(report), flush=True)
+    return 0 if report.get('ok') else 1
+
+
 def main(argv=None):
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     logging.basicConfig(stream=sys.stderr, level=logging.INFO,
                          format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    if args.check_visa is not None:
+        return check_visa(args)
 
     if args.simulate:
         from ..simulator import enable_simulation
@@ -128,4 +163,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
