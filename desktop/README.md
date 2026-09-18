@@ -79,3 +79,22 @@ backend is smoke-tested in CI — handshake, `/health`, clean exit on stdin clos
 
 `sidecar/resistamet-api/` holds only a README in the repository so the resource
 path exists at compile time; the build fills it.
+
+## Instruments on a Mac
+
+NI ships no GPIB driver for current macOS (NI-488.2 ended at 21.5.1, whose
+kernel extension does not load on macOS 13+). The backend therefore has its
+own user-space driver for the NI GPIB-USB-HS family over libusb
+(`resistamet_gui/gpib_usb`), used through pyvisa-py. Settings ▸ Instrument ▸
+VISA backend chooses: *Automatic* takes NI-VISA when installed (right on the
+lab's Windows PCs), *pyvisa-py* is the Mac route. The frozen macOS backend
+bundles libusb; a source checkout needs `brew install libusb`.
+
+Routes pyvisa-py can reach: the NI GPIB-USB-HS (`GPIB0::24::INSTR`), a
+Keithley over RS-232 (`ASRL/dev/cu.…::INSTR`), or a 2450 over Ethernet
+(`TCPIP::…::INSTR`). A Prologix GPIB-USB or AR488 adapter is supported by
+pyvisa-py too, but needs its `PRLGX-ASRL::…::INTFC` interface resource
+opened before the instrument address works; the app does not do that yet.
+The NI driver has been written from the protocol specification and tested
+against a scripted fake only; its first run on a real adapter is still to
+come.
