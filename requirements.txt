@@ -34,6 +34,14 @@ pydantic>=2.0
 fastapi>=0.110
 uvicorn>=0.27
 
+# User-space driver for NI GPIB-USB adapters (resistamet_gui/gpib_usb), the
+# GPIB route on a Mac where NI ships no driver. pyusb is BSD; it needs a
+# libusb shared library at runtime (brew install libusb / apt install
+# libusb-1.0-0; bundled into the frozen backend on macOS by
+# resistamet-api.spec). Without libusb the driver reports itself
+# unavailable and nothing else changes.
+pyusb>=1.2
+
 # Testing (development)
 pytest>=7.0.0
 pytest-cov>=4.0.0

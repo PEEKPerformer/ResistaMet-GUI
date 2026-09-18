@@ -63,6 +63,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
+      - name: Install libusb (bundled with the frozen backend)
+        # The NI GPIB-USB user-space driver needs it; resistamet-api.spec
+        # copies the dylib beside the executable.
+        if: runner.os == 'macOS'
+        run: brew install libusb
+
       - name: Freeze the backend
         # One-dir bundle into desktop/sidecar, where tauri.conf.json's
         # bundle.resources picks it up.
