@@ -22,6 +22,10 @@ export interface FieldSpec<K extends string = string> {
   hint?: string;
   /** Enum labels, when the raw values are not self-explanatory. */
   options?: Record<string, string>;
+  /** The instrument ignores this field while another field has a given
+   *  value; the row is shown disabled with `hint` so the number on screen is
+   *  not mistaken for the number in use. */
+  overriddenBy?: { key: string; when: unknown; hint: string };
 }
 
 export interface FieldGroup<K extends string = string> {
@@ -35,8 +39,22 @@ export const RESISTANCE_FIELDS: FieldGroup<Keys<ResistanceSettings>>[] = [
   {
     title: "Source",
     fields: [
-      { key: "res_test_current", label: "Test current", unit: "A" },
-      { key: "res_voltage_compliance", label: "Voltage compliance", unit: "V" },
+      // With Auto range on, the 2400's auto-ohms picks the test current per
+      // range and sets its own voltage limit (2.1 V seen for a 0.5 V request);
+      // the CSV's Current column and effective.voltage_compliance_V record
+      // what it chose. Bench, 2026-09-18.
+      {
+        key: "res_test_current",
+        label: "Test current",
+        unit: "A",
+        overriddenBy: { key: "res_auto_range", when: true, hint: "Chosen by the instrument per range while Auto range is on." },
+      },
+      {
+        key: "res_voltage_compliance",
+        label: "Voltage compliance",
+        unit: "V",
+        overriddenBy: { key: "res_auto_range", when: true, hint: "Set by the instrument while Auto range is on; the file records the value in force." },
+      },
     ],
   },
   {
