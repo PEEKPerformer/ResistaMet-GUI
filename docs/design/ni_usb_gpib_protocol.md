@@ -965,6 +965,26 @@ reported through the status block rather than as a USB error.
     initialisation message was accepted but no reply arrived within 2 s,
     nor after a stop request" as this condition and tell the user to
     power-cycle the adapter.
+18. **Settle after IFC / REN before the first addressed command.** Observed
+    on GPIB-USB-HS 01CEE482 with a Keithley 2400 at PAD 3, 2026-09-18: with
+    the sequence attach -> presence probe (5.16, which addresses the
+    instrument and puts it in remote) -> shutdown (2.9; the chip reset drops
+    REN, the instrument returns to local) -> attach (IFC, REN, take control)
+    -> `3f 40 23`, `0d ... *IDN?` within about 1 ms, the write instruction
+    reported all 6 bytes transferred (the instrument's interface handshakes
+    in hardware) but the instrument never parsed them: the following read
+    timed out and the instrument logged `-420,"Query UNTERMINATED"`. It
+    reproduced within 1-4 iterations; without the probe (instrument never
+    in remote) it did not reproduce in 20. A pause of 20 ms after take
+    control, or after the shutdown, was already enough (10/10 each); the
+    driver waits 100 ms after the attach's take control and after a public
+    IFC pulse. The adapter also hung once (8.17) under the application at
+    exactly this point -- the first `0x0c` after such an attach never
+    answered even after the device timeout -- so a stalled handshake with an
+    instrument in this state may be what wedges the firmware; with the pause
+    in place the sequence ran 10 x (attach, probe, close, attach, `*IDN?`,
+    50 x `:OUTP?`, close) with no gap and 5 more cycles through pyvisa
+    without incident.
 
 ---
 
@@ -994,8 +1014,8 @@ They correct the sources in these places: the read-reply trailer is 16
 bytes (5.2, 3.5, 3.6); the count field is meaningful only after data
 operations and bytes 6-7 are not zero (4.1); the termination block follows
 the 0x35 block of a register-read reply (3.5); the readiness reply's
-informational bytes vary by unit (2.3); the 5.16 probe works; and the hung
-state of 8.17 exists.
+informational bytes vary by unit (2.3); the 5.16 probe works; the hung
+state of 8.17 exists; and instruments need a pause after IFC/REN (8.18).
 
 Section-level attribution: sections 1-5, 7 and 8 -- linux-gpib
 ni_usb_gpib.c / ni_usb_gpib.h and ni-gpib-usb-hs controller.py; register
