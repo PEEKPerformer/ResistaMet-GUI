@@ -36,6 +36,10 @@ DEFAULT_SETTINGS = {
         "nplc": 1,                           # Number of power line cycles (shared)
         "settling_time": 0.2,                # Settling time in seconds (shared)
         "gpib_address": "GPIB0::24::INSTR",  # GPIB address of the instrument
+        # Which VISA implementation opens the bus: "" = pyvisa's default
+        # (vendor library if installed, else pyvisa-py), "@ivi", "@py", or a
+        # library path. Machine-local like gpib_address (visa_backend.py).
+        "visa_library": "",
         "stop_on_compliance": False,
         # auto_zero=once cuts each reading from 3 integrations to 1 (a 3×
         # speedup) by caching the zero/reference at run start. Acceptable

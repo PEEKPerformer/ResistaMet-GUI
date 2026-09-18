@@ -43,12 +43,15 @@ class SettingsModel(BaseModel):
 class InstrumentSettings(SettingsModel):
     """Knobs that apply to every mode, wherever the value comes from.
 
-    ``gpib_address`` is machine-local — ``ConfigManager`` keeps it under
-    ``machines[hostname]`` and injects it into the profile on read, so it is
-    never stored per user (``config.py``).
+    ``gpib_address`` and ``visa_library`` are machine-local — ``ConfigManager``
+    keeps them under ``machines[hostname]`` and injects them into the profile
+    on read, so they are never stored per user (``config.py``).
     """
 
     gpib_address: str = Field(default=_M['gpib_address'], min_length=1)
+    #: '' = pyvisa's default, '@ivi' = vendor VISA, '@py' = pyvisa-py, or a
+    #: path to a VISA library (``visa_backend.py``).
+    visa_library: str = _M['visa_library']
     nplc: float = Field(default=_M['nplc'], ge=0.01, le=10.0)
     sampling_rate: float = Field(default=_M['sampling_rate'], ge=0.1, le=100.0)
     settling_time: float = Field(default=_M['settling_time'], ge=0.0, le=10.0)

@@ -163,6 +163,46 @@ class TestInstruments:
         assert response.status_code == 200
         assert response.json()['model']
 
+    def test_resources_say_which_backend_answered(self, client, fake_rm):
+        body = client.get('/instruments/resources').json()
+        assert body['backend']['requested'] == ''
+        assert body['backend']['kind'] == 'unknown'  # the fake has no visalib
+
+    def test_resources_can_try_a_backend_before_saving_it(self, client, fake_rm, monkeypatch):
+        import pyvisa
+        calls = []
+        factory = pyvisa.ResourceManager
+
+        def recording(*args, **kwargs):
+            calls.append(args)
+            return factory(*args, **kwargs)
+
+        monkeypatch.setattr(pyvisa, 'ResourceManager', recording)
+        body = client.get('/instruments/resources', params={'visa_library': '@py'}).json()
+        assert calls == [('@py',)]
+        assert body['backend']['requested'] == '@py'
+
+    def test_resources_use_the_machine_backend_by_default(self, client, config, fake_rm, monkeypatch):
+        import pyvisa
+        config.set_machine_local('visa_library', '@ivi')
+        calls = []
+        factory = pyvisa.ResourceManager
+        monkeypatch.setattr(pyvisa, 'ResourceManager',
+                            lambda *a, **k: (calls.append(a), factory(*a, **k))[1])
+        client.get('/instruments/resources')
+        assert calls == [('@ivi',)]
+
+    def test_identify_can_name_a_backend(self, client, fake_rm, monkeypatch):
+        import pyvisa
+        calls = []
+        factory = pyvisa.ResourceManager
+        monkeypatch.setattr(pyvisa, 'ResourceManager',
+                            lambda *a, **k: (calls.append(a), factory(*a, **k))[1])
+        response = client.post('/instruments/identify',
+                                json={'address': 'GPIB0::24::INSTR', 'visa_library': '@py'})
+        assert response.status_code == 200
+        assert calls == [('@py',)]
+
     def test_identify_is_refused_during_a_run(self, client, fake_rm):
         client.post('/session/start', json={'mode': 'four_point', 'sample_name': 'w',
                                              'username': 'alice'})

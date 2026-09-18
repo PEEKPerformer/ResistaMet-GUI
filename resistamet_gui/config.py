@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # the shared `measurement` block or in per-user overrides; they live under
 # config['machines'][hostname] so a NAS-shared config.json works across lab
 # PCs with different instrument wiring.
-_MACHINE_LOCAL_MEASUREMENT_KEYS = ('gpib_address',)
+_MACHINE_LOCAL_MEASUREMENT_KEYS = ('gpib_address', 'visa_library')
 
 
 def _current_hostname() -> str:
@@ -94,6 +94,10 @@ class ConfigManager:
 
     def set_gpib_address(self, addr: str) -> None:
         self.set_machine_local('gpib_address', addr)
+
+    def get_visa_library(self) -> str:
+        """Which VISA implementation this machine opens the bus with."""
+        return self.get_machine_local('visa_library')
 
     def _store_machine_local_from(self, measurement_in) -> None:
         """Route any machine-local keys in an incoming measurement block."""
