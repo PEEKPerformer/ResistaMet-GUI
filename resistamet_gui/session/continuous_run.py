@@ -512,6 +512,8 @@ class ContinuousRun:
                     self.keithley.write(":OUTP ON")
                     self._events.log('settling', f"Waiting for settling time ({settling_time}s)...")
                     self._control.sleep(settling_time)
+                except RunStopped:
+                    raise
                 except Exception as e:
                     self._events.error('output_on_failed', 'smu', f"Error turning on output: {str(e)}")
                     self._control.finish('output_on_failed')
@@ -579,6 +581,8 @@ class ContinuousRun:
                                     self._events.log('recovered', f"Delta read recovered after {retry} retries")
                                 consecutive_errors = 0
                                 break
+                            except RunStopped:
+                                raise
                             except Exception as e:
                                 consecutive_errors += 1
                                 if retry < max_retries - 1:
@@ -860,14 +864,14 @@ class ContinuousRun:
             self._events.log('completed', final_message)
             self._events.emit('acquisition_finished', {'mode': self.mode})
 
-        except Exception as e:
-            self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self.mode}): {str(e)}")
         except RunStopped:
-            # A stop landed during a settle; the normal shutdown path follows.
+            # A stop landed during a settle or a retry backoff; the normal
+            # shutdown path follows. Listed first: RunStopped is an Exception,
+            # and the handler below would otherwise report a stop as a fault.
             pass
-        except Exception:
+        except Exception as e:
             self._control.finish('worker_error')
-            raise
+            self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self.mode}): {str(e)}")
         finally:
             # Read the counters before cleanup releases the exporter.
             samples = self.exporter.row_count if self.exporter else 0
