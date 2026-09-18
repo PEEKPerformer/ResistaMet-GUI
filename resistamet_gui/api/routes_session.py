@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from ..session.instrument_lock import InstrumentBusy
 from ..session.manager import MeasurementSession, SessionBusy
 from .app import UI_ROLE, busy_as_conflict, get_session, require_token
 
@@ -79,6 +80,9 @@ def start(body: StartRequest, request: Request,
                                 prompt_timeout_s=body.prompt_timeout_s)
     except SessionBusy as exc:
         raise busy_as_conflict(exc)
+    except InstrumentBusy as exc:
+        # Another process holds the bus. Refused now, not failed later.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                              detail=str(exc))

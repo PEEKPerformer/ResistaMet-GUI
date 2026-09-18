@@ -21,7 +21,7 @@ from ..instrument import Keithley2400, humanize_connection_error
 from ..sensors import aux_column_names, make_sensor, reading_to_columns
 from ..system_utils import SleepInhibitor
 from .control import RunStopped
-from .instrument_lock import InstrumentBusy, hold_instrument
+from .instrument_lock import HeldInstrument, InstrumentBusy
 from .configure import (
     configure_four_point, configure_resistance, configure_source_i,
     configure_source_v, configure_sweep,
@@ -48,7 +48,7 @@ class ContinuousRun:
     """
 
     def __init__(self, mode, sample_name, username, settings, control, events,
-                  safety_ack='skip', prompt_timeout_s=None):
+                  safety_ack='skip', prompt_timeout_s=None, instrument_lock=None):
         if mode not in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             raise ValueError(f"Invalid measurement mode: {mode}")
         self.mode = mode
@@ -59,7 +59,9 @@ class ContinuousRun:
         self._safety_ack = safety_ack
         #: None = wait forever (the GUI has an operator at the bench).
         self._prompt_timeout_s = prompt_timeout_s
-        self._instrument_lock = None
+        #: A HeldInstrument the caller already took (so its refusal was
+        #: synchronous), or None to take it here. Released in _cleanup either way.
+        self._instrument_lock = instrument_lock
         # Set by the configure step: the frozen per-mode state the loop reads.
         self._mode_state = None
         # Set by each delta read: the per-polarity values the row builder logs.
@@ -290,11 +292,12 @@ class ContinuousRun:
         """Hold the address for this run; released in _cleanup.
 
         Taken before anything is opened, so a second process is refused rather
-        than allowed to interleave SCPI on the same bus.
+        than allowed to interleave SCPI on the same bus. A lock the caller
+        already holds is kept as it is.
         """
-        manager = hold_instrument(address)
-        manager.__enter__()
-        return manager
+        if self._instrument_lock is not None:
+            return self._instrument_lock
+        return HeldInstrument(address)
 
     def _safety_prompt_declined(self) -> bool:
         """Ask before a hazardous voltage reaches the leads. True = cancel.
@@ -921,11 +924,11 @@ class ContinuousRun:
         self._control.finish('user_stop')
 
     def _release_instrument_lock(self) -> None:
-        manager = getattr(self, '_instrument_lock', None)
-        if manager is not None:
+        held = getattr(self, '_instrument_lock', None)
+        if held is not None:
             self._instrument_lock = None
             try:
-                manager.__exit__(None, None, None)
+                held.release()
             except Exception:
                 logger.warning("failed to release the instrument lock", exc_info=True)
 
