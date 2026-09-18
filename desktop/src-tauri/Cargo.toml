@@ -1,6 +1,6 @@
 [package]
 name = "resistamet-desktop"
-version = "2.0.0-dev"
+version = "2.0.0-1"
 description = "ResistaMet desktop shell"
 authors = ["Brenden Ferland"]
 license = "MIT"
