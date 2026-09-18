@@ -142,7 +142,7 @@ export function SectionTitle({ children }: { children: ReactNode }) {
 
 interface DialogProps {
   title: ReactNode;
-  onClose?: () => void;
+  onClose?: (() => void) | undefined;
   footer?: ReactNode;
   size?: "md" | "lg";
   /** When false the dialog has no close affordance; the footer must resolve it. */
