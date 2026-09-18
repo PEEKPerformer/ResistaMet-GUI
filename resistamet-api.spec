@@ -23,6 +23,24 @@ import sys
 import tempfile
 from pathlib import Path
 
+from PyInstaller.utils.hooks import copy_metadata
+
+
+def _version_metadata():
+    """Distribution metadata for the packages that report their own version.
+
+    pyvisa and pyvisa-py read their version through importlib.metadata; with
+    no dist-info in the bundle they answer "unknown", which makes
+    ``--check-visa`` output useless in a bug report from the lab.
+    """
+    found = []
+    for name in ("pyvisa", "pyvisa-py", "pyusb"):
+        try:
+            found += copy_metadata(name)
+        except Exception:
+            pass  # not installed on this build machine; the version stays unknown
+    return found
+
 block_cipher = None
 
 ROOT = Path(SPECPATH)
@@ -83,7 +101,7 @@ a = Analysis(
     [str(ROOT / "resistamet-api.py")],
     pathex=[str(ROOT)],
     binaries=_LIBUSB_BINARIES,
-    datas=_LIBUSB_DATAS,
+    datas=_LIBUSB_DATAS + _version_metadata(),
     hiddenimports=[
         # pyvisa backends are chosen by name at runtime; static analysis does
         # not see them.
