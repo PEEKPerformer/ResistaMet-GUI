@@ -86,10 +86,13 @@ or narration of the sources' structure.
    operation until the resource was reopened. Fixed, with tests that assert
    the retry reaches the wire.
 
-The Orchestrator wrote the settings, packaging and documentation around the
-package, and one test expectation in `test_gpib_usb_visa.py` (how many USB
-handles a re-enumeration supersedes — no protocol content). Everything in
-the package itself is the Implementer's.
+The Orchestrator wrote the settings, packaging, diagnostic and documentation
+around the package. Inside it, three things: one test expectation in
+`test_gpib_usb_visa.py` (how many USB handles a re-enumeration supersedes),
+the version guard that skips those tests on a pyvisa-py too old for the
+Session API, and `transport.libusb_library_path`, a four-line accessor that
+reports which libusb loaded. None of the three carries a protocol fact.
+Everything that speaks to the adapter is the Implementer's.
 
 ## What exists
 
