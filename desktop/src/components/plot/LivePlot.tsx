@@ -10,7 +10,7 @@ import { useEffect, useRef } from "react";
 import uPlot, { type AlignedData, type Options, type Series } from "uplot";
 import "uplot/dist/uPlot.min.css";
 import { getSeries, getSamplesVersion } from "../../state/samples";
-import { engineering } from "../../lib/format";
+import { axisLabels, engineering } from "../../lib/format";
 import styles from "./LivePlot.module.css";
 
 export interface TraceSpec {
@@ -70,14 +70,7 @@ export function LivePlot({ traces, mode, windowS = 0, fps = 30 }: Props) {
       })),
     ];
 
-    const axisValues = (unit: string) => (_u: uPlot, ticks: number[]) => {
-      // Pick one prefix for the whole axis from the largest tick so labels
-      // read as a scale, not a jumble of prefixes.
-      const largest = ticks.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
-      const ref = engineering(largest || 1, unit);
-      const factor = largest ? Number(ref.mantissa) / largest : 1;
-      return ticks.map((v) => (v * factor).toPrecision(4).replace(/\.?0+$/, "") + (ref.unit ? ` ${ref.unit}` : ""));
-    };
+    const axisValues = (unit: string) => (_u: uPlot, ticks: number[]) => axisLabels(ticks, unit);
 
     const leftUnit = traces.find((t) => !t.rightAxis)?.unit ?? "";
     const rightUnit = traces.find((t) => t.rightAxis)?.unit ?? "";
