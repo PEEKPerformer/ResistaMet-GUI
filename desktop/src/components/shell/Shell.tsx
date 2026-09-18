@@ -51,7 +51,7 @@ function TopBar({ onOpenSettings, onOpenUser }: Omit<ShellProps, "children">) {
     <header className={styles.topbar}>
       <div className={styles.brand}>
         <img src={logo} alt="" />
-        ResistaMet
+        <span>ResistaMet</span>
         <span className={styles.brandVersion}>2.0</span>
       </div>
 
@@ -120,7 +120,7 @@ function NavRail() {
             onClick={() => setView(view)}
           >
             <Icon />
-            {label}
+            <span>{label}</span>
             {running && activeMode === view ? <span className={styles.railRunning} /> : null}
           </button>
         );
@@ -133,7 +133,7 @@ function NavRail() {
         onClick={() => setView("results")}
       >
         <Icons.results />
-        Results
+        <span>Results</span>
       </button>
       <div className={styles.railSpacer} />
     </nav>

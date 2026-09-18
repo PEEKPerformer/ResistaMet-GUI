@@ -61,3 +61,44 @@
   color: var(--danger);
   font-size: var(--text-sm);
 }
+
+.safety {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.safety p {
+  margin: 0;
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+
+.safetyVoltage {
+  font-size: 40px;
+  font-weight: 500;
+  color: var(--warn);
+  letter-spacing: -0.02em;
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+
+.checkbox input {
+  accent-color: var(--accent);
+}
+
+.detail {
+  margin: 0;
+  padding: var(--sp-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+}
