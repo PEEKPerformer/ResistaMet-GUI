@@ -7,6 +7,7 @@ so the QThread adapter in ``workers.py`` and the headless session drive the same
 code. No Qt here.
 """
 import logging
+import math
 import time
 from datetime import datetime
 from pathlib import Path
@@ -160,6 +161,14 @@ class ContinuousRun:
                 return
         return True
 
+    def _effective_settings(self):
+        """What the instrument reported after configuration, for the file header."""
+        state = self._mode_state
+        limit = getattr(state, 'voltage_compliance_v', None)
+        if limit is None or not math.isfinite(limit):
+            return None
+        return {'voltage_compliance_V': limit}
+
     def _open_output_file(self, measurement_settings, source_value_str):
         """Create the exporter for this run. False on failure."""
         # File setup via the configured exporter (csv / hdf5 / csv+legacy_json).
@@ -182,6 +191,7 @@ class ContinuousRun:
                 aux_units=self._aux_units,
                 on_compress=self._emit_compress_status,
                 on_large_file=self._emit_large_file_status,
+                effective=self._effective_settings(),
             )
             # Hdf5Exporter does not expose them; the schema is still known
             # to the caller, so an empty list means "ask get_column_config".

@@ -231,3 +231,47 @@ class TestEventStream:
         sink = _run_until_samples(session, profile, 'resistance',
                                    res_test_current=1e-3, res_voltage_compliance=5.0)
         assert [e.seq for e in sink.events] == list(range(1, len(sink.events) + 1))
+
+
+class TestResistanceCompliance:
+    """The ohms function does not raise the compliance bit; the reading has to say it.
+
+    Bench, 2026-09-18, Keithley 2400 and 2420: with the source pinned at its
+    voltage limit the status word stays clear, and in manual range the CURR
+    element is the programmed current, so V/I is a wrong resistance that
+    looks like data. The simulator reproduces that, and the parser must catch
+    it from the measured voltage sitting at the limit.
+    """
+
+    def test_a_pinned_voltage_is_flagged_not_recorded_as_good(self, session, profile):
+        # 100 Ω at 10 mA wants 1 V; a 0.5 V limit pins it.
+        sink = _run_until_samples(session, profile, 'resistance', res_auto_range=False,
+                                   res_test_current=10e-3, res_voltage_compliance=0.5)
+        samples = sink.of_type('sample')
+        assert samples, 'no samples'
+        assert {s.payload['compliance'] for s in samples} == {'V_COMP'}
+        assert sink.of_type('compliance'), 'no compliance event'
+        # And the value it would have archived is indeed wrong, which is why the flag matters.
+        assert all(v['resistance'] < DUT_OHMS * 0.6 for v in (s.payload['values'] for s in samples))
+
+    def test_stop_on_compliance_ends_the_run(self, session, profile):
+        profile['measurement']['stop_on_compliance'] = True
+        session.start(profile, 'resistance', 'pinned', 'alice',
+                      overrides={'res_auto_range': False, 'res_test_current': 10e-3,
+                                 'res_voltage_compliance': 0.5})
+        assert _wait_for(lambda: session.state == 'idle')
+        ended = session.sink.of_type('run_ended')[-1].payload
+        assert ended['reason'] == 'compliance_stop'
+
+    def test_within_compliance_is_still_ok(self, session, profile):
+        sink = _run_until_samples(session, profile, 'resistance', res_auto_range=False,
+                                   res_test_current=1e-3, res_voltage_compliance=5.0)
+        assert {s.payload['compliance'] for s in sink.of_type('sample')} == {'OK'}
+
+    def test_the_file_records_the_limit_the_instrument_has(self, session, profile):
+        sink = _run_until_samples(session, profile, 'resistance', res_auto_range=False,
+                                   res_test_current=1e-3, res_voltage_compliance=2.0)
+        with open(sink.of_type('run_ended')[-1].payload['path']) as handle:
+            comments = [line for line in handle if line.startswith('#')]
+        assert any('effective' in line and 'voltage_compliance_V' in line and '2.0' in line
+                   for line in comments), comments
