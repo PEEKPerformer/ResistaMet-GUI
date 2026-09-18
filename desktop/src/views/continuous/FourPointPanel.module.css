@@ -1,0 +1,93 @@
+.row {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(0, 1.4fr);
+  gap: var(--sp-3);
+  min-height: 0;
+}
+
+.stats,
+.spots {
+  min-height: 0;
+}
+
+.statGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-3) var(--sp-4);
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.statLabel {
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.statValue {
+  font-size: var(--text-md);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.saveRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+
+.spotsTitle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+}
+
+.across {
+  color: var(--fg-muted);
+  font-weight: 400;
+}
+
+.spotsBody {
+  overflow: auto;
+  max-height: 200px;
+}
+
+.empty {
+  color: var(--fg-faint);
+  font-size: var(--text-sm);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.table th {
+  text-align: left;
+  color: var(--fg-faint);
+  font-weight: 600;
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0 var(--sp-3) var(--sp-1) 0;
+}
+
+.table td {
+  padding: 3px var(--sp-3) 3px 0;
+  border-top: 1px solid var(--border);
+}
+
+.table td:last-child {
+  text-align: right;
+  padding-right: 0;
+}
