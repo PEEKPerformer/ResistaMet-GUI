@@ -71,6 +71,14 @@ const TRACES: Record<ContinuousMode, TraceSpec[]> = {
   ],
 };
 
+export const STATE_LABEL: Record<string, string> = {
+  running: "Measuring",
+  paused: "Paused",
+  awaiting_prompt: "Waiting for you",
+  stopping: "Stopping",
+  identifying: "Identifying",
+};
+
 const WINDOWS: { label: string; seconds: number }[] = [
   { label: "30 s", seconds: 30 },
   { label: "5 min", seconds: 300 },
@@ -283,10 +291,10 @@ function RunState({ mode }: { mode: Mode }) {
   const sample = useLatestSample();
   const latest = sample && sample.mode === mode ? sample : null;
   if (status && status.state !== "idle" && status.mode === mode) {
-    const tone = status.state === "paused" ? "warn" : status.state === "stopping" ? "warn" : "ok";
+    const tone = status.state === "running" ? "ok" : "warn";
     return (
       <span className={styles.runState}>
-        <Badge tone={tone}>{status.state === "running" ? "Measuring" : status.state}</Badge>
+        <Badge tone={tone}>{STATE_LABEL[status.state] ?? status.state}</Badge>
         {latest ? (
           <span className={`${styles.runMeta} num`}>
             {formatElapsed(latest.elapsedS)} · {latest.count} samples

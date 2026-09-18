@@ -6,6 +6,7 @@ import { PromptDialog } from "./components/dialogs/PromptDialog";
 import { SettingsDialog } from "./components/dialogs/SettingsDialog";
 import { ContinuousView } from "./views/continuous/ContinuousView";
 import { SweepView } from "./views/sweep/SweepView";
+import { VdpView } from "./views/vdp/VdpView";
 import { useSession } from "./state/session";
 import { useUi } from "./state/ui";
 import styles from "./App.module.css";
@@ -89,6 +90,8 @@ function View({ view }: { view: string }) {
       return <ContinuousView key={view} mode={view} />;
     case "sweep":
       return <SweepView />;
+    case "vdp":
+      return <VdpView />;
     default:
       return <div className={styles.placeholder}>{view}</div>;
   }
