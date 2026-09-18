@@ -161,6 +161,11 @@ export class ApiClient {
     return this.request("GET", "/users");
   }
 
+  /** Create a profile, or select an existing one as last_user. */
+  addUser(username: string): Promise<{ users: string[]; last_user: string }> {
+    return this.request("POST", "/users", { username });
+  }
+
   profile(username: string): Promise<Profile> {
     return this.request("GET", `/profiles/${encodeURIComponent(username)}`);
   }

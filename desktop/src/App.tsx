@@ -1,8 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { AppProvider } from "./app/AppContext";
 import { Shell } from "./components/shell/Shell";
+import { UserPicker } from "./components/dialogs/UserPicker";
 import { useUi } from "./state/ui";
 import styles from "./App.module.css";
+
+type DialogName = "user" | "settings" | null;
 
 export default function App() {
   const ui = useUi();
@@ -19,10 +22,25 @@ export default function App() {
 
   return (
     <AppProvider fallback={({ error }) => <Startup error={error} />}>
-      <Shell onOpenSettings={() => undefined} onOpenUser={() => undefined}>
+      <Workspace />
+    </AppProvider>
+  );
+}
+
+function Workspace() {
+  const ui = useUi();
+  const [dialog, setDialog] = useState<DialogName>(null);
+
+  // No operator, no measuring: the picker opens itself until one is chosen.
+  const showUserPicker = dialog === "user" || ui.username === null;
+
+  return (
+    <>
+      <Shell onOpenSettings={() => setDialog("settings")} onOpenUser={() => setDialog("user")}>
         <Placeholder view={ui.view} />
       </Shell>
-    </AppProvider>
+      {showUserPicker ? <UserPicker onClose={() => setDialog(null)} /> : null}
+    </>
   );
 }
 
