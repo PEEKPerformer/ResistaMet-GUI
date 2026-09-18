@@ -65,6 +65,7 @@ dev = [
     "pytest-cov>=4.0.0",
     "fastapi>=0.110",
     "uvicorn>=0.27",
+    "websockets>=13",
     "httpx>=0.27",
 ]
 hdf5 = [
@@ -73,6 +74,8 @@ hdf5 = [
 api = [
     "fastapi>=0.110",
     "uvicorn>=0.27",
+    # uvicorn has no WebSocket implementation of its own.
+    "websockets>=13",
 ]
 # NI GPIB-USB adapters from user space (resistamet_gui/gpib_usb); needs a
 # libusb shared library on the machine as well.
