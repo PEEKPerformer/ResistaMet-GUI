@@ -1,0 +1,66 @@
+.startup {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+}
+
+.startupCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-4);
+  min-width: 320px;
+  max-width: 640px;
+  padding: var(--sp-8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  color: var(--fg-muted);
+  box-shadow: var(--shadow-2);
+}
+
+.startupCard[data-error="true"] {
+  align-items: stretch;
+  border-color: var(--danger);
+}
+
+.startupTitle {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.startupError {
+  margin: 0;
+  padding: var(--sp-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.placeholder {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+}
