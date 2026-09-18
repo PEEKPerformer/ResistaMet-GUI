@@ -499,11 +499,21 @@ class TestDispatch:
         assert info.value.error_code == StatusCode.error_resource_not_found
         assert Sentinel.calls == ['GPIB9::1::INSTR']
 
-    def test_opening_foreign_boards_does_not_re_enumerate(self, rm, enumeration):
-        for _ in range(3):
-            with pytest.raises(pyvisa.errors.VisaIOError):
-                rm.open_resource('GPIB9::1::INSTR')
+    def test_opening_our_board_does_not_re_enumerate_but_a_miss_looks_once(self, rm, enumeration):
+        rm.open_resource('GPIB0::24::INSTR').close()
+        rm.open_resource('GPIB0::24::INSTR').close()
         assert enumeration['calls'] == 1
+        with pytest.raises(pyvisa.errors.VisaIOError):
+            rm.open_resource('GPIB9::1::INSTR')
+        assert enumeration['calls'] == 2
+        assert Sentinel.calls == ['GPIB9::1::INSTR']
+
+    def test_adapter_plugged_in_later_opens_without_a_listing(self, rm, adapter, enumeration):
+        enumeration['adapters'].append(fake_adapter_info(serial='LATER', address=9))
+        inst = rm.open_resource('GPIB1::24::INSTR')
+        assert inst.get_visa_attribute(constants.VI_ATTR_INTF_NUM) == 1
+        inst.close()
+        assert Sentinel.calls == []
 
     def test_attach_failure_is_a_visa_error_not_a_crash(self, rm, monkeypatch, adapter):
         def broken(info):
@@ -538,7 +548,9 @@ class TestBoardRegistry:
         first = fake_adapter_info(serial='AAA', bus=1, address=9)
         registry = BoardRegistry(open_transport=lambda i: SimulatedAdapter({}), first_board=0)
         enumeration['adapters'] = [first]
-        assert registry.owns('0') and not registry.owns('1')
+        assert registry.owns('0')
+        # A miss looks at the bus again, which hands board 0 a fresh handle.
+        assert not registry.owns('1')
         # A second adapter appears at a lower USB address: it must not take GPIB0.
         first_again = fake_adapter_info(serial='AAA', bus=1, address=9)
         second = fake_adapter_info(serial='BBB', bus=1, address=2)
@@ -546,7 +558,9 @@ class TestBoardRegistry:
         registry.refresh()
         assert registry.board_names() == ['0', '1']
         assert registry.owns('1')
-        assert disposed == [first]  # the stale handle of the re-enumerated adapter
+        # Every superseded handle of the re-enumerated adapter, disposed once:
+        # one for the miss above, one for this refresh.
+        assert [info.serial for info in disposed] == ['AAA', 'AAA']
 
     def test_a_board_in_use_keeps_its_controller_and_drops_the_duplicate(self, enumeration, monkeypatch):
         disposed: List[AdapterInfo] = []
@@ -591,6 +605,20 @@ class TestBoardRegistry:
         enumeration['adapters'] = [fake_adapter_info(serial=None, bus=3, address=4)]
         registry.refresh()
         assert registry.board_names() == ['2']
+
+    def test_owns_finds_an_adapter_that_appeared_after_the_first_enumeration(self, enumeration):
+        enumeration['adapters'] = []
+        registry = BoardRegistry(open_transport=lambda i: SimulatedAdapter({}), first_board=0)
+        assert registry.owns('0') is False
+        assert enumeration['calls'] == 1
+        enumeration['adapters'] = [fake_adapter_info(serial='NEW')]
+        assert registry.owns('0') is True
+        assert enumeration['calls'] == 2
+        # A hit does not enumerate; a miss for a board that does not exist does, once, and stays False.
+        assert registry.owns('0') is True
+        assert enumeration['calls'] == 2
+        assert registry.owns('7') is False
+        assert enumeration['calls'] == 3
 
     def test_failed_acquire_re_enumerates_next_time(self, enumeration):
         def broken(info):

@@ -629,16 +629,51 @@ class TestFaults:
         transport.assert_done()
         assert transport.closed
 
-    def test_reattach_failure_surfaces_as_not_ready(self):
+    def test_reattach_failure_surfaces_as_not_ready_and_is_retried(self):
         controller, transport = attached([
             ('out', p.command_message(b'\x14', T3S)), ('in', h('0c 00'), 12),
             STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH),
-            ('ctrl', (0x41, 0, 0, 16), h('00 00 00 00 00')),
+            ('ctrl', (0x41, 0, 0, 16), h('00 00 00 00 00')),       # re-attach 1 fails
+        ] + attach_script() + [                                    # re-attach 2 succeeds
+            ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
         ])
         with pytest.raises(ProtocolError):
             controller.command(b'\x14', timeout_s=3.0)
         with pytest.raises(AdapterNotReady):
             controller.command(b'\x14', timeout_s=3.0)
+        assert controller.command(b'\x14', timeout_s=3.0) == 1
+        transport.assert_done()
+
+    def test_reattach_failing_with_a_bus_error_is_retried_too(self):
+        controller, transport = attached([
+            ('out', p.command_message(b'\x14', T3S)), ('in', TransportError('pipe stalled')),
+        ] + attach_script(take_control_error=3) + attach_script() + [
+            ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
+        ])
+        with pytest.raises(TransportError):
+            controller.command(b'\x14', timeout_s=3.0)
+        with pytest.raises(GpibError) as info:
+            controller.command(b'\x14', timeout_s=3.0)
+        assert info.value.code == 3
+        assert controller.command(b'\x14', timeout_s=3.0) == 1
+        transport.assert_done()
+
+    def test_fault_during_the_reattach_drains_exactly_once_more(self):
+        bad_init = attach_script()[:4]
+        bad_init[3] = ('in', regwrite_reply(20), 16)               # malformed mid-attach
+        controller, transport = attached([
+            ('out', p.command_message(b'\x14', T3S)), ('in', h('0c 00'), 12),
+            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH),
+        ] + bad_init + [
+            STOP, ('in', TransportTimeout('drained again'), DRAIN_LENGTH),
+        ] + attach_script() + [
+            ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
+        ])
+        with pytest.raises(ProtocolError):
+            controller.command(b'\x14', timeout_s=3.0)
+        with pytest.raises(ProtocolError):
+            controller.command(b'\x14', timeout_s=3.0)
+        assert controller.command(b'\x14', timeout_s=3.0) == 1
         transport.assert_done()
 
 
