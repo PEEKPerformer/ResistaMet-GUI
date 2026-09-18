@@ -83,6 +83,32 @@ function dedupeInterfaces(source) {
   return kept.join("\n");
 }
 
+function fieldMeta(contract) {
+  // Per-field bounds, defaults and enums, straight from the schema, so a form
+  // can clamp and validate exactly where the backend will. Labels and units
+  // are a UI concern and live in src/lib/fields.ts.
+  const meta = {};
+  for (const [model, schema] of Object.entries(contract.definitions)) {
+    const fields = {};
+    for (const [key, prop] of Object.entries(schema.properties ?? {})) {
+      const entry = {};
+      const resolved = prop.anyOf ? prop.anyOf.find((p) => p.type !== "null") ?? prop : prop;
+      if (resolved.type) entry.type = resolved.type;
+      if (prop.anyOf?.some((p) => p.type === "null")) entry.nullable = true;
+      if (resolved.enum) entry.enum = resolved.enum;
+      if (resolved.minimum !== undefined) entry.min = resolved.minimum;
+      if (resolved.exclusiveMinimum !== undefined) entry.exclusiveMin = resolved.exclusiveMinimum;
+      if (resolved.maximum !== undefined) entry.max = resolved.maximum;
+      if (resolved.exclusiveMaximum !== undefined) entry.exclusiveMax = resolved.exclusiveMaximum;
+      if ("default" in prop) entry.default = prop.default;
+      if (schema.required?.includes(key)) entry.required = true;
+      fields[key] = entry;
+    }
+    meta[model] = fields;
+  }
+  return meta;
+}
+
 async function settingsTypes() {
   const contract = JSON.parse(readFileSync(join(contractsDir, "settings.schema.json"), "utf8"));
   const parts = [];
@@ -98,7 +124,21 @@ async function settingsTypes() {
       "export type Mode = (typeof MODES)[number];\n\n" +
       "export interface ModeSettingsMap {\n" +
       modes.map(([mode, model]) => `  ${mode}: ${model};`).join("\n") +
-      "\n}\n",
+      "\n}\n\n" +
+      "/** The settings model each mode's tab writes, by mode. */\n" +
+      "export const MODE_MODEL = {\n" +
+      modes.map(([mode, model]) => `  ${mode}: ${JSON.stringify(model)},`).join("\n") +
+      "\n} as const;\n",
+  );
+  parts.push(
+    "export interface FieldMeta {\n" +
+      "  type?: string;\n  nullable?: boolean;\n  enum?: readonly (string | number)[];\n" +
+      "  min?: number;\n  exclusiveMin?: number;\n  max?: number;\n  exclusiveMax?: number;\n" +
+      "  default?: unknown;\n  required?: boolean;\n}\n\n" +
+      "/** Bounds, defaults and enums per model field, from the schema. */\n" +
+      "export const FIELD_META: Record<string, Record<string, FieldMeta>> = " +
+      JSON.stringify(fieldMeta(contract), null, 2) +
+      ";\n",
   );
   return BANNER + dedupeInterfaces(parts.join("\n"));
 }
