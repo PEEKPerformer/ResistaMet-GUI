@@ -182,7 +182,7 @@ export const VDP_FIELDS: FieldGroup<Keys<VdpSettings>>[] = [
     fields: [{ key: "vdp_thickness_cm", label: "Thickness", unit: "cm" }],
   },
   {
-    title: "Timing",
+    title: "Readings",
     fields: [
       { key: "vdp_settling_s", label: "Settle after flip", unit: "s" },
       { key: "vdp_readings_per_polarity", label: "Readings per polarity" },

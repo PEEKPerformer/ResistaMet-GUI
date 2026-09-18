@@ -21,10 +21,15 @@ export interface Engineering {
   unit: string;
 }
 
+/** Units that take SI prefixes. Anything else — cm, µm, °C, h, %, Ω/sq — is
+ *  shown at face value: "50 mcm" is not a thing. */
+const PREFIXABLE = new Set(["", "Ω", "V", "A", "W", "s", "Hz", "F", "H", "S", "Ω·cm", "S/cm"]);
+
 /** Split a value into a mantissa and a prefixed unit. NaN yields "—". */
 export function engineering(value: number, unit = "", digits = 4): Engineering {
   if (!Number.isFinite(value)) return { mantissa: "—", unit };
   if (value === 0) return { mantissa: "0", unit };
+  if (!PREFIXABLE.has(unit)) return { mantissa: toSignificant(value, digits), unit };
   const magnitude = Math.abs(value);
   const [scale, prefix] = PREFIXES.find(([s]) => magnitude >= s * 0.9995) ?? PREFIXES[PREFIXES.length - 1]!;
   const scaled = value / scale;

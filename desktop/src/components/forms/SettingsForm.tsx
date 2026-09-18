@@ -7,7 +7,7 @@ import { FIELD_META, MODE_MODEL, type Mode } from "../../generated/settings";
 import type { FieldGroup, FieldSpec } from "../../lib/fields";
 import type { Issue } from "../../lib/api";
 import { EngineeringInput } from "../ui/EngineeringInput";
-import { Field, Select, SectionTitle, Toggle } from "../ui";
+import { Field, Input, Select, SectionTitle, Toggle } from "../ui";
 
 export type Overrides = Record<string, unknown>;
 
@@ -82,17 +82,24 @@ export function FieldRow({ spec, meta, value, onChange, issue, disabled }: RowPr
   }
 
   if (meta.type === "integer") {
+    // Counts are counts: no prefixes, no decimals.
+    const current = typeof value === "number" ? value : ((meta.default as number | undefined) ?? 0);
     return (
       <Field label={spec.label} hint={spec.hint} error={error}>
-        <EngineeringInput
-          value={typeof value === "number" ? value : ((meta.default as number | undefined) ?? 0)}
+        <Input
+          type="number"
+          inputMode="numeric"
+          step={1}
           min={meta.min}
           max={meta.max}
+          value={String(current)}
           unit={spec.unit}
-          digits={6}
           disabled={disabled}
           invalid={issue !== undefined}
-          onChange={(v) => onChange(v === null ? null : Math.round(v))}
+          onChange={(e) => {
+            const parsed = Number.parseInt(e.target.value, 10);
+            if (Number.isFinite(parsed)) onChange(parsed);
+          }}
         />
       </Field>
     );
