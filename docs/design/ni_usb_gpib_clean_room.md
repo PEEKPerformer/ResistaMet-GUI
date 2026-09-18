@@ -81,6 +81,15 @@ or narration of the sources' structure.
 6. **Implementer** fixed all of it, split the modules to the project's size
    rule, and added the missing tests, including a fake `usb` module that
    catches the handle leak.
+7. **Code reviewer** verified the fixes and found one more: a failed
+   re-attach after a fault left the controller refusing every later
+   operation until the resource was reopened. Fixed, with tests that assert
+   the retry reaches the wire.
+
+The Orchestrator wrote the settings, packaging and documentation around the
+package, and one test expectation in `test_gpib_usb_visa.py` (how many USB
+handles a re-enumeration supersedes — no protocol content). Everything in
+the package itself is the Implementer's.
 
 ## What exists
 
