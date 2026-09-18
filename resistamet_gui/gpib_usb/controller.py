@@ -18,6 +18,13 @@ The interrupt endpoint is not used (§2.5 calls it optional and operation
 without it reliable), so attach skips the interrupt-monitor-mask steps 4 and
 6 of §2.8 and ``status()`` polls the control endpoint instead.
 
+Bench notes (GPIB-USB-HS 01CEE482, Keithley 2400 at PAD 3, 2026-09-18): the
+attach sequence, addressing, write, read, serial poll and the presence probe
+all work as written. The read reply's trailer is 16 bytes, not the 28 the
+specification derived (see ``protocol``). The count field of a status reply
+is only meaningful after 0x0a/0x0c/0x0d; other replies carry stale or marker
+bytes there, which is why nothing here reads it elsewhere.
+
 Size: this module runs a little over the 400-line guideline even with the
 device-level sequences moved out. What remains is the attach sequence, the
 three transfer primitives and the exchange/fault machinery they share; the
@@ -31,7 +38,7 @@ from typing import Callable, Iterator, List, Optional, Sequence, Tuple
 
 from . import protocol as p
 from . import tables as t
-from .protocol import AdapterNotReady, GpibError, GpibTimeout, ProtocolError, StatusBlock
+from .protocol import AdapterNotReady, GpibError, GpibTimeout, NoReply, ProtocolError, StatusBlock
 from .transport import Transport, TransportError, TransportTimeout
 
 logger = logging.getLogger(__name__)
@@ -128,9 +135,17 @@ class Controller:
                 self.serial_number = self._usb_b_serial()           # step 3 (USB-B)
             # Step 4 (monitor mask 0x0000) skipped: the interrupt endpoint is not used.
             # Own secondary addressing stays disabled (rows 20-22 of §2.6).
-            self._register_write(                                   # step 5
-                t.register_init_writes(self._own_address, system_controller, self._t1_ns),
-                'register initialisation')
+            try:
+                self._register_write(                               # step 5
+                    t.register_init_writes(self._own_address, system_controller, self._t1_ns),
+                    'register initialisation')
+            except NoReply as exc:
+                # Seen on the bench: a hung adapter answers every control request,
+                # swallows bulk messages until its FIFO fills and never replies. A
+                # USB reset does not clear it; only a power cycle does.
+                raise AdapterNotReady(
+                    '%s accepted the initialisation message but never replied: the '
+                    'adapter is hung. Unplug it and plug it back in.' % self._model.name) from exc
             # Step 6 (monitor mask 0x10ff) skipped for the same reason.
             if system_controller:                                   # step 7
                 self._interface_clear()
@@ -407,7 +422,7 @@ class Controller:
             try:
                 return self._transport.bulk_in(reply_length, int(RECOVERY_WAIT_S * 1000))
             except TransportTimeout as exc:
-                raise ProtocolError('adapter did not answer after a stop request') from exc
+                raise NoReply('adapter did not answer after a stop request') from exc
 
     def _exchange(self, message: bytes, reply_length: int, wait_s: float, operation: str,
                   tolerate: Sequence[int] = ()) -> Tuple[StatusBlock, bytes]:

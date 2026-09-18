@@ -80,8 +80,8 @@ def find_listeners(controller: Controller, addresses: Iterable[int],
     a listener holds NDAC asserted while it waits for data; an empty
     address leaves it released. No data byte is sent to the instrument.
     """
-    # spec gap: this NDAC probe follows IEEE-488.1 but is not bench-verified
-    # with this adapter; §5.16 marks it uncertain.
+    # Bench-verified on the GPIB-USB-HS with a Keithley 2400 at PAD 3: BSR reads
+    # 0x01 (REN only) for empty addresses and has NDAC set for the instrument.
     with controller.lock:
         found: List[int] = []
         for pad in addresses:

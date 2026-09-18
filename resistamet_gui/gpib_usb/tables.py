@@ -84,6 +84,9 @@ HS_PLUS_INIT_REQUESTS: Tuple[Tuple[ControlRequest, bytes], ...] = (
      bytes.fromhex('f80100000001000000')),
 )
 
+#: Observed on GPIB-USB-HS 01CEE482 (bcdDevice 0x101): the readiness reply is
+#: ``40 01 00 01 30 01 19 08 00 00 65``, i.e. bytes 6/7/10 differ from the
+#: values the specification lists; nonzero still means ready.
 READINESS_ATTEMPTS = 50
 READINESS_INTERVAL_S = 0.1
 READINESS_USB_TIMEOUT_MS = 100
