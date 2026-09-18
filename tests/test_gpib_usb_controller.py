@@ -129,9 +129,10 @@ def read_reply(data: bytes, requested: int, *, end: bool = True, error: int = 0)
     last_count = len(data) - ((len(data) - 1) // 15) * 15 if data else 0
     ibsta = 0x0100 | (t.IBSTA_END if end else 0) | (t.IBSTA_TIMO if error == t.ERR_TIMEOUT else 0)
     count = (len(data) - requested) & 0xFFFF
+    # The 16-byte trailer as the GPIB-USB-HS sends it (no embedded 0x09 block).
     trailer = (bytes((0x38,)) + ibsta.to_bytes(2, 'big') + bytes((error,))
-               + count.to_bytes(2, 'little') + b'\x00\x00' + bytes((0, last_count, 0, 0))
-               + h('09 00 00 00 00 00 00 00 02 00 00 00 04 00 00 00'))
+               + count.to_bytes(2, 'little') + b'\xff\xff'
+               + bytes((0xE0 if end else 0x60, last_count, 0, 0)) + h('04 00 00 00'))
     return blocks + trailer
 
 
@@ -200,6 +201,21 @@ class TestAttach:
         controller = Controller(ScriptedTransport(script), t.PID_HS, sleep=naps.append)
         controller.attach()
         assert naps == [0.1] * 4
+
+    def test_hung_adapter_is_reported_with_the_replug_message(self):
+        # Seen on the bench: control requests answered, init accepted, no bulk reply ever.
+        script = attach_script()[:3] + [
+            ('in', TransportTimeout('no reply'), 16),
+            STOP,
+            ('in', TransportTimeout('still no reply'), 16),
+        ]
+        transport = ScriptedTransport(script)
+        controller = Controller(transport, t.PID_HS, sleep=lambda s: None)
+        with pytest.raises(AdapterNotReady) as info:
+            controller.attach()
+        assert 'Unplug' in str(info.value)
+        transport.assert_done()
+        assert [tm for kind, _, tm in transport.timeouts if kind == 'in'] == [SHORT_MS, int(RECOVERY_WAIT_S * 1000)]
 
     def test_never_ready_raises_after_50_polls(self):
         script = [('ctrl', (0x41, 0, 0, 16), SERIAL_REPLY)]
@@ -399,17 +415,24 @@ class TestWrite:
 
 
 class TestRead:
-    IDN_REPLY = h('36 41 42 43 44 45 0a ee ee ee ee ee ee ee ee ee'
-                  '38 21 00 00 06 ff 00 00 aa 06 00 00 09 00 00 00 00 00 00 00 02 00 00 00 04 00 00 00')
+    #: The *IDN? reply as GPIB-USB-HS 01CEE482 sent it for a Keithley 2400 at PAD 3
+    #: (2026-09-18): three 0x37 blocks and the 16-byte trailer. The specification's
+    #: worked example drew a 28-byte trailer; the device disagreed.
+    IDN_TEXT = b'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1175680,C30   Mar 17 2006 09:29:29/A02  /K/J\n'
+    IDN_REPLY = h(
+        '37 00 4b 45 49 54 48 4c 45 59 20 49 4e 53 54 52 55 4d 45 4e 54 53 20 49 4e 43 2e 2c 4d 4f 44 45'
+        '37 00 4c 20 32 34 30 30 2c 31 31 37 35 36 38 30 2c 43 33 30 20 20 20 4d 61 72 20 31 37 20 32 30'
+        '37 00 30 36 20 30 39 3a 32 39 3a 32 39 2f 41 30 32 20 20 2f 4b 2f 4a 0a 00 00 00 00 00 00 00 00'
+        '38 20 20 00 52 ff ff ff e0 16 00 00 04 00 00 00')
 
-    def test_read_ending_in_eoi_uses_the_worked_example_bytes(self):
+    def test_read_ending_in_eoi_as_observed_on_the_bench(self):
         controller, transport = attached([
-            ('out', p.command_message(bytes((0x3F, 0x20, 0x56)), T3S)), ('in', status_reply(0x0C), 12),
-            ('out', h('06 00 00 00 04 00 00 00')), ('in', status_reply(0x06), 12),
+            ('out', h('0c fd 00 fc 3f 20 43 00 04 00 00 00')), ('in', h('0c 00 6c 00 00 00 ff ff 04 00 00 00'), 12),
+            ('out', h('06 00 00 00 04 00 00 00')), ('in', h('06 00 20 00 aa 55 ff ff 04 00 00 00'), 12),
             ('out', h('0a 00 00 fc 00 ff 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')),
             ('in', self.IDN_REPLY, 512),
         ])
-        assert controller.read(22, max_bytes=256, timeout_s=3.0) == (b'ABCDE\n', True)
+        assert controller.read(3, max_bytes=256, timeout_s=3.0) == (self.IDN_TEXT, True)
         transport.assert_done()
 
     def test_read_ending_on_the_count(self):

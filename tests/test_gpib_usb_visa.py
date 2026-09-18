@@ -146,13 +146,14 @@ class SimulatedAdapter:
     def _read(self, data: bytes) -> bytes:
         requested = 0x10000 - int.from_bytes(data[4:6], 'little')
         eos_mode, eos_char = data[1], data[2]
-        trailer_tail = h('09 01 30 00 00 00 00 00 02 00 00 00 04 00 00 00')
+        # The 16-byte trailer as the real adapter sends it.
+        trailer_tail = h('04 00 00 00')
         if self.atn:
-            return self._status(0x38, error=2, count=-requested) + h('00 00 00 00') + trailer_tail
+            return self._status(0x38, error=2, count=-requested) + h('60 00 00 00') + trailer_tail
         instrument = self.instruments.get(self.talker) if self.talker is not None else None
         if instrument is None or not instrument.pending:
-            return (self._status(0x38, error=0x0A, count=-requested, ibsta=0x4100)
-                    + h('00 00 00 00') + trailer_tail)
+            return (self._status(0x38, error=0x0A, count=-requested, ibsta=0x0020)
+                    + h('e0 5e 00 00') + trailer_tail)
         source = instrument.pending
         if eos_mode & 0x04 and bytes((eos_char,)) in source:
             cut = source.index(bytes((eos_char,))) + 1
@@ -168,7 +169,7 @@ class SimulatedAdapter:
         last_count = len(out) - ((len(out) - 1) // 15) * 15 if out else 0
         status = self._status(0x38, count=len(out) - requested,
                               ibsta=0x2100 if end else 0x0100)
-        return blocks + status + bytes((0x80 if end else 0, last_count, 0, 0)) + trailer_tail
+        return blocks + status + bytes((0xE0 if end else 0x60, last_count, 0, 0)) + trailer_tail
 
     def bulk_in(self, length: int, timeout_ms: int) -> bytes:
         self.bulk_in_timeouts.append(timeout_ms)

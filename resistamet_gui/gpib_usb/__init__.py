@@ -15,7 +15,7 @@ Layers, bottom up: ``protocol`` (bytes, pure), ``transport`` (pyusb),
 import logging
 
 from . import transport as _transport
-from .protocol import AdapterNotReady, GpibError, GpibTimeout, NoListener, ProtocolError
+from .protocol import AdapterNotReady, GpibError, GpibTimeout, NoListener, NoReply, ProtocolError
 from .transport import AdapterInfo, TransportError, TransportTimeout, find_adapters
 
 __all__ = [
@@ -24,6 +24,7 @@ __all__ = [
     'GpibError',
     'GpibTimeout',
     'NoListener',
+    'NoReply',
     'ProtocolError',
     'TransportError',
     'TransportTimeout',
