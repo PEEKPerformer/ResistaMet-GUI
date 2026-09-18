@@ -363,6 +363,7 @@ select.control {
   letter-spacing: 0.02em;
   background: var(--bg-inset);
   color: var(--fg-muted);
+  white-space: nowrap;
 }
 
 .badge[data-tone="ok"] {

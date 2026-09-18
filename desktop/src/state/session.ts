@@ -98,6 +98,9 @@ function appendLog(line: LogLine): LogLine[] {
 export function applyEvent(event: AnyEvent): void {
   switch (event.type) {
     case "log":
+      // The per-sample "Running …" line is the readout's job; in the log it
+      // is noise that scrolls everything else away.
+      if (event.payload.code === "progress") return;
       publish({
         ...snapshot,
         log: appendLog({

@@ -220,6 +220,42 @@
   flex: 1;
 }
 
+/* Below ~1280px the rail keeps its icons and drops its labels, so the plot
+   and the settings panel keep their room. */
+@media (max-width: 1280px) {
+  .shell {
+    --rail-width: 56px;
+  }
+
+  .brand {
+    width: auto;
+  }
+
+  .brand span,
+  .brandVersion,
+  .railSection,
+  .railItem span:not(.railRunning) {
+    display: none;
+  }
+
+  .railItem {
+    justify-content: center;
+    padding: 0;
+    height: 40px;
+  }
+
+  .railRunning {
+    position: absolute;
+    margin: 0;
+    top: 6px;
+    right: 6px;
+  }
+
+  .railItem {
+    position: relative;
+  }
+}
+
 /* --- main --------------------------------------------------------------- */
 
 .main {

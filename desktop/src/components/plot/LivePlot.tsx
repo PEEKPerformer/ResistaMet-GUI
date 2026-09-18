@@ -85,7 +85,9 @@ export function LivePlot({ traces, windowS = 0, fps = 30 }: Props) {
       height: host.clientHeight,
       padding: [12, hasRight ? 8 : 16, 0, 8],
       cursor: { drag: { x: true, y: false }, focus: { prox: 16 } },
-      legend: { show: true, live: true },
+      // The readout strip above the plot is the live legend; uPlot's own would
+      // take height from the canvas for a second copy of the same numbers.
+      legend: { show: false },
       scales: { x: { time: false }, y: { auto: true }, ...(hasRight ? { y2: { auto: true } } : {}) },
       axes: [
         {
