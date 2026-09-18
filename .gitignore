@@ -229,3 +229,6 @@ debug_scpi*.py
 
 # Per-address instrument lock files (session/instrument_lock.py)
 locks/
+
+# The desktop UI has a src/lib; the Python build-artifact rule above must not eat it.
+!desktop/src/lib/
