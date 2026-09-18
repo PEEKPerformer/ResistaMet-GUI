@@ -57,8 +57,9 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
+  margin-right: var(--sp-4);
 }
 
 .sampleLabel {
@@ -67,8 +68,9 @@
 }
 
 .sampleInput {
-  flex: 1;
-  min-width: 160px;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
   max-width: 420px;
   height: 30px;
   padding: 0 var(--sp-3);
@@ -96,6 +98,8 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
+  flex: none;
+  margin-left: auto;
 }
 
 .chip {
