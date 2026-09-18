@@ -30,17 +30,20 @@ export function SettingsForm({ mode, groups, values, onChange, issues = [], disa
       {groups.map((group) => (
         <div key={group.title}>
           <SectionTitle>{group.title}</SectionTitle>
-          {group.fields.map((spec) => (
-            <FieldRow
-              key={spec.key}
-              spec={spec}
-              meta={meta[spec.key] ?? {}}
-              value={values[spec.key]}
-              onChange={(v) => onChange(spec.key, v)}
-              issue={issueFor(spec.key)}
-              disabled={disabled}
-            />
-          ))}
+          {group.fields.map((spec) => {
+            const overridden = spec.overriddenBy !== undefined && values[spec.overriddenBy.key] === spec.overriddenBy.when;
+            return (
+              <FieldRow
+                key={spec.key}
+                spec={overridden ? { ...spec, hint: spec.overriddenBy!.hint } : spec}
+                meta={meta[spec.key] ?? {}}
+                value={values[spec.key]}
+                onChange={(v) => onChange(spec.key, v)}
+                issue={issueFor(spec.key)}
+                disabled={disabled || overridden}
+              />
+            );
+          })}
         </div>
       ))}
     </>
