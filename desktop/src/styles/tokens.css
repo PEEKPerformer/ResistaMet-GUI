@@ -1,0 +1,123 @@
+/* Design tokens. Every colour, size and typeface the UI uses is named here
+   and nowhere else, so a theme change is a change to this file.
+
+   Dark by default: this runs on a lab PC next to a bright instrument display,
+   often for hours, and the plot is the thing that should be brightest on the
+   screen. A light theme follows the system setting. */
+
+:root {
+  /* --- typography ------------------------------------------------------- */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", Inter,
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --text-xs: 11px;
+  --text-sm: 12.5px;
+  --text-md: 14px;
+  --text-lg: 17px;
+  --text-xl: 22px;
+  --text-readout: 34px;
+  --leading: 1.45;
+
+  /* --- spacing (4px base) and shape ------------------------------------- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --radius-sm: 4px;
+  --radius-md: 7px;
+  --radius-lg: 10px;
+  --rail-width: 208px;
+  --panel-width: 336px;
+  --topbar-height: 48px;
+  --log-height: 160px;
+
+  /* --- data colours: Wong palette, matching the PySide6 plots ----------- */
+  --data-r: #d55e00; /* resistance */
+  --data-v: #0072b2; /* voltage */
+  --data-i: #009e73; /* current */
+  --data-aux: #cc79a7;
+  --data-derived: #e69f00;
+
+  /* --- motion ----------------------------------------------------------- */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 120ms;
+  --dur: 200ms;
+}
+
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #0d1014;
+  --bg-elevated: #14181e;
+  --bg-panel: #181d24;
+  --bg-inset: #0a0c10;
+  --bg-hover: rgba(255, 255, 255, 0.04);
+  --bg-active: rgba(255, 255, 255, 0.08);
+
+  --border: #262c36;
+  --border-strong: #36404d;
+
+  --fg: #e7eaf0;
+  --fg-muted: #9aa5b5;
+  --fg-faint: #5f6b7c;
+  --fg-on-accent: #0b1220;
+
+  --accent: #5aa9ff;
+  --accent-hover: #7dbcff;
+  --accent-muted: rgba(90, 169, 255, 0.16);
+
+  --ok: #33c481;
+  --ok-muted: rgba(51, 196, 129, 0.16);
+  --warn: #f2b23a;
+  --warn-muted: rgba(242, 178, 58, 0.16);
+  --danger: #ee5a5f;
+  --danger-muted: rgba(238, 90, 95, 0.16);
+  --live: #33c481;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 6px 24px rgba(0, 0, 0, 0.45);
+
+  --grid-line: rgba(255, 255, 255, 0.07);
+  --axis-text: #8a95a6;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f4f6f9;
+  --bg-elevated: #ffffff;
+  --bg-panel: #ffffff;
+  --bg-inset: #eceff3;
+  --bg-hover: rgba(0, 0, 0, 0.04);
+  --bg-active: rgba(0, 0, 0, 0.08);
+
+  --border: #d9dee6;
+  --border-strong: #bfc7d2;
+
+  --fg: #151a22;
+  --fg-muted: #4e5a6b;
+  --fg-faint: #8a95a6;
+  --fg-on-accent: #ffffff;
+
+  --accent: #1f6fe0;
+  --accent-hover: #185cbd;
+  --accent-muted: rgba(31, 111, 224, 0.12);
+
+  --ok: #1c9c5b;
+  --ok-muted: rgba(28, 156, 91, 0.14);
+  --warn: #b97a0a;
+  --warn-muted: rgba(185, 122, 10, 0.14);
+  --danger: #d03a40;
+  --danger-muted: rgba(208, 58, 64, 0.12);
+  --live: #1c9c5b;
+
+  --shadow-1: 0 1px 2px rgba(20, 30, 50, 0.08);
+  --shadow-2: 0 6px 24px rgba(20, 30, 50, 0.12);
+
+  --grid-line: rgba(0, 0, 0, 0.08);
+  --axis-text: #6b7687;
+}
