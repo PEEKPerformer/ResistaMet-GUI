@@ -94,3 +94,45 @@ def test_different_addresses_do_not_collide(tmp_path):
     with hold_instrument('GPIB0::24::INSTR', str(tmp_path)):
         with hold_instrument('ASRL6::INSTR', str(tmp_path)):
             pass
+
+
+class TestWhereTheLockLives:
+    """Two processes exclude each other only if they look in the same place."""
+
+    def test_default_dir_is_per_user_not_per_working_directory(self, tmp_path, monkeypatch):
+        from resistamet_gui.session import instrument_lock
+
+        monkeypatch.setattr(instrument_lock.Path, 'home', staticmethod(lambda: tmp_path))
+        (tmp_path / 'a').mkdir()
+        (tmp_path / 'b').mkdir()
+        monkeypatch.chdir(tmp_path / 'a')
+        first = lock_path('GPIB0::24::INSTR')
+        monkeypatch.chdir(tmp_path / 'b')
+        second = lock_path('GPIB0::24::INSTR')
+        assert first == second == tmp_path / '.resistamet' / 'locks' / 'GPIB0__24__INSTR.lock'
+
+
+class TestHeldInstrument:
+    def test_held_then_released_frees_the_address(self, tmp_path):
+        from resistamet_gui.session.instrument_lock import HeldInstrument
+
+        held = HeldInstrument('GPIB0::24::INSTR', str(tmp_path))
+        assert held.path == lock_path('GPIB0::24::INSTR', str(tmp_path))
+        held.release()
+        held.release()  # idempotent
+        with hold_instrument('GPIB0::24::INSTR', str(tmp_path)):
+            pass
+
+    def test_refused_while_another_process_holds_it(self, tmp_path):
+        from resistamet_gui.session.instrument_lock import HeldInstrument
+
+        script = HOLDER.format(address='GPIB0::24::INSTR', lock_dir=str(tmp_path))
+        holder = subprocess.Popen([sys.executable, '-c', textwrap.dedent(script), '5'],
+                                   stdout=subprocess.PIPE, text=True)
+        try:
+            assert holder.stdout.readline().strip() == 'held'
+            with pytest.raises(InstrumentBusy):
+                HeldInstrument('GPIB0::24::INSTR', str(tmp_path), wait_s=0.2)
+        finally:
+            holder.kill()
+            holder.wait(timeout=5)

@@ -373,3 +373,47 @@ class TestPauseClock:
         session.start(self._timed(profile, 0.5 / 3600.0), 'source_v', 'wafer1', 'alice')
         assert _wait_for(lambda: session.state == 'idle', timeout=10.0)
         assert [e.payload['reason'] for e in sink.of_type('run_ended')] == ['duration']
+
+
+class TestInstrumentHeldElsewhere:
+    """Start refuses at once when another process holds the bus.
+
+    The bench showed why: a second backend was told 'started', connected
+    anyway a moment later, and its SCPI landed in the middle of a live run.
+    """
+
+    def test_start_is_refused_synchronously(self, session, sink, fake_rm, profile, tmp_path, monkeypatch):
+        import subprocess, sys, textwrap
+        from resistamet_gui.session import instrument_lock
+        from resistamet_gui.session.instrument_lock import InstrumentBusy
+
+        monkeypatch.setattr(instrument_lock, 'default_lock_dir', lambda: tmp_path / 'locks')
+        monkeypatch.setattr(instrument_lock, 'ACQUIRE_GRACE_S', 0.3)
+        holder_script = textwrap.dedent(f"""
+            import sys, time
+            from resistamet_gui.session.instrument_lock import hold_instrument
+            with hold_instrument('GPIB0::24::INSTR', {str(tmp_path / 'locks')!r}):
+                print('held', flush=True)
+                time.sleep(10)
+        """)
+        holder = subprocess.Popen([sys.executable, '-c', holder_script],
+                                   stdout=subprocess.PIPE, text=True)
+        try:
+            assert holder.stdout.readline().strip() == 'held'
+            with pytest.raises(InstrumentBusy, match='in use by another ResistaMet process'):
+                session.start(_four_point(profile), 'four_point', 'wafer1', 'alice')
+            assert session.state == 'idle'
+            assert sink.events == []  # nothing started, nothing reported
+        finally:
+            holder.kill()
+            holder.wait(timeout=5)
+
+    def test_the_run_releases_the_lock_the_session_took(self, session, sink, fake_rm, profile, tmp_path, monkeypatch):
+        from resistamet_gui.session import instrument_lock
+
+        monkeypatch.setattr(instrument_lock, 'default_lock_dir', lambda: tmp_path / 'locks')
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+        # Free again: a fresh hold succeeds without waiting.
+        with instrument_lock.hold_instrument('GPIB0::24::INSTR', wait_s=0.0):
+            pass

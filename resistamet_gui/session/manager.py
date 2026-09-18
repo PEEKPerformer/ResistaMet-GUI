@@ -26,7 +26,7 @@ from ..schema.resolve import resolve_run_settings
 from .continuous_run import ContinuousRun
 from .control import RunControl
 from .emitter import EventEmitter
-from .instrument_lock import hold_instrument
+from .instrument_lock import HeldInstrument, InstrumentBusy, hold_instrument
 from .vdp_run import VdpRun
 
 logger = logging.getLogger(__name__)
@@ -98,7 +98,8 @@ class MeasurementSession:
               prompt_timeout_s: float = 900.0) -> str:
         """Resolve settings, then run them. Returns the run id immediately.
 
-        Raises ``SessionBusy`` unless idle and ``ValueError`` when the strict
+        Raises ``SessionBusy`` unless idle, ``InstrumentBusy`` when another
+        process holds the instrument, and ``ValueError`` when the strict
         resolver rejects the request — a run that cannot be described should
         never reach the instrument.
         """
@@ -110,19 +111,30 @@ class MeasurementSession:
         with self._lock:
             if self._state != 'idle':
                 raise SessionBusy(f"session is {self._state}")
-            self._run_count += 1
-            run_id = f"run-{self._run_count}"
-            control = RunControl()
-            emitter = EventEmitter(self._record, run_id=run_id, clock=self._clock)
-            if mode == VDP_MODE:
-                run = VdpRun(sample_name, username, resolved.settings, control, emitter,
-                              safety_ack='prompt', prompt_timeout_s=prompt_timeout_s)
-            else:
-                run = ContinuousRun(mode, sample_name, username, resolved.settings,
-                                     control, emitter, safety_ack='prompt',
-                                     prompt_timeout_s=prompt_timeout_s)
-            thread = threading.Thread(target=self._execute, args=(run,),
-                                       name=f"resistamet-{run_id}", daemon=True)
+            # The instrument is taken here, before "started" is answered, so a
+            # bus held by another process is a refusal the caller sees, not a
+            # run that fails a moment later. The run releases it in cleanup.
+            address = resolved.settings.get('measurement', {}).get('gpib_address', '')
+            held = HeldInstrument(address)  # raises InstrumentBusy
+            try:
+                self._run_count += 1
+                run_id = f"run-{self._run_count}"
+                control = RunControl()
+                emitter = EventEmitter(self._record, run_id=run_id, clock=self._clock)
+                if mode == VDP_MODE:
+                    run = VdpRun(sample_name, username, resolved.settings, control, emitter,
+                                  safety_ack='prompt', prompt_timeout_s=prompt_timeout_s,
+                                  instrument_lock=held)
+                else:
+                    run = ContinuousRun(mode, sample_name, username, resolved.settings,
+                                         control, emitter, safety_ack='prompt',
+                                         prompt_timeout_s=prompt_timeout_s,
+                                         instrument_lock=held)
+                thread = threading.Thread(target=self._execute, args=(run,),
+                                           name=f"resistamet-{run_id}", daemon=True)
+            except Exception:
+                held.release()
+                raise
             self._state = 'running'
             self._run_id, self._mode = run_id, mode
             self._control, self._run, self._thread = control, run, thread
