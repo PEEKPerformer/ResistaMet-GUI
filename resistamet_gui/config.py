@@ -51,50 +51,70 @@ class ConfigManager:
             return machines.setdefault(self._hostname, {})
         return self.config.get('machines', {}).get(self._hostname, {})
 
-    def get_gpib_address(self) -> str:
-        """Resolve the instrument address for this machine.
+    def get_machine_local(self, key: str) -> str:
+        """Resolve a machine-local measurement key for this host.
 
-        Lookup order: machines[hostname] → legacy measurement.gpib_address →
+        Lookup order: machines[hostname] → legacy measurement.<key> →
         default. The legacy fallback lets a freshly-copied config still work
         until the first save migrates it into the machine slot.
         """
         entry = self._machine_entry()
-        if 'gpib_address' in entry:
-            return entry['gpib_address']
-        legacy = self.config.get('measurement', {}).get('gpib_address')
+        if key in entry:
+            return entry[key]
+        legacy = self.config.get('measurement', {}).get(key)
         if legacy:
             return legacy
-        return DEFAULT_SETTINGS['measurement'].get('gpib_address', '')
+        return DEFAULT_SETTINGS['measurement'].get(key, '')
 
-    def set_gpib_address(self, addr: str) -> None:
+    def set_machine_local(self, key: str, value: str) -> None:
+        """Persist a machine-local key to the per-machine slot.
+
+        Also strips any stale copies from the shared measurement block and
+        per-user overrides so they cannot shadow the machine entry on
+        reload. An empty value is ignored for keys whose default is
+        non-empty: there is no such thing as an empty instrument address.
+        Keys whose default is empty (a "use the default" sentinel) accept it.
+        """
         with self._lock:
-            """Persist instrument address to the per-machine slot.
-
-            Also strips any stale copies from the shared measurement block and
-            per-user overrides so they cannot shadow the machine entry on
-            reload.
-            """
-            if not addr:
+            if not value and DEFAULT_SETTINGS['measurement'].get(key, ''):
                 return
             entry = self._machine_entry(create=True)
-            entry['gpib_address'] = addr
+            entry[key] = value
             if isinstance(self.config.get('measurement'), dict):
-                self.config['measurement'].pop('gpib_address', None)
+                self.config['measurement'].pop(key, None)
             for user_overrides in self.config.get('user_settings', {}).values():
                 measurement = user_overrides.get('measurement') if isinstance(user_overrides, dict) else None
                 if isinstance(measurement, dict):
-                    measurement.pop('gpib_address', None)
+                    measurement.pop(key, None)
             self.save_config()
+
+    def get_gpib_address(self) -> str:
+        """The instrument address for this machine."""
+        return self.get_machine_local('gpib_address')
+
+    def set_gpib_address(self, addr: str) -> None:
+        self.set_machine_local('gpib_address', addr)
+
+    def _store_machine_local_from(self, measurement_in) -> None:
+        """Route any machine-local keys in an incoming measurement block."""
+        if not isinstance(measurement_in, dict):
+            return
+        for key in _MACHINE_LOCAL_MEASUREMENT_KEYS:
+            if key in measurement_in:
+                self.set_machine_local(key, measurement_in[key])
 
     def _migrate_machine_local(self) -> bool:
         entry = self._machine_entry()
-        if 'gpib_address' in entry:
-            return False
-        legacy = self.config.get('measurement', {}).get('gpib_address')
-        if not legacy:
-            return False
-        self._machine_entry(create=True)['gpib_address'] = legacy
-        return True
+        dirty = False
+        for key in _MACHINE_LOCAL_MEASUREMENT_KEYS:
+            if key in entry:
+                continue
+            legacy = self.config.get('measurement', {}).get(key)
+            if not legacy:
+                continue
+            self._machine_entry(create=True)[key] = legacy
+            dirty = True
+        return dirty
 
     # --- migrations -------------------------------------------------------
 
@@ -207,7 +227,8 @@ class ConfigManager:
 
         # Machine-local fields always win — they never live in user_settings
         # because the same profile may run on a different PC tomorrow.
-        user_settings['measurement']['gpib_address'] = self.get_gpib_address()
+        for key in _MACHINE_LOCAL_MEASUREMENT_KEYS:
+            user_settings['measurement'][key] = self.get_machine_local(key)
         return user_settings
 
     def update_user_settings(self, username: str, settings: Dict) -> None:
@@ -219,9 +240,8 @@ class ConfigManager:
 
             # Route machine-local fields to the per-machine slot, never persist
             # them under the user profile.
-            measurement_in = settings.get('measurement') if isinstance(settings, dict) else None
-            if isinstance(measurement_in, dict) and 'gpib_address' in measurement_in:
-                self.set_gpib_address(measurement_in['gpib_address'])
+            if isinstance(settings, dict):
+                self._store_machine_local_from(settings.get('measurement'))
 
             for section, section_settings in settings.items():
                 if section in ['measurement', 'display', 'file', 'output']:
@@ -236,9 +256,8 @@ class ConfigManager:
 
     def update_global_settings(self, settings: Dict) -> None:
         with self._lock:
-            measurement_in = settings.get('measurement') if isinstance(settings, dict) else None
-            if isinstance(measurement_in, dict) and 'gpib_address' in measurement_in:
-                self.set_gpib_address(measurement_in['gpib_address'])
+            if isinstance(settings, dict):
+                self._store_machine_local_from(settings.get('measurement'))
 
             for section, section_settings in settings.items():
                 if section in ['measurement', 'display', 'file', 'output'] and isinstance(self.config.get(section), dict):
