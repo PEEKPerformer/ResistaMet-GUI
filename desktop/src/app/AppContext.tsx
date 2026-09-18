@@ -13,6 +13,7 @@ import { EventStream } from "../lib/events";
 import { applyEvent, setBackendReachable, setConnected, setGap, setStatus } from "../state/session";
 import { applySample, resetSamples } from "../state/samples";
 import { applySweepSegment, resetSweep } from "../state/sweep";
+import { applyVdpGeometry, applyVdpResult, resetVdp } from "../state/vdp";
 
 interface AppServices {
   api: ApiClient;
@@ -80,9 +81,12 @@ export function AppProvider({ children, fallback }: ProviderProps) {
           if (message.event.type === "run_started") {
             resetSamples(message.event.payload.mode, message.event.run_id ?? null);
             resetSweep(message.event.run_id ?? null);
+            resetVdp(message.event.run_id ?? null);
           }
           if (message.event.type === "sample") applySample(message.event);
           if (message.event.type === "sweep_segment") applySweepSegment(message.event);
+          if (message.event.type === "vdp_geometry_complete") applyVdpGeometry(message.event);
+          if (message.event.type === "vdp_result") applyVdpResult(message.event);
           applyEvent(message.event);
           return;
       }
