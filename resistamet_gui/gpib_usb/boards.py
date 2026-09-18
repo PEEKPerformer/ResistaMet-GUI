@@ -112,8 +112,14 @@ class BoardRegistry:
         self._enumerated = True
 
     def owns(self, board: str) -> bool:
+        """Whether ``board`` is one of ours; a miss looks at the USB bus once more.
+
+        An adapter plugged in after the first enumeration must be reachable by
+        ``open_resource`` without a ``list_resources`` first, and a miss that
+        fell through to pyvisa-py would read as "install linux-gpib".
+        """
         with self._lock:
-            if not self._enumerated:
+            if not self._enumerated or board not in self._boards:
                 self._refresh_locked()
             return board in self._boards
 

@@ -79,8 +79,12 @@ class Controller:
         self._attached = False
         self._closed = False
         self._system_controller = True
-        #: Set after a fault; the next operation re-runs attach first.
+        #: Set after a fault; the next operation re-runs attach first. Cleared
+        #: only by an attach that succeeds, so a failed re-attach is retried.
         self._resync_pending = False
+        #: The stop-and-drain of §8.2 has run since the last fault. Reset when
+        #: a re-attach starts, so a fault during it drains again, once.
+        self._drained = False
         #: (direction, pad, sad) of the last successful addressing command,
         #: so a caller that disables re-addressing can skip a repeat.
         self._addressed: Optional[Tuple[str, int, Optional[int]]] = None
@@ -114,7 +118,7 @@ class Controller:
             if self._attached:
                 return
             self._system_controller = system_controller
-            self._resync_pending = False
+            self._drained = False
             self._addressed = None
             if self._model.readiness_poll:
                 self._readiness_poll()                              # step 2
@@ -135,6 +139,7 @@ class Controller:
                 self._status_exchange(p.take_control_message(True), SHORT_WAIT_S,
                                       'take control', tolerate=(t.ERR_NO_ACCEPTOR,))
             self._attached = True
+            self._resync_pending = False
 
     def _readiness_poll(self) -> None:
         reply = self._control(t.SERIAL_NUMBER_QUERY)
@@ -357,9 +362,10 @@ class Controller:
 
     def _resync(self) -> None:
         """§8.2: stop whatever is in flight, drain one stale reply, re-attach later."""
-        if self._resync_pending:
-            return
         self._resync_pending = True
+        if self._drained:
+            return  # nested guards report the same fault; one drain per fault
+        self._drained = True
         logger.warning('%s: reply out of step; stopping and draining the bulk pipe',
                        self._model.name)
         try:
