@@ -12,6 +12,7 @@ import { ApiClient } from "../lib/api";
 import { EventStream } from "../lib/events";
 import { applyEvent, setBackendReachable, setConnected, setGap, setStatus } from "../state/session";
 import { applySample, resetSamples } from "../state/samples";
+import { applySweepSegment, resetSweep } from "../state/sweep";
 
 interface AppServices {
   api: ApiClient;
@@ -78,8 +79,10 @@ export function AppProvider({ children, fallback }: ProviderProps) {
         case "event":
           if (message.event.type === "run_started") {
             resetSamples(message.event.payload.mode, message.event.run_id ?? null);
+            resetSweep(message.event.run_id ?? null);
           }
           if (message.event.type === "sample") applySample(message.event);
+          if (message.event.type === "sweep_segment") applySweepSegment(message.event);
           applyEvent(message.event);
           return;
       }

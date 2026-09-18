@@ -5,6 +5,7 @@ import { UserPicker } from "./components/dialogs/UserPicker";
 import { PromptDialog } from "./components/dialogs/PromptDialog";
 import { SettingsDialog } from "./components/dialogs/SettingsDialog";
 import { ContinuousView } from "./views/continuous/ContinuousView";
+import { SweepView } from "./views/sweep/SweepView";
 import { useSession } from "./state/session";
 import { useUi } from "./state/ui";
 import styles from "./App.module.css";
@@ -86,6 +87,8 @@ function View({ view }: { view: string }) {
       // One component per continuous mode instance, keyed so switching modes
       // remounts the plot with the right traces.
       return <ContinuousView key={view} mode={view} />;
+    case "sweep":
+      return <SweepView />;
     default:
       return <div className={styles.placeholder}>{view}</div>;
   }
