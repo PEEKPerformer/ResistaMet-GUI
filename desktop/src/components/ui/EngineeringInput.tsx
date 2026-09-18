@@ -6,7 +6,7 @@
 // has to know how it was displayed.
 
 import { useEffect, useState, type KeyboardEvent } from "react";
-import { formatEngineering, parseEngineering } from "../../lib/format";
+import { engineering, parseEngineering } from "../../lib/format";
 import { Input } from "./index";
 
 interface Props {
@@ -39,8 +39,8 @@ export function EngineeringInput({
   const [draft, setDraft] = useState("");
 
   useEffect(() => {
-    if (!editing) setDraft(value === null ? "" : formatEngineering(value, "", digits));
-  }, [value, editing, digits]);
+    if (!editing) setDraft(value === null ? "" : trimZeros(value));
+  }, [value, editing]);
 
   const commit = () => {
     setEditing(false);
@@ -66,18 +66,16 @@ export function EngineeringInput({
     }
   };
 
-  const display = editing
-    ? draft
-    : value === null
-      ? ""
-      : formatEngineering(value, "", digits);
-  // The prefix belongs with the unit suffix while idle; while editing the
-  // operator types their own.
-  const idleUnit = !editing && value !== null ? formatEngineering(value, unit ?? "", digits).split(" ")[1] ?? unit : unit;
+  // Idle: mantissa and prefixed unit come from one formatting call, so the
+  // prefix in the suffix always matches the number beside it. Editing: the
+  // operator's text, verbatim.
+  const idle = value === null ? null : engineering(value, unit ?? "", digits);
+  const shown = editing ? draft : idle ? idle.mantissa : "";
+  const idleUnit = editing || idle === null ? unit : idle.unit || unit;
 
   return (
     <Input
-      value={editing ? draft : display.split(" ")[0] ?? ""}
+      value={shown}
       unit={idleUnit ?? undefined}
       disabled={disabled}
       invalid={invalid}

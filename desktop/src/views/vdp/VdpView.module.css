@@ -2,12 +2,13 @@
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(340px, 1fr) auto;
   gap: var(--sp-3);
+  overflow-y: auto; /* a short window scrolls rather than clipping the wizard */
 }
 
 .wizard {
-  min-height: 300px;
+  min-height: 340px;
 }
 
 .wizardBody {
