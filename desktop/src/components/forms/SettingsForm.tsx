@@ -81,6 +81,22 @@ export function FieldRow({ spec, meta, value, onChange, issue, disabled }: RowPr
     );
   }
 
+  if (meta.type === "string") {
+    // Free text: an address, a driver name, a directory. Never the numeric
+    // input, whose formatter would throw on a string mid-render.
+    return (
+      <Field label={spec.label} hint={spec.hint} error={error} stacked>
+        <Input
+          className="mono"
+          value={typeof value === "string" ? value : String(meta.default ?? "")}
+          disabled={disabled}
+          invalid={issue !== undefined}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      </Field>
+    );
+  }
+
   if (meta.type === "integer") {
     // Counts are counts: no prefixes, no decimals.
     const current = typeof value === "number" ? value : ((meta.default as number | undefined) ?? 0);
