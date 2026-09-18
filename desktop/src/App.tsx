@@ -3,6 +3,7 @@ import { AppProvider } from "./app/AppContext";
 import { Shell } from "./components/shell/Shell";
 import { UserPicker } from "./components/dialogs/UserPicker";
 import { PromptDialog } from "./components/dialogs/PromptDialog";
+import { SettingsDialog } from "./components/dialogs/SettingsDialog";
 import { ContinuousView } from "./views/continuous/ContinuousView";
 import { useSession } from "./state/session";
 import { useUi } from "./state/ui";
@@ -45,7 +46,13 @@ function Workspace() {
       <Shell onOpenSettings={() => setDialog("settings")} onOpenUser={() => setDialog("user")}>
         <View view={ui.view} />
       </Shell>
-      {prompt ? <PromptDialog prompt={prompt} /> : showUserPicker ? <UserPicker onClose={() => setDialog(null)} /> : null}
+      {prompt ? (
+        <PromptDialog prompt={prompt} />
+      ) : showUserPicker ? (
+        <UserPicker onClose={() => setDialog(null)} />
+      ) : dialog === "settings" ? (
+        <SettingsDialog onClose={() => setDialog(null)} />
+      ) : null}
     </>
   );
 }
