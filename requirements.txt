@@ -33,6 +33,10 @@ pydantic>=2.0
 # the GUI; required by the sidecar the Tauri shell will launch.
 fastapi>=0.110
 uvicorn>=0.27
+# uvicorn speaks WebSocket only through a separately installed implementation;
+# without one it answers every upgrade with 404 and the desktop UI shows
+# "Reconnecting" forever. Found on the lab PC in the first frozen build.
+websockets>=13
 
 # User-space driver for NI GPIB-USB adapters (resistamet_gui/gpib_usb), the
 # GPIB route on a Mac where NI ships no driver. pyusb is BSD; it needs a
