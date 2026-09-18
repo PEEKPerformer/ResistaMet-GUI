@@ -54,6 +54,23 @@ def list_users(request: Request, role: str = Depends(require_token)):
             "last_user": _config(request).config.get('last_user')}
 
 
+class NewUser(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/users", status_code=status.HTTP_201_CREATED)
+def add_user(body: NewUser, request: Request, role: str = Depends(require_token)):
+    """Create a profile. Idempotent: an existing name is simply selected."""
+    config = _config(request)
+    username = body.username.strip()
+    if not username:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                             detail="username is empty")
+    config.add_user(username)
+    config.set_last_user(username)
+    return {"users": config.config.get('users', []), "last_user": username}
+
+
 @router.get("/profiles/{username}")
 def read_profile(username: str, request: Request, role: str = Depends(require_token)):
     return _config(request).get_user_settings(username)
