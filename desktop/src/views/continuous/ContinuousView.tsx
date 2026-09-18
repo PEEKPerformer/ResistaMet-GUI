@@ -23,6 +23,7 @@ import { Badge, Button, Notice, Panel } from "../../components/ui";
 import { Icons } from "../../components/icons";
 import { LivePlot, type TraceSpec } from "../../components/plot/LivePlot";
 import { FieldRow, SettingsForm } from "../../components/forms/SettingsForm";
+import { FourPointPanel } from "./FourPointPanel";
 import styles from "./ContinuousView.module.css";
 
 type ContinuousMode = Exclude<Mode, "sweep" | "vdp">;
@@ -134,6 +135,18 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
 
   const onChange = useCallback((key: string, value: unknown) => setOverride(mode, key, value), [mode]);
 
+  // M marks the moment, as in the PySide6 app — unless the operator is typing.
+  useEffect(() => {
+    if (!thisModeRunning) return;
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+      if (e.key === "m" || e.key === "M") void api.mark();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [api, thisModeRunning]);
+
   const canStart =
     !locked && ui.username !== null && ui.sampleName.trim() !== "" && resolved !== null && resolved.ok && !busy;
 
@@ -242,6 +255,8 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
         >
           <LivePlot traces={TRACES[mode]} mode={mode} windowS={windowS} />
         </Panel>
+
+        {mode === "four_point" ? <FourPointPanel running={thisModeRunning} /> : null}
       </div>
 
       <aside className={styles.settings}>

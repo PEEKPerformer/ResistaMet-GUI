@@ -62,7 +62,14 @@ export function applySample(event: Event<"sample">): void {
   const n = series.t.length;
   series.t.push(payload.elapsed_s);
   series.compliance.push(payload.compliance ?? "OK");
-  const values = payload.values ?? {};
+  const values: Record<string, unknown> = { ...(payload.values ?? {}) };
+  // Derived 4PP quantities join the columns under a derived_ prefix so the
+  // plot and the statistics can treat them like any other trace.
+  if (payload.derived) {
+    for (const [key, raw] of Object.entries(payload.derived)) {
+      if (typeof raw === "number") values[`derived_${key}`] = raw;
+    }
+  }
   for (const [key, raw] of Object.entries(values)) {
     const value = typeof raw === "number" ? raw : NaN;
     let column = series.values[key];

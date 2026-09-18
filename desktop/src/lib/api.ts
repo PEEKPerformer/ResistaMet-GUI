@@ -88,6 +88,14 @@ export interface EventPage {
 
 export type Profile = Record<string, Record<string, unknown>>;
 
+export interface ResultFile {
+  path: string;
+  name: string;
+  user: string | null;
+  size: number;
+  modified: number;
+}
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -185,6 +193,35 @@ export class ApiClient {
     strict = true,
   ): Promise<Resolved> {
     return this.request("POST", "/settings/resolve", { mode, username, overrides, strict });
+  }
+
+  // --- results -----------------------------------------------------------
+
+  results(user?: string | null): Promise<{ root: string; files: ResultFile[] }> {
+    const params = new URLSearchParams();
+    if (user) params.set("user", user);
+    const query = params.toString();
+    return this.request("GET", `/results${query ? `?${query}` : ""}`);
+  }
+
+  async resultFile(path: string): Promise<string> {
+    const response = await fetch(`${this.backend.url}/results/file?path=${encodeURIComponent(path)}`, {
+      headers: { Authorization: `Bearer ${this.backend.token}` },
+    });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        detail = String(((await response.json()) as { detail?: unknown }).detail ?? detail);
+      } catch {
+        // keep status text
+      }
+      throw new ApiError(response.status, detail);
+    }
+    return response.text();
+  }
+
+  resultsDirectory(): Promise<{ root: string; exists: boolean; separator: string }> {
+    return this.request("GET", "/results/directory");
   }
 
   // --- instruments -------------------------------------------------------
