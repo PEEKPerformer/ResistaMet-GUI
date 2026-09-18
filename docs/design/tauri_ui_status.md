@@ -74,7 +74,14 @@ things landed for that:
   `GPIB0::24::INSTR` works on a Mac through pyvisa-py. MIT, written from a
   facts-only protocol specification by an agent that never saw the GPL
   drivers; see `ni_usb_gpib_clean_room.md`. The frozen macOS backend
-  bundles libusb.
+  bundles libusb, and CI asserts that the bundled copy loads from inside
+  the bundle.
+- **`resistamet-api --check-visa`**, which prints the resolved VISA
+  implementation, its version, and whether the NI USB driver found libusb,
+  as one JSON line. This is the diagnostic for "the app sees no
+  instruments" on a PC with no development tools — the failure that cost an
+  afternoon on the lab laptop was a VISA library present with no GPIB
+  driver behind it.
 
 ## Not yet
 
@@ -83,8 +90,9 @@ things landed for that:
 - **The NI USB driver on a real adapter.** Proven only against scripted
   fakes. Needs the GPIB-USB-HS from laptop2 on a Mac with a 2400: attach,
   `*IDN?`, a resistance run, a stop mid-settle, Scan while idle.
-- **Installing the Windows build on the lab PC** and confirming pyvisa finds
-  NI-VISA from inside the frozen backend.
+- **Installing the Windows build on the lab PC.** `resistamet-api
+  --check-visa bus` answers whether the frozen backend finds NI-VISA and the
+  instrument before the GUI is opened at all.
 - **Prologix / AR488 adapters** need their `PRLGX-ASRL::…::INTFC` resource
   opened before the instrument address resolves; the app does not do that.
 - **Backend items step 2 depends on** but works around for now: the 4PP spot
