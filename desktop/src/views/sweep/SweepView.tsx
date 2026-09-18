@@ -24,6 +24,13 @@ import own from "./SweepView.module.css";
 
 const MODE: Mode = "sweep";
 
+/** Conservative sweeps per source, applied when the source is switched. The
+ *  voltage set is the profile default; the current set is its mirror at the
+ *  scale a 2400 sources into an unknown DUT without drama. */
+const SWEEP_FOR_VOLTAGE = { sweep_start: 0.0, sweep_stop: 1.0, sweep_step: 0.05, sweep_compliance: 0.1 };
+// sweep_compliance is bounded at 3 in the schema whatever the unit, so 2 V.
+const SWEEP_FOR_CURRENT = { sweep_start: 0.0, sweep_stop: 1e-3, sweep_step: 50e-6, sweep_compliance: 2.0 };
+
 export function SweepView() {
   const api = useApi();
   const session = useSession();
@@ -62,7 +69,25 @@ export function SweepView() {
     };
   }, [api, ui.username, overrides]);
 
-  const onChange = useCallback((key: string, value: unknown) => setOverride(MODE, key, value), []);
+  // The start, stop, step and compliance numbers are in volts or amps
+  // depending on the source. Switching the source must not keep the numbers
+  // and change their meaning: a 2 V compliance would silently become 2 A.
+  // They reset to a conservative sweep for the new source instead, and the
+  // view says so until the next edit.
+  const [reset, setReset] = useState<string | null>(null);
+  const onChange = useCallback(
+    (key: string, value: unknown) => {
+      if (key === "sweep_source" && value !== (overrides.sweep_source ?? "voltage")) {
+        const range = value === "current" ? SWEEP_FOR_CURRENT : SWEEP_FOR_VOLTAGE;
+        for (const [k, v] of Object.entries(range)) setOverride(MODE, k, v);
+        setReset(value === "current" ? "Start, stop, step and compliance reset for a current source: 0 to 1 mA in 50 µA steps, 2 V limit." : "Start, stop, step and compliance reset for a voltage source: 0 to 1 V in 50 mV steps, 100 mA limit.");
+      } else if (key !== "sweep_source") {
+        setReset(null);
+      }
+      setOverride(MODE, key, value);
+    },
+    [overrides.sweep_source],
+  );
 
   const sourceIsVoltage = (overrides.sweep_source ?? "voltage") === "voltage";
   const sourceUnit = sourceIsVoltage ? "V" : "A";
@@ -121,6 +146,7 @@ export function SweepView() {
         </header>
 
         {error ? <Notice tone="danger">{error}</Notice> : null}
+        {reset ? <Notice tone="info">{reset}</Notice> : null}
         {running && !thisRunning ? <Notice tone="info">Another run is in progress.</Notice> : null}
         {ui.sampleName.trim() === "" && !running ? <Notice tone="info">Name the sample in the top bar to enable the sweep.</Notice> : null}
         {resolved?.hazard?.hazardous && !running ? (
