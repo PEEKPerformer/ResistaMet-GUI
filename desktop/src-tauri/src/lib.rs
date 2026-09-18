@@ -33,7 +33,9 @@ pub fn run() {
         .setup(|app| {
             let repo_root = backend::dev_repo_root();
             let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from));
-            let launch = backend::locate(exe_dir.as_deref(), repo_root.as_deref());
+            let resource_dir = app.path().resource_dir().ok();
+            let launch = backend::locate(exe_dir.as_deref(), resource_dir.as_deref(), repo_root.as_deref());
+            eprintln!("resistamet: backend via {launch:?}");
 
             // In a source checkout the backend works where the PySide6 app
             // does, so both see the same config and measurement_data.

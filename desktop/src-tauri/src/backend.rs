@@ -51,12 +51,19 @@ pub enum Launch {
 }
 
 /// Decide what to execute. See the module docs for the order.
-pub fn locate(exe_dir: Option<&Path>, repo_root: Option<&Path>) -> Launch {
+///
+/// `resource_dir` is where Tauri unpacks bundled resources; the PyInstaller
+/// one-dir build ships there as `resistamet-api/resistamet-api[.exe]`.
+pub fn locate(exe_dir: Option<&Path>, resource_dir: Option<&Path>, repo_root: Option<&Path>) -> Launch {
     if let Ok(explicit) = std::env::var("RESISTAMET_PYTHON") {
         return Launch::Interpreter(PathBuf::from(explicit));
     }
-    if let Some(dir) = exe_dir {
-        let sidecar = dir.join(if cfg!(windows) { "resistamet-api.exe" } else { "resistamet-api" });
+    let binary = if cfg!(windows) { "resistamet-api.exe" } else { "resistamet-api" };
+    for dir in [resource_dir.map(|d| d.join("resistamet-api")), exe_dir.map(PathBuf::from)]
+        .into_iter()
+        .flatten()
+    {
+        let sidecar = dir.join(binary);
         if sidecar.exists() {
             return Launch::Executable(sidecar);
         }

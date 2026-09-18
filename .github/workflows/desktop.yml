@@ -1,0 +1,115 @@
+name: desktop
+
+# Builds the Tauri desktop app with the Python backend frozen inside it.
+#
+# Windows is the target the lab runs; NI-VISA is a Windows install and the
+# frozen backend talks to it through pyvisa at runtime, so nothing VISA-specific
+# is bundled. macOS is built too so the app can be developed and demoed off the
+# bench against the simulator.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            bundles: msi,nsis
+          - name: macOS arm64
+            os: macos-latest
+            bundles: dmg
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # --- the Python backend, frozen -------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Freeze the backend
+        # One-dir bundle into desktop/sidecar, where tauri.conf.json's
+        # bundle.resources picks it up.
+        run: pyinstaller resistamet-api.spec --noconfirm --clean --distpath desktop/sidecar
+
+      - name: Smoke-test the frozen backend (handshake + /health)
+        shell: python
+        run: |
+          import json, subprocess, sys, time, urllib.request, os
+          exe = os.path.join("desktop", "sidecar", "resistamet-api",
+                             "resistamet-api.exe" if os.name == "nt" else "resistamet-api")
+          proc = subprocess.Popen([exe, "--port", "0", "--simulate", "--config", "ci-config.json"],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+          line = proc.stdout.readline()
+          print("handshake:", line.strip())
+          info = json.loads(line)
+          with urllib.request.urlopen(info["url"] + "/health", timeout=10) as r:
+              assert r.status == 200, r.status
+          proc.stdin.close()
+          proc.wait(timeout=60)
+          print("backend exited", proc.returncode)
+
+      # --- the shell ---------------------------------------------------------
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Install UI dependencies
+        working-directory: desktop
+        run: npm ci --no-audit --no-fund
+
+      - name: Contract types are current
+        working-directory: desktop
+        run: npm run check:types
+
+      - name: Build the app
+        working-directory: desktop
+        run: npm run tauri build -- --bundles ${{ matrix.bundles }}
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: resistamet-desktop-${{ matrix.os }}
+          path: |
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg

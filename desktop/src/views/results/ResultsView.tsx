@@ -66,7 +66,11 @@ export function ResultsView() {
       .then((text) => {
         const result = parseResistametCsv(text);
         setParsed(result);
-        const first = result.columns.find((c) => c !== "elapsed_s" && c in result.data && !c.includes("unc"));
+        // The quantity the run was about, when the file has it.
+        const preferred = ["R_ohm", "Rs_ohm_sq", "I_meas", "V_meas", "I", "V"];
+        const first =
+          preferred.find((c) => c in result.data) ??
+          result.columns.find((c) => c !== "elapsed_s" && c in result.data && !c.includes("unc"));
         setColumn(first ?? null);
       })
       .catch((e: unknown) => setError(e instanceof ApiError ? e.detail : String(e)));
