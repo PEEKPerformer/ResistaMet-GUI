@@ -16,6 +16,21 @@ import pytest
 from .fakes.fake_keithley import FakeKeithley, FakeResourceManager
 
 
+@pytest.fixture(autouse=True)
+def _undo_simulation() -> Iterator[None]:
+    """No test leaves the simulator bound to ``pyvisa`` for the next one.
+
+    ``enable_simulation`` patches the module attribute process-wide, which is
+    right for the app and wrong for a test session: one e2e test would leave
+    every later test measuring the fake instead of whatever it meant to.
+    Autouse so a new fixture cannot forget; a no-op when nothing enabled it.
+    """
+    yield
+    from resistamet_gui.simulator import disable_simulation
+
+    disable_simulation()
+
+
 @pytest.fixture
 def fake_rm(monkeypatch) -> FakeResourceManager:
     """Replace ``pyvisa.ResourceManager`` with a FakeResourceManager.
