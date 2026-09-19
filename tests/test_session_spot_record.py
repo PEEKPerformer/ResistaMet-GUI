@@ -160,3 +160,14 @@ class TestPositionCorrectionIsAlwaysWarn:
     def test_missing_or_empty_means_warn(self):
         record = spot_record_from_settings(_settings(_spot(), fpp_position_correction=None))
         assert record.ignored_position_correction is None
+
+
+class TestProbeSpacing:
+    @pytest.mark.parametrize("spacing", [0.0, None])
+    def test_a_missing_spacing_is_the_one_the_rows_assume(self, spacing):
+        """build_row falls back to 0.1016 cm; the spot check must not refuse
+        a run the rows would have computed."""
+        settings = _settings(_spot(x_mm=0.0, y_mm=0.0), fpp_spacing_cm=spacing,
+                             fpp_geometry='circle', fpp_diameter_cm=5.08)
+        record = spot_record_from_settings(settings)
+        assert record.position.factor_centre == pytest.approx(geo.circle_factor(50.8, 1.016))
