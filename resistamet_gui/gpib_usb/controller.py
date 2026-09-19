@@ -22,7 +22,7 @@ when an instrument asserts SRQ, having serial-polled it itself (§10.4.2).
 
 Large transfers take the instructions NI's own driver uses (§10): a read of
 ``RAW_READ_MIN_BYTES`` or more is a 0x0b whose bytes arrive unframed on the
-alternate bulk IN endpoint, and a write longer than ``RAW_WRITE_MIN_BYTES``
+alternate bulk IN endpoint, and a write of ``RAW_WRITE_MIN_BYTES`` or more
 is a 0x0e whose bytes go out unframed on the alternate bulk OUT. Smaller
 transfers keep the bench-proven framed 0x0a / 0x0d paths, as do models
 without the alternate pair. The raw paths were written from the captures
@@ -85,11 +85,12 @@ DEFAULT_INFINITE_WAIT_S = 600.0
 #: so where NI switches is not established. 4096 is the smallest count NI was
 #: seen use 0x0b for.
 RAW_READ_MIN_BYTES = 4096
-#: Writes longer than this use the 0x0e instruction with the data on the
-#: alternate bulk OUT (§10.5.2). NI was observed using 0x0d up to 17 bytes and
-#: 0x0e at 2050; the boundary in between is not established. 2048 keeps every
-#: write NI was seen frame framed and sends the one it was seen send raw, raw.
-RAW_WRITE_MIN_BYTES = 2048
+#: Writes of at least this many bytes use the 0x0e instruction with the data
+#: on the alternate bulk OUT (§10.5.2), i.e. writes longer than 2048 bytes. NI
+#: was observed using 0x0d up to 17 bytes and 0x0e at 2050; the boundary in
+#: between is not established. Same reading as RAW_READ_MIN_BYTES: the
+#: smallest transfer that goes raw.
+RAW_WRITE_MIN_BYTES = 2049
 #: The interrupt read of ``wait_srq`` is issued in slices of this length so a
 #: ``close`` is noticed between them; the only cost is one extra interrupt
 #: read per slice while nothing is pending.
@@ -324,7 +325,7 @@ class Controller:
               eos_char: Optional[int] = None, readdress: bool = True) -> int:
         """Address ``pad`` to listen, then write ``data`` (§5.1, §10.5).
 
-        Writes longer than ``RAW_WRITE_MIN_BYTES`` go as 0x0e instructions
+        Writes of ``RAW_WRITE_MIN_BYTES`` and more go as 0x0e instructions
         with the bytes on the alternate bulk OUT; shorter ones as framed
         0x0d. ``eos_char`` fills the 0x0e header's ``e`` byte, which NI sets
         to the session's termination character (§10.5.2); the framed 0x0d
@@ -355,14 +356,18 @@ class Controller:
 
     def _write_bytes(self, data: bytes, code: int, limit: Optional[float], send_eoi: bool,
                      eos_char: Optional[int]) -> int:
-        """Write instructions of at most 0xffff bytes each, EOI only with the last (§5.1)."""
-        raw = self._raw and len(data) > RAW_WRITE_MIN_BYTES
-        step = p.MAX_RAW_TRANSFER_BYTES if raw else p.MAX_TRANSFER_BYTES
+        """Write instructions of at most 0xffff bytes each, EOI only with the last (§5.1).
+
+        Framed or raw is decided per chunk, like the read loop, so a short
+        tail after a raw chunk goes framed.
+        """
+        # Both instructions carry at most 0xffff bytes, so one chunk size serves.
+        step = min(p.MAX_TRANSFER_BYTES, p.MAX_RAW_TRANSFER_BYTES)
         written = 0
         for start in range(0, len(data), step):
             chunk = data[start:start + step]
             eoi = send_eoi and start + len(chunk) == len(data)
-            if raw:
+            if self._raw and len(chunk) >= RAW_WRITE_MIN_BYTES:
                 written += self._raw_write_instruction(chunk, code, limit, eoi, eos_char)
             else:
                 wait = p.host_wait_s(limit, self._infinite_wait_s)
@@ -486,7 +491,7 @@ class Controller:
                               eos_8bit: bool, termchar: Optional[int], operation: str) -> Tuple[bytes, bool]:
         """One 0x0b (§10.1.2-10.1.3): the data arrives raw on the alternate bulk IN, the status on the primary."""
         message = p.read_raw_message(count, code, eos, eos_8bit, termchar)
-        buffer = p.raw_read_buffer_size(count, self._transport.max_packet_size)
+        buffer = p.raw_read_buffer_size(count, self._transport.max_packet_size_raw)
         wait_s = p.host_wait_s(limit, self._infinite_wait_s) + count / RAW_TRANSFER_MIN_RATE_BPS
         data, reply = self._raw_read_transact(message, buffer, wait_s)
         parsed = p.parse_raw_read_reply(reply, count, data)
@@ -702,7 +707,7 @@ class Controller:
             # a full-length one, may still sit on the alternate IN (§10.1.4).
             try:
                 self._transport.bulk_in_raw(
-                    p.raw_read_buffer_size(p.MAX_RAW_TRANSFER_BYTES, self._transport.max_packet_size),
+                    p.raw_read_buffer_size(p.MAX_RAW_TRANSFER_BYTES, self._transport.max_packet_size_raw),
                     int(DRAIN_WAIT_S * 1000))
             except TransportTimeout:
                 logger.debug('nothing to drain on the alternate endpoint')

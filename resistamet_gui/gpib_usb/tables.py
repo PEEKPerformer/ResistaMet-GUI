@@ -327,7 +327,12 @@ def address_talker_command(controller: int, pad: int, sad: Optional[int] = None)
 
 
 def serial_poll_enable_command(controller: int, pad: int, sad: Optional[int] = None) -> bytes:
-    """``3f 20+C 18 40+N [60+S]``."""
+    """``3f 20+C 18 40+N [60+S]`` -- the IEEE-488.1 serial-poll sequence of §5.9, §6.
+
+    Not sent by the driver, which polls with the 0x10 instruction (§10.5.4);
+    kept with ``SERIAL_POLL_DISABLE_COMMAND`` as the §6 encoding, exercised
+    only by tests.
+    """
     return (bytes((CMD_UNL, listen_address(controller), CMD_SPE))
             + _with_secondary(talk_address(pad), sad))
 

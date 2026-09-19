@@ -64,6 +64,7 @@ class SimulatedAdapter:
     """Answers protocol messages like an attached HS with instruments on the bus."""
 
     max_packet_size = 512
+    max_packet_size_raw = 512
 
     def __init__(self, instruments: Dict[int, FakeInstrument], serial_reply: bytes = h('41 78 56 34 12')) -> None:
         self.instruments = instruments

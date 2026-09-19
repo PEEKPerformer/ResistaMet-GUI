@@ -44,6 +44,7 @@ class ScriptedTransport:
     """
 
     max_packet_size = 512
+    max_packet_size_raw = 512
 
     def __init__(self, script: List[Tuple[Any, ...]]) -> None:
         self.script = list(script)
@@ -526,7 +527,7 @@ def raw_write_reply(requested: int, transferred: int, *, error: int = 0) -> byte
 
 
 class TestRawWrite:
-    """Writes longer than RAW_WRITE_MIN_BYTES: 0x0e, data on the alternate bulk OUT (§10.5.2)."""
+    """Writes of RAW_WRITE_MIN_BYTES and more: 0x0e, data on the alternate bulk OUT (§10.5.2)."""
 
     LONG = b'*CLS;' * 409 + b'*CL\r\n'  # 2050 bytes, as longwrite.pcap
 
@@ -542,17 +543,17 @@ class TestRawWrite:
         transport.assert_done()
 
     def test_the_threshold_is_the_named_constant(self):
-        assert RAW_WRITE_MIN_BYTES == 2048
+        assert RAW_WRITE_MIN_BYTES == 2049  # writes longer than 2048 bytes go raw
+        under = bytes(RAW_WRITE_MIN_BYTES - 1)
         at = bytes(RAW_WRITE_MIN_BYTES)
-        over = bytes(RAW_WRITE_MIN_BYTES + 1)
         controller, transport = attached(address_listener() + [
-            ('out', p.write_message(at, T3S, True)), ('in', status_reply(0x0D)),
+            ('out', p.write_message(under, T3S, True)), ('in', status_reply(0x0D)),
         ] + address_listener() + [
-            ('out', p.write_raw_message(len(over), T3S, True)), ('raw_out', over),
-            ('in', raw_write_reply(len(over), len(over)), 512),
+            ('out', p.write_raw_message(len(at), T3S, True)), ('raw_out', at),
+            ('in', raw_write_reply(len(at), len(at)), 512),
         ])
+        assert controller.write(22, under, timeout_s=3.0) == RAW_WRITE_MIN_BYTES - 1
         assert controller.write(22, at, timeout_s=3.0) == RAW_WRITE_MIN_BYTES
-        assert controller.write(22, over, timeout_s=3.0) == RAW_WRITE_MIN_BYTES + 1
         transport.assert_done()
 
     def test_the_raw_transfer_and_the_reply_get_the_transfer_allowance(self):
@@ -571,15 +572,26 @@ class TestRawWrite:
         controller.write_raw(b'*IDN?\n', timeout_s=3.0, eos_char=0x0A)
         transport.assert_done()
 
-    def test_chunks_of_0xffff_with_eoi_on_the_last(self):
+    def test_chunks_of_0xffff_with_eoi_on_the_last_and_a_short_tail_framed(self):
+        # Per chunk, like the read loop: the 1-byte tail is below the threshold, so 0x0d.
         data = bytes(0xFFFF) + b'Z'
         controller, transport = attached(address_listener() + [
             ('out', p.write_raw_message(0xFFFF, T3S, False)), ('raw_out', bytes(0xFFFF)),
             ('in', raw_write_reply(0xFFFF, 0xFFFF), 512),
-            ('out', p.write_raw_message(1, T3S, True)), ('raw_out', b'Z'),
-            ('in', raw_write_reply(1, 1), 512),
+            ('out', p.write_message(b'Z', T3S, True)), ('in', status_reply(0x0D)),
         ])
         assert controller.write(22, data, timeout_s=3.0) == 0x10000
+        transport.assert_done()
+
+    def test_a_long_tail_after_a_full_chunk_goes_raw_too(self):
+        data = bytes(0xFFFF + 3000)
+        controller, transport = attached([
+            ('out', p.write_raw_message(0xFFFF, T3S, False)), ('raw_out', bytes(0xFFFF)),
+            ('in', raw_write_reply(0xFFFF, 0xFFFF), 512),
+            ('out', p.write_raw_message(3000, T3S, True)), ('raw_out', bytes(3000)),
+            ('in', raw_write_reply(3000, 3000), 512),
+        ])
+        assert controller.write_raw(data, timeout_s=3.0) == 0xFFFF + 3000
         transport.assert_done()
 
     def test_no_listener_reported_in_the_reply(self):
