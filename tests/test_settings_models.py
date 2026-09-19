@@ -68,6 +68,8 @@ class TestGpibInterface:
     def test_what_is_accepted_is_what_pyvisa_parses(self, name):
         """The validator must not drift from the installed grammar."""
         from pyvisa import rname
+        if not hasattr(rname, 'PrlgxASRLIntfc'):
+            pytest.skip("this pyvisa predates the Prologix resource names")
         parsed = rname.ResourceName.from_string(name)
         assert isinstance(parsed, (rname.PrlgxASRLIntfc, rname.PrlgxTCPIPIntfc))
 
