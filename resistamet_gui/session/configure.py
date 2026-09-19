@@ -245,7 +245,7 @@ def configure_four_point(keithley, events, measurement_settings, nplc):
         return
     if worst_case_power > state.power_warn_w:
         events.warn('power_envelope',
-            f"⚠️ 4PP power envelope: up to {worst_case_power*1e3:.1f} mW "
+            f"Warning: 4PP power envelope: up to {worst_case_power*1e3:.1f} mW "
             f"(I × V_comp). Above warning threshold "
             f"{state.power_warn_w*1e3:.0f} mW — proceed with care."
         )
