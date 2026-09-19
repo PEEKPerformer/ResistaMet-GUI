@@ -99,10 +99,15 @@
   line-height: 1.3;
 }
 
+/* The hint belongs to the row above it: it wraps inside the row and keeps
+   clear of the next row's label, which may itself run to two lines. */
 .fieldHint {
   grid-column: 1 / -1;
+  padding-bottom: var(--sp-1);
   color: var(--fg-faint);
   font-size: var(--text-xs);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .fieldError {
