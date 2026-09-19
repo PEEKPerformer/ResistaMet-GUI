@@ -73,6 +73,8 @@ class ContinuousRun:
         self._mode_state = None
         # Set by each delta read: the per-polarity values the row builder logs.
         self._last_delta = None
+        #: The negative-V/I warning is given once per run, not per sample.
+        self._fpp_negative_ratio_warned = False
         # Set before anything is opened: this run's spot resolved against the
         # sample outline, or None for a run that carries no spot.
         self._spot_record = None
@@ -814,6 +816,9 @@ class ContinuousRun:
                             self._events.log('compliance_stop', "Stopping due to compliance (per settings).")
                             self._control.finish('compliance_stop')
 
+                    if self.mode == 'four_point':
+                        self._warn_once_if_ratio_negative(data_dict, compliance_status)
+
                     # 4PP probe-safety runtime check: measured V*I against the
                     # configured warn / hard-stop thresholds. Hard stop also
                     # turns the output off on the worker side as a defense in
@@ -1024,6 +1029,34 @@ class ContinuousRun:
             final_message = f"Measurement ({self._mode_name}) completed! Data saved to: {self.filename}"
         self._events.log('completed', final_message)
         self._events.emit('acquisition_finished', {'mode': self.mode})
+
+    def _warn_once_if_ratio_negative(self, data_dict, compliance_status):
+        """Say so, once, when a four-point sample's V/I is negative.
+
+        A passive sample cannot have a negative resistance. With the sense
+        leads open the voltmeter floats (the bench saw about -0.95 V) and the
+        run recorded -43 kΩ/sq, in compliance with nothing, with no word from
+        the log. Swapped sense leads give the same sign.
+
+        A warning only: the sample, the row and the run are left exactly as
+        they were. Delta mode is excluded because its reading is the
+        half-difference of two polarities, where an offset of either sign
+        cancels by design and the sign test means something else.
+        """
+        if self._fpp_negative_ratio_warned or self._mode_state.delta_mode:
+            return
+        if compliance_status != 'OK':
+            return
+        voltage = data_dict.get('voltage', float('nan'))
+        current = data_dict.get('current', float('nan'))
+        if not (np.isfinite(voltage) and np.isfinite(current)):
+            return
+        if voltage * current < 0:
+            self._fpp_negative_ratio_warned = True
+            self._events.warn('fpp_negative_ratio',
+                f"Warning: four-point V/I is negative (V = {voltage:.4g} V at "
+                f"I = {current:.4g} A). The sense leads are probably open or swapped."
+            )
 
     def _spot_statistics(self, nplc):
         """The four-point statistics for the file footer; None for other modes.

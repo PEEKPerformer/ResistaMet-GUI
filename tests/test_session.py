@@ -225,6 +225,59 @@ class TestLogText:
         assert messages['stopping'] == "Stopping measurement (Resistance)..."
 
 
+class TestOpenSenseLeads:
+    """Four-point with the sense leads open or swapped: V/I comes out
+    negative. The run says so once and changes nothing."""
+
+    @pytest.fixture
+    def floating_sense(self, monkeypatch):
+        """The fake with the voltmeter floating at -0.95 V, as on the bench."""
+        import pyvisa
+        from tests.fakes.fake_keithley import FakeResourceManager
+        rm = FakeResourceManager(dut_voltage_offset=-0.95)
+        monkeypatch.setattr(pyvisa, "ResourceManager", lambda *args, **kwargs: rm)
+        return rm
+
+    def _warnings(self, sink):
+        return [e.payload for e in sink.of_type('log')
+                if e.payload['code'] == 'fpp_negative_ratio']
+
+    def test_one_warning_for_the_whole_run(self, session, sink, floating_sense, profile):
+        session.start(_four_point(profile, samples=5), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+
+        warnings = self._warnings(sink)
+        assert len(warnings) == 1
+        assert warnings[0]['level'] == 'warning'
+        assert "sense leads are probably open or swapped" in warnings[0]['message']
+
+    def test_the_run_and_its_numbers_are_untouched(self, session, sink, floating_sense, profile):
+        session.start(_four_point(profile, samples=5), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+
+        ended = sink.of_type('run_ended')[0].payload
+        assert (ended['reason'], ended['ok'], ended['samples']) == ('target_samples', True, 5)
+        assert sink.of_type('error') == []
+        for sample in sink.of_type('sample'):
+            assert sample.payload['values']['voltage'] < 0
+            values, derived = sample.payload['values'], sample.payload['derived']
+            assert derived['ratio'] == pytest.approx(values['voltage'] / values['current'])
+            assert derived['rs'] < 0
+            assert sample.payload['compliance'] == 'OK'
+
+    def test_a_good_contact_is_not_warned_about(self, session, sink, fake_rm, profile):
+        session.start(_four_point(profile, samples=3), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+        assert self._warnings(sink) == []
+
+    def test_delta_mode_is_not_warned_about(self, session, sink, floating_sense, profile):
+        profile = _four_point(profile, samples=2)
+        profile['measurement'].update({'fpp_delta_mode': True, 'fpp_delta_settling': 0.01})
+        session.start(profile, 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+        assert self._warnings(sink) == []
+
+
 class TestValidation:
     def test_strict_resolver_rejects_a_bad_request(self, session, profile):
         with pytest.raises(ValueError) as excinfo:
