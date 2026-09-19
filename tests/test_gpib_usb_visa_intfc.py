@@ -6,6 +6,7 @@ as a ``GPIBInterface``: IFC, REN, ATN, raw command bytes, data to and from
 whoever the caller addressed, the bus line and controller state attributes,
 and each operation the specification does not let the session offer.
 """
+import re
 from typing import List
 
 import pytest
@@ -175,6 +176,36 @@ class TestDispatch:
         assert not board.closed
         inst.close()
         assert board.closed
+
+    def test_installed_over_pyvisa_py_unavailable_class(self, monkeypatch, session_registry, enumeration):
+        # What pyvisa-py registers for (gpib, INTFC) on a machine without
+        # linux-gpib: a class whose __init__ raises ValueError with the reason,
+        # and no listing of its own.
+        message = 'Please install linux-gpib (Linux) or gpib-ctypes (Windows, Linux)'
+        Session.register_unavailable(constants.InterfaceType.gpib, 'INTFC', message)
+        sim = SimulatedAdapter({})
+        monkeypatch.setattr(gpib_usb, 'available', lambda: True)
+        monkeypatch.setattr(controller_module, 'IFC_SETTLE_S', 0.0)
+        monkeypatch.setattr(visa_session, '_REGISTRY',
+                            BoardRegistry(open_transport=lambda i: sim, first_board=0))
+        session_registry[GPIB_INSTR] = Sentinel
+        gpib_usb.install()
+        rm = pyvisa.highlevel.ResourceManager('@py')
+        try:
+            with pytest.raises(ValueError, match=re.escape(message)):
+                rm.open_resource('GPIB9::INTFC')
+            assert NiUsbGpibIntfcDispatch.list_resources() == ['GPIB0::INTFC']
+            intf = rm.open_resource('GPIB0::INTFC')
+            assert isinstance(intf.visalib.sessions[intf.session], NiUsbGpibIntfcSession)
+            intf.close()
+            # Adapter unplugged: the merged listing is empty and the board is
+            # no longer ours, so it too falls through to pyvisa-py's class.
+            enumeration['adapters'] = []
+            assert NiUsbGpibIntfcDispatch.list_resources() == []
+            with pytest.raises(ValueError, match=re.escape(message)):
+                rm.open_resource('GPIB0::INTFC')
+        finally:
+            rm.close()
 
     def test_attach_failure_is_a_visa_error(self, rm, monkeypatch, board):
         def broken(info):
