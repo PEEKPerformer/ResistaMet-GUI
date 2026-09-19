@@ -255,6 +255,61 @@ class TestDerived:
         assert resolved.settings['measurement']['sampling_rate'] == 100.0
 
 
+class TestInvalidInputIsReportedNotRaised:
+    """Every one of these used to raise out of the resolver -- a 500 from the
+    API, and in the GUI a Start that did nothing."""
+
+    CASES = [
+        ('sweep', {'sweep_step': 'abc'}),          # was ValueError, from the points
+        ('sweep', {'sweep_step': None}),           # was TypeError
+        ('sweep', {'sweep_start': 'abc'}),         # was ValueError, from the hazard
+        ('sweep', {'sweep_stop': [1.0]}),
+        ('resistance', {'nplc': 'fast'}),          # was ValueError, from the rate
+        ('resistance', {'filter_count': None}),
+        ('four_point', {'fpp_current': None}),     # the power check
+        ('four_point', {'fpp_voltage_compliance': 'high'}),
+        ('four_point', {'fpp_power_stop_w': None}),
+        ('vdp', {'vdp_thickness_cm': None}),       # the thickness check
+        ('vdp', {'vdp_thickness_cm': 'thin'}),
+        ('source_v', {'vsource_voltage': 'abc'}),
+    ]
+
+    @pytest.mark.parametrize("strict", [True, False])
+    @pytest.mark.parametrize("mode, override", CASES)
+    def test_the_bad_key_is_the_issue(self, profile, mode, override, strict):
+        resolved = resolve_run_settings(profile, mode, override, strict=strict)
+        assert _keys(resolved) == list(override)
+        assert not resolved.ok
+
+    def test_a_value_derived_from_it_is_left_out(self, profile):
+        resolved = resolve_run_settings(profile, 'sweep', {'sweep_step': 'abc'}, strict=True)
+        assert 'sweep_points' not in resolved.derived
+        assert 'max_rate_hz' in resolved.derived, "the timing keys are fine"
+
+    def test_so_is_the_rate_when_a_timing_key_is_bad(self, profile):
+        resolved = resolve_run_settings(profile, 'resistance', {'nplc': 'fast'}, strict=True)
+        assert 'max_rate_hz' not in resolved.derived
+
+    def test_no_hazard_is_judged_from_a_voltage_that_is_not_one(self, profile):
+        resolved = resolve_run_settings(profile, 'source_v', {'vsource_voltage': 'abc'},
+                                         strict=True)
+        assert resolved.hazard is None
+        assert not resolved.ok, "and the run is refused, so nothing is energised unasked"
+
+    def test_an_unrelated_bad_key_leaves_the_hazard_in_place(self, profile):
+        resolved = resolve_run_settings(profile, 'source_v', {
+            'vsource_voltage': 60.0, 'vsource_duration_hours': 'long'}, strict=True)
+        assert resolved.hazard.hazardous
+
+    def test_a_stored_profile_with_a_null_in_it_still_gathers(self, profile):
+        """The PySide6 gather resolves leniently on every call and keeps only
+        the settings; the old gather never read this key at all."""
+        profile['measurement']['filter_count'] = None
+        resolved = resolve_run_settings(profile, 'resistance', {})
+        assert _keys(resolved) == ['filter_count']
+        assert resolved.settings['measurement']['filter_count'] is None
+
+
 class TestHazard:
     def test_hazard_uses_resolved_values(self, profile):
         profile['measurement']['vsource_voltage'] = 1.0
