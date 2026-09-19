@@ -162,9 +162,17 @@ python -m resistamet_gui.api --port 0 --config config.json --no-watchdog
 
 **Symptom:** The chip in the top bar turns to **Backend unreachable**, a red notice appears in the view, and Start is disabled.
 
-**Cause:** The backend process stopped answering HTTP: it crashed, was killed, or the PC has just woken from sleep and the connection has not recovered yet. The app polls every 2 s and the event stream reconnects by itself.
+**Cause:** The backend process is alive but not answering HTTP, for example because the PC has just woken from sleep and the connection has not recovered yet. The app polls every 2 s and the event stream reconnects by itself.
 
-**Fix:** Press **Retry** in the notice. If it stays unreachable, the backend process is gone; restart the app. If a run was in progress when the backend died, the instrument was not told to turn its output off: check the front panel, and expect the run's file to end without its `# --- run completed ---` block. A run is not lost when only the *window* is closed; see [Desktop app → Closing the window](desktop.md#closing-the-window).
+**Fix:** Press **Retry** in the notice.
+
+### "The measurement backend has exited"
+
+**Symptom:** A blocking alert with this title, the exit code (or "The process was killed"), and a **Restart backend** button.
+
+**Cause:** The backend process ended without the app asking it to: a crash, or something killed it.
+
+**Fix:** Look at the instrument first. A backend that dies this way never sent `:OUTP OFF`, so the output is in whatever state it was; turn it off at the front panel if it is on. Expect the run's file to end without its `# --- run completed ---` block and possibly without the rows since the last flush. Then press **Restart backend**. The newest `backend-….log` in the app's log directory ([where](desktop.md#where-things-are)) has the traceback if it was a crash. A run is not lost when only the *window* is closed; see [Desktop app → Closing the window](desktop.md#closing-the-window).
 
 ## Plot / display
 

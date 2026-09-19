@@ -32,7 +32,7 @@ cd desktop && npm run dev      # then open http://localhost:1420/?backend=http:/
 
 ### Installers
 
-`.github/workflows/desktop.yml` builds Windows installers (msi and NSIS) and a macOS dmg on every `v*` tag, with the backend frozen by PyInstaller inside the bundle, and attaches them to the release. No release carries them yet. A machine running an installer build needs no Python. It still needs a way to reach the instrument: NI-VISA with NI-488.2 on Windows; on a Mac the bundled backend includes libusb for the [built-in NI GPIB-USB driver](gpib.md#ni-gpib-usb-hs-on-macos-and-linux).
+`.github/workflows/desktop.yml` builds Windows installers (msi and NSIS) and a macOS dmg for `desktop-v<version>` tags, with the backend frozen by PyInstaller inside the bundle, and uploads them to the release of that tag once someone has created it. No release carries them yet. A machine running an installer build needs no Python. It still needs a way to reach the instrument: NI-VISA with NI-488.2 on Windows; on a Mac the bundled backend includes libusb for the [built-in NI GPIB-USB driver](gpib.md#ni-gpib-usb-hs-on-macos-and-linux).
 
 ## Where things are
 
@@ -42,7 +42,7 @@ cd desktop && npm run dev      # then open http://localhost:1420/?backend=http:/
 | Data files | `data_directory` from the profile; the default `measurement_data` resolves against the repository root | The same setting; the default resolves to `measurement_data` inside the app's data directory. Set an absolute data directory under Settings ▸ Files & output to put data somewhere you back up. |
 | Backend log | The terminal you started `tauri dev` from | One file per launch, `backend-<milliseconds since 1970>.log`, in the app's log directory; the newest ten are kept |
 | Instrument locks | `~/.resistamet/locks/` | the same |
-| Window state (selected operator, sample name, tab values, theme, current map id) | the webview's local storage | the same |
+| Window state (selected operator, sample name, each operator's tab values, theme, current map id) | the webview's local storage | the same |
 
 The app's identifier is `edu.uconn.adamson.resistamet`, and the two directories are wherever Tauri puts per-user data and logs for that identifier. By Tauri's convention that is `~/Library/Application Support/<identifier>` and `~/Library/Logs/<identifier>` on macOS, and `%APPDATA%\<identifier>` and `%LOCALAPPDATA%\<identifier>\logs` on Windows. These paths were not checked on an installed build for this page; the **Results** view shows the data directory's absolute path, which settles it.
 
@@ -54,13 +54,13 @@ Files are laid out under the data directory exactly as the PySide6 app lays them
 
 An **operator** must be chosen before anything else; the picker opens by itself and creates profiles. Every file is stored under the operator's name, and the operator's profile supplies the settings.
 
-Each measurement view has its settings panel on the right. Values you type there are this tab's values on top of the profile; they are sent to the backend as you type, and the backend answers with what the run would actually use, any issues, the achievable sampling rate and the touch-safety check. **Start** is enabled only when the backend is reachable, an operator and a sample name exist, no run is active and the backend accepts the settings. Numeric fields take engineering input (`100u`, `1e-4`, `0.1 mA`); the prefix is case-sensitive (`m` is milli, `M` is mega), and text that is not wholly a number is refused, not guessed at.
+Each measurement view has its settings panel on the right. Values you type there are this tab's values on top of the profile, kept per operator; they are sent to the backend as you type, and the backend answers with what the run would actually use, any issues, the achievable sampling rate and the touch-safety check. **Start** is enabled only when the backend is reachable, an operator and a sample name exist, no run is active and the backend accepts the settings. Numeric fields take engineering input (`100u`, `1e-4`, `0.1 mA`); the prefix is case-sensitive (`m` is milli, `M` is mega), and text that is not wholly a number is refused, not guessed at.
 
 ### Resistance, Voltage source, Current source
 
 Live plot with a time window (30 s, 5 min, 1 h, all), a large readout, Start / Pause / Stop / **Mark**. Mark (or the `M` key when the focus is not in a field) puts a label on the next data row and on the plot. Notices above the plot say why Start is unavailable, warn that a voltage at or above the touch-safety threshold will be asked about, and warn when the requested rate exceeds what the timing settings can deliver.
 
-In Resistance mode with **Auto range** on, the instrument's auto-ohms function chooses its own test current and voltage limit; the file records the limit it reports (`effective.voltage_compliance_V`) and the current that flowed is in the `I_meas` column.
+In Resistance mode with **Auto range** on, the instrument's auto-ohms function chooses its own test current and voltage limit, so the fields for them are disabled; the current that flowed is in the file's `I_meas` column.
 
 ### Four-point probe
 
@@ -68,11 +68,11 @@ The continuous view plus three panels:
 
 - **Spot.** Rs, ρ and σ of the current sample as the backend derived them, and, when the run ends, the spot's statistics from the backend's `spot_complete` event: mean ± combined uncertainty, n, and whether the run was cut short. The name field labels the next spot.
 - **Spots.** The current map's spots as the backend assembles them from the run files (`GET /maps/{id}`): mean, RSD, the edge effect where known, and the spread across spots. **Redo** on a row makes the next run measure that spot again; the newer run stands for the spot and the older file stays on disk. **New map** makes the next run start a new map; the files of the old one stay.
-- **Map.** The sample outline to scale with one marker per spot that has a position, colored by the chosen quantity, with optional labels and a nearest-spot fill (not an interpolation). It needs the sample's shape and dimensions from the **Sample** group of the settings panel.
+- **Map.** The sample outline to scale with one marker per spot that has a position, colored by the chosen quantity, with optional labels and a nearest-spot fill (not an interpolation). It needs the sample's shape and dimensions from the **Sample** group of the settings panel. Click the drawing to say where the next run measures, or type the coordinates (millimeters from the center of the sample, y up); with the drawing focused the arrow keys move the position by 0.1 mm, with Shift by 1 mm. The marker shows the four tips to scale at the array angle, which is one setting for the whole map. It turns red, and Start is disabled, when a tip is on or beyond the edge; it turns amber near an edge, where the backend will report the size of the effect when the run starts. A run without a position is allowed. **Redo** puts a spot's recorded position back.
 
-Each four-point run is sent with its spot (map id, index, label), so the [map](concepts.md#spots-and-maps) exists in the files and survives the app. A new map starts with the first run after the app starts, after the operator or sample name changes, and on New map.
+Each four-point run is sent with its spot (map id, index, label, and the position if one was given), so the [map](concepts.md#spots-and-maps) exists in the files and survives the app. A new map starts with the first run after the app starts, after the operator or sample name changes, and on New map.
 
-The map is in progress. At the time of writing the app cannot yet give a spot a position, so spots measured from it appear in the table and not on the drawing; positions reach a file only through the [API](api.md) (`spot.x_mm`, `spot.y_mm`). The optional sample photo and a figure export are not there.
+The map is still being built, and this paragraph will date fastest. At the time of writing there is no sample photo underlay and no figure export, and none of the map has been used at a bench.
 
 A run refused because a tip would be off the sample shows the backend's message in the view with "Nothing was measured."
 
@@ -98,7 +98,9 @@ When a run is blocked on a decision (the touch-safety acknowledgement, a van der
 
 ## Closing the window
 
-Closing the window, or quitting the app, does not abandon the instrument:
+With a run in progress, the close button, Alt+F4 and, on macOS, Cmd+Q first ask **Exit confirmation**: *Keep running* (the default) or *Stop and exit*. If the backend does not answer within 3 s the question is asked anyway, since a run cannot be ruled out. With no run the window closes at once.
+
+Exiting does not abandon the instrument:
 
 1. The shell closes the backend's stdin.
 2. The backend stops the run: `:OUTP OFF`, the file finalized with its footer (end reason `user_stop`), the instrument closed, the lock released. It allows itself 35 s for that.
@@ -106,6 +108,6 @@ Closing the window, or quitting the app, does not abandon the instrument:
 
 So closing the window mid-run ends the run cleanly and keeps the data. The same ordered shutdown was checked on a 2420 through `POST /session/shutdown` on 2026-09-18, with the output confirmed off afterwards by asking the instrument directly.
 
-What this cannot cover: the app or the PC being killed outright, or a VISA call that does not return within the 35 s. Then nobody tells the instrument anything, and the output stays as it was. Check the front panel. If the app's shell dies without closing anything (a crash, a forced quit), the backend notices that its stdin closed and performs step 2 on its own.
+What this cannot cover: the backend or the PC being killed outright, or a VISA call that does not return within the 35 s. Then nobody tells the instrument anything, and the output stays as it was. If the backend process dies while the window is open, the app says so in a blocking alert (**The measurement backend has exited**; the output state is unknown, check the front panel) and offers **Restart backend**. If the app's shell dies without closing anything (a crash, a forced quit), the backend notices that its stdin closed and performs step 2 on its own.
 
 Reloading the page inside the window (or a crashed webview) does not touch the backend: the run continues, and the view catches up from the backend's status and event history.
