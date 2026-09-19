@@ -159,6 +159,13 @@
   gap: var(--sp-2);
 }
 
+/* Rows keep their height and the body scrolls. A field row has an explicit
+   min-height, so as a shrinkable flex item it collapsed to that and its hint
+   spilled over the row below. */
+.settingsBody > * {
+  flex: none;
+}
+
 .sectionTitle {
   margin: var(--sp-4) 0 var(--sp-2);
   color: var(--fg-faint);
