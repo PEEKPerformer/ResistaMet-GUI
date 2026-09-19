@@ -270,13 +270,61 @@ def prologix():
     adapter.close()
 
 
+#: The stand-in's board. An NI GPIB-USB adapter plugged into the machine
+#: running the tests is GPIB0 (GPIB1 for a second one); nothing here may
+#: name a board a real adapter could own.
+BOARD = '7'
+INSTRUMENT = f'GPIB{BOARD}::24::INSTR'
+
+
+@pytest.fixture
+def pyvisa_py_as_shipped(monkeypatch):
+    """A real pyvisa-py manager that cannot reach an attached NI adapter.
+
+    The NI GPIB-USB hook is kept from running, and the dispatchers an
+    earlier test in this process let it install are taken out again:
+    pyvisa-py keeps its session classes in one process-wide table, and
+    ``list_resources()`` through the dispatcher walks the real bus.
+    """
+    monkeypatch.setattr(visa_backend, '_PY_EXTENSIONS', [])
+    try:
+        from pyvisa_py.sessions import Session
+    except ImportError:
+        return
+    for key, session_class in list(Session._session_classes.items()):
+        if not session_class.__module__.startswith('resistamet_gui.gpib_usb'):
+            continue
+        if session_class.previous is None:
+            monkeypatch.delitem(Session._session_classes, key)
+        else:
+            monkeypatch.setitem(Session._session_classes, key, session_class.previous)
+
+
+def test_as_shipped_undoes_an_install_an_earlier_test_ran(request):
+    sessions = pytest.importorskip('pyvisa_py.sessions')
+
+    def ours():
+        return [cls for cls in sessions.Session._session_classes.values()
+                if cls.__module__.startswith('resistamet_gui.gpib_usb')]
+
+    # What any test that reaches resource_manager('') or ('@py') does, on a
+    # machine with pyusb and libusb. It registers classes; it touches no bus.
+    visa_backend._install_ni_usb()
+
+    request.getfixturevalue('pyvisa_py_as_shipped')
+
+    assert visa_backend._PY_EXTENSIONS == []
+    assert ours() == []
+
+
+@pytest.mark.usefixtures('pyvisa_py_as_shipped')
 class TestGpibInterfaceOnPyvisaPy:
     """The same, against the real pyvisa-py and a Prologix stand-in on TCP."""
 
     def test_the_instrument_address_resolves_through_the_interface(self, prologix):
-        rm = visa_backend.resource_manager(visa_backend.PY, prologix.resource())
+        rm = visa_backend.resource_manager(visa_backend.PY, prologix.resource(BOARD))
         try:
-            instrument = rm.open_resource('GPIB0::24::INSTR')
+            instrument = rm.open_resource(INSTRUMENT)
             instrument.timeout = 2000
             assert instrument.query('*IDN?').strip() == IDN
             assert '++addr 24' in prologix.lines
@@ -284,9 +332,9 @@ class TestGpibInterfaceOnPyvisaPy:
             rm.close()
 
     def test_one_connection_however_many_callers(self, prologix):
-        rm = visa_backend.resource_manager(visa_backend.PY, prologix.resource())
+        rm = visa_backend.resource_manager(visa_backend.PY, prologix.resource(BOARD))
         try:
-            assert visa_backend.resource_manager(visa_backend.PY, prologix.resource()) is rm
+            assert visa_backend.resource_manager(visa_backend.PY, prologix.resource(BOARD)) is rm
             assert prologix.connections == 1
         finally:
             rm.close()
@@ -295,23 +343,23 @@ class TestGpibInterfaceOnPyvisaPy:
         import gc
         from pyvisa_py.prologix import _PrologixIntfcSession
 
-        rm = visa_backend.resource_manager(visa_backend.PY, prologix.resource())
+        rm = visa_backend.resource_manager(visa_backend.PY, prologix.resource(BOARD))
         try:
             gc.collect()
-            assert '0' in _PrologixIntfcSession.boards
+            assert BOARD in _PrologixIntfcSession.boards
         finally:
             rm.close()
 
     def test_it_closes_with_the_manager_and_reopens_with_the_next(self, prologix):
         from pyvisa_py.prologix import _PrologixIntfcSession
 
-        rm = visa_backend.resource_manager(visa_backend.PY, prologix.resource())
+        rm = visa_backend.resource_manager(visa_backend.PY, prologix.resource(BOARD))
         _, session = getattr(rm, visa_backend._INTERFACE_ATTR)
         rm.close()
         assert visa_backend._is_open(session) is False
         assert _PrologixIntfcSession.boards == {}
 
-        rm = visa_backend.resource_manager(visa_backend.PY, prologix.resource())
+        rm = visa_backend.resource_manager(visa_backend.PY, prologix.resource(BOARD))
         try:
             assert prologix.connections == 2
         finally:
@@ -363,9 +411,10 @@ class TestInstrumentUsesTheChoice:
         "VisaInstrument.connect refuses an address that list_resources() does "
         "not return, and pyvisa-py cannot enumerate the instruments behind a "
         "Prologix adapter (PrologixInstrSession.list_resources returns [])."))
-    def test_a_keithley_connects_through_a_prologix_interface(self, prologix):
-        instrument = Keithley2400('GPIB0::24::INSTR', visa_library=visa_backend.PY,
-                                  gpib_interface=prologix.resource())
+    def test_a_keithley_connects_through_a_prologix_interface(
+            self, prologix, pyvisa_py_as_shipped):
+        instrument = Keithley2400(INSTRUMENT, visa_library=visa_backend.PY,
+                                  gpib_interface=prologix.resource(BOARD))
         try:
             instrument.connect()
             assert instrument.idn() == IDN
