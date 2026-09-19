@@ -19,6 +19,8 @@ interface AppServices {
   api: ApiClient;
   stream: EventStream;
   backend: BackendInfo;
+  /** Ask the backend for its status and reconnect the stream, now. */
+  retryConnection: () => Promise<void>;
 }
 
 const ServicesContext = createContext<AppServices | null>(null);
@@ -62,7 +64,16 @@ export function AppProvider({ children, fallback }: ProviderProps) {
   const services = useMemo<AppServices | null>(() => {
     if (!backend) return null;
     const api = new ApiClient(backend);
-    return { api, stream: new EventStream(api), backend };
+    const stream = new EventStream(api);
+    const retryConnection = async () => {
+      try {
+        setStatus(await api.status());
+      } catch {
+        setBackendReachable(false);
+      }
+      stream.retry();
+    };
+    return { api, stream, backend, retryConnection };
   }, [backend]);
 
   useEffect(() => {

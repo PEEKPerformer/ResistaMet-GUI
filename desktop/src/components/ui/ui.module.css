@@ -400,6 +400,12 @@ select.control {
   line-height: 1.4;
 }
 
+.noticeAction {
+  flex: none;
+  margin-left: auto;
+  align-self: center;
+}
+
 .notice[data-tone="warn"] {
   background: var(--warn-muted);
   color: var(--warn);
