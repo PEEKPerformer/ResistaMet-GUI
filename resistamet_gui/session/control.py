@@ -40,11 +40,22 @@ class RunStopped(Exception):
     """
 
 
+class InvalidPromptChoice(ValueError):
+    """The answer is not one of the options the pending prompt offered.
+
+    Distinct from a stale id (which is simply False): the caller named the
+    right prompt and said something it cannot mean, and the prompt stays open.
+    """
+
+
 class RunControl:
     """Start/stop/pause state plus the operator's proceed gate."""
 
-    def __init__(self):
+    def __init__(self, run_id: Optional[str] = None):
         self._lock = threading.Lock()
+        #: Prefixes every prompt id, so an answer composed for one run's
+        #: prompt can never match the same prompt in the next run.
+        self._run_id = run_id
         self._running = False
         self._paused = False
         self._event_markers: List[str] = []
@@ -126,8 +137,11 @@ class RunControl:
         """Block the run on a decision. Returns the prompt to report."""
         with self._lock:
             self._prompt_count += 1
+            prompt_id = f"{kind}-{self._prompt_count}"
+            if self._run_id:
+                prompt_id = f"{self._run_id}:{prompt_id}"
             prompt = PendingPrompt(
-                prompt_id=f"{kind}-{self._prompt_count}",
+                prompt_id=prompt_id,
                 kind=kind, options=list(options),
                 requires_human=requires_human, detail=dict(detail or {}),
             )
@@ -142,11 +156,19 @@ class RunControl:
 
         ``fields`` carries anything the answer needs beyond the choice — the
         safety dialog's "don't show again", for instance.
+
+        Raises :class:`InvalidPromptChoice` when the id is current but the
+        choice is not one the prompt offered. The prompt stays pending: a
+        typo must not be able to stand in for a decision about an output.
         """
         with self._lock:
             prompt = self._prompt
             if prompt is None or prompt.prompt_id != prompt_id or self._answer is not None:
                 return False
+            if choice not in prompt.options:
+                raise InvalidPromptChoice(
+                    f"{choice!r} is not an answer to {prompt.kind}; "
+                    f"the options are {', '.join(prompt.options)}")
             self._answer = choice
             self._answer_fields = dict(fields or {})
         self.proceed_event.set()
