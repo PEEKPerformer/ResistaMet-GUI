@@ -65,7 +65,9 @@ from .transport import Transport, TransportError, TransportStall, TransportTimeo
 logger = logging.getLogger(__name__)
 
 #: Host wait for the bulk replies §7.2 puts at "1 s minimum" (0x01, 0x06,
-#: 0x08, 0x09, 0x0f), and for every bulk OUT.
+#: 0x08, 0x09, 0x0f), and for the bulk OUT of every message that carries no
+#: data. A message or transfer that carries write data is paced by the bus
+#: and gets ``Controller._transfer_wait_s`` instead.
 SHORT_WAIT_S = 2.0
 #: Wait for the reply the device owes after a stop request (§5.11).
 RECOVERY_WAIT_S = 2.0
@@ -101,12 +103,13 @@ RAW_WRITE_MIN_BYTES = 2049
 SRQ_WAIT_SLICE_S = 1.0
 #: The device timeout code bounds a handshake interval, not the whole
 #: instruction (§10.1.8: 20480-byte chunks took 4.0 s each under the 3 s code
-#: and completed with error 0), so the host wait for a raw transfer must also
+#: and completed with error 0), so the host wait for a transfer must also
 #: cover the transfer itself. This is the slowest instrument pace assumed: the
 #: host wait grows by one second per this many bytes. The 2420 formats at
-#: about 5000 bytes per second (§10.1.4). This is a driver choice, not a
+#: about 5000 bytes per second (§10.1.4) and took write data at about 5600
+#: (2049 bytes in 368 ms, §10.5.2). This is a driver choice, not a
 #: specification value.
-RAW_TRANSFER_MIN_RATE_BPS = 1000
+BUS_MIN_RATE_BPS = 1000
 
 _LISTEN = 'listen'
 _TALK = 'talk'
@@ -374,11 +377,30 @@ class Controller:
             if self._raw and len(chunk) >= RAW_WRITE_MIN_BYTES:
                 written += self._raw_write_instruction(chunk, code, limit, eoi, eos_char)
             else:
+                # The data rides inside the message, and the adapter takes the
+                # message only as fast as the instrument takes the data: the
+                # tail of NI's 2080-byte message needed 103 ms (§10.5.2, §7.2).
+                # So the OUT follows the device timeout and the byte count, not
+                # the short wait. Once it completes all but the adapter's own
+                # buffer is on the bus, and the reply keeps the §7.2 wait.
                 wait = p.host_wait_s(limit, self._infinite_wait_s)
                 status, _ = self._exchange(p.write_message(chunk, code, eoi), p.STATUS_REPLY_LENGTH,
-                                           wait, 'write')
+                                           wait, 'write',
+                                           out_wait_s=self._transfer_wait_s(limit, len(chunk)))
                 written += status.transferred(len(chunk))
         return written
+
+    def _transfer_wait_s(self, limit: Optional[float], byte_count: int) -> float:
+        """The host wait for a transfer of ``byte_count`` bytes that the bus paces.
+
+        The §7.2 wait for the effective device timeout -- at least half as
+        long again, where the adapter was measured expiring 12-40 % past the
+        nominal value (§7.1, §10.1.8), so the adapter always gives up first
+        and says so in its reply -- plus the time the bytes themselves take
+        at ``BUS_MIN_RATE_BPS``. Used for the raw IN of a 0x0b, the raw OUT of
+        a 0x0e and its reply, and the OUT of a 0x0d message.
+        """
+        return p.host_wait_s(limit, self._infinite_wait_s) + byte_count / BUS_MIN_RATE_BPS
 
     def _raw_write_instruction(self, chunk: bytes, code: int, limit: Optional[float], send_eoi: bool,
                                eos_char: Optional[int]) -> int:
@@ -397,7 +419,7 @@ class Controller:
         reply and resets the two OUT pipes, and so does this.
         """
         message = p.write_raw_message(len(chunk), code, send_eoi, eos_char)
-        wait_s = p.host_wait_s(limit, self._infinite_wait_s) + len(chunk) / RAW_TRANSFER_MIN_RATE_BPS
+        wait_s = self._transfer_wait_s(limit, len(chunk))
         self._host_stopped = False
         self._transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
         refused = False
@@ -535,7 +557,7 @@ class Controller:
         """One 0x0b (§10.1.2-10.1.3): the data arrives raw on the alternate bulk IN, the status on the primary."""
         message = p.read_raw_message(count, code, eos, eos_8bit, termchar)
         buffer = p.raw_read_buffer_size(count, self._transport.max_packet_size_raw)
-        wait_s = p.host_wait_s(limit, self._infinite_wait_s) + count / RAW_TRANSFER_MIN_RATE_BPS
+        wait_s = self._transfer_wait_s(limit, count)
         data, reply = self._raw_read_transact(message, buffer, wait_s)
         parsed = p.parse_raw_read_reply(reply, count, data)
         self._raise_for_error(parsed.status, operation, partial=parsed.data)
@@ -780,17 +802,27 @@ class Controller:
                                           request.length, timeout_ms,
                                           request_type=request.request_type)
 
-    def _transact(self, message: bytes, reply_length: int, wait_s: float) -> bytes:
-        """One message out, its one reply in (§3.1); stop and collect on a host timeout."""
+    def _transact(self, message: bytes, reply_length: int, wait_s: float,
+                  out_wait_s: float = SHORT_WAIT_S) -> bytes:
+        """One message out, its one reply in (§3.1); stop and collect on a host timeout.
+
+        ``out_wait_s`` is for the one message the bus paces, the 0x0d with
+        its data inline; every other message is taken at once.
+        """
         self._host_stopped = False
-        self._transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
+        self._transport.bulk_out(message, int(out_wait_s * 1000))
         return self._reply_or_stop(reply_length, wait_s)
 
     def _reply_or_stop(self, reply_length: int, wait_s: float) -> bytes:
         """The reply on the primary IN; on a host timeout, §5.11: stop the device and collect.
 
         After a stop request already sent for this exchange the wait is the
-        recovery wait, and a second miss is ``NoReply``.
+        recovery wait, and a second miss is ``NoReply``. The stop request is
+        from §5.11 alone: it is in none of NI's captures, whose failed and
+        timed-out instructions all ended by themselves with a normal reply
+        (§10.6.7, §10.8). With the host wait outlasting the device timeout
+        it is reached only when the adapter does not answer at all, or when
+        the device timeout is disabled.
         """
         try:
             return self._transport.bulk_in(reply_length, int(wait_s * 1000))
@@ -805,14 +837,14 @@ class Controller:
                 raise NoReply('adapter did not answer after a stop request') from exc2
 
     def _exchange(self, message: bytes, reply_length: int, wait_s: float, operation: str,
-                  tolerate: Sequence[int] = ()) -> Tuple[StatusBlock, bytes]:
+                  tolerate: Sequence[int] = (), out_wait_s: float = SHORT_WAIT_S) -> Tuple[StatusBlock, bytes]:
         """Send, receive, check the echoed id, and raise for a nonzero error code.
 
         Every bulk instruction with a status block goes through here, so the
         error-code mapping of §4.3 lives in ``_raise_for_error`` alone. The
         register read (0x08) has no status block and uses ``_transact`` directly.
         """
-        reply = self._transact(message, reply_length, wait_s)
+        reply = self._transact(message, reply_length, wait_s, out_wait_s)
         opcode = message[0]
         if opcode == p.OP_READ:
             offset, expected_id = p.read_status_offset(reply), p.BLOCK_READ_STATUS

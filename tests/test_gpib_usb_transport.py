@@ -356,6 +356,17 @@ class TestPyUsbTransport:
             usb_transport.bulk_in_raw(4608, 5000)
         assert info.value.partial == b'PART'
 
+    def test_zero_length_raw_read_before_the_deadline_is_the_adapter_ending_the_transfer(self, monkeypatch):
+        # §10.6.6: at its own timeout (4.195 s under the 3 s code) the adapter completes the
+        # pending 0x88 transfer with a zero-length packet. Inside a 25 s host wait that is data
+        # of length zero, not a host timeout.
+        device = HS()
+        install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
+        monkeypatch.setattr(transport.time, 'monotonic', iter([0.0, 4.195]).__next__)
+        device.next_read = b''
+        assert usb_transport.bulk_in_raw(20992, 25480) == b''
+
     def test_full_raw_read_at_the_deadline_is_not_a_timeout(self, monkeypatch):
         device = HS()
         install_fake_usb(monkeypatch, [device])

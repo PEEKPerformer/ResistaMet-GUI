@@ -15,7 +15,7 @@ from resistamet_gui.gpib_usb import device_ops as ops
 from resistamet_gui.gpib_usb import protocol as p
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb.controller import (DRAIN_WAIT_S, IFC_SETTLE_S, RAW_READ_MIN_BYTES,
-                                                 RAW_TRANSFER_MIN_RATE_BPS, RAW_WRITE_MIN_BYTES, RECOVERY_WAIT_S,
+                                                 BUS_MIN_RATE_BPS, RAW_WRITE_MIN_BYTES, RECOVERY_WAIT_S,
                                                  SHORT_WAIT_S, SRQ_WAIT_SLICE_S, Controller)
 from resistamet_gui.gpib_usb.protocol import AdapterNotReady, GpibError, GpibTimeout, NoListener, ProtocolError
 from resistamet_gui.gpib_usb.transport import TransportError, TransportStall, TransportTimeout
@@ -859,7 +859,7 @@ def raw_read_reply(requested: int, transferred: int, *, end: bool = True, error:
 
 
 def raw_wait_ms(count: int, base_ms: int = WAIT_3S_MS) -> int:
-    return int((base_ms / 1000 + count / RAW_TRANSFER_MIN_RATE_BPS) * 1000)
+    return int((base_ms / 1000 + count / BUS_MIN_RATE_BPS) * 1000)
 
 
 IDN_2420 = b'KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L\n'
@@ -951,6 +951,23 @@ class TestRawRead:
         assert info.value.partial == b'' and info.value.code == 0x0A
         transport.assert_done()
 
+    def test_a_device_timeout_needs_no_stop_request_and_no_reattach(self):
+        # raw_errors.pcap 6.1075-10.3034: the adapter ends the 0x88 transfer itself with a
+        # zero-length packet at its timeout, the reply follows, and the next operation is
+        # ordinary (§10.6.6, §10.6.7). NI's reply blocks, in our two-block message.
+        controller, transport = attached(address_talker(pad=5) + [
+            ('out', h('0b 00 0a fc 00 b0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),
+            ('raw_in', b'', 20992),
+            ('in', h('0b 00 64 0a 00 b0 ff ff 60 00 00 00 09 00 64 00 00 b0 ff ff 01 00 00 00 04 00 00 00'), 512),
+        ] + address_listener(pad=24) + [
+            ('out', p.write_message(b'*IDN?\n', T3S, True)), ('in', status_reply(0x0D)),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.read(5, max_bytes=20480, timeout_s=3.0, termchar=0x0A)
+        assert info.value.code == 0x0A and info.value.partial == b''
+        assert controller.write(24, b'*IDN?\n', timeout_s=3.0) == 6
+        transport.assert_done()  # no ('ctrl', 0x20 ...) step anywhere in the script
+
     def test_partial_data_on_a_device_timeout(self):
         controller, transport = attached(address_talker() + [
             ('out', p.read_raw_message(4096, T3S)),
@@ -1005,7 +1022,7 @@ class TestRawRead:
         assert info.value.code == 1 and info.value.partial == b''
         transport.assert_done()
         waits = [tm for kind, _, tm in transport.timeouts if kind == 'raw_in']
-        assert waits == [int((0.01 + 4096 / RAW_TRANSFER_MIN_RATE_BPS) * 1000), int(RECOVERY_WAIT_S * 1000)]
+        assert waits == [int((0.01 + 4096 / BUS_MIN_RATE_BPS) * 1000), int(RECOVERY_WAIT_S * 1000)]
         assert transport.timeouts[-1] == ('in', 512, int(RECOVERY_WAIT_S * 1000))
 
     def test_partial_data_at_the_host_wait_is_kept_and_completed_after_the_stop(self):
@@ -1180,12 +1197,76 @@ class TestHostWait:
         controller.write(22, b'A', timeout_s=None)
         assert transport.in_timeouts_after(0x0D) == [42000]
 
-    def test_bulk_out_always_uses_the_short_wait(self):
+    def test_only_a_message_that_carries_write_data_waits_longer_on_the_out(self):
         controller, transport = attached(address_listener() + [
             ('out', p.write_message(b'A', T3S, True)), ('in', status_reply(0x0D)),
         ])
         controller.write(22, b'A', timeout_s=3.0)
-        assert {tm for kind, _, tm in transport.timeouts if kind == 'out'} == {SHORT_MS}
+        outs = [(opcode, tm) for kind, opcode, tm in transport.timeouts if kind == 'out']
+        assert {tm for opcode, tm in outs if opcode != 0x0D} == {SHORT_MS}
+        assert [tm for opcode, tm in outs if opcode == 0x0D] == [raw_wait_ms(1)]
+
+    @pytest.mark.parametrize('timeout_s, base_ms', [(3.0, 5000), (20.0, 45000), (0.3, 2300)])
+    def test_the_out_of_a_framed_write_follows_the_device_timeout_and_the_length(self, timeout_s, base_ms):
+        # §7.2, §10.5.2: the tail of NI's 2080-byte 0x0d message took 103 ms on 0x02 with a
+        # fast listener; the 1 s of the §7.2 table is too short for a slow one.
+        data = bytes(2048)  # the longest framed write on a model with the alternate pair
+        code, _ = p.effective_timeout(timeout_s)
+        controller, transport = attached([
+            ('out', p.write_message(data, code, True)), ('in', status_reply(0x0D)),
+        ])
+        controller.write_raw(data, timeout_s=timeout_s)
+        assert transport.timeouts[-2:] == [('out', 0x0D, base_ms + 2048), ('in', 12, base_ms)]
+
+    def test_a_framed_write_of_a_full_instruction_on_a_model_without_the_pair(self):
+        data = bytes(0xFFFF)
+        script = [
+            ('out', p.register_read_message(t.USB_B_SERIAL_REGISTERS)),
+            ('in', regread_reply([0x78, 0x56, 0x34, 0x12]), 32),
+        ] + attach_script()[2:] + [('out', p.write_message(data, T3S, True)), ('in', status_reply(0x0D))]
+        transport = ScriptedTransport(script)
+        controller = Controller(transport, t.PID_USB_B, sleep=lambda s: None)
+        controller.attach()
+        controller.write_raw(data, timeout_s=3.0)
+        assert transport.timeouts[-2] == ('out', 0x0D, raw_wait_ms(0xFFFF))  # 5 s + 65.5 s
+
+    def test_the_raw_out_and_its_reply_follow_the_device_timeout_and_the_length(self):
+        # §10.5.2: 2049 bytes took 368 ms to complete on 0x06.
+        controller, transport = attached([
+            ('out', p.write_raw_message(2049, 0xFE, True)), ('raw_out', bytes(2049)),
+            ('in', raw_write_reply(2049, 2049), 512),
+        ])
+        controller.write_raw(bytes(2049), timeout_s=20.0)
+        assert transport.timeouts[-3:] == [('out', 0x0E, SHORT_MS), ('raw_out', 2049, 45000 + 2049),
+                                           ('in', 512, 45000 + 2049)]
+
+    def test_disabled_timeout_waits_the_application_wait_on_the_out_too(self):
+        controller, transport = attached([
+            ('out', p.write_message(bytes(1000), 0xF0, True)), ('in', status_reply(0x0D)),
+        ], infinite_wait_s=42.0)
+        controller.write_raw(bytes(1000), timeout_s=None)
+        assert transport.timeouts[-2:] == [('out', 0x0D, 43000), ('in', 12, 42000)]
+
+    @pytest.mark.parametrize('limit_s, measured_s', [(3.0, 4.20), (30.0, 33.55)])
+    def test_the_host_outlasts_the_measured_device_expiry(self, limit_s, measured_s):
+        # §7.1, §10.1.8: the adapter expires 12-40 % past the nominal value of its code.
+        assert p.host_wait_s(limit_s, 600.0) > measured_s
+
+    def test_the_host_margin_covers_the_measured_overrun_on_every_row(self):
+        for limit_s, _code in t.TIMEOUT_TABLE:
+            assert p.host_wait_s(limit_s, 600.0) >= 1.5 * limit_s > 1.4 * limit_s
+
+    def test_the_raw_in_wait_is_never_shorter_than_the_reply_wait_of_a_framed_read(self):
+        # §10.9: give the 0x88 read the same host wait as the reply rather than cancelling it
+        # early; ours adds the transfer allowance on top.
+        controller, transport = attached([
+            ('out', p.read_raw_message(20480, T3S)), ('raw_in', b'', 20992),
+            ('in', raw_read_reply(20480, 0, end=False, error=0x0A), 512),
+        ])
+        with pytest.raises(GpibTimeout):
+            controller.read_raw(20480, timeout_s=3.0)
+        kind, _, raw_in_ms = transport.timeouts[-2]
+        assert kind == 'raw_in' and raw_in_ms == WAIT_3S_MS + 20480 and raw_in_ms > 4196
 
 
 # ---------------------------------------------------------------------------
