@@ -919,7 +919,7 @@ class TestSpotStatisticsAtTheEndOfARun:
     }
     FOOTER_KEYS_BEFORE = {'ended_at', 'total_samples', 'duration_s'}
     #: The one thing that changed for a run without a spot.
-    FOOTER_KEYS_ADDED = {'spot_stats.n', 'spot_stats.n_excluded'} | {
+    FOOTER_KEYS_ADDED = {'spot_stats.n', 'spot_stats.n_excluded', 'spot_stats.end_reason'} | {
         f'spot_stats.{quantity}.{field}'
         for quantity in ('rs', 'rho', 'sigma')
         for field in ('n', 'mean', 'sd', 'rsd_pct', 'u_stat', 'u_inst', 'u_total')
@@ -1342,3 +1342,29 @@ class TestTheMapIsAssembledAfterTheRunHasLetGo:
         ended = sink.of_type('run_ended')[0].payload
         assert (ended['reason'], ended['ok']) == ('target_samples', True)
         assert sink.types()[-1] == 'run_ended'
+
+
+class TestTheFooterSaysWhyTheSpotEnded:
+    def test_a_spot_that_ran_its_course(self, session, sink, fake_rm, profile):
+        session.start(_four_point(profile, samples=2), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+        stats = sink.of_type('spot_complete')[0].payload['stats']
+        assert stats['end_reason'] == 'target_samples'
+        assert stats['end_reason'] == sink.of_type('run_ended')[0].payload['reason']
+
+    def test_a_spot_that_was_stopped_early_and_its_map(self, session, sink, fake_rm, profile):
+        from pathlib import Path
+        from resistamet_gui.data_export import parse_metadata
+        from resistamet_gui.session.spot_map import assemble_map
+
+        session.start(_four_point(profile, samples=0), 'four_point', 'wafer1', 'alice',
+                      spot={'map_id': 'wafer7', 'index': 0, 'label': 'centre'})
+        assert _wait_for(lambda: len(sink.of_type('sample')) >= 2)
+        session.stop()
+        assert _wait_for(lambda: session.state == 'idle')
+
+        path = sink.of_type('run_ended')[0].payload['path']
+        assert parse_metadata(path)['spot_stats.end_reason'] == 'user_stop'
+        found = assemble_map(Path(path).parent, 'wafer7')
+        # Newest-wins is unchanged: the stopped run still stands for its spot.
+        assert [spot.stats.end_reason for spot in found.spots] == ['user_stop']

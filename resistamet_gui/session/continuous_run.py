@@ -1126,7 +1126,12 @@ class ContinuousRun:
         if self._spot_samples is None:
             return None
         try:
-            return spot_statistics(self._spot_samples, model=self._model_name, nplc=nplc)
+            stats = spot_statistics(self._spot_samples, model=self._model_name, nplc=nplc)
+            # The same expression run_ended uses. It lets a map tell a spot
+            # that was stopped early from one that ran its course; what a map
+            # should do about it is not decided here.
+            stats['end_reason'] = self._control.finish_reason or 'completed'
+            return stats
         except Exception as e:
             self._events.warn('spot_stats_failed', f"Warning: Could not compute spot statistics - {str(e)}")
             return None
