@@ -1267,3 +1267,26 @@ class TestEveryExitAfterTheFileIsOpenFinalizesIt:
         assert footer['spot_stats.n'] == 2
         assert sink.types().count('file_finalized') == 1
         assert sink.types()[-1] == 'run_ended'
+
+
+class TestASpotThatCannotBeAnnounced:
+    SPOT = {'map_id': 'wafer7', 'index': 0, 'label': 'centre'}
+
+    def test_a_spot_complete_that_cannot_be_sent_is_not_a_finalize_failure(
+            self, session, sink, fake_rm, profile, monkeypatch):
+        from resistamet_gui.data_export import parse_metadata
+        from resistamet_gui.session import events
+
+        class Unsendable(events.SpotCompletePayload):
+            def __init__(self, **data):
+                raise ValueError("cannot be built")
+        monkeypatch.setitem(events.PAYLOAD_MODELS, 'spot_complete', Unsendable)
+
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice', spot=self.SPOT)
+        assert _wait_for(lambda: session.state == 'idle')
+
+        codes = [e.payload['code'] for e in sink.of_type('log')]
+        assert 'spot_complete_failed' in codes and 'finalize_failed' not in codes
+        path = sink.of_type('run_ended')[0].payload['path']
+        assert parse_metadata(path)['spot_stats.n'] == 2           # the file is whole
+        assert 'map_summary' in codes                               # and still mapped

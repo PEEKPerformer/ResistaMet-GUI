@@ -1057,17 +1057,11 @@ class ContinuousRun:
                 self.exporter.finalize(end_metadata)
                 self._events.emit('file_finalized', {
                     'path': self.filename, 'end_metadata': end_metadata})
-                if spot_stats is not None:
-                    record = self._spot_record
-                    self._events.emit('spot_complete', {
-                        'spot': record.spot.model_dump() if record else None,
-                        'path': self.filename,
-                        'stats': spot_stats,
-                    })
-                    if record is not None:
-                        self._write_map_summary(record.spot.map_id)
             except Exception as e:
+                spot_stats = None
                 self._events.warn('finalize_failed', f"Warning: Error finalizing export - {str(e)}")
+            if spot_stats is not None:
+                self._announce_spot(spot_stats)
             final_message = f"Measurement ({self._mode_name}) completed! Data saved to: {self.filename}"
         self._events.log('completed', final_message)
         self._events.emit('acquisition_finished', {'mode': self.mode})
@@ -1132,6 +1126,26 @@ class ContinuousRun:
         except Exception as e:
             self._events.warn('spot_stats_failed', f"Warning: Could not compute spot statistics - {str(e)}")
             return None
+
+    def _announce_spot(self, spot_stats):
+        """Emit spot_complete for a file that has just been finalized.
+
+        Outside the guard around the finalize, with a code of its own: by now
+        the file is closed and whole, and a failure to announce it must not be
+        reported as a failure to finalize it.
+        """
+        record = self._spot_record
+        try:
+            self._events.emit('spot_complete', {
+                'spot': record.spot.model_dump() if record else None,
+                'path': self.filename,
+                'stats': spot_stats,
+            })
+        except Exception as e:
+            self._events.warn('spot_complete_failed',
+                f"Warning: The data file is complete, but its statistics could not be reported - {str(e)}")
+        if record is not None:
+            self._write_map_summary(record.spot.map_id)
 
     def _write_map_summary(self, map_id):
         """Refresh ``<map_id>_map.json`` beside this run's file.
