@@ -10,6 +10,7 @@ import {
   type ReactNode,
   type SelectHTMLAttributes,
 } from "react";
+import { CONTAINER, trappedTabStop } from "../../lib/focusTrap";
 import { Icons } from "../icons";
 import styles from "./ui.module.css";
 
@@ -156,6 +157,12 @@ interface DialogProps {
   children: ReactNode;
 }
 
+const TAB_STOPS =
+  'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+
+/** Open dialogs, the one on top last. Only that one owns the keyboard. */
+const openDialogs: HTMLElement[] = [];
+
 export function Dialog({ title, onClose, footer, size = "md", dismissable = true, children }: DialogProps) {
   const titleId = useId();
   const ref = useRef<HTMLDivElement>(null);
@@ -169,13 +176,36 @@ export function Dialog({ title, onClose, footer, size = "md", dismissable = true
     latest.current = { dismissable, onClose };
   });
 
+  // The dialog is modal to the keyboard as well as to the eye: Tab cycles
+  // inside it, and a key pressed with focus behind it goes no further, so a
+  // view's shortcut (M marks a run) cannot fire through a safety prompt.
   useEffect(() => {
-    ref.current?.focus();
+    const dialog = ref.current;
+    if (!dialog) return;
+    const opener = document.activeElement;
+    openDialogs.push(dialog);
+    dialog.focus();
     const onKey = (e: KeyboardEvent) => {
+      if (openDialogs[openDialogs.length - 1] !== dialog) return;
+      if (e.key === "Tab") {
+        const stops = Array.from(dialog.querySelectorAll<HTMLElement>(TAB_STOPS));
+        const active = stops.findIndex((stop) => stop === document.activeElement);
+        const to = trappedTabStop(stops.length, active, e.shiftKey);
+        if (to !== null) {
+          e.preventDefault();
+          (to === CONTAINER ? dialog : stops[to]!).focus();
+        }
+      }
+      if (e.target instanceof Node && dialog.contains(e.target)) return; // onKeyDown below
+      e.stopPropagation();
       if (e.key === "Escape" && latest.current.dismissable) latest.current.onClose?.();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      openDialogs.splice(openDialogs.indexOf(dialog), 1);
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
   }, []);
 
   return (
@@ -193,6 +223,12 @@ export function Dialog({ title, onClose, footer, size = "md", dismissable = true
         aria-labelledby={titleId}
         tabIndex={-1}
         ref={ref}
+        onKeyDown={(e) => {
+          // Keys pressed inside end here, for the same reason. A field that
+          // used Escape to drop its own edit has already stopped it.
+          e.stopPropagation();
+          if (e.key === "Escape" && dismissable) onClose?.();
+        }}
       >
         <header className={styles.dialogHeader}>
           <h2 className={styles.dialogTitle} id={titleId}>
