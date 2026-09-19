@@ -236,6 +236,45 @@ class TestSafetyPrompt:
         assert sink.of_type('instrument_connected') == []
         assert sink.of_type('file_opened') == []
 
+    def test_cancel_is_written_to_the_log(self, session, sink, fake_rm, profile):
+        session.start(self._hazardous(profile), 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: self._pending(session) is not None)
+        session.answer_prompt(self._pending(session)['prompt_id'], 'cancel')
+        assert _wait_for(lambda: session.state == 'idle')
+
+        declined = [e.payload for e in sink.of_type('log')
+                    if e.payload['code'] == 'safety_declined']
+        assert [d['message'] for d in declined] == [
+            "Run of 'wafer1' not started: the touch-safety warning was not "
+            "acknowledged (Source V = 60 V, threshold 30 V)."]
+        # The refusal is the last thing said before the run ends.
+        assert sink.events[-2].payload['code'] == 'safety_declined'
+        assert sink.events[-1].type == 'run_ended'
+
+    def test_cancelling_a_van_der_pauw_run_is_logged_too(self, session, sink, fake_rm, profile):
+        profile['measurement'].update({
+            'safety_voltage_warn_v': 30.0, 'safety_voltage_warn_silenced': False,
+            'vdp_voltage_compliance': 60.0, 'vdp_thickness_cm': 0.05})
+        session.start(profile, 'vdp', 'wafer1', 'alice')
+        assert _wait_for(lambda: self._pending(session) is not None)
+        session.answer_prompt(self._pending(session)['prompt_id'], 'cancel')
+        assert _wait_for(lambda: session.state == 'idle')
+
+        messages = [e.payload['message'] for e in sink.of_type('log')
+                    if e.payload['code'] == 'safety_declined']
+        assert messages == [
+            "Run of 'wafer1' not started: the touch-safety warning was not "
+            "acknowledged (V compliance = 60 V, threshold 30 V)."]
+
+    def test_acknowledging_logs_no_refusal(self, session, sink, fake_rm, profile):
+        session.start(self._hazardous(profile), 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: self._pending(session) is not None)
+        session.answer_prompt(self._pending(session)['prompt_id'], 'acknowledge')
+        assert _wait_for(lambda: sink.of_type('sample'))
+        session.stop()
+        assert _wait_for(lambda: session.state == 'idle')
+        assert [e for e in sink.of_type('log') if e.payload['code'] == 'safety_declined'] == []
+
     def test_safe_voltage_asks_nothing(self, session, sink, fake_rm, profile):
         profile['measurement'].update({'safety_voltage_warn_v': 30.0,
                                         'vsource_voltage': 1.0,
