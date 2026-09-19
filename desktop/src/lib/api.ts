@@ -8,7 +8,7 @@
 import type { BackendInfo } from "./backend";
 import type { ClientInfo, Mode } from "../generated/settings";
 import type { EventEnvelope } from "../generated/events";
-import type { SessionStatus } from "../generated/session";
+import type { InstrumentInfo, SessionStatus } from "../generated/session";
 import { version as packageVersion } from "../../package.json";
 
 /** Written into the header of every file a run started from here produces,
@@ -17,7 +17,7 @@ const CLIENT: ClientInfo = { name: "resistamet-desktop", version: packageVersion
 
 // What GET /session and the session commands answer with: generated from the
 // backend's SessionStatus model, re-exported here so callers keep one import.
-export type { PendingPrompt, SessionStatus } from "../generated/session";
+export type { InstrumentInfo, PendingPrompt, SessionStatus } from "../generated/session";
 export type SessionState = SessionStatus["state"];
 
 export interface StartRequest {
@@ -53,15 +53,6 @@ export interface ModeSchema {
   model: string;
   fields: string[];
   override_keys: string[];
-}
-
-export interface InstrumentInfo {
-  address: string;
-  idn: string;
-  model: string | null;
-  max_source_v: number | null;
-  max_source_i: number | null;
-  max_power_w: number | null;
 }
 
 /** Which VISA implementation answered: a vendor library ("ivi"), pyvisa-py
