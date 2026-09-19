@@ -2367,7 +2367,11 @@ class ResistanceMeterApp(QMainWindow):
         Driver/address come from the global Settings ▸ Measurement aux_* keys.
         No-op during a run (the worker holds the port). Failures are shown in
         the readout label, not raised — a missing sensor must not block setup.
-        The driver's reader thread does the serial I/O; nothing here blocks.
+
+        The open runs here, on the GUI thread: the VISA resource listing and
+        the port open take as long as the backend takes, and the window does
+        not repaint meanwhile. Only the reads that follow are off-thread, on
+        the driver's reader thread.
         """
         w = getattr(self, 'tab_four_point', None)
         if (not w or self.measurement_running
@@ -2392,7 +2396,12 @@ class ResistanceMeterApp(QMainWindow):
             w.fpp_temp_readout.setText(f"Aux sensor: not connected ({str(e)[:40]})")
 
     def _stop_aux_preview(self):
-        """Stop the preview timer, release the serial port, drop cached state."""
+        """Stop the preview timer, release the serial port, drop cached state.
+
+        Returns with the port closed, which is what lets Start hand it to the
+        worker. The close runs on the GUI thread and can take up to a second
+        when the backend does not abort the reader's pending read.
+        """
         self._aux_monitor_timer.stop()
         if self._aux_preview_sensor is not None:
             try:
