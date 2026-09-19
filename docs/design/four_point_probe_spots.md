@@ -170,19 +170,29 @@ What changes:
   Rs — the F84 path with no thickness — and the first is used). The footer gains
   the spot's statistics: n, mean and sample standard deviation of Rs, ρ, σ,
   and the combined (statistical ⊕ instrument) uncertainty from
-  `four_point_combined_uncertainty`, which today only the GUI computes.
+  `four_point_combined_uncertainty`, which today only the GUI computes, and
+  `spot_stats.end_reason` — why the run ended, so a reader can tell a spot
+  that was stopped after two samples from one that ran its course.
 - **Events.** `spot_complete` at the end of a four-point run, carrying the
   same statistics, so both UIs show the backend's numbers instead of
   computing their own (the rule `derived` already follows for single
   samples). `geometry_warning` before the first sample when a tip is off the
   sample (refused) or the relative error exceeds `fpp_edge_warn_pct`
-  (default 1 %).
+  (default 1 %). The error held against the threshold is
+  `relative_error_rows` whenever the rows have a factor; the event's
+  `compared_with` (`rows` or `centre`) and its message say which.
 - **Map summary.** `session/spot_map.py`: given a data directory and a
   `map_id`, read the headers and footers, keep the newest run per spot
   index, and return the spots with the inter-spot mean, standard deviation
   and RSD. Served at `GET /maps/{map_id}` and written as
   `<map_id>_map.json` beside the runs whenever a spot completes, so the
-  archive holds the map, not the browser.
+  archive holds the map, not the browser. "Newest" is decided by the Unix
+  stamp at the front of the file name, then `started_at`, then the `-N` the
+  exporter appends to a taken name. A run that cannot stand for a spot (no
+  footer, no valid sample, a header that does not parse, a file that cannot
+  be read) is listed under `skipped` with the reason and never displaces a
+  good run. Open: whether a run whose `end_reason` says it was cut short
+  should displace a complete earlier one — today newest wins.
 - **PySide6.** *Save Spot* keeps working as it does; it additionally passes
   a `map_id` and the spot label into the run settings, so files written from
   the shipping app are linked too. No new widgets there.
