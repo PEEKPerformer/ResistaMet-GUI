@@ -31,6 +31,23 @@ def _undo_simulation() -> Iterator[None]:
     disable_simulation()
 
 
+@pytest.fixture(autouse=True)
+def _private_instrument_locks(tmp_path_factory, monkeypatch) -> None:
+    """Every test takes its instrument locks in a directory of its own.
+
+    The real location is one per machine on purpose, so that two ResistaMet
+    processes exclude each other. A test session is not a second ResistaMet:
+    two suites running at once (two checkouts, CI shards, an editor's test
+    runner) would refuse each other's simulated ``GPIB0::24`` and fail with
+    "in use by another process". Tests of the shared location patch it again
+    themselves.
+    """
+    from resistamet_gui.session import instrument_lock
+
+    locks = tmp_path_factory.mktemp('locks')
+    monkeypatch.setattr(instrument_lock, 'default_lock_dir', lambda: locks)
+
+
 @pytest.fixture
 def fake_rm(monkeypatch) -> FakeResourceManager:
     """Replace ``pyvisa.ResourceManager`` with a FakeResourceManager.
