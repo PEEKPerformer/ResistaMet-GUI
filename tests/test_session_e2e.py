@@ -180,6 +180,36 @@ class TestFiles:
         assert directions == ['forward', 'reverse']
 
 
+    def test_sweep_log_counts_every_point_written(self, session, profile):
+        session.start(profile, 'sweep', 'E2E-DUT', 'e2e', overrides={
+            'sweep_source': 'voltage', 'sweep_start': 0.0, 'sweep_stop': 0.5,
+            'sweep_step': 0.1, 'sweep_compliance': 0.1, 'sweep_delay': 0.0,
+            'sweep_direction': 'up_down',
+        })
+        assert _wait_for(lambda: session.state == 'idle')
+
+        sink = session.sink
+        messages = {e.payload['code']: e.payload['message'] for e in sink.of_type('log')}
+        assert messages['sweep_started'] == "Running I-V sweep (6 points each way)..."
+        assert messages['sweep_finished'] == (
+            "Sweep complete: 12 points acquired (6 forward, 6 reverse)")
+        total = sink.of_type('file_finalized')[0].payload['end_metadata']['total_samples']
+        assert total == 12
+
+    def test_one_way_sweep_log_is_unchanged(self, session, profile):
+        session.start(profile, 'sweep', 'E2E-DUT', 'e2e', overrides={
+            'sweep_source': 'voltage', 'sweep_start': 0.0, 'sweep_stop': 0.5,
+            'sweep_step': 0.1, 'sweep_compliance': 0.1, 'sweep_delay': 0.0,
+            'sweep_direction': 'up',
+        })
+        assert _wait_for(lambda: session.state == 'idle')
+
+        messages = {e.payload['code']: e.payload['message']
+                    for e in session.sink.of_type('log')}
+        assert messages['sweep_started'] == "Running I-V sweep (6 points)..."
+        assert messages['sweep_finished'] == "Sweep complete: 6 points acquired"
+
+
 class TestStopInsideTheSettle:
     """A stop during the settle unwinds by exception. It must still end the
     run the way every other stop does: footer in the file, output-off and
