@@ -32,6 +32,7 @@ from ..workers import MeasurementWorker, VdpMeasurementWorker
 from .canvas import HistogramCanvas, IVCanvas, PgLiveCanvas
 from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, VdpSampleDiagram, VdpProtocolFilmstrip, VdpPerGeometryBarChart, format_engineering, format_readout_html, format_with_uncertainty, precision_for_nplc
 from .dialogs import SettingsDialog, UserSelectionDialog
+from .visa_helpers import configured_resource_manager
 
 
 class ResistanceMeterApp(QMainWindow):
@@ -3269,8 +3270,7 @@ class ResistanceMeterApp(QMainWindow):
 
     def prompt_gpib_selection(self, current_addr: str):
         try:
-            import pyvisa
-            rm = pyvisa.ResourceManager()
+            rm = configured_resource_manager(self.config_manager)
             resources = rm.list_resources()
         except Exception as e:
             QMessageBox.information(self, "GPIB Detection", f"Failed to list VISA resources: {e}")
@@ -3493,8 +3493,7 @@ class ResistanceMeterApp(QMainWindow):
         addr = self.user_settings['measurement']['gpib_address']
         self.statusBar().showMessage(f"Testing connection to {addr}...")
         try:
-            import pyvisa
-            rm = pyvisa.ResourceManager()
+            rm = configured_resource_manager(self.config_manager)
             resources = rm.list_resources()
             if addr not in resources:
                 # Do not rm.close(): the ResourceManager is a process-wide
