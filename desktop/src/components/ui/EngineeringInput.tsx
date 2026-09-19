@@ -65,6 +65,9 @@ export function EngineeringInput({
       setRefused(null);
       return; // the effect puts the value back on show
     }
+    // A visit is not an edit: the text on show is the value shortened to ten
+    // figures, and committing it back would quietly round the setting.
+    if (refused === null && draft === pristine.current) return;
     const text = draft.trim();
     if (text === "") {
       setRefused(null);
