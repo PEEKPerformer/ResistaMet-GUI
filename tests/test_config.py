@@ -10,6 +10,8 @@ Tests cover:
 
 import json
 import os
+import time
+
 import pytest
 from pathlib import Path
 
@@ -535,8 +537,10 @@ class TestMachineLocalGpib:
             'measurement': {'gpib_address': 'GPIB0::25::INSTR', 'sampling_rate': 42.0},
         })
         assert manager.get_gpib_address() == 'GPIB0::25::INSTR'
-        # Address didn't leak back into the shared measurement block
-        assert 'gpib_address' not in manager.config['measurement']
+        # The address didn't leak into the shared measurement block, which
+        # holds at most the default every load fills in.
+        assert manager.config['measurement'].get('gpib_address') in (
+            None, DEFAULT_SETTINGS['measurement']['gpib_address'])
         assert manager.config['measurement']['sampling_rate'] == 42.0
 
 
@@ -696,6 +700,137 @@ class TestConcurrentWrites:
         manager.add_user('bob')  # logged, not raised
 
         assert Path(temp_config_file).read_text() == before
+
+
+class TestTwoManagers:
+    """The GUI and a sidecar, or two lab PCs, each hold the file's contents.
+
+    A save must only change what that manager changed; everything else in the
+    file is whatever the other one last wrote.
+    """
+
+    @pytest.fixture
+    def pair(self, temp_config_file):
+        first = ConfigManager(config_file=temp_config_file)
+        first.add_user('alice')
+        first.update_user_settings('alice', {'measurement': {'nplc': 2.0}})
+        return first, ConfigManager(config_file=temp_config_file)
+
+    def test_both_new_users_are_kept(self, pair, temp_config_file):
+        a, b = pair
+        a.add_user('carol')
+        b.add_user('dave')
+
+        assert ConfigManager(config_file=temp_config_file).get_users() == \
+            ['alice', 'carol', 'dave']
+        assert b.get_users() == ['alice', 'carol', 'dave']
+
+    def test_an_edit_does_not_undo_another_users_edit(self, pair, temp_config_file):
+        a, b = pair
+        a.add_user('bob')
+        a.update_user_settings('bob', {'measurement': {'fpp_current': 5e-5}})
+
+        b.update_user_settings('alice', {'measurement': {'nplc': 5.0}})
+
+        stored = ConfigManager(config_file=temp_config_file).config['user_settings']
+        assert stored['bob']['measurement'] == {'fpp_current': 5e-5}
+        assert stored['alice']['measurement'] == {'nplc': 5.0}
+
+    def test_the_same_key_goes_to_the_last_writer(self, pair, temp_config_file):
+        a, b = pair
+        a.merge_user_settings('alice', {'measurement': {'nplc': 3.0, 'sampling_rate': 4.0}})
+        b.merge_user_settings('alice', {'measurement': {'nplc': 7.0}})
+
+        stored = ConfigManager(config_file=temp_config_file).config['user_settings']['alice']
+        assert stored['measurement'] == {'nplc': 7.0, 'sampling_rate': 4.0}
+
+    def test_a_section_replaced_whole_stays_replaced(self, pair, temp_config_file):
+        """update_user_settings drops the keys it is not given; a merge keeps that."""
+        a, b = pair
+        b.update_user_settings('alice', {'measurement': {'sampling_rate': 4.0}})
+
+        stored = ConfigManager(config_file=temp_config_file).config['user_settings']['alice']
+        assert stored['measurement'] == {'sampling_rate': 4.0}
+
+    def test_last_user_and_unknown_keys_survive(self, pair, temp_config_file):
+        a, b = pair
+        a.set_last_user('alice')
+        raw = json.loads(Path(temp_config_file).read_text())
+        raw['written_by_a_newer_version'] = {'keep': True}
+        Path(temp_config_file).write_text(json.dumps(raw))
+
+        b.add_user('dave')
+
+        saved = json.loads(Path(temp_config_file).read_text())
+        assert saved['last_user'] == 'alice'
+        assert saved['written_by_a_newer_version'] == {'keep': True}
+
+    def test_a_file_that_went_missing_is_written_whole(self, pair, temp_config_file):
+        a, b = pair
+        os.unlink(temp_config_file)
+
+        b.add_user('dave')
+
+        assert ConfigManager(config_file=temp_config_file).get_users() == ['alice', 'dave']
+
+    def test_a_file_that_became_unreadable_is_kept_aside(self, pair, temp_config_file):
+        a, b = pair
+        Path(temp_config_file).write_text('{"users": ["ali')
+
+        b.add_user('dave')
+
+        copies = list(Path(temp_config_file).parent.glob('test_config.json.corrupt-*'))
+        assert [c.read_text() for c in copies] == ['{"users": ["ali']
+        assert ConfigManager(config_file=temp_config_file).get_users() == ['alice', 'dave']
+
+    def test_a_file_that_was_unreadable_at_start_and_is_whole_now(self, temp_config_file):
+        """The sync finished after we opened: our change goes onto the real file."""
+        whole = ConfigManager(config_file=temp_config_file)
+        whole.add_user('alice')
+        whole.update_user_settings('alice', {'measurement': {'nplc': 2.0}})
+        good = Path(temp_config_file).read_bytes()
+        Path(temp_config_file).write_bytes(good[:len(good) // 2])
+        late = ConfigManager(config_file=temp_config_file)
+        assert late.load_failed
+        Path(temp_config_file).write_bytes(good)
+
+        late.add_user('dave')
+
+        reloaded = ConfigManager(config_file=temp_config_file)
+        assert reloaded.get_users() == ['alice', 'dave']
+        assert reloaded.config['user_settings']['alice']['measurement'] == {'nplc': 2.0}
+        assert list(Path(temp_config_file).parent.glob('*.corrupt-*')) == []
+
+    def test_saves_from_two_processes_do_not_lose_each_other(self, temp_config_file, tmp_path):
+        import subprocess
+        import sys
+        ConfigManager(config_file=temp_config_file)
+        # Every child loads the file, then all wait for 'go' before saving:
+        # each holds a copy that knows nothing of the others' users.
+        script = (
+            "import os, sys, time\n"
+            "from resistamet_gui.config import ConfigManager\n"
+            "m = ConfigManager(config_file=sys.argv[1], machine_file=sys.argv[2])\n"
+            "open(sys.argv[2] + '.ready-' + sys.argv[3], 'w').close()\n"
+            "while not os.path.exists(sys.argv[2] + '.go'):\n"
+            "    time.sleep(0.01)\n"
+            "for i in range(15):\n"
+            "    m.add_user(f'{sys.argv[3]}{i}')\n"
+        )
+        repo = str(Path(__file__).resolve().parents[1])
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join(
+            filter(None, [repo, os.environ.get('PYTHONPATH')])))
+        children = [subprocess.Popen(
+            [sys.executable, '-c', script, temp_config_file, str(tmp_path / 'm.json'), name],
+            cwd=str(tmp_path), env=env) for name in ('a', 'b', 'c')]
+        deadline = time.time() + 30
+        while time.time() < deadline and len(list(tmp_path.glob('m.json.ready-*'))) < 3:
+            time.sleep(0.02)
+        (tmp_path / 'm.json.go').touch()
+        assert [child.wait(timeout=60) for child in children] == [0, 0, 0]
+
+        users = ConfigManager(config_file=temp_config_file).get_users()
+        assert len(users) == 45
 
 
 class TestMachineLocalVisaLibrary:
