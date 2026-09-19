@@ -109,7 +109,13 @@ function SpotStatistics({ running }: { running: boolean }) {
       </div>
     );
   }
-  if (lastSpot === null) return <div className={styles.pendingStats}><span className={styles.faint}>No run yet.</span></div>;
+  if (lastSpot === null) {
+    return (
+      <div className={styles.pendingStats}>
+        <span className={styles.faint}>{warning?.refused ? "Refused; nothing measured." : "No run yet."}</span>
+      </div>
+    );
+  }
 
   const { stats, spot } = lastSpot;
   const excluded = stats.n_excluded ?? 0;
