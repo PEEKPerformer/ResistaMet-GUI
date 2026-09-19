@@ -27,7 +27,7 @@ steps 4 and 6 of §2.8 and ``status()`` polls the control endpoint instead.
 when an instrument asserts SRQ, having serial-polled it itself (§10.4.2).
 
 Transfers of every size take the framed 0x0a / 0x0d instructions unless the
-controller is built with ``raw_transfers=True``: those are the paths that
+controller is built with ``ni_instructions=True``: those are the paths that
 have run on our bench, and the application's every read is a large one
 (pyvisa asks for 20480 bytes at a time). Switched on, large transfers take
 the instructions NI's own driver uses (§10): a read of
@@ -39,13 +39,15 @@ pair. The raw paths were written from the captures alone, and what this
 driver sends around them (a 0x0c, a 0x06 and the 0x0b as three messages,
 under AUXRA 0x81, without NI's bank-2 session configuration) is a
 composition no capture shows. They stay off until they have run against
-an adapter of ours.
+an adapter of ours. The same switch selects the serial poll: off, it is the
+IEEE-488.1 command sequence of §5.9 (``device_ops.serial_poll``); on, NI's
+0x10 instruction (``serial_poll_instruction``).
 
 Bench notes (GPIB-USB-HS 01CEE482, Keithley 2400 at PAD 3, 2026-09-18): the
 attach sequence, addressing, the framed write and read and the presence
 probe all work as written. The serial poll that ran that day was the
-IEEE-488.1 command sequence of §5.9; the 0x10 instruction has since replaced
-it and has not run on hardware. Instruments need a moment after IFC and REN before the
+IEEE-488.1 command sequence of §5.9, which is still the default; the 0x10
+instruction has not run on hardware. Instruments need a moment after IFC and REN before the
 first addressed command (``IFC_SETTLE_S``); without it the 2400 silently
 dropped the first query after a close-then-attach, and the adapter hung once
 under the backend at exactly that point. The read reply's trailer is 16 bytes, not the 28 the
@@ -131,12 +133,14 @@ class Controller:
     def __init__(self, transport: Transport, product_id: int, *,
                  own_address: int = 0, t1_ns: int = 2000,
                  infinite_wait_s: float = DEFAULT_INFINITE_WAIT_S,
-                 raw_transfers: bool = False,
+                 ni_instructions: bool = False,
                  sleep: Callable[[float], None] = time.sleep) -> None:
-        """``raw_transfers`` True sends large transfers as 0x0b / 0x0e on a model with
-        the alternate pair (see the module docstring); the default keeps every
-        transfer on the framed 0x0a / 0x0d paths, the ones proven on the bench.
-        The serial poll and the SRQ wait are unaffected."""
+        """``ni_instructions`` True uses the instructions NI's driver was captured
+        sending and our bench has not run: 0x0b / 0x0e for large transfers, on a
+        model with the alternate pair, and 0x10 for the serial poll (see the
+        module docstring). The default keeps every transfer on the framed 0x0a /
+        0x0d paths and the serial poll on the §5.9 command sequence, the ones
+        proven on the bench. The SRQ wait is unaffected."""
         model = t.MODELS.get(product_id)
         if model is None:
             raise ValueError('unsupported product id 0x%04x' % product_id)
@@ -147,9 +151,10 @@ class Controller:
             raise ValueError('own address %d outside 0..30' % own_address)
         self._transport = transport
         self._model = model
+        self._ni_instructions = bool(ni_instructions)
         #: Whether 0x0b / 0x0e are used: the caller must have switched them on and
         #: the model must have the alternate pair.
-        self._raw = bool(raw_transfers) and model.raw_endpoints
+        self._raw = self._ni_instructions and model.raw_endpoints
         self._own_address = own_address
         self._t1_ns = t1_ns
         self._infinite_wait_s = infinite_wait_s
@@ -183,6 +188,11 @@ class Controller:
     @property
     def own_address(self) -> int:
         return self._own_address
+
+    @property
+    def ni_instructions(self) -> bool:
+        """Whether the caller asked for NI's instructions; decides the serial poll (``device_ops``)."""
+        return self._ni_instructions
 
     @property
     def raw_transfers(self) -> bool:
@@ -689,13 +699,17 @@ class Controller:
         self._status_exchange(p.command_message(command, code), wait_s, 'address to %s' % direction)
         self._addressed = target
 
-    def serial_poll(self, pad: int, sad: Optional[int] = None,
-                    timeout_s: Optional[float] = DEFAULT_TIMEOUT_S) -> int:
+    def serial_poll_instruction(self, pad: int, sad: Optional[int] = None,
+                                timeout_s: Optional[float] = DEFAULT_TIMEOUT_S) -> int:
         """The status byte of device ``pad`` through the 0x10 instruction (§10.5.4).
 
         NI's driver polls this way rather than with the IEEE-488.1 command
         sequence of §5.9. The adapter addresses the bus itself for the poll,
-        so whoever was addressed before is forgotten here.
+        so whoever was addressed before is forgotten here. Not run on
+        hardware yet, and NI's captures all had its bank-2 session
+        configuration written first, which this driver does not write;
+        ``device_ops.serial_poll`` sends this only when the controller was
+        built with ``ni_instructions``, and the §5.9 sequence otherwise.
         """
         with self._guard():
             self._ensure_attached()

@@ -32,7 +32,8 @@ from resistamet_gui.gpib_usb.visa_intfc import (GPIB_INTFC, NiUsbGpibIntfcDispat
                                                 NiUsbGpibIntfcSession)
 from resistamet_gui.gpib_usb.visa_session import GPIB_INSTR, NiUsbGpibDispatch  # noqa: E402
 from tests.test_gpib_usb_visa import (FakeInstrument, Sentinel, SimulatedAdapter,  # noqa: E402,F401
-                                      enumeration, h, raw_transfers, session_registry)
+                                      enumeration, h, ni_instructions, session_registry,
+                                      switch_unset)
 
 UNL, MTA0, MLA0, LAD24, TAD24, UNT = 0x3F, 0x40, 0x20, 0x38, 0x58, 0x5F
 REN, ATN = constants.RENLineOperation, constants.ATNLineOperation
@@ -347,7 +348,7 @@ class TestData:
         read = board.instructions(p.OP_READ)[-1]
         assert read[1:6] == h('00 00 fb 00 b0')  # compare off: the bench-proven 00 00
 
-    def test_read_with_raw_transfers_on_is_a_0x0b_after_standby(self, raw_transfers, intf, board):
+    def test_read_with_ni_instructions_on_is_a_0x0b_after_standby(self, ni_instructions, intf, board):
         intf.send_command(bytes((UNL, MTA0, LAD24)))
         intf.write('*IDN?')
         intf.send_command(bytes((UNL, MLA0, TAD24)))
@@ -361,7 +362,7 @@ class TestData:
     @pytest.mark.parametrize('opcode', [p.OP_READ, p.OP_READ_RAW])
     def test_read_termination_selects_eos(self, rm, board, monkeypatch, opcode):
         if opcode == p.OP_READ_RAW:
-            monkeypatch.setenv('RESISTAMET_GPIB_RAW_TRANSFERS', '1')
+            monkeypatch.setenv('RESISTAMET_GPIB_NI_INSTRUCTIONS', '1')
         intf = rm.open_resource('GPIB0::INTFC', read_termination='\n')
         intf.send_command(bytes((UNL, MTA0, LAD24)))
         intf.write('*IDN?')

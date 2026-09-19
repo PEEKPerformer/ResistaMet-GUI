@@ -27,17 +27,31 @@ logger = logging.getLogger(__name__)
 
 #: Every primary address; the controller skips its own.
 PROBE_ADDRESSES = tuple(range(31))
-#: Set to 1 / true / yes / on to send large transfers as the 0x0b / 0x0e raw
-#: instructions NI's driver uses. Unset, 0 or anything else keeps every
-#: transfer on the framed 0x0a / 0x0d instructions, the paths proven on the
-#: bench: the raw ones have not run on an adapter of ours, and every read the
-#: application makes is large enough to take them. Read once per board open,
-#: here and nowhere else.
+#: Set to 1 / true / yes / on to use the instructions NI's driver was captured
+#: sending: 0x0b / 0x0e with the data raw on the alternate endpoints for large
+#: transfers, and 0x10 for the serial poll. Unset, 0 or anything else keeps
+#: what ran on the bench: every transfer framed (0x0a / 0x0d) and the serial
+#: poll as the §5.9 command sequence. NI's instructions have not run on an
+#: adapter of ours, and every read the application makes is large enough to
+#: take 0x0b. Read once per board open, here and nowhere else.
+NI_INSTRUCTIONS_ENV = 'RESISTAMET_GPIB_NI_INSTRUCTIONS'
+#: The switch's first name, from when it covered the transfers only. Still
+#: read, with the same spellings, when ``NI_INSTRUCTIONS_ENV`` is not set.
 RAW_TRANSFERS_ENV = 'RESISTAMET_GPIB_RAW_TRANSFERS'
 
 
-def raw_transfers_enabled() -> bool:
-    return os.environ.get(RAW_TRANSFERS_ENV, '0').strip().lower() in ('1', 'true', 'yes', 'on')
+def ni_instructions_enabled() -> bool:
+    value = os.environ.get(NI_INSTRUCTIONS_ENV)
+    if value is None:
+        value = os.environ.get(RAW_TRANSFERS_ENV, '0')
+    return value.strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _instructions_label(controller: Controller) -> str:
+    """Which instructions this board uses, for the attach log line."""
+    if not controller.ni_instructions:
+        return 'framed transfers, command-sequence serial poll'
+    return '%s transfers, 0x10 serial poll' % ('raw' if controller.raw_transfers else 'framed')
 
 
 def _linux_gpib_board_count() -> int:
@@ -149,8 +163,7 @@ class BoardRegistry:
             entry = self._boards[board]
             if entry.controller is None:
                 entry.controller = self._open(entry.info)
-                logger.info('GPIB%s: %s attached (%s transfers)', board, entry.info.label,
-                            'raw' if entry.controller.raw_transfers else 'framed')
+                logger.info('GPIB%s: %s attached (%s)', board, entry.info.label, _instructions_label(entry.controller))
             entry.sessions += 1
             return entry.controller
 
@@ -159,7 +172,7 @@ class BoardRegistry:
         controller: Optional[Controller] = None
         try:
             usb_transport = self._open_transport(info)
-            controller = Controller(usb_transport, info.product_id, raw_transfers=raw_transfers_enabled())
+            controller = Controller(usb_transport, info.product_id, ni_instructions=ni_instructions_enabled())
             controller.attach()
         except Exception:  # noqa: BLE001 - whatever failed, the claimed interface must not leak
             if controller is not None:
