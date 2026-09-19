@@ -246,9 +246,9 @@ def attached(extra: List[Tuple[Any, ...]], **kwargs) -> Tuple[Controller, Script
     return controller, transport
 
 
-def attached_raw(extra: List[Tuple[Any, ...]], **kwargs) -> Tuple[Controller, ScriptedTransport]:
-    """``attached`` with the 0x0b / 0x0e paths switched on; a controller leaves them off by default."""
-    return attached(extra, raw_transfers=True, **kwargs)
+def attached_ni(extra: List[Tuple[Any, ...]], **kwargs) -> Tuple[Controller, ScriptedTransport]:
+    """``attached`` with NI's instructions (0x0b, 0x0e, 0x10) switched on; a controller leaves them off by default."""
+    return attached(extra, ni_instructions=True, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -565,7 +565,7 @@ class TestRawWrite:
     def test_2050_bytes_with_ni_bytes(self):
         # longwrite.pcap 1.8914 / 1.8916 / 2.0354: code 0xfe, termination character 0x0a, EOI.
         assert len(self.LONG) == 2050
-        controller, transport = attached_raw(address_listener(pad=24, code=0xFE) + [
+        controller, transport = attached_ni(address_listener(pad=24, code=0xFE) + [
             ('out', h('0e 00 00 fe 00 0a 08 00 fe f7 ff ff 04 00 00 00')),
             ('raw_out', self.LONG),
             ('in', h('0e 00 28 00 00 00 00 00 04 00 00 00'), 512),
@@ -577,7 +577,7 @@ class TestRawWrite:
         assert RAW_WRITE_MIN_BYTES == 2049  # §10.5.2: 2048 the last 0x0d, 2049 the first 0x0e
         under = bytes(RAW_WRITE_MIN_BYTES - 1)
         at = bytes(RAW_WRITE_MIN_BYTES)
-        controller, transport = attached_raw(address_listener() + [
+        controller, transport = attached_ni(address_listener() + [
             ('out', p.write_message(under, T3S, True)), ('in', status_reply(0x0D)),
         ] + address_listener() + [
             ('out', p.write_raw_message(len(at), T3S, True)), ('raw_out', at),
@@ -588,7 +588,7 @@ class TestRawWrite:
         transport.assert_done()
 
     def test_the_raw_transfer_and_the_reply_get_the_transfer_allowance(self):
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.write_raw_message(3000, T3S, True)), ('raw_out', bytes(3000)),
             ('in', raw_write_reply(3000, 3000), 512),
         ])
@@ -597,7 +597,7 @@ class TestRawWrite:
 
     def test_the_framed_write_ignores_the_termination_character(self):
         # 0x0d keeps byte 5 at 0x00, the form the bench proved; NI's 0x0a there is untested.
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', h('0d fa ff fc 00 00 08 00 2a 49 44 4e 3f 0a 00 00 04 00 00 00')), ('in', status_reply(0x0D)),
         ])
         controller.write_raw(b'*IDN?\n', timeout_s=3.0, eos_char=0x0A)
@@ -606,7 +606,7 @@ class TestRawWrite:
     def test_chunks_of_0xffff_with_eoi_on_the_last_and_a_short_tail_framed(self):
         # Per chunk, like the read loop: the 1-byte tail is below the threshold, so 0x0d.
         data = bytes(0xFFFF) + b'Z'
-        controller, transport = attached_raw(address_listener() + [
+        controller, transport = attached_ni(address_listener() + [
             ('out', p.write_raw_message(0xFFFF, T3S, False)), ('raw_out', bytes(0xFFFF)),
             ('in', raw_write_reply(0xFFFF, 0xFFFF), 512),
             ('out', p.write_message(b'Z', T3S, True)), ('in', status_reply(0x0D)),
@@ -616,7 +616,7 @@ class TestRawWrite:
 
     def test_a_long_tail_after_a_full_chunk_goes_raw_too(self):
         data = bytes(0xFFFF + 3000)
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.write_raw_message(0xFFFF, T3S, False)), ('raw_out', bytes(0xFFFF)),
             ('in', raw_write_reply(0xFFFF, 0xFFFF), 512),
             ('out', p.write_raw_message(3000, T3S, True)), ('raw_out', bytes(3000)),
@@ -626,7 +626,7 @@ class TestRawWrite:
         transport.assert_done()
 
     def test_no_listener_reported_in_the_reply(self):
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.write_raw_message(2100, T3S, True)), ('raw_out', bytes(2100)),
             ('in', raw_write_reply(2100, 0, error=8), 512),
         ])
@@ -649,7 +649,7 @@ class TestRawWrite:
 
     def test_refused_data_reads_the_reply_resets_both_out_pipes_and_carries_on(self):
         assert len(self.NOBODY) == 2502
-        controller, transport = attached_raw(self.refused_write([
+        controller, transport = attached_ni(self.refused_write([
             ('clear_halt', 0x06), ('clear_halt', 0x02),
             # The next operation is ordinary: no stop request, no drain, no re-attach (§10.6.7).
         ]) + address_listener(pad=24) + [
@@ -662,7 +662,7 @@ class TestRawWrite:
         transport.assert_done()
 
     def test_the_reply_to_refused_data_is_already_due(self):
-        controller, transport = attached_raw(self.refused_write([('clear_halt', 0x06), ('clear_halt', 0x02)]))
+        controller, transport = attached_ni(self.refused_write([('clear_halt', 0x06), ('clear_halt', 0x02)]))
         with pytest.raises(NoListener):
             controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
         assert ('in', 512, SHORT_MS) in transport.timeouts[-1:]
@@ -673,7 +673,7 @@ class TestRawWrite:
         # one, and the raw paths have not run on an adapter of ours. The script says what the
         # adapter is expected to do after the two pipe resets; what the test pins is what the
         # driver sends, an ordinary 0x0e with no stop request and no re-attach in between.
-        controller, transport = attached_raw(self.refused_write([
+        controller, transport = attached_ni(self.refused_write([
             ('clear_halt', 0x06), ('clear_halt', 0x02),
         ]) + address_listener(pad=24) + [
             ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY),
@@ -685,7 +685,7 @@ class TestRawWrite:
         transport.assert_done()
 
     def test_a_pipe_reset_that_fails_still_reports_no_listener_and_reattaches_next(self):
-        controller, transport = attached_raw(self.refused_write([
+        controller, transport = attached_ni(self.refused_write([
             ('clear_halt', 0x06, TransportError('device gone')), ('clear_halt', 0x02),
         ]) + reattach_script() + address_listener(pad=24) + [
             ('out', p.write_message(b'A', T3S, True)), ('in', status_reply(0x0D)),
@@ -699,7 +699,7 @@ class TestRawWrite:
         # How libusb on macOS reports the adapter's STALL has not been seen. Whatever it is,
         # the reply is read and the pipes are reset, or the reply stays queued and 0x06 halted.
         odd = TransportError('raw bulk write failed: [Errno 5] Input/Output Error')
-        controller, transport = attached_raw(address_listener(pad=5) + [
+        controller, transport = attached_ni(address_listener(pad=5) + [
             ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY, odd),
             ('in', h('0e 00 28 08 3a f6 ff ff 04 00 00 00'), 512),
             ('clear_halt', 0x06), ('clear_halt', 0x02),
@@ -716,7 +716,7 @@ class TestRawWrite:
     def test_the_refusal_is_logged_with_its_class_errno_and_backend_code(self, caplog):
         stall = TransportStall('raw bulk write was refused with a STALL')
         stall.errno, stall.backend_code = 32, -9
-        controller, transport = attached_raw(address_listener(pad=5) + [
+        controller, transport = attached_ni(address_listener(pad=5) + [
             ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY, stall),
             ('in', h('0e 00 28 08 3a f6 ff ff 04 00 00 00'), 512),
             ('clear_halt', 0x06), ('clear_halt', 0x02),
@@ -728,7 +728,7 @@ class TestRawWrite:
         assert 'TransportStall' in line and 'errno 32' in line and 'backend code -9' in line
 
     def test_the_pipes_are_reset_and_the_refusal_raised_when_the_reply_never_comes(self):
-        controller, transport = attached_raw(address_listener(pad=5) + [
+        controller, transport = attached_ni(address_listener(pad=5) + [
             ('out', p.write_raw_message(2502, T3S, True, 0x0A)),
             ('raw_out', self.NOBODY, self.STALL),
             ('in', TransportTimeout('no reply'), 512), STOP, ('in', TransportTimeout('still none'), 512),
@@ -743,7 +743,7 @@ class TestRawWrite:
         transport.assert_done()
 
     def test_refused_data_with_a_reply_that_reports_success_raises_the_refusal_and_reattaches(self):
-        controller, transport = attached_raw(address_listener(pad=5) + [
+        controller, transport = attached_ni(address_listener(pad=5) + [
             ('out', p.write_raw_message(2502, T3S, True, 0x0A)),
             ('raw_out', self.NOBODY, self.STALL),
             ('in', raw_write_reply(2502, 2502), 512),
@@ -758,7 +758,7 @@ class TestRawWrite:
 
     def test_a_reply_read_that_fails_too_still_resets_the_pipes_and_raises_the_first_error(self):
         gone = TransportError('raw bulk write failed: [Errno 19] No such device')
-        controller, transport = attached_raw(address_listener(pad=5) + [
+        controller, transport = attached_ni(address_listener(pad=5) + [
             ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY, gone),
             ('in', TransportError('bulk read failed: [Errno 19] No such device'), 512),
             ('clear_halt', 0x06, TransportError('no device')), ('clear_halt', 0x02, TransportError('no device')),
@@ -778,7 +778,7 @@ class TestRawWrite:
         ] + attach_script() + [                               # the pipes cannot be trusted: re-attach
             ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
         ])
-        controller = Controller(transport, t.PID_HS, raw_transfers=True, sleep=lambda s: None)
+        controller = Controller(transport, t.PID_HS, ni_instructions=True, sleep=lambda s: None)
         controller.attach()
         with pytest.raises(NoListener) as info:
             controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
@@ -787,14 +787,14 @@ class TestRawWrite:
         transport.assert_done()
 
     def test_partial_count_is_returned(self):
-        controller, _ = attached_raw([
+        controller, _ = attached_ni([
             ('out', p.write_raw_message(2100, T3S, True)), ('raw_out', bytes(2100)),
             ('in', raw_write_reply(2100, 1500), 512),
         ])
         assert controller.write_raw(bytes(2100), timeout_s=3.0) == 1500
 
     def test_instrument_not_accepting_times_out_the_transfer_and_stops_the_device(self):
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.write_raw_message(2100, T3S, True)),
             ('raw_out', bytes(2100), TransportTimeout('instrument holds NRFD')),
             STOP,
@@ -810,7 +810,7 @@ class TestRawWrite:
     def test_transfer_that_stops_part_way_stops_the_device_and_reports_the_count_it_took(self):
         # pyusb returns the partial count, not a timeout, once some bytes moved; that is the
         # same situation as no byte accepted within the wait and takes the same path (§5.11).
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.write_raw_message(2100, T3S, True)),
             ('raw_out', bytes(2100), 1024),                       # 1024 of 2100 accepted, then the wait expired
             STOP,
@@ -827,7 +827,7 @@ class TestRawWrite:
         # 124 of the 1024 accepted bytes never reached the bus and may sit in the alternate
         # OUT FIFO, where they would lead the data of the next 0x0e. No capture shows the case;
         # the driver treats the state as unknown. Scripted expectation, not a hardware result.
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.write_raw_message(2100, T3S, True)),
             ('raw_out', bytes(2100), 1024),
             STOP,
@@ -843,7 +843,7 @@ class TestRawWrite:
         transport.assert_done()
 
     def test_a_stopped_raw_write_with_no_reply_still_resets_the_out_pipes(self):
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.write_raw_message(2100, T3S, True)),
             ('raw_out', bytes(2100), TransportTimeout('instrument holds NRFD')),
             STOP,
@@ -856,7 +856,7 @@ class TestRawWrite:
         transport.assert_done()
 
     def test_missing_reply_takes_the_stop_path(self):
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.write_raw_message(2100, T3S, True)), ('raw_out', bytes(2100)),
             ('in', TransportTimeout('no reply'), 512),
             STOP,
@@ -867,7 +867,7 @@ class TestRawWrite:
         transport.assert_done()
 
     def test_wrong_reply_block_is_a_fault(self):
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.write_raw_message(2100, T3S, True)), ('raw_out', bytes(2100)),
             ('in', status_reply(0x0D), 512),
             STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,
@@ -885,7 +885,7 @@ class TestRawWrite:
             ('out', p.write_message(data, T3S, True)), ('in', status_reply(0x0D)),
         ]
         transport = ScriptedTransport(script)
-        controller = Controller(transport, t.PID_USB_B, raw_transfers=True, sleep=lambda s: None)
+        controller = Controller(transport, t.PID_USB_B, ni_instructions=True, sleep=lambda s: None)
         controller.attach()
         assert controller.write_raw(data, timeout_s=3.0) == 5000
         transport.assert_done()
@@ -1000,7 +1000,7 @@ class TestRawRead:
     def test_idn_over_0x0b_with_ni_bytes(self):
         # counts.pcap 13.4323 / 13.4419 / 13.4424: the 0x0b of 4096 with the 3 s code. Our
         # message is the 0x0b block and the clear-END write; the reply is those two blocks.
-        controller, transport = attached_raw(address_talker(pad=24) + [
+        controller, transport = attached_ni(address_talker(pad=24) + [
             ('out', h('0b 00 0a fc 00 f0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),
             ('raw_in', IDN_2420, 4608),
             ('in', h('0b 20 64 00 52 f0 ff ff e0 00 00 00 09 00 64 00 52 f0 ff ff 01 00 00 00 04 00 00 00'), 512),
@@ -1012,7 +1012,7 @@ class TestRawRead:
         # §10.1.1: counts.pcap 12.8188 is the last 0x0a (1024), read_thresholds.pcap 0.3160 the
         # first 0x0b (1025); the instruction blocks below are NI's bytes.
         assert RAW_READ_MIN_BYTES == 1025
-        controller, transport = attached_raw(address_talker() + [
+        controller, transport = attached_ni(address_talker() + [
             ('out', h('0a 00 0a fc 00 fc 00 00') + p.read_message(1024, T3S)[8:]),
             ('in', read_reply(b'x', 1024), p.read_reply_buffer_size(1024, 512)),
         ] + address_talker() + [
@@ -1025,7 +1025,7 @@ class TestRawRead:
         transport.assert_done()
 
     def test_data_is_read_before_the_reply_and_the_reply_wait_is_short(self):
-        controller, transport = attached_raw(address_talker() + [
+        controller, transport = attached_ni(address_talker() + [
             ('out', p.read_raw_message(20480, T3S)),
             ('raw_in', IDN_2420, 20992),
             ('in', raw_read_reply(20480, 82), 512),
@@ -1038,7 +1038,7 @@ class TestRawRead:
 
     def test_full_chunk_has_end_clear(self):
         data = bytes(range(256)) * 80
-        controller, transport = attached_raw(address_talker() + [
+        controller, transport = attached_ni(address_talker() + [
             ('out', p.read_raw_message(20480, T3S)),
             ('raw_in', data, 20992),
             ('in', h('0b 00 64 00 00 00 00 00 60 00 00 00 09 00 64 00 00 00 00 00 01 00 00 00 04 00 00 00'), 512),
@@ -1048,7 +1048,7 @@ class TestRawRead:
 
     def test_request_above_one_instruction_loops_without_readdressing(self):
         first, second = bytes(0xFFFF), b'tail\n'
-        controller, transport = attached_raw(address_talker() + [
+        controller, transport = attached_ni(address_talker() + [
             ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', first, 66048),
             ('in', raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
             ('out', p.read_raw_message(70000 - 0xFFFF, T3S)), ('raw_in', second, 4608),
@@ -1061,7 +1061,7 @@ class TestRawRead:
         # The requested count decides the instruction once per read (§10.1.1): the 1-byte tail
         # of a 0x0b read is a 0x0b too, not a framed 0x0a in the middle of the message. The
         # odd byte arrives padded to two on the alternate IN (§10.1.3).
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', bytes(0xFFFF), 66048),
             ('in', raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
             ('out', p.read_raw_message(1, T3S)), ('raw_in', b'z\x00', 512),
@@ -1074,7 +1074,7 @@ class TestRawRead:
 
     def test_a_tail_just_under_the_threshold_stays_raw_and_a_small_request_stays_framed(self):
         tail = RAW_READ_MIN_BYTES - 1
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', bytes(0xFFFF), 66048),
             ('in', raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
             ('out', p.read_raw_message(tail, T3S)), ('raw_in', b'end\n', 1536),
@@ -1088,7 +1088,7 @@ class TestRawRead:
 
     def test_zero_length_transfer_on_a_device_timeout(self):
         # nolistener.pcap 9.8121 / 9.8126: IN88 0 B, then error 0x0a with count -20480.
-        controller, transport = attached_raw(address_talker(pad=5) + [
+        controller, transport = attached_ni(address_talker(pad=5) + [
             ('out', p.read_raw_message(20480, T3S)),
             ('raw_in', b'', 20992),
             ('in', h('0b 00 64 0a 00 b0 ff ff 60 00 00 00 09 00 64 00 00 b0 ff ff 01 00 00 00 04 00 00 00'), 512),
@@ -1102,7 +1102,7 @@ class TestRawRead:
         # raw_errors.pcap 6.1075-10.3034: the adapter ends the 0x88 transfer itself with a
         # zero-length packet at its timeout, the reply follows, and the next operation is
         # ordinary (§10.6.6, §10.6.7). NI's reply blocks, in our two-block message.
-        controller, transport = attached_raw(address_talker(pad=5) + [
+        controller, transport = attached_ni(address_talker(pad=5) + [
             ('out', h('0b 00 0a fc 00 b0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),
             ('raw_in', b'', 20992),
             ('in', h('0b 00 64 0a 00 b0 ff ff 60 00 00 00 09 00 64 00 00 b0 ff ff 01 00 00 00 04 00 00 00'), 512),
@@ -1116,7 +1116,7 @@ class TestRawRead:
         transport.assert_done()  # no ('ctrl', 0x20 ...) step anywhere in the script
 
     def test_partial_data_on_a_device_timeout(self):
-        controller, transport = attached_raw(address_talker() + [
+        controller, transport = attached_ni(address_talker() + [
             ('out', p.read_raw_message(4096, T3S)),
             ('raw_in', b'PART', 4608),
             ('in', raw_read_reply(4096, 4, end=False, error=0x0A), 512),
@@ -1126,7 +1126,7 @@ class TestRawRead:
         assert info.value.partial == b'PART'
 
     def test_timeout_in_a_later_chunk_keeps_the_earlier_ones(self):
-        controller, _ = attached_raw([
+        controller, _ = attached_ni([
             ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', bytes(0xFFFF), 66048),
             ('in', raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
             ('out', p.read_raw_message(4096, T3S)), ('raw_in', b'AB', 4608),
@@ -1138,7 +1138,7 @@ class TestRawRead:
 
     def test_transfer_longer_than_the_count_is_cut_to_the_count(self):
         # trac.pcap 13.0075 / 13.0079: 6 bytes on 0x88 for a 5-byte answer.
-        controller, transport = attached_raw(address_talker(pad=24) + [
+        controller, transport = attached_ni(address_talker(pad=24) + [
             ('out', p.read_raw_message(20480, T3S)),
             ('raw_in', h('31 31 30 33 0a 00'), 20992),
             ('in', h('0b 20 64 00 05 b0 ff ff e0 00 00 00 09 00 64 00 05 b0 ff ff 01 00 00 00 04 00 00 00'), 512),
@@ -1146,7 +1146,7 @@ class TestRawRead:
         assert controller.read(24, max_bytes=20480, timeout_s=3.0) == (b'1103\n', True)
 
     def test_fewer_bytes_than_the_count_is_a_fault_that_resyncs(self):
-        controller, transport = attached_raw(address_talker() + [
+        controller, transport = attached_ni(address_talker() + [
             ('out', p.read_raw_message(4096, T3S)),
             ('raw_in', b'SHORT', 4608),
             ('in', raw_read_reply(4096, 82), 512),
@@ -1157,7 +1157,7 @@ class TestRawRead:
         transport.assert_done()
 
     def test_host_wait_expiry_on_the_data_stops_the_device_and_reports_a_timeout(self):
-        controller, transport = attached_raw(address_talker(code=t.TIMEOUT_DISABLED_CODE) + [
+        controller, transport = attached_ni(address_talker(code=t.TIMEOUT_DISABLED_CODE) + [
             ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
             ('raw_in', TransportTimeout('host wait'), 4608),
             STOP,
@@ -1175,7 +1175,7 @@ class TestRawRead:
     def test_partial_data_at_the_host_wait_is_kept_and_completed_after_the_stop(self):
         # The transport received 4 bytes when its wait expired (pyusb's partial count); after the
         # stop the device completes the transfer with 2 more and the reply counts 6.
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
             ('raw_in', TransportTimeout('host wait', partial=b'PART'), 4608),
             STOP,
@@ -1188,7 +1188,7 @@ class TestRawRead:
         transport.assert_done()
 
     def test_partial_data_with_nothing_more_after_the_stop(self):
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
             ('raw_in', TransportTimeout('host wait', partial=b'PART'), 4608),
             STOP,
@@ -1201,7 +1201,7 @@ class TestRawRead:
         transport.assert_done()
 
     def test_stopped_read_whose_data_never_completes_is_fine_when_nothing_was_read(self):
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
             ('raw_in', TransportTimeout('host wait'), 4608),
             STOP,
@@ -1213,7 +1213,7 @@ class TestRawRead:
         transport.assert_done()
 
     def test_stopped_read_whose_data_never_completes_but_was_read_is_a_fault(self):
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
             ('raw_in', TransportTimeout('host wait'), 4608),
             STOP,
@@ -1226,7 +1226,7 @@ class TestRawRead:
         transport.assert_done()
 
     def test_reply_missing_after_the_data_takes_the_stop_path(self):
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.read_raw_message(4096, T3S)),
             ('raw_in', b'AB', 4608),
             ('in', TransportTimeout('no reply'), 512),
@@ -1239,7 +1239,7 @@ class TestRawRead:
         transport.assert_done()
 
     def test_no_reply_even_after_the_stop_is_a_fault(self):
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.read_raw_message(4096, T3S)),
             ('raw_in', b'', 4608),
             ('in', TransportTimeout('no reply'), 512),
@@ -1252,7 +1252,7 @@ class TestRawRead:
         transport.assert_done()
 
     def test_termination_character_and_eos_reach_the_instruction(self):
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', h('0b 00 0a fc 00 f0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),
             ('raw_in', b'x', 4608), ('in', raw_read_reply(4096, 1), 512),
             ('out', h('0b 14 2c fc 00 f0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),
@@ -1271,7 +1271,7 @@ class TestRawRead:
             ('in', read_reply(b'x', 20480), p.read_reply_buffer_size(20480, 512)),
         ]
         transport = ScriptedTransport(script)
-        controller = Controller(transport, t.PID_USB_B, raw_transfers=True, sleep=lambda s: None)
+        controller = Controller(transport, t.PID_USB_B, ni_instructions=True, sleep=lambda s: None)
         controller.attach()
         assert controller.read_raw(20480, timeout_s=3.0) == (b'x', True)
         transport.assert_done()
@@ -1287,15 +1287,15 @@ class TestRawTransfersSwitch:
         ] + address_listener() + [
             ('out', p.write_message(bytes(3000), T3S, True)), ('in', status_reply(0x0D)),
         ])
-        assert controller.raw_transfers is False
+        assert controller.raw_transfers is False and controller.ni_instructions is False
         # pyvisa's chunk is 20480 bytes: the application's first read is this one.
         assert controller.read(22, max_bytes=20480, timeout_s=3.0) == (b'x', True)
         assert controller.write(22, bytes(3000), timeout_s=3.0) == 3000
         transport.assert_done()
 
     def test_switched_on_large_transfers_go_raw(self):
-        controller, _ = attached_raw([])
-        assert controller.raw_transfers is True
+        controller, _ = attached_ni([])
+        assert controller.raw_transfers is True and controller.ni_instructions is True
 
     def test_switched_off_reads_and_writes_stay_framed(self):
         controller, transport = attached(address_talker() + [
@@ -1303,7 +1303,7 @@ class TestRawTransfersSwitch:
             ('in', read_reply(b'x', 20480), p.read_reply_buffer_size(20480, 512)),
         ] + address_listener() + [
             ('out', p.write_message(bytes(3000), T3S, True)), ('in', status_reply(0x0D)),
-        ], raw_transfers=False)
+        ], ni_instructions=False)
         assert controller.raw_transfers is False
         assert controller.read(22, max_bytes=20480, timeout_s=3.0) == (b'x', True)
         assert controller.write(22, bytes(3000), timeout_s=3.0) == 3000
@@ -1313,7 +1313,7 @@ class TestRawTransfersSwitch:
         controller, transport = attached([
             ('out', p.command_message(b'\x14', T3S)), ('in', h('0c 00'), 12),
             STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH),
-        ], raw_transfers=False)
+        ], ni_instructions=False)
         with pytest.raises(ProtocolError):
             controller.command(b'\x14', timeout_s=3.0)
         transport.assert_done()
@@ -1323,9 +1323,10 @@ class TestRawTransfersSwitch:
             ('out', p.register_read_message(t.USB_B_SERIAL_REGISTERS)),
             ('in', regread_reply([0x78, 0x56, 0x34, 0x12]), 32),
         ] + attach_script()[2:]
-        controller = Controller(ScriptedTransport(script), t.PID_USB_B, raw_transfers=True, sleep=lambda s: None)
+        controller = Controller(ScriptedTransport(script), t.PID_USB_B, ni_instructions=True, sleep=lambda s: None)
         controller.attach()
         assert controller.raw_transfers is False
+        assert controller.ni_instructions is True  # the serial poll needs no alternate pair
 
 
 # ---------------------------------------------------------------------------
@@ -1394,7 +1395,7 @@ class TestHostWait:
 
     def test_the_raw_out_and_its_reply_follow_the_device_timeout_and_the_length(self):
         # §10.5.2: 2049 bytes took 368 ms to complete on 0x06.
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.write_raw_message(2049, 0xFE, True)), ('raw_out', bytes(2049)),
             ('in', raw_write_reply(2049, 2049), 512),
         ])
@@ -1459,7 +1460,7 @@ class TestHostWait:
     def test_the_raw_in_wait_is_never_shorter_than_the_reply_wait_of_a_framed_read(self):
         # §10.9: give the 0x88 read the same host wait as the reply rather than cancelling it
         # early; ours adds the transfer allowance on top.
-        controller, transport = attached_raw([
+        controller, transport = attached_ni([
             ('out', p.read_raw_message(20480, T3S)), ('raw_in', b'', 20992),
             ('in', raw_read_reply(20480, 0, end=False, error=0x0A), 512),
         ])
@@ -1726,8 +1727,8 @@ class TestFaults:
         assert drain == [int(DRAIN_WAIT_S * 1000)]
         assert not [kind for kind, _, _ in transport.timeouts if kind == 'raw_in']
 
-    def test_with_raw_transfers_on_the_alternate_in_is_drained_as_well(self):
-        controller, transport = attached_raw([
+    def test_with_ni_instructions_on_the_alternate_in_is_drained_as_well(self):
+        controller, transport = attached_ni([
             ('out', p.command_message(t.address_listener_command(0, 22), T3S)),
             ('in', status_reply(0x0D)),                       # wrong id echoed
             STOP, ('in', b'\x00' * 12, DRAIN_LENGTH), RAW_DRAIN,
@@ -1902,41 +1903,91 @@ class TestDeviceOps:
         ops.local_lockout(controller, 24, timeout_s=0.3)
         transport.assert_done()
 
+    def test_serial_poll_sequence(self):
+        controller, transport = attached([
+            ('out', p.command_message(bytes((0x3F, 0x20, 0x18, 0x56)), T3S)), ('in', status_reply(0x0C)),
+            ('out', p.go_to_standby_message()), ('in', status_reply(0x06)),
+            ('out', p.read_message(1, T3S)), ('in', read_reply(b'\x40', 1), 512),
+            ('out', p.command_message(bytes((0x19, 0x5F)), T3S)), ('in', status_reply(0x0C)),
+        ])
+        assert ops.serial_poll(controller, 22) == 0x40
+        transport.assert_done()
+
+    def test_serial_poll_with_ni_instructions_on_is_one_0x10(self):
+        controller, transport = attached_ni([
+            ('out', p.serial_poll_message(22, T3S)),
+            ('in', h('3a 16 00 40 39 00 74 00 00 00 ff ff 04 00 00 00'), 512),
+        ])
+        assert ops.serial_poll(controller, 22) == 0x40
+        transport.assert_done()
+
+    def test_serial_poll_leaves_poll_mode_even_when_the_read_times_out(self):
+        controller, transport = attached([
+            ('out', p.command_message(bytes((0x3F, 0x20, 0x18, 0x56)), T3S)), ('in', status_reply(0x0C)),
+            ('out', p.go_to_standby_message()), ('in', status_reply(0x06)),
+            ('out', p.read_message(1, T3S)), ('in', read_reply(b'', 1, end=False, error=0x0A), 512),
+            ('out', p.command_message(bytes((0x19, 0x5F)), T3S)), ('in', status_reply(0x0C)),
+        ])
+        with pytest.raises(GpibTimeout):
+            ops.serial_poll(controller, 22)
+        transport.assert_done()
+
+    def test_serial_poll_cleanup_failure_does_not_mask_the_read_failure(self):
+        controller, transport = attached([
+            ('out', p.command_message(bytes((0x3F, 0x20, 0x18, 0x56)), T3S)), ('in', status_reply(0x0C)),
+            ('out', p.go_to_standby_message()), ('in', status_reply(0x06)),
+            ('out', p.read_message(1, T3S)), ('in', read_reply(b'', 1, end=False, error=0x0A), 512),
+            ('out', p.command_message(bytes((0x19, 0x5F)), T3S)), ('in', status_reply(0x0C, error=5, count=-2)),
+        ])
+        with pytest.raises(GpibTimeout):
+            ops.serial_poll(controller, 22)
+        transport.assert_done()
+
+    def test_serial_poll_cleanup_failure_alone_is_raised(self):
+        controller, _ = attached([
+            ('out', p.command_message(bytes((0x3F, 0x20, 0x18, 0x56)), T3S)), ('in', status_reply(0x0C)),
+            ('out', p.go_to_standby_message()), ('in', status_reply(0x06)),
+            ('out', p.read_message(1, T3S)), ('in', read_reply(b'\x40', 1), 512),
+            ('out', p.command_message(bytes((0x19, 0x5F)), T3S)), ('in', status_reply(0x0C, error=5, count=-2)),
+        ])
+        with pytest.raises(NoListener):
+            ops.serial_poll(controller, 22)
+
 
 class TestSerialPoll:
     """The 0x10 instruction (§10.5.4), not the §5.9 command sequence."""
 
     def test_poll_with_ni_bytes(self):
         # stb.pcap 0.5134 / 0.5151 (code 0xfe, status byte 0), minus the blocks NI batches around it.
-        controller, transport = attached([
+        controller, transport = attached_ni([
             ('out', h('10 01 00 00 18 00 fe 00 04 00 00 00')),
             ('in', h('3a 18 00 00 39 00 74 00 00 00 ff ff 04 00 00 00'), 512),
         ])
-        assert controller.serial_poll(24, timeout_s=20.0) == 0
+        assert controller.serial_poll_instruction(24, timeout_s=20.0) == 0
         transport.assert_done()
         assert transport.timeouts[-1] == ('in', 512, WAIT_30S_MS)  # the 0xfe expiry + 2 s
 
     def test_status_byte_with_rqs(self):
         # srq_poll.pcap 2.5379 reported 0x20 after the adapter had polled RQS away; 0x60 is what
         # a device still requesting service would give.
-        controller, _ = attached([
+        controller, _ = attached_ni([
             ('out', p.serial_poll_message(22, T3S)),
             ('in', h('3a 16 00 60 39 00 74 00 00 00 ff ff 04 00 00 00'), 512),
         ])
-        assert controller.serial_poll(22) == 0x60
+        assert controller.serial_poll_instruction(22) == 0x60
 
     def test_secondary_address(self):
         # sad_poll.pcap 0.5152 / 0.5170: S = 0x60 | 1, echoed in the 0x3a block; status byte 4.
-        controller, transport = attached([
+        controller, transport = attached_ni([
             ('out', h('10 01 00 00 18 61 fc 00 04 00 00 00')),
             ('in', h('3a 18 61 04 39 00 74 00 00 00 ff ff 04 00 00 00'), 512),
         ])
-        assert controller.serial_poll(24, sad=1) == 4
+        assert controller.serial_poll_instruction(24, sad=1) == 4
         transport.assert_done()
 
     def test_device_timeout_replies_without_the_0x3a_block(self):
         # raw_errors.pcap 10.8046 / 15.0003: nothing at address 5; the 0x39 block alone, error 0x0a.
-        controller, transport = attached([
+        controller, transport = attached_ni([
             ('out', h('10 01 00 00 05 00 fc 00 04 00 00 00')),
             ('in', h('39 00 74 0a 00 00 00 00 04 00 00 00'), 512),
             # and the next operation goes out with no stop request and no re-attach (§10.6.7)
@@ -1944,41 +1995,41 @@ class TestSerialPoll:
             ('in', h('3a 18 00 00 39 00 74 00 00 00 00 00 04 00 00 00'), 512),
         ])
         with pytest.raises(GpibTimeout) as info:
-            controller.serial_poll(5)
+            controller.serial_poll_instruction(5)
         assert info.value.code == 0x0A
-        assert controller.serial_poll(24) == 0
+        assert controller.serial_poll_instruction(24) == 0
         transport.assert_done()
 
     def test_device_timeout_with_a_0x3a_block_raises_too(self):
-        controller, _ = attached([
+        controller, _ = attached_ni([
             ('out', p.serial_poll_message(22, T3S)),
             ('in', h('3a 16 00 00 39 00 74 0a ff ff ff ff 04 00 00 00'), 512),
         ])
         with pytest.raises(GpibTimeout):
-            controller.serial_poll(22)
+            controller.serial_poll_instruction(22)
 
     def test_success_without_a_status_byte_is_a_fault(self):
-        controller, transport = attached([
+        controller, transport = attached_ni([
             ('out', p.serial_poll_message(22, T3S)),
             ('in', h('39 00 74 00 00 00 ff ff 04 00 00 00'), 512),
-            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH),
+            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,
         ])
         with pytest.raises(ProtocolError):
-            controller.serial_poll(22)
+            controller.serial_poll_instruction(22)
         transport.assert_done()
 
     def test_answer_for_another_address_is_a_fault(self):
-        controller, transport = attached([
+        controller, transport = attached_ni([
             ('out', p.serial_poll_message(22, T3S)),
             ('in', h('3a 18 00 00 39 00 74 00 00 00 ff ff 04 00 00 00'), 512),
-            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH),
+            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,
         ])
         with pytest.raises(ProtocolError):
-            controller.serial_poll(22)
+            controller.serial_poll_instruction(22)
         transport.assert_done()
 
     def test_poll_forgets_who_was_addressed(self):
-        controller, transport = attached(address_listener() + [
+        controller, transport = attached_ni(address_listener() + [
             ('out', p.write_message(b'A', T3S, True)), ('in', status_reply(0x0D)),
             ('out', p.serial_poll_message(22, T3S)),
             ('in', h('3a 16 00 00 39 00 74 00 00 00 ff ff 04 00 00 00'), 512),
@@ -1986,17 +2037,17 @@ class TestSerialPoll:
             ('out', p.write_message(b'B', T3S, True)), ('in', status_reply(0x0D)),
         ])
         controller.write(22, b'A', timeout_s=3.0, readdress=False)
-        controller.serial_poll(22)
+        controller.serial_poll_instruction(22)
         controller.write(22, b'B', timeout_s=3.0, readdress=False)
         transport.assert_done()
 
     def test_host_wait_expiry_takes_the_stop_path(self):
-        controller, transport = attached([
+        controller, transport = attached_ni([
             ('out', p.serial_poll_message(22, T3S)), ('in', TransportTimeout('host wait'), 512),
             STOP, ('in', h('3a 16 00 00 39 00 74 01 ff ff ff ff 04 00 00 00'), 512),
         ])
         with pytest.raises(GpibTimeout):
-            controller.serial_poll(22)
+            controller.serial_poll_instruction(22)
         transport.assert_done()
 
 
