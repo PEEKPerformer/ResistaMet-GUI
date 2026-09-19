@@ -1,0 +1,4 @@
+831467.315 RM open, scenario trigger
+831467.897 assert_trigger (GET)
+831468.399 *CLS
+831468.904 done

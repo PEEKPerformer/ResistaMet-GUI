@@ -1,0 +1,10 @@
+831702.794 RM open, scenario two_sessions
+831703.533 a: *IDN?
+82
+831703.847 b: *IDN?
+82
+831704.161 close a
+831704.463 b: *IDN?
+82
+831704.776 close b
+831705.278 done

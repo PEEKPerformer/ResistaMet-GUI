@@ -1,0 +1,6 @@
+831409.091 RM open, scenario stb
+831409.670 read_stb x3
+STB 0
+STB 0
+STB 0
+831410.780 done
