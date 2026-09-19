@@ -33,8 +33,10 @@ def go_to_local(controller: Controller, pad: int, sad: Optional[int] = None,
     """GTL to one device, as NI addresses it: ``40+C 3f 20+N [60+S] 01`` (§10.7.4).
 
     NI writes no register for this (§5.15). Its device clear and trigger
-    lead with the talk address as well (§10.5.3); those two keep the §6
-    form here, which is the one that has run against an instrument.
+    lead with the talk address as well (§10.5.3); those two still send the
+    §6 table's form here. Both forms are valid IEEE-488.1 and neither has
+    been tried on our bench for them, so which to send is an open choice,
+    not a finding.
     """
     controller.command(t.addressed_command(pad, t.CMD_GTL, sad, controller=controller.own_address),
                        timeout_s)
