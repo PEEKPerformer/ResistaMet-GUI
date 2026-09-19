@@ -11,6 +11,7 @@ line; ``read_latest()`` is a NON-BLOCKING cache read. Tests inject a fake
 uses after ``connect()``), then use ``wait_for_reading`` where they need to
 block for the first line.
 """
+import threading
 import time
 
 import pytest
@@ -218,6 +219,72 @@ def test_close_stops_reader_thread(_closer):
     assert not reader.is_alive(), "reader thread survived close()"
     with pytest.raises(SensorReadError):
         s.read_latest()          # cache cleared on close
+
+
+class _BlockingDev:
+    """A device whose read() blocks until a line is released or, when
+    ``close_aborts_read`` is set, until the session is closed — the two
+    behaviours a VISA backend can have."""
+
+    def __init__(self, close_aborts_read):
+        self._close_aborts_read = close_aborts_read
+        self._wake = threading.Event()
+        self.in_read = threading.Event()
+        self.closed = False
+
+    def read(self):
+        self.in_read.set()
+        self._wake.wait(10.0)
+        if self.closed and self._close_aborts_read:
+            raise OSError("session closed")
+        return "DATA,21.0,22.0,0,0"
+
+    def release(self):
+        self._wake.set()
+
+    def close(self):
+        self.closed = True
+        if self._close_aborts_read:
+            self._wake.set()
+
+
+def _blocked_in_read(close_aborts_read):
+    s = ArduinoThermocouple("ASRL6::INSTR")
+    dev = _BlockingDev(close_aborts_read)
+    s.dev = dev
+    s._start_reader()
+    assert dev.in_read.wait(2.0), "reader never reached read()"
+    return s, dev, s._reader
+
+
+def test_close_ends_a_blocked_read_when_the_backend_aborts_it():
+    s, dev, reader = _blocked_in_read(close_aborts_read=True)
+    t0 = time.monotonic()
+    s.close()
+    assert time.monotonic() - t0 < 0.5, "close() waited on an aborted read"
+    assert dev.closed
+    assert not reader.is_alive()
+
+
+def test_close_is_bounded_when_the_backend_does_not_abort_the_read():
+    """Closing the session does not end the pending read. close() must still
+    return — after its 1 s wait for the reader, not after the read's own
+    timeout — and the reader thread may outlive it. That is the documented
+    contract: the thread is a daemon and exits once the read returns."""
+    s, dev, reader = _blocked_in_read(close_aborts_read=False)
+    try:
+        t0 = time.monotonic()
+        s.close()
+        took = time.monotonic() - t0
+        assert 0.9 < took < 2.0, f"close() took {took:.2f}s"
+        assert dev.closed
+        assert reader.is_alive(), "the reader is expected to outlive close()"
+        with pytest.raises(SensorReadError):
+            s.read_latest()              # cache cleared even so
+    finally:
+        dev.release()
+    reader.join(2.0)
+    assert not reader.is_alive(), "reader did not exit once its read returned"
 
 
 def test_arduino_declares_two_channels():
