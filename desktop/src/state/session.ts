@@ -33,7 +33,15 @@ export interface SessionSnapshot {
   connected: boolean;
   backendReachable: boolean;
   instrument: InstrumentState | null;
-  lastRunEnded: { reason: string; ok: boolean; path: string | null } | null;
+  /** How the last run ended, kept until the next one starts. Duration and
+   *  sample count are null when the backend did not report them. */
+  lastRunEnded: {
+    reason: string;
+    ok: boolean;
+    path: string | null;
+    durationS: number | null;
+    samples: number | null;
+  } | null;
   log: LogLine[];
   gap: boolean;
 }
@@ -147,6 +155,8 @@ export function applyEvent(event: AnyEvent): void {
           reason: event.payload.reason,
           ok: event.payload.ok ?? true,
           path: event.payload.path ?? null,
+          durationS: event.payload.duration_s ?? null,
+          samples: event.payload.samples ?? null,
         },
       });
       return;

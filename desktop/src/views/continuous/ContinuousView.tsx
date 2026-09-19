@@ -236,7 +236,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
           </Notice>
         ) : null}
 
-        <Readout mode={mode} />
+        <Readout mode={mode} final={!thisModeRunning} />
 
         <Panel
           className={styles.plotPanel}
@@ -323,23 +323,35 @@ function RunState({ mode }: { mode: Mode }) {
     );
   }
   if (lastRunEnded && status?.mode === mode) {
+    // The run's totals stay on screen until the next Start: the backend's
+    // own figures when it sent them, the last sample's otherwise.
+    const durationS = lastRunEnded.durationS ?? latest?.elapsedS ?? null;
+    const samples = lastRunEnded.samples ?? latest?.count ?? null;
     return (
       <span className={styles.runState}>
         <Badge tone={lastRunEnded.ok ? undefined : "danger"}>ended: {lastRunEnded.reason.replace(/_/g, " ")}</Badge>
+        {durationS !== null && samples !== null ? (
+          <span className={`${styles.runMeta} num`}>
+            {formatElapsed(durationS)} · {samples} samples
+          </span>
+        ) : null}
       </span>
     );
   }
   return <Badge>Idle</Badge>;
 }
 
-function Readout({ mode }: { mode: ContinuousMode }) {
+/** `final`: no run of this mode is going, so whatever is shown is the last
+ *  run's closing reading, not a live one — dimmed and tagged to say so. */
+function Readout({ mode, final }: { mode: ContinuousMode; final: boolean }) {
   const sample = useLatestSample();
   // Another mode's samples are not this view's numbers.
   const latest = sample && sample.mode === mode ? sample : null;
+  const stale = final && latest !== null;
   const specs = READOUTS[mode];
   const derived = mode === "four_point" ? latest?.derived : null;
   return (
-    <div className={styles.readout}>
+    <div className={styles.readout} data-final={stale || undefined}>
       {specs.map((spec) => {
         const raw = latest?.values[spec.key];
         const value = typeof raw === "number" ? raw : NaN;
@@ -362,6 +374,11 @@ function Readout({ mode }: { mode: ContinuousMode }) {
       {latest && latest.compliance !== "OK" ? (
         <div className={styles.readoutCell}>
           <Badge tone="danger">{latest.compliance === "V_COMP" ? "Voltage compliance" : "Current compliance"}</Badge>
+        </div>
+      ) : null}
+      {stale ? (
+        <div className={styles.readoutFinal}>
+          <Badge>final</Badge>
         </div>
       ) : null}
     </div>
