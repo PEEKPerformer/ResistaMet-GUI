@@ -129,7 +129,7 @@ def read_run_metadata(path: Path) -> Dict[str, Any]:
 
 def _read_hdf5_attributes(path: Path) -> Dict[str, Any]:
     """HDF5 keeps the same flat keys as file attributes, already typed."""
-    import h5py  # optional dependency; the caller treats ImportError as unreadable
+    import h5py  # optional; the caller reports ImportError as 'h5py not installed'
 
     with h5py.File(path, 'r') as handle:
         meta = {}
@@ -151,35 +151,87 @@ def _four_point_files(directory: Path) -> List[Path]:
                   and _FOUR_POINT_TAG in path.name)
 
 
-def _map_runs(directory: Path) -> List[Tuple[Path, Dict[str, Any]]]:
-    """Every readable four-point run in ``directory`` that names a map."""
-    runs = []
+def _map_runs(directory: Path) -> Tuple[List[Tuple[Path, Dict[str, Any]]], List[SkippedRun]]:
+    """The four-point runs in ``directory`` that name a map, and the files
+    that could not be read at all.
+
+    An unreadable file cannot say which map it belongs to, so it is reported
+    with every map of the directory rather than dropped from all of them: an
+    HDF5 run on a machine without h5py is a spot that is missing from the
+    map, and the map should say why.
+    """
+    runs, unreadable = [], []
     for path in _four_point_files(directory):
         try:
             meta = read_run_metadata(path)
+        except ImportError:
+            unreadable.append(SkippedRun(file=path.name, reason='h5py not installed'))
+            continue
         except Exception as exc:
-            # A file that cannot be read belongs to no map we can name.
-            logger.debug(f"spot map: cannot read {path.name}: {exc}")
+            unreadable.append(SkippedRun(file=path.name, reason=f"unreadable: {_brief(exc)}"))
             continue
         if meta.get('mode') == 'four_point' and meta.get('spot.map_id') not in (None, ''):
             runs.append((path, meta))
-    return runs
+    return runs, unreadable
 
 
 def list_map_ids(directory: Union[str, Path]) -> List[str]:
     """The map ids named by the four-point runs in ``directory``, sorted."""
-    ids = {str(meta['spot.map_id']) for _, meta in _map_runs(Path(directory))}
-    return sorted(map_id for map_id in ids if re.match(MAP_ID_PATTERN, map_id))
+    runs, _ = _map_runs(Path(directory))
+    ids = {str(meta['spot.map_id']) for _, meta in runs}
+    return sorted(map_id for map_id in ids if re.fullmatch(MAP_ID_PATTERN, map_id))
 
 
-def _started_key(path: Path, meta: Dict[str, Any]) -> Tuple[datetime, str]:
-    """Newest-first ordering: the header's start time, then the file name
-    (which begins with the Unix stamp) for runs the header cannot order."""
+#: ``<unix stamp>_...`` at the front of a run's file name, and the ``-2``,
+#: ``-3`` the exporter appends when that name is already taken.
+_NAME_STAMP = re.compile(r'^(\d+)_')
+_NAME_REPEAT = re.compile(r'-(\d+)$')
+
+
+def _started_timestamp(meta: Dict[str, Any]) -> float:
+    """The header's ``started_at`` as Unix seconds; -inf when it has none.
+
+    A float, so a header written with a UTC offset and one written without
+    can be compared (two aware/naive datetimes cannot).
+    """
     try:
-        started = datetime.fromisoformat(str(meta.get('started_at')))
-    except ValueError:
-        started = datetime.min
-    return started, path.name
+        return datetime.fromisoformat(str(meta.get('started_at'))).timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return float('-inf')
+
+
+def _newest_first_key(path: Path, meta: Dict[str, Any]) -> Tuple[float, float, int, str]:
+    """What "newest" means between two runs of one spot.
+
+    The Unix stamp at the front of the file name first: it is UTC seconds, so
+    it orders runs across a daylight-saving change and between two PCs with
+    different zone settings, where the header's local ``started_at`` does
+    not. Then ``started_at``, which has the sub-second part. Then the ``-N``
+    the exporter adds to a name that was taken, compared as a number so
+    ``-10`` follows ``-9``. Then the name. A file renamed so that it has no
+    stamp is placed by its ``started_at``.
+    """
+    name = path.name
+    for suffix in RUN_SUFFIXES:
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+            break
+    started = _started_timestamp(meta)
+    stamp = _NAME_STAMP.match(name)
+    repeat = _NAME_REPEAT.search(name)
+    return (float(stamp.group(1)) if stamp else started, started,
+            int(repeat.group(1)) if repeat else 1, path.name)
+
+
+def _brief(exc: Exception) -> str:
+    """One line of an exception, for a ``skipped`` reason."""
+    errors = exc.errors() if hasattr(exc, 'errors') else None
+    if errors:
+        first = errors[0]
+        where = '.'.join(str(part) for part in first.get('loc', ()))
+        return f"{where}: {first.get('msg')}" if where else str(first.get('msg'))
+    text = str(exc).strip().splitlines()
+    return text[0] if text else type(exc).__name__
 
 
 def _spot_stats(meta: Dict[str, Any]) -> Optional[SpotStats]:
@@ -198,6 +250,24 @@ def _spot_stats(meta: Dict[str, Any]) -> Optional[SpotStats]:
     return SpotStats.model_validate(block)
 
 
+def _map_spot(path: Path, meta: Dict[str, Any], stats: SpotStats) -> MapSpot:
+    """One run as a spot. Raises when the header's values are not what they
+    should be (``spot.x_mm: abc``)."""
+    return MapSpot(
+        index=int(meta['spot.index']),
+        label=str(meta.get('spot.label') or ''),
+        x_mm=meta.get('spot.x_mm'),
+        y_mm=meta.get('spot.y_mm'),
+        angle_deg=meta.get('spot.angle_deg'),
+        relative_error=meta.get('spot.relative_error'),
+        edge_clearance_s=meta.get('spot.edge_clearance_s'),
+        sample=None if meta.get('sample') is None else str(meta.get('sample')),
+        started_at=None if meta.get('started_at') is None else str(meta.get('started_at')),
+        file=path.name,
+        stats=stats,
+    )
+
+
 def assemble_map(directory: Union[str, Path], map_id: str) -> SpotMap:
     """The map ``map_id`` as the run files in ``directory`` describe it.
 
@@ -206,46 +276,36 @@ def assemble_map(directory: Union[str, Path], map_id: str) -> SpotMap:
     footer because it never finished, or no sample outside compliance -- is
     listed under ``skipped`` and does not displace a good earlier run.
     """
-    if not re.match(MAP_ID_PATTERN, map_id):
+    if not re.fullmatch(MAP_ID_PATTERN, map_id):
         raise ValueError(f"'{map_id}' is not a valid map id")
-    directory = Path(directory)
-    candidates: Dict[int, List[Tuple[Path, Dict[str, Any], SpotStats]]] = {}
-    skipped: List[SkippedRun] = []
-    for path, meta in _map_runs(directory):
+    runs, skipped = _map_runs(Path(directory))
+    candidates: Dict[int, List[Tuple[Tuple, MapSpot]]] = {}
+    for path, meta in runs:
         if str(meta['spot.map_id']) != map_id:
             continue
+        # Everything read from the file is validated here, inside the guard:
+        # one run with a header somebody edited must cost the map that run,
+        # not the whole map.
         try:
             stats = _spot_stats(meta)
-            index = int(meta['spot.index'])
-        except (KeyError, TypeError, ValueError) as exc:
-            skipped.append(SkippedRun(file=path.name, reason=f"unreadable spot block: {exc}"))
+            spot = None if stats is None else _map_spot(path, meta, stats)
+        except Exception as exc:
+            skipped.append(SkippedRun(file=path.name,
+                                      reason=f"unreadable spot block: {_brief(exc)}"))
             continue
         if stats is None:
             skipped.append(SkippedRun(file=path.name, reason='no footer: the run did not finish'))
         elif stats.rs.n < 1:
             skipped.append(SkippedRun(file=path.name, reason='no valid sample'))
         else:
-            candidates.setdefault(index, []).append((path, meta, stats))
+            candidates.setdefault(spot.index, []).append((_newest_first_key(path, meta), spot))
 
     spots = []
     for index in sorted(candidates):
-        runs = sorted(candidates[index], key=lambda run: _started_key(run[0], run[1]),
-                      reverse=True)
-        path, meta, stats = runs[0]
-        spots.append(MapSpot(
-            index=index,
-            label=str(meta.get('spot.label') or ''),
-            x_mm=meta.get('spot.x_mm'),
-            y_mm=meta.get('spot.y_mm'),
-            angle_deg=meta.get('spot.angle_deg'),
-            relative_error=meta.get('spot.relative_error'),
-            edge_clearance_s=meta.get('spot.edge_clearance_s'),
-            sample=None if meta.get('sample') is None else str(meta.get('sample')),
-            started_at=None if meta.get('started_at') is None else str(meta.get('started_at')),
-            file=path.name,
-            superseded=[older[0].name for older in runs[1:]],
-            stats=stats,
-        ))
+        ordered = [spot for _, spot in sorted(candidates[index], key=lambda run: run[0],
+                                              reverse=True)]
+        spots.append(ordered[0].model_copy(
+            update={'superseded': [older.file for older in ordered[1:]]}))
     return SpotMap(
         map_id=map_id,
         spots=spots,
@@ -257,7 +317,7 @@ def assemble_map(directory: Union[str, Path], map_id: str) -> SpotMap:
 
 
 def map_summary_path(directory: Union[str, Path], map_id: str) -> Path:
-    if not re.match(MAP_ID_PATTERN, map_id):
+    if not re.fullmatch(MAP_ID_PATTERN, map_id):
         raise ValueError(f"'{map_id}' is not a valid map id")
     return Path(directory) / f"{map_id}{MAP_SUMMARY_SUFFIX}"
 
