@@ -294,11 +294,15 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
         termchar, _ = self.get_attribute(ResourceAttribute.termchar)
         if termchar_enabled and not 0 <= termchar <= 0xFF:
             return b'', StatusCode.error_nonsupported_attribute_state
+        # §10.1.6: with the character enabled the instruction compares on it
+        # (m = 0x14); disabled, the character still rides in e with m = 0x00,
+        # as NI sends it on every read.
         eos = termchar if termchar_enabled else None
         try:
             data, ended = controller.read(self._pad, sad=self._sad, max_bytes=count,
                                           timeout_s=self._device_timeout(), eos=eos,
-                                          eos_8bit=True, readdress=self._readdress())
+                                          eos_8bit=True, termchar=self._termchar_byte(),
+                                          readdress=self._readdress())
         except GpibTimeout as exc:
             return exc.partial, StatusCode.error_timeout
         except (GpibError, TransportError) as exc:
