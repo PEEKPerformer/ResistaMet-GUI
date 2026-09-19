@@ -32,6 +32,7 @@ from resistamet_gui.gpib_usb import controller as controller_module  # noqa: E40
 from resistamet_gui.gpib_usb import transport, visa_session  # noqa: E402
 from resistamet_gui.gpib_usb.boards import BoardRegistry  # noqa: E402
 from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportError  # noqa: E402
+from resistamet_gui.gpib_usb.visa_intfc import NiUsbGpibIntfcDispatch  # noqa: E402
 from resistamet_gui.gpib_usb.visa_session import GPIB_INSTR, NiUsbGpibDispatch  # noqa: E402
 
 
@@ -256,14 +257,20 @@ class Sentinel(Session):
 
 @pytest.fixture
 def session_registry():
-    """Restore pyvisa-py's session table and the dispatcher's memory after each test."""
+    """Restore pyvisa-py's session table and both dispatchers' memory after each test.
+
+    ``install()`` puts the INSTR and the INTFC dispatcher in place together,
+    so both ``previous`` slots are saved here.
+    """
     saved = dict(Session._session_classes)
     saved_previous = NiUsbGpibDispatch.previous
+    saved_intfc_previous = NiUsbGpibIntfcDispatch.previous
     Sentinel.calls = []
     yield Session._session_classes
     Session._session_classes.clear()
     Session._session_classes.update(saved)
     NiUsbGpibDispatch.previous = saved_previous
+    NiUsbGpibIntfcDispatch.previous = saved_intfc_previous
 
 
 @pytest.fixture
