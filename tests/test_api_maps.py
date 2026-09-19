@@ -109,6 +109,16 @@ class TestReading:
         assert response.status_code in (404, 422), response.text
         assert 'do-not-serve' not in response.text
 
+    def test_one_malformed_run_file_is_skipped_not_a_500(self, client, data_root):
+        bad = _write_run(data_root / 'alice', 6, 'wafer7', 2, 130.0,
+                         position={'x_mm': 1.5, 'y_mm': 2.5})
+        bad.write_text(bad.read_text().replace('# spot.x_mm: 1.5', '# spot.x_mm: abc'))
+        response = client.get('/maps/wafer7?user=alice')
+        assert response.status_code == 200
+        body = response.json()
+        assert [spot['index'] for spot in body['spots']] == [0, 1]
+        assert [run['file'] for run in body['skipped']] == [bad.name]
+
     def test_nothing_is_written_by_reading(self, client, data_root):
         before = sorted(p.name for p in (data_root / 'alice').iterdir())
         client.get('/maps?user=alice')
