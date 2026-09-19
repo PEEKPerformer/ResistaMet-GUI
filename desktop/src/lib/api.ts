@@ -8,38 +8,17 @@
 import type { BackendInfo } from "./backend";
 import type { ClientInfo, Mode } from "../generated/settings";
 import type { EventEnvelope } from "../generated/events";
+import type { SessionStatus } from "../generated/session";
 import { version as packageVersion } from "../../package.json";
 
 /** Written into the header of every file a run started from here produces,
  *  so desktop output can be told from the PySide6 app's. */
 const CLIENT: ClientInfo = { name: "resistamet-desktop", version: packageVersion };
 
-export type SessionState =
-  | "idle"
-  | "identifying"
-  | "running"
-  | "paused"
-  | "awaiting_prompt"
-  | "stopping";
-
-export interface PendingPrompt {
-  prompt_id: string;
-  kind: "vdp_geometry" | "safety_voltage_ack" | "cable_null_shorted";
-  options: string[];
-  requires_human: boolean;
-  detail: Record<string, unknown>;
-}
-
-// Mirrors MeasurementSession.status(). Not part of the exported contract yet;
-// when it is, this moves to src/generated.
-export interface SessionStatus {
-  state: SessionState;
-  run_id: string | null;
-  mode: Mode | null;
-  path: string | null;
-  last_seq: number;
-  pending_prompt: PendingPrompt | null;
-}
+// What GET /session and the session commands answer with: generated from the
+// backend's SessionStatus model, re-exported here so callers keep one import.
+export type { PendingPrompt, SessionStatus } from "../generated/session";
+export type SessionState = SessionStatus["state"];
 
 export interface StartRequest {
   mode: Mode;
