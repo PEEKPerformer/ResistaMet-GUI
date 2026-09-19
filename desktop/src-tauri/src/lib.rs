@@ -10,9 +10,20 @@ mod supervisor;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use backend::{BackendInfo, SpawnOptions};
-use supervisor::Supervisor;
-use tauri::{Manager, RunEvent, State};
+use backend::{Backend, BackendInfo, SpawnOptions};
+use serde::Serialize;
+use supervisor::{ExitHook, Supervisor};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+
+/// Sent to the webview when the backend ends without having been asked to.
+const BACKEND_EXITED: &str = "backend-exited";
+
+#[derive(Clone, Serialize)]
+struct BackendExited {
+    /// The process's exit code; null when a signal ended it.
+    code: Option<i32>,
+    message: String,
+}
 
 /// The URL and token the UI needs to talk to the backend, once it is up; the
 /// reason there is no backend when it failed to start.
@@ -24,9 +35,36 @@ async fn backend_info(supervisor: State<'_, Arc<Supervisor>>) -> Result<BackendI
         .map_err(|e| format!("the shell stopped waiting for the backend: {e}"))?
 }
 
+/// Start a fresh backend after the last one ended, and answer like
+/// `backend_info`. One that is somehow still there is shut down in order first.
+#[tauri::command]
+async fn restart_backend(app: AppHandle, supervisor: State<'_, Arc<Supervisor>>) -> Result<BackendInfo, String> {
+    let supervisor = Arc::clone(&supervisor);
+    supervisor.restart(starter(&app), exit_reporter(&app));
+    tauri::async_runtime::spawn_blocking(move || supervisor.wait_info())
+        .await
+        .map_err(|e| format!("the shell stopped waiting for the backend: {e}"))?
+}
+
+/// How the supervisor starts a backend for this app.
+fn starter(app: &AppHandle) -> impl FnOnce(ExitHook) -> Result<Backend, String> + Send + 'static {
+    let app = app.clone();
+    move |on_exit| backend::spawn(spawn_options(&app, on_exit)?)
+}
+
+/// How the webview learns that the backend it was using is gone.
+fn exit_reporter(app: &AppHandle) -> impl FnOnce(Option<i32>) + Send + 'static {
+    let app = app.clone();
+    move |code| {
+        let message = supervisor::exit_message(code);
+        eprintln!("resistamet: {message}");
+        let _ = app.emit(BACKEND_EXITED, BackendExited { code, message });
+    }
+}
+
 /// Where the backend keeps config and data when there is no source checkout:
 /// the platform's per-user app data directory.
-fn packaged_dirs(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
+fn packaged_dirs(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
     let data = app
         .path()
         .app_data_dir()
@@ -36,7 +74,7 @@ fn packaged_dirs(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
 }
 
 /// What to launch, where, and with what, decided afresh for each launch.
-fn spawn_options(app: &tauri::AppHandle) -> Result<SpawnOptions, String> {
+fn spawn_options(app: &AppHandle, on_exit: ExitHook) -> Result<SpawnOptions, String> {
     let repo_root = backend::dev_repo_root();
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from));
     let resource_dir = app.path().resource_dir().ok();
@@ -62,7 +100,7 @@ fn spawn_options(app: &tauri::AppHandle) -> Result<SpawnOptions, String> {
         Some(file)
     };
 
-    Ok(SpawnOptions { launch, cwd, config, simulate, stderr_log })
+    Ok(SpawnOptions { launch, cwd, config, simulate, stderr_log, on_exit })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -71,13 +109,11 @@ pub fn run() {
         .setup(|app| {
             // Off the main thread, and never as an error from this hook:
             // the window opens at once and shows how the start went.
-            let supervisor = Supervisor::new();
-            app.manage(Arc::clone(&supervisor));
-            let handle = app.handle().clone();
-            supervisor.start(move || backend::spawn(spawn_options(&handle)?));
+            let handle = app.handle();
+            app.manage(Supervisor::launch(starter(handle), exit_reporter(handle)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![backend_info])
+        .invoke_handler(tauri::generate_handler![backend_info, restart_backend])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
