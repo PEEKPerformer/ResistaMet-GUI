@@ -1099,3 +1099,46 @@ class TestASpotCheckThatRaises:
                             off_sample_with_a_bad_number)
         session.start(_on_a_wafer(profile), 'four_point', 'wafer1', 'alice', spot=self.SPOT)
         self._assert_refused_and_free(session, sink, fake_rm, profile)
+
+
+class TestKeepingSamplesForStatisticsCannotHurtTheRun:
+    def test_a_failure_is_not_a_write_failure(self, session, sink, fake_rm, profile, monkeypatch):
+        """Three write failures stop a run; this is not one of them."""
+        from resistamet_gui.session import spot_stats
+
+        def explode(self, *args, **kwargs):
+            raise RuntimeError("statistics are broken")
+        monkeypatch.setattr(spot_stats.SpotSamples, 'add', explode)
+
+        session.start(_four_point(profile, samples=5), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+
+        ended = sink.of_type('run_ended')[0].payload
+        assert (ended['reason'], ended['ok'], ended['samples']) == ('target_samples', True, 5)
+        codes = [e.payload['code'] for e in sink.of_type('log')]
+        assert codes.count('spot_sample_failed') == 1          # said once, not per sample
+        assert 'write_failed' not in codes
+        assert sink.of_type('error') == []
+        # The file is whole; its statistics are empty rather than wrong.
+        assert sink.of_type('spot_complete')[0].payload['stats']['n'] == 0
+
+    def test_a_row_that_was_not_written_is_not_counted(self, session, sink, fake_rm, profile,
+                                                       monkeypatch):
+        from resistamet_gui import data_export
+
+        real_write = data_export.CsvExporter.write_row
+        calls = {'n': 0}
+
+        def fail_the_second(self, row):
+            calls['n'] += 1
+            if calls['n'] == 2:
+                raise OSError("disk hiccup")
+            return real_write(self, row)
+        monkeypatch.setattr(data_export.CsvExporter, 'write_row', fail_the_second)
+
+        session.start(_four_point(profile, samples=4), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+
+        finalized = sink.of_type('file_finalized')[0].payload['end_metadata']
+        assert finalized['total_samples'] == 3
+        assert finalized['spot_stats']['n'] == 3

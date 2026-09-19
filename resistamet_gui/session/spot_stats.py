@@ -48,15 +48,22 @@ class SpotSamples:
 
     def add(self, voltage: Any, current: Any, derived: Dict[str, Any],
             compliance: str = 'OK') -> None:
-        """Record one sample. ``derived`` is the dict ``build_row`` returns."""
+        """Record one sample. ``derived`` is the dict ``build_row`` returns.
+
+        Every value is converted before any column is touched, so a sample is
+        recorded whole or not at all and the columns cannot end up with
+        different lengths. Anything that is not a number becomes NaN; a
+        ``derived`` that is not a dict is a sample with no derived values.
+        """
         if compliance != 'OK':
             self.excluded += 1
             return
-        self.voltage.append(_as_float(voltage))
-        self.current.append(_as_float(current))
-        self.rs.append(_as_float(derived.get('rs')))
-        self.rho.append(_as_float(derived.get('rho')))
-        self.sigma.append(_as_float(derived.get('sigma')))
+        if not isinstance(derived, dict):
+            derived = {}
+        row = (_as_float(voltage), _as_float(current), _as_float(derived.get('rs')),
+               _as_float(derived.get('rho')), _as_float(derived.get('sigma')))
+        for column, value in zip((self.voltage, self.current, self.rs, self.rho, self.sigma), row):
+            column.append(value)
 
 
 def quantity_statistics(values: Sequence[float], v_readings: Sequence[float],
@@ -112,9 +119,8 @@ def _is_finite_number(value: Any) -> bool:
 
 
 def _as_float(value: Any) -> float:
-    """A float, or NaN for anything that is not one. Never raises: this runs
-    inside the acquisition loop, where a bad value must not end the run."""
+    """A float, or NaN for anything that cannot be made one."""
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return _NAN
