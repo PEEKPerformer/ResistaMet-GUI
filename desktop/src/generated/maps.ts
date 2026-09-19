@@ -42,6 +42,7 @@ export interface MapSpot {
   index: number;
   label: string;
   relative_error?: number | null;
+  relative_error_rows?: number | null;
   sample?: string | null;
   started_at?: string | null;
   stats: SpotStats;

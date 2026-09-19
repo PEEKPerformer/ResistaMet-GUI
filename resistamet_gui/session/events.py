@@ -149,12 +149,18 @@ class GeometryWarningPayload(EventModel):
     """A four-point spot's position is a problem, said before the first sample.
 
     ``refused`` with ``off_sample``: a probe tip is on or beyond the edge and
-    the run ends without touching the instrument. ``near_edge``: assuming a
-    centred probe costs more than ``edge_warn_pct`` here; the run goes on and
-    the values are recorded as measured, without a position correction.
+    the run ends without touching the instrument. ``near_edge``: the position
+    costs more than ``edge_warn_pct`` here; the run goes on and the values are
+    recorded as measured, without a position correction.
 
-    ``relative_error`` is ``factor_centre / factor_here - 1``, a fraction, not
-    a percentage. The factors are absent off the sample, where they diverge.
+    Two errors, both fractions and not percentages. ``relative_error_rows`` is
+    ``factor_rows / factor_here - 1``, against the lateral factor the run's
+    rows really apply (the table look-up, or K*alpha); it is the error in the
+    file's Rs. ``relative_error`` is ``factor_centre / factor_here - 1``,
+    against the closed-form centre of the sample outline. ``compared_with``
+    says which one was held against the threshold: ``rows`` whenever the rows
+    have a factor, else ``centre``. The factors are absent off the sample,
+    where they diverge.
     """
 
     refused: bool
@@ -166,6 +172,9 @@ class GeometryWarningPayload(EventModel):
     factor_here: Optional[float] = None
     factor_centre: Optional[float] = None
     relative_error: Optional[float] = None
+    factor_rows: Optional[float] = None
+    relative_error_rows: Optional[float] = None
+    compared_with: Literal['rows', 'centre'] = 'centre'
 
 
 class QuantityStats(EventModel):

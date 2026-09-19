@@ -105,6 +105,18 @@
               "default": null,
               "title": "Relative Error"
             },
+            "relative_error_rows": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Relative Error Rows"
+            },
             "sample": {
               "anyOf": [
                 {
