@@ -397,6 +397,12 @@ def adapter(monkeypatch, session_registry, enumeration):
 
 
 @pytest.fixture
+def raw_transfers(monkeypatch):
+    """Switch the 0x0b / 0x0e paths on for boards opened in this test; they are off by default."""
+    monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '1')
+
+
+@pytest.fixture
 def rm(adapter):
     # The class itself, not the ``pyvisa.ResourceManager`` name: the --simulate
     # machinery rebinds that name process-wide and other test modules leave it so.
@@ -466,28 +472,40 @@ class TestInstrumentSession:
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         write = adapter.instructions(p.OP_WRITE)[-1]
         assert write == p.write_message(b'*IDN?\r\n', 0xFD, send_eoi=True)
-        # pyvisa reads in 20480-byte chunks, so the read is a 0x0b with the data on the
-        # alternate endpoint, as it is under NI's driver (§10.1.1).
-        assert adapter.instructions(p.OP_READ) == []
-        read = adapter.instructions(p.OP_READ_RAW)[-1]
-        # Compare off: m 00 and e 00 (the bench-proven form under our AUXRA 0x81 init; NI
-        # sends e 0a under its 0x99 init, §10.1.6), 10 s code, -20480.
-        assert read[:8] == h('0b 00 00 fd 00 b0 ff ff')
-        assert adapter.raw_in_timeouts[-1] == 18778 + 20480  # 0xfd expiry + 2 s, + 20480 B at 1000 B/s
+        # pyvisa reads in 20480-byte chunks. Unless the raw paths are switched on, that is the
+        # framed 0x0a the bench has run, not the 0x0b NI's driver would send (§10.1.1).
+        assert adapter.instructions(p.OP_READ_RAW) == []
+        read = adapter.instructions(p.OP_READ)[-1]
+        # Compare off: m 00 and e 00, 10 s code, -20480, then the embedded two-write block.
+        assert read == h('0a 00 00 fd 00 b0 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')
         # Addressing: controller talks / instrument listens, then instrument talks.
         commands = adapter.instructions(p.OP_COMMAND)[-2:]
         assert commands[0][4:7] == bytes((0x3F, 0x40, 0x38))
         assert commands[1][4:7] == bytes((0x3F, 0x20, 0x58))
         inst.close()
 
-    def test_read_termination_selects_eos_and_is_stripped(self, rm, adapter):
+    def test_query_with_raw_transfers_on_reads_through_0x0b(self, rm, adapter, raw_transfers):
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 5000
+        assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
+        # The 20480-byte chunk is then a 0x0b with the data on the alternate endpoint, as it
+        # is under NI's driver (§10.1.1).
+        assert adapter.instructions(p.OP_READ) == []
+        read = adapter.instructions(p.OP_READ_RAW)[-1]
+        # Compare off: m 00 and e 00 (the bench-proven form under our AUXRA 0x81 init; NI
+        # sends e 0a under its 0x99 init, §10.1.6), 10 s code, -20480.
+        assert read[:8] == h('0b 00 00 fd 00 b0 ff ff')
+        assert adapter.raw_in_timeouts[-1] == 18778 + 20480  # 0xfd expiry + 2 s, + 20480 B at 1000 B/s
+        inst.close()
+
+    def test_read_termination_selects_eos_and_is_stripped(self, rm, adapter, raw_transfers):
         inst = rm.open_resource('GPIB0::24::INSTR', read_termination='\n')
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30'
         read = adapter.instructions(p.OP_READ_RAW)[-1]
         assert read[1:3] == h('14 0a')
         inst.close()
 
-    def test_a_long_write_goes_raw(self, rm, adapter):
+    def test_a_long_write_goes_raw(self, rm, adapter, raw_transfers):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 20000
         inst.write('*CLS;' * 409 + '*CL')  # 2048 + '\r\n' = 2050 bytes, as longwrite.pcap
@@ -503,7 +521,7 @@ class TestInstrumentSession:
         assert adapter.instruments[24].received[-1] == adapter.raw_writes[-1]
         inst.close()
 
-    def test_a_long_write_to_an_empty_address_reports_no_listeners(self, rm, adapter):
+    def test_a_long_write_to_an_empty_address_reports_no_listeners(self, rm, adapter, raw_transfers):
         # §10.6.5: the data is refused with a STALL; NI resets 0x06, then 0x02, and carries on.
         inst = rm.open_resource('GPIB0::5::INSTR')
         with pytest.raises(pyvisa.errors.VisaIOError) as info:
@@ -521,7 +539,7 @@ class TestInstrumentSession:
         other.close()
         inst.close()
 
-    def test_plain_reads_send_the_bench_proven_eos_bytes(self, rm, adapter):
+    def test_plain_reads_send_the_bench_proven_eos_bytes(self, rm, adapter, raw_transfers):
         # The first *IDN? of a bench day, on both read forms: m 00 e 00 with the compare off,
         # whatever VI_ATTR_TERMCHAR holds (pyvisa's default is 0x0a).
         inst = rm.open_resource('GPIB0::24::INSTR')
@@ -537,7 +555,7 @@ class TestInstrumentSession:
             '0a 00 00 fc 00 ff 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')  # §3.6 worked example
         inst.close()
 
-    def test_changing_the_termination_character_changes_e_only_when_enabled(self, rm, adapter):
+    def test_changing_the_termination_character_changes_e_only_when_enabled(self, rm, adapter, raw_transfers):
         # eosmodes.pcap: TERMCHAR 0x2c enabled -> 14 2c. Disabled, we keep 00 00 (see _termchar_byte).
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR, 0x2C)
@@ -550,8 +568,12 @@ class TestInstrumentSession:
         assert adapter.instructions(p.OP_READ_RAW)[-1][1:3] == h('14 2c')
         inst.close()
 
-    def test_the_environment_switch_keeps_every_transfer_framed(self, rm, adapter, monkeypatch):
-        monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '0')
+    @pytest.mark.parametrize('value', [None, '0'])
+    def test_without_the_environment_switch_every_transfer_is_framed(self, rm, adapter, monkeypatch, value):
+        if value is None:
+            monkeypatch.delenv(boards.RAW_TRANSFERS_ENV, raising=False)
+        else:
+            monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, value)
         inst = rm.open_resource('GPIB0::24::INSTR')
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         inst.write('*CLS;' * 500)
@@ -561,14 +583,23 @@ class TestInstrumentSession:
         inst.close()
 
     def test_the_environment_switch_spellings(self, monkeypatch):
-        for value in ('0', 'false', 'No', ' off '):
-            monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, value)
-            assert boards.raw_transfers_enabled() is False, value
-        for value in ('1', 'true', 'yes', ''):
+        for value in ('1', 'true', 'Yes', ' on '):
             monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, value)
             assert boards.raw_transfers_enabled() is True, value
+        for value in ('0', 'false', 'no', 'off', '', 'raw'):
+            monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, value)
+            assert boards.raw_transfers_enabled() is False, value
         monkeypatch.delenv(boards.RAW_TRANSFERS_ENV)
-        assert boards.raw_transfers_enabled() is True
+        assert boards.raw_transfers_enabled() is False
+
+    def test_the_attach_log_line_says_which_transfers(self, rm, adapter, monkeypatch, caplog):
+        with caplog.at_level('INFO', logger='resistamet_gui.gpib_usb.boards'):
+            rm.open_resource('GPIB0::24::INSTR').close()
+            monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '1')
+            rm.open_resource('GPIB0::24::INSTR').close()
+        attached = [record.getMessage() for record in caplog.records if 'attached' in record.getMessage()]
+        assert len(attached) == 2
+        assert attached[0].endswith('(framed transfers)') and attached[1].endswith('(raw transfers)')
 
     def test_a_small_chunk_size_reads_through_the_framed_instruction(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
