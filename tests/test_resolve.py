@@ -502,3 +502,49 @@ class TestSweepSourceRange:
     ])
     def test_the_desktop_s_per_source_defaults_validate(self, profile, sweep):
         assert resolve_run_settings(profile, 'sweep', sweep, strict=True).issues == []
+
+
+class TestProfileSections:
+    """A strict request runs on the whole profile, not only ``measurement``:
+    where the rows go and in what format is decided by the other sections."""
+
+    def test_a_profile_that_cannot_write_its_file_is_refused(self, profile):
+        profile['output']['format'] = 'xml'
+        profile['file']['data_directory'] = ''
+        profile['file']['auto_save_interval'] = -5
+        resolved = resolve_run_settings(profile, 'resistance', {}, strict=True)
+        assert _keys(resolved) == ['file.auto_save_interval', 'file.data_directory',
+                                   'output.format']
+        assert not resolved.ok
+
+    def test_a_bad_display_value_is_said_and_does_not_stop_a_measurement(self, profile):
+        """No run reads the display section."""
+        profile['display']['plot_color_r'] = 5
+        resolved = resolve_run_settings(profile, 'resistance', {}, strict=True)
+        assert [(i.key, i.severity) for i in resolved.issues] == [
+            ('display.plot_color_r', 'warning')]
+        assert resolved.ok
+
+    def test_wrong_types_are_issues_not_exceptions(self, profile):
+        profile['file']['auto_save_interval'] = None
+        profile['output']['compression_threshold_mb'] = 'big'
+        profile['display']['plot_figsize'] = 'wide'
+        resolved = resolve_run_settings(profile, 'resistance', {}, strict=True)
+        assert _keys(resolved) == ['display.plot_figsize', 'file.auto_save_interval',
+                                   'output.compression_threshold_mb']
+
+    def test_a_profile_from_before_the_output_section_still_runs(self, profile):
+        del profile['output']
+        assert resolve_run_settings(profile, 'resistance', {}, strict=True).issues == []
+
+    def test_an_unlimited_buffer_in_either_spelling_is_fine(self, profile):
+        for unlimited in (0, None):
+            profile['display']['buffer_size'] = unlimited
+            assert resolve_run_settings(profile, 'resistance', {}, strict=True).issues == []
+
+    def test_the_lenient_path_does_not_look(self, profile):
+        """The PySide6 gather: these sections pass through as they always did."""
+        profile['output']['format'] = 'xml'
+        resolved = resolve_run_settings(profile, 'resistance', {})
+        assert resolved.issues == []
+        assert resolved.settings['output']['format'] == 'xml'

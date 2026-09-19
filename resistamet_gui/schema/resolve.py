@@ -21,7 +21,8 @@ Two validation modes:
   in a form the models never saw. Then the same issues, plus the checks the
   GUI makes at Start — vdP needs a real thickness, 4PP must not ask for more power
   than its own hard stop, aux co-logging only exists for the continuous modes —
-  and unknown or profile-owned override keys are rejected. The touch-safety
+  and unknown or profile-owned override keys are rejected. The profile's
+  ``file``, ``output`` and ``display`` sections are validated too. The touch-safety
   keys are profile-owned here: whoever may not answer the hazardous-voltage
   prompt may not move its threshold or silence it for one run either.
 """
@@ -32,7 +33,14 @@ from typing import Any, Dict, List, Optional
 
 from ..constants import MODE_TIMING_OVERRIDES
 from ..formatting import format_power
-from .settings_common import AuxSensorSettings, InstrumentSettings, SafetySettings
+from .settings_common import (
+    AuxSensorSettings,
+    DisplaySettings,
+    FileSettings,
+    InstrumentSettings,
+    OutputSettings,
+    SafetySettings,
+)
 from .settings_modes import MODE_MODELS
 
 logger = logging.getLogger(__name__)
@@ -50,6 +58,17 @@ SAFETY_KEYS = tuple(SafetySettings.model_fields)
 
 #: Override keys that are not settings: they select a value rather than be one.
 CONTROL_KEYS = ('vsource_run_continuous', 'isource_run_continuous')
+
+#: The sections beside ``measurement``, the model of each, and how bad an
+#: invalid value is for a strict request. ``file`` and ``output`` decide where
+#: and how the rows are written, so an error there must stop the run before
+#: it opens anything. Nothing in a run reads ``display``; a bad value is
+#: worth telling the client about and not worth refusing a measurement for.
+SECTION_MODELS = (
+    ('file', FileSettings, 'error'),
+    ('output', OutputSettings, 'error'),
+    ('display', DisplaySettings, 'warning'),
+)
 
 #: Modes whose runs can co-log an auxiliary sensor (data_export.AUX_LOG_MODES).
 AUX_LOG_MODES = ('resistance', 'source_v', 'source_i', 'four_point')
@@ -181,6 +200,8 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
 
     # 9. Validate against the models; strict adds the GUI's Start-time checks.
     issues.extend(_validate(m_cfg, mode, strict=strict))
+    if strict:
+        issues.extend(_section_issues(settings))
 
     # 10-11. Arithmetic only on values that validated. A key with an error
     #     has already been reported by name; reading it again would raise
@@ -254,6 +275,22 @@ def _validate(m_cfg: Dict[str, Any], mode: str, *, strict: bool) -> List[Issue]:
     if m_cfg.get('aux_log_enabled') and mode not in AUX_LOG_MODES:
         issues.append(Issue('aux_log_enabled',
                              f"auxiliary co-logging is not available for mode '{mode}'"))
+    return issues
+
+
+def _section_issues(settings: Dict[str, Any]) -> List[Issue]:
+    """Strict only: the ``file``, ``output`` and ``display`` sections.
+
+    A request cannot override these, so what is judged is the stored profile
+    -- an unknown output format, an empty data directory -- before a run is
+    started on it rather than when the exporter first trips over it. Keys
+    are qualified (``output.format``) because these names are not unique to
+    their section the way measurement keys are.
+    """
+    issues: List[Issue] = []
+    for section, model, severity in SECTION_MODELS:
+        for issue in _model_issues(model, settings[section], strict=True):
+            issues.append(Issue(f"{section}.{issue.key}", issue.message, severity))
     return issues
 
 
