@@ -11,10 +11,11 @@ See ``docs/design/tauri_backend_split.md`` section 4.2.
 """
 from typing import Any, Dict, Literal, Optional
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from ..constants import DEFAULT_SETTINGS
 from .settings_common import SettingsModel
+from .spots import SpotRequest
 
 _M = DEFAULT_SETTINGS['measurement']
 
@@ -170,3 +171,12 @@ class RunRequest(SettingsModel):
     # Session runs only: how long a prompt may sit unanswered before the run
     # aborts with the output off. The PySide6 path never times out.
     prompt_timeout_s: float = Field(default=900.0, gt=0.0)
+    # Which placement of the probe this run is. Four-point only: the spot and
+    # map model belongs to no other mode until a second one needs it.
+    spot: Optional[SpotRequest] = None
+
+    @model_validator(mode='after')
+    def _only_four_point_has_spots(self):
+        if self.spot is not None and self.mode != 'four_point':
+            raise ValueError(f"a spot belongs to a four_point run, not '{self.mode}'")
+        return self

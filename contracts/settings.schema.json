@@ -491,6 +491,77 @@
       "type": "object"
     },
     "RunRequest": {
+      "$defs": {
+        "SpotRequest": {
+          "additionalProperties": false,
+          "description": "One placement of the probe, as the client describes it.\n\nThe position is optional -- a spot can be a label and nothing more -- but\n``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the\ndirection of the probe array, anticlockwise from +x; absent, the run uses\nthe ``fpp_array_angle_deg`` setting.",
+          "properties": {
+            "angle_deg": {
+              "anyOf": [
+                {
+                  "maximum": 360.0,
+                  "minimum": -360.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Angle Deg"
+            },
+            "index": {
+              "maximum": 9999,
+              "minimum": 0,
+              "title": "Index",
+              "type": "integer"
+            },
+            "label": {
+              "maxLength": 80,
+              "minLength": 1,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+              "title": "Label",
+              "type": "string"
+            },
+            "map_id": {
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "title": "Map Id",
+              "type": "string"
+            },
+            "x_mm": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "X Mm"
+            },
+            "y_mm": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Y Mm"
+            }
+          },
+          "required": [
+            "map_id",
+            "index",
+            "label"
+          ],
+          "title": "SpotRequest",
+          "type": "object"
+        }
+      },
       "additionalProperties": false,
       "description": "What a client asks for. Never persisted.\n\n``overrides`` is flat measurement keys, the same shape the tabs produce\ntoday, so one request format serves the UI, a script and the MCP layer.\nStrict validation of the keys happens in the resolver, which knows which\nones the profile owns.",
       "properties": {
@@ -521,6 +592,17 @@
           "minLength": 1,
           "title": "Sample Name",
           "type": "string"
+        },
+        "spot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpotRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "username": {
           "minLength": 1,
