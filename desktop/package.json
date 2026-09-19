@@ -11,7 +11,8 @@
     "tauri": "tauri",
     "gen:types": "node scripts/generate-types.mjs",
     "check:types": "node scripts/generate-types.mjs --check",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test \"src/lib/**/*.test.ts\""
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
