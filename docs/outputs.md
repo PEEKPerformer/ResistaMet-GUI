@@ -148,13 +148,12 @@ Value encoding in both blocks: booleans are `true` / `false`, a missing value is
 
 `params.*` is what was asked for. `effective.*` is what the instrument reported after it was configured, recorded so that a reader comparing the two sees what the instrument overrode.
 
-One key exists, in resistance mode only:
+It exists in resistance mode only, as one of two keys. Both hold the reply to `:SENS:VOLT:PROT?` read once, after configuration and before the output comes on (the requested value if the query fails):
 
-| Key | Unit | Meaning |
-|---|---|---|
-| `effective.voltage_compliance_V` | V | The reply to `:SENS:VOLT:PROT?` after configuration. With **Auto range** on, the instrument's auto-ohms function sets its own voltage limit and chooses its own test current per range, so this can differ from `params.voltage_compliance_V`, and the `I_meas` column, not `params.test_current_A`, is the record of the current that flowed. If the query fails the requested value is written. |
-
-Resistance-mode compliance is judged against this value; see [Resistance](#resistance).
+| Key | Unit | Written when | Meaning |
+|---|---|---|---|
+| `effective.voltage_compliance_V` | V | Manual range (`params.auto_range: false`) | The voltage limit in force for the whole run. Compliance is judged against it; see [Resistance](#resistance). |
+| `effective.voltage_compliance_V_at_configure` | V | **Auto range** (`params.auto_range: true`, the default) | What the limit was at configure time, and no more than that. In Auto range the instrument's auto-ohms function chooses its own test current and voltage limit per ohms range and moves them as it changes range, so no row was necessarily measured under this number, and `params.voltage_compliance_V` and `params.test_current_A` are not what applied either. The `I_meas` column is the record of the current that flowed. |
 
 ### `client.*` — which program asked for the run
 
@@ -273,7 +272,7 @@ Only files in the user's own directory (not subdirectories) whose names contain 
 
 ## HDF5 layout
 
-Single dataset named `data` of compound dtype (every column as a variable-length UTF-8 string for type-mixing safety). Metadata lives in the file's `attrs` under the same dotted names the CSV uses (`params.source_current_A`, `effective.voltage_compliance_V`, `spot.map_id`, `spot_stats.rs.mean`, …), plus `columns` and `units` attribute arrays and `resistamet_format_version`. End metadata is added to `attrs` at finalize. Chunked (1024 rows per chunk), gzip level 6.
+Single dataset named `data` of compound dtype (every column as a variable-length UTF-8 string for type-mixing safety). Metadata lives in the file's `attrs` under the same dotted names the CSV uses (`params.source_current_A`, `effective.voltage_compliance_V_at_configure`, `spot.map_id`, `spot_stats.rs.mean`, …), plus `columns` and `units` attribute arrays and `resistamet_format_version`. End metadata is added to `attrs` at finalize. Chunked (1024 rows per chunk), gzip level 6.
 
 ### CSV and HDF5 parity
 
@@ -302,9 +301,16 @@ The two backends receive the same metadata dict, the same columns and the same r
 | `compliance` | | `OK` on a normal reading, `V_COMP` when the voltage side hit compliance (see below) |
 | `event` | | Empty, or the labels of the event marks made since the previous row, joined with `; ` |
 
-Metadata `params`: `test_current_A`, `voltage_compliance_V`, `measurement_type`, `auto_range`, `auto_zero`, `offset_compensated_ohms`; plus `effective.voltage_compliance_V`.
+Metadata `params`: `test_current_A`, `voltage_compliance_V`, `measurement_type`, `auto_range`, `auto_zero`, `offset_compensated_ohms`; plus one [`effective.*`](#effective-what-the-instrument-reported-back) key.
 
-**How compliance is flagged in resistance mode.** A row is `V_COMP` when `|V_meas| ≥ 0.99 ×` the effective voltage limit, the value in `effective.voltage_compliance_V`, or when the status word's compliance bit is set. The 99 % rule is what does the work: on the 2400 and the 2420 the ohms function was seen on the bench (2026-09-18) never to set the compliance bit, and in manual range it reports the programmed current, so `R_ohm` under compliance is a plausible-looking wrong number. The comparison uses the limit the instrument reports, not the one requested, because auto-ohms replaces the requested limit (2.1 V has been read back on a 2420 asked for 0.5 V). The other continuous modes apply the same 99 % test against their requested limit (`vsource_current_compliance`, `isource_voltage_compliance`, `fpp_voltage_compliance`) alongside the status bit.
+**How compliance is flagged in resistance mode.** It depends on the range mode, because the voltage limit does.
+
+- **Manual range.** A row is `V_COMP` when `|V_meas| ≥ 0.99 ×` the effective voltage limit (`effective.voltage_compliance_V`), or when the status word's compliance bit is set. The 99 % rule is what does the work: on the 2400 and the 2420 the ohms function was seen on the bench (2026-09-18) never to set the compliance bit, and in manual range it reports the programmed current, so `R_ohm` under compliance is a plausible-looking wrong number. The bench showed 0.4998 V under a 0.5 V limit.
+- **Auto range** (the default). There is no fixed limit to compare with: auto-ohms sets its own per ohms range (2.1 V was read back at configure time on a 2420 asked for 0.5 V, while the top ranges measure up to 20 V), so a healthy 1 MΩ DUT at 10 V is not in compliance. A row is `V_COMP` only when the status bit is set or when `V_meas` or `R_ohm` is the instrument's overflow value (`9.9e37`), which it returns past its top range.
+
+The other continuous modes apply the 99 % test against their requested limit (`vsource_current_compliance`, `isource_voltage_compliance`, `fpp_voltage_compliance`) alongside the status bit.
+
+The simulator does not model auto-ohms; the Auto range behavior rests on the bench observations above and on the instrument manual's range table, not on a simulated run.
 
 ### Voltage Source
 
