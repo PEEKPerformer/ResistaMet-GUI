@@ -177,7 +177,24 @@ export function SweepView() {
           ) : null}
         </div>
 
-        <Panel className={styles.plotPanel} bodyClassName={styles.plotBody} title="I–V">
+        <Panel
+          className={styles.plotPanel}
+          bodyClassName={styles.plotBody}
+          title="I–V"
+          actions={
+            curve.length > 0 ? (
+              // The key to the two legs: hysteresis is what this view is for.
+              <div className={own.legend} aria-label="Legend">
+                {curve.map((s, i) => (
+                  <span key={i} className={own.legendItem}>
+                    <span className={own.swatch} style={{ background: s.color }} />
+                    {s.label}
+                  </span>
+                ))}
+              </div>
+            ) : undefined
+          }
+        >
           {curve.length > 0 ? (
             <XYPlot series={curve} xUnit="V" yUnit="A" />
           ) : (
