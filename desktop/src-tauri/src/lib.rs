@@ -103,10 +103,17 @@ fn packaged_dirs(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
 
 /// What to launch, where, and with what, decided afresh for each launch.
 fn spawn_options(app: &AppHandle, on_exit: ExitHook) -> Result<SpawnOptions, String> {
+    // Development conveniences; a release build has none of them.
+    let overrides = backend::dev_overrides(cfg!(debug_assertions), |name| std::env::var(name).ok());
     let repo_root = backend::dev_repo_root();
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from));
     let resource_dir = app.path().resource_dir().ok();
-    let launch = backend::locate(exe_dir.as_deref(), resource_dir.as_deref(), repo_root.as_deref());
+    let launch = backend::locate(
+        overrides.python.as_deref(),
+        exe_dir.as_deref(),
+        resource_dir.as_deref(),
+        repo_root.as_deref(),
+    );
     eprintln!("resistamet: backend via {launch:?}");
 
     // In a source checkout the backend works where the PySide6 app
@@ -115,7 +122,7 @@ fn spawn_options(app: &AppHandle, on_exit: ExitHook) -> Result<SpawnOptions, Str
         Some(root) => (root.clone(), root.join("config.json")),
         None => packaged_dirs(app)?,
     };
-    let simulate = std::env::var("RESISTAMET_SIMULATE").map(|v| v == "1").unwrap_or(false);
+    let simulate = overrides.simulate;
 
     // Development keeps the backend's log in the terminal. A packaged
     // app has no terminal, so each launch writes its own file.

@@ -7,10 +7,10 @@
 //! output off, finalize the file) before killing it as a last resort.
 //!
 //! Where the interpreter comes from, in order:
-//!   1. `RESISTAMET_PYTHON` — an explicit override, for development.
+//!   1. `RESISTAMET_PYTHON` — an explicit override, in development builds only.
 //!   2. A bundled sidecar next to the executable (`resistamet-api[.exe]`),
 //!      which step 3 of the migration adds.
-//!   3. The repo's `.venv`, when running from a source checkout.
+//!   3. The repo's `.venv`, when a development build runs from its checkout.
 //!   4. `python3` / `python` on PATH.
 
 use std::io::{BufRead, BufReader, Write};
@@ -56,9 +56,14 @@ pub enum Launch {
 ///
 /// `resource_dir` is where Tauri unpacks bundled resources; the PyInstaller
 /// one-dir build ships there as `resistamet-api/resistamet-api[.exe]`.
-pub fn locate(exe_dir: Option<&Path>, resource_dir: Option<&Path>, repo_root: Option<&Path>) -> Launch {
-    if let Ok(explicit) = std::env::var("RESISTAMET_PYTHON") {
-        return Launch::Interpreter(PathBuf::from(explicit));
+pub fn locate(
+    explicit: Option<&Path>,
+    exe_dir: Option<&Path>,
+    resource_dir: Option<&Path>,
+    repo_root: Option<&Path>,
+) -> Launch {
+    if let Some(explicit) = explicit {
+        return Launch::Interpreter(explicit.to_path_buf());
     }
     let binary = if cfg!(windows) { "resistamet-api.exe" } else { "resistamet-api" };
     for dir in [resource_dir.map(|d| d.join("resistamet-api")), exe_dir.map(PathBuf::from)]
@@ -84,12 +89,43 @@ pub fn locate(exe_dir: Option<&Path>, resource_dir: Option<&Path>, repo_root: Op
 }
 
 /// The source checkout this binary was built from, when it still exists.
-/// Development only: a packaged app has no repo and falls through.
+///
+/// Development builds only, and compiled out of the rest: a release binary
+/// run on the machine that built it would otherwise find the checkout and
+/// work in it — its config.json, its measurement_data — instead of the app
+/// data directory every other machine uses.
 pub fn dev_repo_root() -> Option<PathBuf> {
-    // desktop/src-tauri -> desktop -> repo
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest.parent()?.parent()?.to_path_buf();
-    if root.join("resistamet_gui").is_dir() { Some(root) } else { None }
+    #[cfg(debug_assertions)]
+    {
+        // desktop/src-tauri -> desktop -> repo
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest.parent()?.parent()?.to_path_buf();
+        if root.join("resistamet_gui").is_dir() { Some(root) } else { None }
+    }
+    #[cfg(not(debug_assertions))]
+    None
+}
+
+/// What a developer can switch from the environment. A packaged app honours
+/// none of it: a variable left set on a lab PC must not point the app at
+/// another interpreter, or at the simulator with nothing on screen to say so.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DevOverrides {
+    /// `RESISTAMET_PYTHON`: the interpreter to run the backend with.
+    pub python: Option<PathBuf>,
+    /// `RESISTAMET_SIMULATE=1`: run against the in-package simulator.
+    pub simulate: bool,
+}
+
+/// Read the overrides through `env`, or none of them when `dev` is false.
+pub fn dev_overrides(dev: bool, env: impl Fn(&str) -> Option<String>) -> DevOverrides {
+    if !dev {
+        return DevOverrides::default();
+    }
+    DevOverrides {
+        python: env("RESISTAMET_PYTHON").map(PathBuf::from),
+        simulate: env("RESISTAMET_SIMULATE").is_some_and(|v| v == "1"),
+    }
 }
 
 pub struct SpawnOptions {
@@ -259,6 +295,38 @@ impl Backend {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod override_tests {
+    use super::*;
+
+    fn lab_pc_env(name: &str) -> Option<String> {
+        match name {
+            "RESISTAMET_PYTHON" => Some("/somewhere/python".into()),
+            "RESISTAMET_SIMULATE" => Some("1".into()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_packaged_app_ignores_the_development_variables() {
+        assert_eq!(dev_overrides(false, lab_pc_env), DevOverrides { python: None, simulate: false });
+    }
+
+    #[test]
+    fn a_development_build_honours_them() {
+        let overrides = dev_overrides(true, lab_pc_env);
+        assert_eq!(overrides.python.as_deref(), Some(Path::new("/somewhere/python")));
+        assert!(overrides.simulate);
+        assert!(!dev_overrides(true, |_| None).simulate);
+    }
+
+    #[test]
+    fn an_explicit_interpreter_outranks_everything_found_on_disk() {
+        let launch = locate(Some(Path::new("/somewhere/python")), None, None, None);
+        assert!(matches!(launch, Launch::Interpreter(p) if p == Path::new("/somewhere/python")));
     }
 }
 
