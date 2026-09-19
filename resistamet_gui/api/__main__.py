@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import secrets
+import signal
 import socket
 import sys
 import threading
@@ -39,6 +40,11 @@ logger = logging.getLogger(__name__)
 #: Long enough for a stop to land during a slow VISA read and for the run to
 #: turn the output off and finalize; see the stop-latency table in the design.
 SHUTDOWN_GRACE_S = 35.0
+
+#: How long the server may wait for open connections once it is told to
+#: exit. A client that never hangs up must not stand between a signal and
+#: the run being stopped.
+SERVER_DRAIN_S = 3
 
 
 def _parse_args(argv):
@@ -89,6 +95,28 @@ def _watch_stdin(on_eof):
     thread = threading.Thread(target=run, name="stdin-watchdog", daemon=True)
     thread.start()
     return thread
+
+
+def _exit_through_the_shutdown_on_signals(server) -> None:
+    """Make SIGTERM, SIGINT and Ctrl+Break end the process the ordered way.
+
+    While it serves, uvicorn handles these itself and stops serving. It then
+    puts back whatever handler was there before and raises the signal again
+    -- and with the default handler in place that kills the process on the
+    spot, before the ``finally`` in :func:`main` has stopped the run. A
+    Python-level handler here is what gets put back, so the second delivery
+    is harmless and ``main`` carries on to its shutdown.
+
+    Closing the console window on Windows (CTRL_CLOSE_EVENT) is not a signal
+    Python can handle; the parent closing stdin is the route that covers it.
+    """
+    def ask_to_exit(signum, frame):
+        server.should_exit = True
+
+    for name in ('SIGTERM', 'SIGINT', 'SIGBREAK'):
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            signal.signal(signum, ask_to_exit)
 
 
 def build(args):
@@ -149,7 +177,8 @@ def main(argv=None):
     listener.listen(128)
     port = listener.getsockname()[1]
 
-    config = uvicorn.Config(app, log_config=None, access_log=False)
+    config = uvicorn.Config(app, log_config=None, access_log=False,
+                             timeout_graceful_shutdown=SERVER_DRAIN_S)
     server = uvicorn.Server(config)
     app.state.api.server = server
 
@@ -157,15 +186,27 @@ def main(argv=None):
     print(json.dumps({'url': f"http://{args.host}:{port}", 'token': token,
                        'pid': os.getpid()}), flush=True)
 
-    if not args.no_watchdog:
-        _watch_stdin(lambda: setattr(server, 'should_exit', True))
+    def parent_went_away():
+        # The run first: it can be turning the output off while the server
+        # is still closing its connections.
+        session.stop()
+        server.should_exit = True
 
+    if not args.no_watchdog:
+        _watch_stdin(parent_went_away)
+
+    _exit_through_the_shutdown_on_signals(server)
     try:
         server.run(sockets=[listener])
     finally:
         # The run gets its grace period before the process goes away, so the
         # output is off and the file is finalized.
         session.close(timeout=SHUTDOWN_GRACE_S)
+        if session.state != 'idle':
+            logger.error("the run did not end within %.0f s of being stopped; exiting "
+                         "anyway. The source output may still be ON and the data file "
+                         "is not finalized -- check the instrument's front panel.",
+                         SHUTDOWN_GRACE_S)
 
 
 if __name__ == "__main__":
