@@ -10,6 +10,7 @@ import {
   niceTicks,
   num,
   outlineFromSettings,
+  roundMm,
   photoTransform,
   preflight,
   probeTips,
@@ -107,6 +108,15 @@ test("the viewport keeps the aspect of the sample", () => {
   assert.equal(view.pxPerMm, 10); // limited by the 40 mm length, not the 10 mm width
   assert.deepEqual([view.originX, view.originY], [210, 160]);
   assert.equal(fitViewport({ x: 20, y: 5 }, { x: 0, y: 0, width: 400, height: 300 }, 5).pxPerMm, 8);
+});
+
+test("positions are kept on a grid, without float noise", () => {
+  assert.equal(roundMm(6.97, 0.1), 7);
+  assert.equal(roundMm(0.7000000000000001), 0.7);
+  assert.equal(roundMm(0.1 + 0.2), 0.3);
+  assert.equal(roundMm(-0.004), 0);
+  assert.ok(Object.is(roundMm(-0.004), 0), "no negative zero");
+  assert.equal(roundMm(-4.476, 0.1), -4.5);
 });
 
 test("scale bar lengths are 1, 2 or 5 times a power of ten", () => {

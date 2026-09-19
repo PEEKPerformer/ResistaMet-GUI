@@ -27,7 +27,7 @@ import { Icons } from "../../components/icons";
 import { LivePlot, type TraceSpec } from "../../components/plot/LivePlot";
 import { FieldRow, SettingsForm } from "../../components/forms/SettingsForm";
 import { FourPointPanel } from "./FourPointPanel";
-import { prepareSpot, useMapSync } from "./fourPointSpot";
+import { describeClearance, preflightFor, prepareSpot, useMapSync } from "./fourPointSpot";
 import { MapPanel } from "./MapPanel";
 import styles from "./ContinuousView.module.css";
 
@@ -97,7 +97,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
   const session = useSession();
   const ui = useUi();
   const overrides = useOverrides(mode);
-  const { warning: spotWarning } = useSpots();
+  const { warning: spotWarning, pending: pendingSpot } = useSpots();
   const [resolved, setResolved] = useState<Resolved | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [windowS, setWindowS] = useState(300);
@@ -162,7 +162,13 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [api, thisModeRunning]);
 
+  // The backend refuses a spot with a tip off the sample; the same test here
+  // saves the round trip. How much a spot near an edge costs is the backend's.
+  const spotPreflight = owner ? preflightFor(measurement, pendingSpot) : null;
+  const spotOffSample = spotPreflight?.state === "off";
+
   const canStart =
+    !spotOffSample &&
     session.backendReachable === true && !locked && ui.username !== null && ui.sampleName.trim() !== "" && resolved !== null && resolved.ok && !busy;
 
   const start = async () => {
@@ -237,6 +243,9 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
 
         <BackendNotice />
         {startError ? <Notice tone="danger">{startError}</Notice> : null}
+        {spotOffSample && !locked ? (
+          <Notice tone="warn">The spot is off the sample: {describeClearance(spotPreflight!)}. Move it or clear its position.</Notice>
+        ) : null}
         {mode === "four_point" && spotWarning?.refused ? <Notice tone="danger">{spotWarning.message} Nothing was measured.</Notice> : null}
         {otherModeRunning ? (
           <Notice tone="info">A {MODE_LABEL[status!.mode!]} run is in progress. Stop it before starting another.</Notice>
@@ -281,7 +290,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
         {mode === "four_point" ? (
           <>
             <FourPointPanel running={thisModeRunning} owner={owner} edgeWarnPct={numberSetting(measurement, "fpp_edge_warn_pct", 1)} />
-            <MapPanel owner={owner} measurement={measurement} />
+            <MapPanel owner={owner} measurement={measurement} running={thisModeRunning} start={{ enabled: canStart, run: () => void start() }} />
           </>
         ) : null}
       </div>

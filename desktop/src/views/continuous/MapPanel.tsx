@@ -5,10 +5,10 @@
 // The drawing is a Scene laid out by lib/map/figure.ts; this file decides
 // what goes into it and handles the pointer.
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import type { MapSpot } from "../../generated/maps";
 import type { MapOwner } from "../../lib/map/mapId";
-import { outlineFromSettings, type Outline } from "../../lib/map/geometry";
+import { outlineFromSettings, probeTips, roundMm, toFigure, toSample, type Outline, type Preflight, type Viewport } from "../../lib/map/geometry";
 import {
   defaultQuantity,
   edgeError,
@@ -23,18 +23,30 @@ import {
   type Quantity,
 } from "../../lib/map/figure";
 import { formatWithUncertainty } from "../../lib/format";
-import { activeMap, activeMapId, useSpots } from "../../state/spots";
+import { activeMap, activeMapId, setPending, useSpots } from "../../state/spots";
 import { setMapView, useMapView } from "../../state/mapView";
-import { Panel, Select, Toggle } from "../../components/ui";
+import { Button, Panel, Select, Toggle } from "../../components/ui";
+import { EngineeringInput } from "../../components/ui/EngineeringInput";
 import { Icons } from "../../components/icons";
 import { SceneSvg } from "../../components/map/SceneSvg";
+import { describeClearance, preflightFor } from "./fourPointSpot";
 import styles from "./MapPanel.module.css";
 
 interface Props {
   owner: MapOwner | null;
   /** The measurement settings the next run would use. */
   measurement: Record<string, unknown>;
+  /** A run is going: the position belongs to it and cannot be moved. */
+  running: boolean;
+  /** The view's Start, offered again beside the position: the map sits a
+   *  scroll away from the button at the top. */
+  start: { enabled: boolean; run: () => void };
 }
+
+/** Arrow keys move the pending spot by this much; with Shift, ten times it.
+ *  A click lands on the same grid: a pixel is about that wide, and "7.0" reads
+ *  better than "6.97" in a file. Typed coordinates keep 0.01 mm. */
+const NUDGE_MM = 0.1;
 
 function numberOf(settings: Record<string, unknown>, key: string, fallback: number): number {
   const value = settings[key];
@@ -69,8 +81,10 @@ export function figureTitles(sample: string, quantity: Quantity, spots: MapSpot[
   };
 }
 
-export function MapPanel({ owner, measurement }: Props) {
+export function MapPanel({ owner, measurement, running, start }: Props) {
   const view = useMapView();
+  const { pending } = useSpots();
+  const svgRef = useRef<SVGSVGElement>(null);
   const { map, mapId, outline, spacingMm, arrayAngleDeg, edgeWarnPct } = useFigureInputs(owner, measurement);
   const [hovered, setHovered] = useState<number | null>(null);
 
@@ -98,6 +112,38 @@ export function MapPanel({ owner, measurement }: Props) {
     // `spots` is a fresh array every render while there is no map.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner?.sample, quantity, map, mapId, outline, spacingMm, arrayAngleDeg, edgeWarnPct, view.labels, view.cells]);
+
+  // A position means something on an outline with real dimensions.
+  const canPlace = bounded && !running;
+  const check = preflightFor(measurement, pending);
+
+  const place = (e: PointerEvent<SVGSVGElement>) => {
+    const svg = svgRef.current;
+    if (!canPlace || !svg || e.button !== 0) return;
+    // The SVG keeps its aspect, so client pixels scale evenly into figure units.
+    const rect = svg.getBoundingClientRect();
+    const fx = ((e.clientX - rect.left) / rect.width) * FIGURE_WIDTH;
+    const fy = ((e.clientY - rect.top) / rect.height) * FIGURE_HEIGHT;
+    const box = layout.mapBox;
+    if (fx < box.x || fx > box.x + box.width || fy < box.y || fy > box.y + box.height) return;
+    const at = toSample(layout.view, { x: fx, y: fy });
+    setPending({ x_mm: roundMm(at.x, NUDGE_MM), y_mm: roundMm(at.y, NUDGE_MM) });
+  };
+
+  const nudge = (e: KeyboardEvent<SVGSVGElement>) => {
+    if (!canPlace) return;
+    if (e.key === "Escape" || e.key === "Delete" || e.key === "Backspace") {
+      if (pending) setPending(null);
+      return;
+    }
+    // Up is +y: the sample's y points up the screen.
+    const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }[e.key];
+    if (!direction) return;
+    e.preventDefault();
+    const step = NUDGE_MM * (e.shiftKey ? 10 : 1);
+    const from = pending ?? { x_mm: 0, y_mm: 0 };
+    setPending({ x_mm: roundMm(from.x_mm + direction[0]! * step), y_mm: roundMm(from.y_mm + direction[1]! * step) });
+  };
 
   const hoveredSpot = hovered === null ? null : (layout.placed.find((p) => p.spot.index === hovered) ?? null);
 
@@ -143,20 +189,101 @@ export function MapPanel({ owner, measurement }: Props) {
       {open ? (
         <>
           <div className={styles.canvas}>
-            <SceneSvg scene={layout.scene} onSpot={setHovered} role="img" aria-label="Map of the sample with the measured spots" />
+            <SceneSvg
+              scene={layout.scene}
+              svgRef={svgRef}
+              onSpot={setHovered}
+              role="application"
+              aria-label="Map of the sample. Click to place the next spot; arrow keys move it by 0.1 mm, with Shift by 1 mm."
+              tabIndex={canPlace ? 0 : -1}
+              onPointerDown={place}
+              onKeyDown={nudge}
+              style={{ cursor: canPlace ? "crosshair" : "default" }}
+            >
+              {pending && bounded ? (
+                <PendingMarker view={layout.view} at={pending} angleDeg={arrayAngleDeg} spacingMm={spacingMm} state={check?.state ?? "none"} />
+              ) : null}
+            </SceneSvg>
             {hoveredSpot ? <SpotTip spot={hoveredSpot.spot} quantity={quantity} x={hoveredSpot.at.x} y={hoveredSpot.at.y} /> : null}
           </div>
+          {bounded ? (
+            <div className={styles.position}>
+              <span className={styles.positionLabel}>Next spot</span>
+              <span className={styles.coordinate}>
+              <EngineeringInput
+                value={pending?.x_mm ?? null}
+                unit="mm"
+                nullable
+                disabled={!canPlace}
+                placeholder="x"
+                onChange={(x) => setPending(x === null ? null : { x_mm: roundMm(x), y_mm: pending?.y_mm ?? 0 })}
+              />
+              </span>
+              <span className={styles.coordinate}>
+              <EngineeringInput
+                value={pending?.y_mm ?? null}
+                unit="mm"
+                nullable
+                disabled={!canPlace}
+                placeholder="y"
+                onChange={(y) => setPending(y === null ? null : { x_mm: pending?.x_mm ?? 0, y_mm: roundMm(y) })}
+              />
+              </span>
+              {pending ? (
+                <>
+                  <Button size="sm" variant="ghost" disabled={!canPlace} onClick={() => setPending(null)}>
+                    Clear
+                  </Button>
+                  <Button size="sm" variant="primary" disabled={!start.enabled} onClick={start.run}>
+                    <Icons.play size={12} /> Start here
+                  </Button>
+                </>
+              ) : null}
+              <span className={check ? positionTone(check, styles) : styles.faint}>
+                {check ? `${describeClearance(check)}${check.state === "caution" ? "; the backend reports the error at Start" : ""}` : "No position: click the map, or Start without one."}
+              </span>
+            </div>
+          ) : null}
           <div className={styles.status}>
             {outline === null ? <span className={styles.warn}>Enter the sample's dimensions in Settings ▸ Sample to draw its outline.</span> : null}
             {unplaced > 0 ? (
               <span>
-                {unplaced} of {spots.length} {spots.length === 1 ? "spot has" : "spots have"} no position and {unplaced === 1 ? "is" : "are"} in the table only.
+                {unplaced} of {spots.length} {spots.length === 1 ? "spot" : "spots"} not drawn: no position.
               </span>
             ) : null}
           </div>
         </>
       ) : null}
     </Panel>
+  );
+}
+
+function positionTone(check: Preflight, css: Record<string, string>): string | undefined {
+  return check.state === "off" ? css.danger : check.state === "caution" ? css.warn : css.faint;
+}
+
+const STATE_COLOR: Record<Preflight["state"], string> = {
+  none: "var(--accent)",
+  ok: "var(--accent)",
+  caution: "var(--warn)",
+  off: "var(--danger)",
+};
+
+/** The spot the next run measures: the four tips to scale, along the array. */
+function PendingMarker({ view, at, angleDeg, spacingMm, state }: { view: Viewport; at: { x_mm: number; y_mm: number }; angleDeg: number; spacingMm: number; state: Preflight["state"] }) {
+  const color = STATE_COLOR[state];
+  const centre = toFigure(view, { x: at.x_mm, y: at.y_mm });
+  const tips = probeTips({ x: at.x_mm, y: at.y_mm }, angleDeg, spacingMm).map((tip) => toFigure(view, tip));
+  const tipRadius = Math.max(2, Math.min(4, 0.12 * spacingMm * view.pxPerMm));
+  return (
+    <g pointerEvents="none" style={{ color }}>
+      <circle cx={centre.x} cy={centre.y} r={11} style={{ fill: "none", stroke: "var(--bg-inset)", strokeWidth: 4, opacity: 0.7 }} />
+      <circle cx={centre.x} cy={centre.y} r={11} style={{ fill: "none", stroke: "currentColor", strokeWidth: 1.5, strokeDasharray: "4 3" }} />
+      <line x1={tips[0]!.x} y1={tips[0]!.y} x2={tips[3]!.x} y2={tips[3]!.y} style={{ stroke: "currentColor", strokeWidth: 1.25 }} />
+      {tips.map((tip, k) => (
+        <circle key={k} cx={tip.x} cy={tip.y} r={tipRadius} style={{ fill: "currentColor", stroke: "var(--bg-inset)", strokeWidth: 1 }} />
+      ))}
+    </g>
   );
 }
 

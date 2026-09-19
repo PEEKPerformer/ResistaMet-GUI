@@ -7,6 +7,7 @@ import { ApiError } from "../../lib/api";
 import type { SpotMap } from "../../generated/maps";
 import type { SpotRequest } from "../../generated/settings";
 import type { MapOwner } from "../../lib/map/mapId";
+import { outlineFromSettings, preflight, type Preflight } from "../../lib/map/geometry";
 import { activeMapId, getSpots, setMap, spotForRun, useSpots } from "../../state/spots";
 
 /** GET the map into the store. A 404 is a map whose first run has not
@@ -41,4 +42,24 @@ export async function prepareSpot(api: ApiClient, owner: MapOwner): Promise<Spot
   const mapId = activeMapId(getSpots(), owner);
   const map = mapId === null ? null : await fetchMap(api, owner.user, mapId);
   return spotForRun(owner, map);
+}
+
+/** What the client can say about a position before Start: exact for a tip
+ *  off the sample, a guess for near an edge. null without a position or
+ *  without an outline to hold it against. */
+export function preflightFor(measurement: Record<string, unknown>, pending: { x_mm: number; y_mm: number } | null): Preflight | null {
+  if (pending === null) return null;
+  const outline = outlineFromSettings(measurement);
+  if (outline === null) return null;
+  const spacingCm = typeof measurement.fpp_spacing_cm === "number" ? measurement.fpp_spacing_cm : 0.1016;
+  const angleDeg = typeof measurement.fpp_array_angle_deg === "number" ? measurement.fpp_array_angle_deg : 0;
+  return preflight(outline, { x: pending.x_mm, y: pending.y_mm }, angleDeg, spacingCm * 10);
+}
+
+/** "0.5 s beyond the edge", in the backend's words for the same thing. */
+export function describeClearance(p: Preflight): string {
+  if (p.clearanceS === null) return "";
+  return p.state === "off"
+    ? `a probe tip is ${Math.abs(p.clearanceS).toFixed(2)} s beyond the edge`
+    : `nearest tip ${p.clearanceS.toFixed(1)} s from the edge`;
 }

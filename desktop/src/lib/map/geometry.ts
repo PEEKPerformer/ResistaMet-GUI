@@ -158,7 +158,8 @@ export function fitViewport(halfExtents: Point, box: Box, marginMm = 0): Viewpor
 /** Positions are kept to 0.01 mm, so one reads the same on the screen, in
  *  the request and in the file, and a nudge never accumulates float noise. */
 export function roundMm(value: number, stepMm = 0.01): number {
-  return Math.round(value / stepMm) * stepMm || 0;
+  // toFixed drops the float noise of the product (0.7000000000000001).
+  return Number((Math.round(value / stepMm) * stepMm).toFixed(6)) || 0;
 }
 
 /** The longest of 1, 2, 5 x 10^n that is no longer than `maxMm`. */
