@@ -6,9 +6,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-import pyvisa
-
 from ..config import ConfigManager
+from .visa_helpers import configured_resource_manager
 from .widgets import EngineeringSpinBox, NoScrollSpinBox
 
 
@@ -482,8 +481,11 @@ class SettingsDialog(QDialog):
     def detect_gpib_devices(self):
         try:
             self.setEnabled(False)
-            rm = pyvisa.ResourceManager()
+            rm = configured_resource_manager(self.config_manager)
             resources = rm.list_resources()
+        except Exception as e:
+            QMessageBox.information(self, "GPIB Detection", f"Failed to list VISA resources: {e}")
+            return
         finally:
             self.setEnabled(True)
         if not resources:
