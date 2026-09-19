@@ -5,7 +5,7 @@ import pytest
 
 from resistamet_gui.accuracy import resistance_uncertainty
 from resistamet_gui.session.spot_stats import (
-    SpotSamples, quantity_statistics, spot_statistics,
+    SpotSamples, quantity_statistics, relative_instrument_floor, spot_statistics,
 )
 
 CURRENT = 1e-3
@@ -160,3 +160,46 @@ class TestSpotSamples:
         assert math.isnan(samples.voltage[0])      # too large for a double
         assert samples.sigma[0] == 1000.0
         assert spot_statistics(samples)['n'] == 1
+
+
+class TestTheInstrumentFloorIsWorkedOutOnce:
+    def _samples(self):
+        samples = SpotSamples()
+        for rs, v in zip(RS, _voltages(RS)):
+            samples.add(v, CURRENT, {'rs': rs, 'rho': rs * 1e-4, 'sigma': 1e4 / rs})
+        return samples
+
+    def test_it_is_the_mean_relative_sigma_r(self):
+        voltages, currents = _voltages(RS), [CURRENT] * 4
+        assert relative_instrument_floor(voltages, currents, '2420', 1.0) == pytest.approx(
+            _instrument_floor(voltages, currents, '2420', 1.0))
+
+    def test_no_usable_reading_is_a_floor_of_zero(self):
+        assert relative_instrument_floor([], []) == 0.0
+        assert relative_instrument_floor([float('nan')], [CURRENT]) == 0.0
+
+    def test_every_quantity_equals_the_shared_function_called_with_the_readings(self):
+        """The guard against drift: bit for bit, not approximately."""
+        from resistamet_gui.calculations import four_point_combined_uncertainty
+
+        samples = self._samples()
+        stats = spot_statistics(samples, model='2420', nplc=0.1)
+        for name in ('rs', 'rho', 'sigma'):
+            shared = four_point_combined_uncertainty(
+                list(getattr(samples, name)), list(samples.voltage), list(samples.current),
+                model='2420', nplc=0.1)
+            assert (stats[name]['u_stat'], stats[name]['u_inst'], stats[name]['u_total']) == (
+                shared.u_stat, shared.u_inst, shared.u_total), name
+
+    def test_the_accuracy_tables_are_walked_once_per_spot(self, monkeypatch):
+        from resistamet_gui import accuracy
+
+        calls = {'n': 0}
+        real = accuracy.resistance_uncertainty
+
+        def counted(*args, **kwargs):
+            calls['n'] += 1
+            return real(*args, **kwargs)
+        monkeypatch.setattr(accuracy, 'resistance_uncertainty', counted)
+        spot_statistics(self._samples())
+        assert calls['n'] == 4          # one per reading, not three

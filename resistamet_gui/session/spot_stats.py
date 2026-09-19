@@ -16,7 +16,7 @@ Pure: no Qt, no instrument, no I/O.
 """
 import math
 from array import array
-from typing import Any, Dict, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 from ..calculations import four_point_combined_uncertainty
 
@@ -66,35 +66,74 @@ class SpotSamples:
             column.append(value)
 
 
+def relative_instrument_floor(v_readings: Sequence[float], i_readings: Sequence[float],
+                              model: str = "2400", nplc: float = 1.0) -> float:
+    """The mean of sigma_R / R over the readings: the instrument's accuracy
+    floor as a fraction of whatever is derived from V/I.
+
+    It depends on V and I only, so it is the same for Rs, rho and sigma and is
+    worked out once per spot rather than once per quantity. Obtained from
+    ``four_point_combined_uncertainty`` itself, by asking for the ``u_inst``
+    of a quantity whose mean is exactly 1, so the per-reading rules (which
+    rows count, which accuracy table) stay in that one function.
+    """
+    ones = [1.0] * len(v_readings)
+    combined = four_point_combined_uncertainty(
+        ones, list(v_readings), list(i_readings), model=model, nplc=nplc)
+    return 0.0 if combined is None else combined.u_inst
+
+
 def quantity_statistics(values: Sequence[float], v_readings: Sequence[float],
                         i_readings: Sequence[float], model: str = "2400",
-                        nplc: float = 1.0) -> Dict[str, Any]:
+                        nplc: float = 1.0,
+                        relative_floor: Optional[float] = None) -> Dict[str, Any]:
     """n, mean, sample SD, RSD and the combined uncertainty of one quantity.
 
+    ``relative_floor`` is ``relative_instrument_floor`` of the same readings,
+    for a caller that has several quantities over one set of readings; left
+    out, it is computed here.
+
     Non-finite values are skipped and ``n`` counts what is left. With no
-    finite value every number is NaN. With one, the mean stands but ``sd`` and
-    ``rsd_pct`` are NaN: a sample standard deviation of one value is not zero,
-    it is undefined, and a file should not claim a spread that was never
-    observed. ``u_stat``, ``u_inst`` and ``u_total`` are exactly what
-    ``four_point_combined_uncertainty`` returns, so they match the PySide6
-    panel (which reports ``u_stat`` as 0 for a single sample).
+    finite value every number is NaN.
+
+    ``u_stat``, ``u_inst`` and ``u_total`` are the numbers
+    ``calculations.four_point_combined_uncertainty`` gives, which is what the
+    PySide6 panel shows. Two fields here are *not* that function's, on
+    purpose:
+
+    * ``sd`` and ``rsd_pct`` are NaN for a single value. That function sets
+      the standard deviation of one value to 0, so that its ``u_stat`` is 0
+      and ``u_total`` falls back to the instrument floor -- reasonable for an
+      uncertainty, and ``u_stat`` here is that same 0. But a sample standard
+      deviation of one value is undefined, not zero, and a file should not
+      record a spread that was never observed.
+    * ``rsd_pct`` is ``sd / |mean|``; that function's ``rsd_pct`` divides by
+      the signed mean and so is negative for a negative mean, and is 0 rather
+      than NaN for a mean of 0. They agree for every positive mean with two
+      or more values, which is every real sheet resistance.
     """
     finite = [float(v) for v in values if _is_finite_number(v)]
     n = len(finite)
-    combined = four_point_combined_uncertainty(
-        list(values), list(v_readings), list(i_readings), model=model, nplc=nplc)
+    # No readings passed: only the statistical part is wanted from this call.
+    combined = four_point_combined_uncertainty(list(values), [], [], model=model, nplc=nplc)
     if n == 0 or combined is None:
         return {'n': 0, 'mean': _NAN, 'sd': _NAN, 'rsd_pct': _NAN,
                 'u_stat': _NAN, 'u_inst': _NAN, 'u_total': _NAN}
+    if relative_floor is None:
+        relative_floor = relative_instrument_floor(v_readings, i_readings, model, nplc)
     mean = math.fsum(finite) / n
     if n > 1:
         sd = math.sqrt(math.fsum((x - mean) ** 2 for x in finite) / (n - 1))
     else:
         sd = _NAN
     rsd_pct = sd / abs(mean) * 100.0 if mean != 0 else _NAN
+    # The same two lines the shared function ends with (GUM 5.1.2, quadrature
+    # of uncorrelated parts); a test holds the result equal to calling it
+    # with the readings.
+    u_inst = abs(combined.mean) * relative_floor
+    u_total = math.sqrt(combined.u_stat ** 2 + u_inst ** 2)
     return {'n': n, 'mean': mean, 'sd': sd, 'rsd_pct': rsd_pct,
-            'u_stat': combined.u_stat, 'u_inst': combined.u_inst,
-            'u_total': combined.u_total}
+            'u_stat': combined.u_stat, 'u_inst': u_inst, 'u_total': u_total}
 
 
 def spot_statistics(samples: SpotSamples, model: str = "2400",
@@ -107,10 +146,13 @@ def spot_statistics(samples: SpotSamples, model: str = "2400",
     when no thickness was entered.
     """
     stats: Dict[str, Any] = {'n': len(samples), 'n_excluded': samples.excluded}
+    # Once for all three quantities: it walks every reading through the
+    # accuracy tables, and a run with no sample target can hold a great many.
+    floor = relative_instrument_floor(samples.voltage, samples.current, model, nplc)
     for name in QUANTITIES:
         stats[name] = quantity_statistics(
             getattr(samples, name), samples.voltage, samples.current,
-            model=model, nplc=nplc)
+            model=model, nplc=nplc, relative_floor=floor)
     return stats
 
 
