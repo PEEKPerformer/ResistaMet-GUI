@@ -452,3 +452,53 @@ class TestSweepCompliance:
         assert resolved.hazard.voltage_v == source.hazard.voltage_v == 60.0
         assert resolved.hazard.threshold_v == source.hazard.threshold_v
         assert resolved.hazard.reason == 'V compliance'
+
+
+class TestSweepSourceRange:
+    """Start, stop and step are volts on a voltage-sourced sweep and amperes
+    on a current-sourced one. They were held to +/-200 either way, so a
+    current sweep to 200 A validated -- and for an API client the model is
+    the only gate there is."""
+
+    @pytest.mark.parametrize("key", ['sweep_start', 'sweep_stop', 'sweep_step'])
+    def test_a_current_sourced_sweep_is_bounded_in_amperes(self, profile, key):
+        resolved = resolve_run_settings(profile, 'sweep', {
+            'sweep_source': 'current', 'sweep_start': 0.0, 'sweep_stop': 1e-3,
+            'sweep_step': 1e-4, 'sweep_compliance': 2.0, key: 200.0}, strict=True)
+        assert _keys(resolved) == [key]
+        assert '3 A' in resolved.issues[0].message
+        assert not resolved.ok
+
+    def test_in_either_direction(self, profile):
+        resolved = resolve_run_settings(profile, 'sweep', {
+            'sweep_source': 'current', 'sweep_start': -3.5, 'sweep_stop': 3.5,
+            'sweep_step': 0.5, 'sweep_compliance': 2.0}, strict=True)
+        assert _keys(resolved) == ['sweep_start', 'sweep_stop']
+
+    def test_up_to_what_the_current_source_mode_may_source(self, profile):
+        resolved = resolve_run_settings(profile, 'sweep', {
+            'sweep_source': 'current', 'sweep_start': -3.0, 'sweep_stop': 3.0,
+            'sweep_step': 0.5, 'sweep_compliance': 2.0}, strict=True)
+        assert resolved.issues == []
+
+    def test_a_voltage_sourced_sweep_keeps_its_200_v(self, profile):
+        resolved = resolve_run_settings(profile, 'sweep', {
+            'sweep_source': 'voltage', 'sweep_start': -200.0, 'sweep_stop': 200.0,
+            'sweep_step': 10.0, 'sweep_compliance': 0.01}, strict=True)
+        assert resolved.issues == []
+
+    def test_and_no_more(self, profile):
+        resolved = resolve_run_settings(profile, 'sweep', {
+            'sweep_source': 'voltage', 'sweep_stop': 201.0}, strict=True)
+        assert _keys(resolved) == ['sweep_stop']
+
+    @pytest.mark.parametrize("sweep", [
+        # desktop/src/views/sweep/SweepView.tsx resets to these when the
+        # source is switched; they have to stay startable.
+        {'sweep_source': 'voltage', 'sweep_start': 0.0, 'sweep_stop': 1.0,
+         'sweep_step': 0.05, 'sweep_compliance': 0.1},
+        {'sweep_source': 'current', 'sweep_start': 0.0, 'sweep_stop': 1e-3,
+         'sweep_step': 50e-6, 'sweep_compliance': 2.0},
+    ])
+    def test_the_desktop_s_per_source_defaults_validate(self, profile, sweep):
+        assert resolve_run_settings(profile, 'sweep', sweep, strict=True).issues == []
