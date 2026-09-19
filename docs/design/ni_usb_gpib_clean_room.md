@@ -103,7 +103,7 @@ register initialisation, IEEE-488 command bytes, the timeout table),
 `device_ops.py` (device clear, trigger, serial poll, presence probe),
 `boards.py` (board registry), `visa_session.py` (pyvisa-py instrument
 session and dispatcher), `visa_intfc.py` (the board as `GPIB<n>::INTFC`).
-465 driver tests over scripted and fake transports; every worked hex
+547 driver tests over scripted and fake transports; every worked hex
 example in the specification is asserted byte for byte in both directions,
 and `test_gpib_usb_captures.py` replays the NI captures (below) through the
 codec.
@@ -136,23 +136,31 @@ Roles, same wall:
 3. **Code reviewer** reviewed each batch against the specification and the
    captures.
 
-What the captures corrected: reads over 1 KB do not use the framed path
-at all (0x0b, data raw, one instruction per chunk); long writes likewise
-(0x0e); serial poll is its own instruction; NI never sends go-to-standby
-in an instrument session; the "error 4 on `e` without `m`" rule was wrong;
-the timeout table was right and the timeout bounds a handshake, not a
-transfer; the initialisation matched ours except two register values. The
-complete list is §10 of the specification.
+What the captures corrected: reads over 1024 bytes do not use the framed
+path at all (0x0b, data raw, one instruction per chunk); writes over 2048
+bytes likewise (0x0e); serial poll is its own instruction; NI never sends
+go-to-standby in an instrument session, and never the stop request; the
+"error 4 on `e` without `m`" rule was wrong; the timeout table was right
+and the timeout bounds a handshake, not a transfer; the initialisation
+matched ours except two register values. A second batch of five captures
+settled the two thresholds exactly and the error paths: a long write nobody
+listens to is refused with a STALL on the alternate OUT pipe, answered with
+two pipe resets; a raw read that times out ends itself with a zero-length
+packet; a serial poll that times out replies without its status-byte block.
+The complete list is §10 of the specification.
 
 ## What it has not had
 
 The new paths on a real adapter. The framed paths and the attach sequence
 ran on a GPIB-USB-HS with a Keithley 2400 on 2026-09-18 (identify, runs,
 stop, restart, shutdown, compliance). The 0x0b/0x0e/0x10 paths and the SRQ
-wait were written on 2026-09-19 against the captures alone; the Monday
-checklist in the implementer's report (long reads, chunked reads, long
-writes, serial poll, SRQ on `*OPC`, timeouts) is the first thing to run
-when the adapter is back on the Mac. One proven byte changed on purpose:
-the read instruction now carries the termination character in `e` as NI
-does; if the adapter answers error 4, the fallback is one argument in each
-session's `read`.
+wait were written on 2026-09-19 against the captures alone. The first
+thing to run when the adapter is back on the Mac: reads of 1024 and 1025
+bytes (the two instructions either side of the threshold), a chunked
+`:TRAC:DATA?`, writes of 2048 and 2049 bytes, a long write to an empty
+address followed by a normal query with no replug, a read and a serial poll
+that time out, the REN modes from the front panel's point of view, and SRQ
+on `*OPC`. Plain reads send the bench-proven bytes; the termination
+character goes out only when the session enables it.
+`RESISTAMET_GPIB_RAW_TRANSFERS=0` turns the new transfer paths off for a
+one-flag comparison.
