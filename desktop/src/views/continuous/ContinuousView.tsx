@@ -20,6 +20,7 @@ import { useSession } from "../../state/session";
 import { useLatestSample } from "../../state/samples";
 import { useUi } from "../../state/ui";
 import { seedOverrides, setOverride, useOverrides } from "../../state/overrides";
+import { useSpots } from "../../state/spots";
 import { Badge, Button, Notice, Panel } from "../../components/ui";
 import { BackendNotice } from "../../components/BackendNotice";
 import { Icons } from "../../components/icons";
@@ -95,6 +96,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
   const session = useSession();
   const ui = useUi();
   const overrides = useOverrides(mode);
+  const { warning: spotWarning } = useSpots();
   const [resolved, setResolved] = useState<Resolved | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [windowS, setWindowS] = useState(300);
@@ -234,6 +236,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
 
         <BackendNotice />
         {startError ? <Notice tone="danger">{startError}</Notice> : null}
+        {mode === "four_point" && spotWarning?.refused ? <Notice tone="danger">{spotWarning.message} Nothing was measured.</Notice> : null}
         {otherModeRunning ? (
           <Notice tone="info">A {MODE_LABEL[status!.mode!]} run is in progress. Stop it before starting another.</Notice>
         ) : null}
