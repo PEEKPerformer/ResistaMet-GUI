@@ -662,7 +662,12 @@ class TestRawWrite:
             controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
         assert ('in', 512, SHORT_MS) in transport.timeouts[-1:]
 
-    def test_a_long_raw_write_works_after_a_refused_one(self):
+    def test_scripted_expectation_a_long_raw_write_follows_a_refused_one_without_a_reattach(self):
+        # Not a hardware result. After the refusal NI's next operations were a raw read, a
+        # serial poll and a framed query (§10.6.7): no capture has a second 0x0e after a refused
+        # one, and the raw paths have not run on an adapter of ours. The script says what the
+        # adapter is expected to do after the two pipe resets; what the test pins is what the
+        # driver sends, an ordinary 0x0e with no stop request and no re-attach in between.
         controller, transport = attached(self.refused_write([
             ('clear_halt', 0x06), ('clear_halt', 0x02),
         ]) + address_listener(pad=24) + [
@@ -789,6 +794,7 @@ class TestRawWrite:
             ('raw_out', bytes(2100), TransportTimeout('instrument holds NRFD')),
             STOP,
             ('in', raw_write_reply(2100, 512, error=1), 512),
+            ('clear_halt', 0x06), ('clear_halt', 0x02),
         ])
         with pytest.raises(GpibTimeout) as info:
             controller.write_raw(bytes(2100), timeout_s=3.0)
@@ -804,12 +810,45 @@ class TestRawWrite:
             ('raw_out', bytes(2100), 1024),                       # 1024 of 2100 accepted, then the wait expired
             STOP,
             ('in', raw_write_reply(2100, 900, error=1), 512),    # the device says 900 reached the bus
+            ('clear_halt', 0x06), ('clear_halt', 0x02),
         ])
         with pytest.raises(GpibTimeout) as info:
             controller.write_raw(bytes(2100), timeout_s=3.0)
         assert info.value.code == 1
         transport.assert_done()
         assert transport.timeouts[-1] == ('in', 512, int(RECOVERY_WAIT_S * 1000))
+
+    def test_a_raw_write_the_host_stopped_resets_the_out_pipes_and_reattaches_before_the_next_operation(self):
+        # 124 of the 1024 accepted bytes never reached the bus and may sit in the alternate
+        # OUT FIFO, where they would lead the data of the next 0x0e. No capture shows the case;
+        # the driver treats the state as unknown. Scripted expectation, not a hardware result.
+        controller, transport = attached([
+            ('out', p.write_raw_message(2100, T3S, True)),
+            ('raw_out', bytes(2100), 1024),
+            STOP,
+            ('in', raw_write_reply(2100, 900, error=1), 512),
+            ('clear_halt', 0x06), ('clear_halt', 0x02),
+        ] + reattach_script() + [
+            ('out', p.write_raw_message(2100, T3S, True)), ('raw_out', bytes(2100)),
+            ('in', raw_write_reply(2100, 2100), 512),
+        ])
+        with pytest.raises(GpibTimeout):
+            controller.write_raw(bytes(2100), timeout_s=3.0)
+        assert controller.write_raw(bytes(2100), timeout_s=3.0) == 2100
+        transport.assert_done()
+
+    def test_a_stopped_raw_write_with_no_reply_still_resets_the_out_pipes(self):
+        controller, transport = attached([
+            ('out', p.write_raw_message(2100, T3S, True)),
+            ('raw_out', bytes(2100), TransportTimeout('instrument holds NRFD')),
+            STOP,
+            ('in', TransportTimeout('no reply'), 512),
+            ('clear_halt', 0x06), ('clear_halt', 0x02),
+            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,   # no reply is a fault (§8.2)
+        ])
+        with pytest.raises(ProtocolError):
+            controller.write_raw(bytes(2100), timeout_s=3.0)
+        transport.assert_done()
 
     def test_missing_reply_takes_the_stop_path(self):
         controller, transport = attached([
