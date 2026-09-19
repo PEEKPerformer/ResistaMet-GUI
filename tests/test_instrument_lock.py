@@ -99,6 +99,7 @@ def test_different_addresses_do_not_collide(tmp_path):
 class TestWhereTheLockLives:
     """Two processes exclude each other only if they look in the same place."""
 
+    @pytest.mark.shared_lock_dir
     def test_default_dir_is_per_user_not_per_working_directory(self, tmp_path, monkeypatch):
         from resistamet_gui.session import instrument_lock
 
