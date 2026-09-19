@@ -80,16 +80,15 @@ IFC_SETTLE_S = 0.1
 #: stopped (§5.11) and reported as a timeout.
 DEFAULT_INFINITE_WAIT_S = 600.0
 #: Reads of at least this many bytes use the 0x0b instruction with the data
-#: on the alternate bulk IN (§10.1.1). NI was observed using 0x0a for every
-#: count up to 1024 and 0x0b from 4096 up; no count in between was captured,
-#: so where NI switches is not established. 4096 is the smallest count NI was
-#: seen use 0x0b for.
-RAW_READ_MIN_BYTES = 4096
+#: on the alternate bulk IN. NI's rule (§10.1.1, read_thresholds.pcap): a
+#: requested count of 1024 or less goes as 0x0a, 1025 or more as 0x0b. Only
+#: the requested count decides, not how much the instrument then sends, and
+#: nothing changes at 2048 or 4096.
+RAW_READ_MIN_BYTES = 1025
 #: Writes of at least this many bytes use the 0x0e instruction with the data
-#: on the alternate bulk OUT (§10.5.2), i.e. writes longer than 2048 bytes. NI
-#: was observed using 0x0d up to 17 bytes and 0x0e at 2050; the boundary in
-#: between is not established. Same reading as RAW_READ_MIN_BYTES: the
-#: smallest transfer that goes raw.
+#: on the alternate bulk OUT. NI's rule (§10.5.2, write_thresholds.pcap):
+#: every length up to 2048 goes as one framed 0x0d, 2049 and more as 0x0e.
+#: The write boundary is not the read boundary.
 RAW_WRITE_MIN_BYTES = 2049
 #: The interrupt read of ``wait_srq`` is issued in slices of this length so a
 #: ``close`` is noticed between them; the only cost is one extra interrupt
