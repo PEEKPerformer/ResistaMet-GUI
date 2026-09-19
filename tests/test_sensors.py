@@ -174,6 +174,28 @@ def test_read_latest_raises_when_stale(_closer):
         s.read_latest()
 
 
+def test_reading_age_is_measured_against_its_timestamp():
+    r = SensorReading(timestamp=100.0, values={"t": 21.0})
+    assert r.age_s(100.0) == 0.0
+    assert r.age_s(103.5) == 3.5
+    assert r.age_s(99.0) == 0.0          # clock stepped back: not negative
+
+
+def test_a_stalled_stream_shows_its_age_while_still_served(_closer):
+    """The stream stops after one line. read_latest keeps returning that
+    reading until AUX_STALE_AFTER_S, and age_s is what tells the caller the
+    value is old."""
+    now = [50.0]
+    s = _start(ArduinoThermocouple("ASRL6::INSTR", clock=lambda: now[0]),
+               ["DATA,21.0,22.0,0,0"])
+    _closer(s)
+    s.wait_for_reading(2.0)
+    now[0] += AUX_STALE_AFTER_S - 1.0
+    r = s.read_latest()                  # still inside the staleness limit
+    assert r.ok, "the repeated value carries no fault of its own"
+    assert r.age_s(now[0]) == AUX_STALE_AFTER_S - 1.0
+
+
 def test_reader_resyncs_past_banner_lines(_closer):
     s = _arduino_with(["maxwelld foam-TC v1", "READY", "DATA,21.0,22.0,0,0"])
     _closer(s)
