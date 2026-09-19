@@ -450,6 +450,16 @@ class TestNiUsbExtensionDegrades:
         visa_backend._install_ni_usb()
         assert called == []
 
+    @pytest.mark.parametrize('value, installs', [('1', False), ('0', True), ('', True)])
+    def test_the_environment_can_switch_the_driver_off(self, monkeypatch, value, installs):
+        import resistamet_gui.gpib_usb as gpib_usb
+
+        called = []
+        monkeypatch.setattr(gpib_usb, 'install', lambda: called.append(1))
+        monkeypatch.setenv(visa_backend.DISABLE_NI_USB_ENV, value)
+        visa_backend._install_ni_usb()
+        assert bool(called) is installs
+
     def test_a_pyvisa_py_manager_still_opens_when_the_driver_is_absent(self, monkeypatch):
         import resistamet_gui.gpib_usb as gpib_usb
 
