@@ -718,9 +718,17 @@ class TestRawReadReply:
         with pytest.raises(p.ProtocolError):
             p.parse_raw_read_reply(twice, 8, bytes(8))
 
-    @pytest.mark.parametrize('requested, expected', [(4096, 4608), (20480, 20992), (4097, 4608), (0xFFFF, 65536)])
-    def test_raw_buffer_is_at_least_one_packet_larger_than_the_request(self, requested, expected):
+    @pytest.mark.parametrize('requested, expected', [
+        (4096, 4608), (20480, 20992), (4097, 4608),
+        # One below a packet boundary: a full answer is padded to the boundary (128 full
+        # packets for 65535), so the buffer must still have a packet to spare for the ZLP.
+        (20479, 20992), (0xFFFF, 66048), (8191, 8704), (511, 1024),
+    ])
+    def test_raw_buffer_exceeds_the_even_padded_request_by_at_least_a_packet(self, requested, expected):
         assert p.raw_read_buffer_size(requested, 512) == expected
+        # Whole packets, and strictly larger than the padded transfer, so a full answer never
+        # fills the buffer exactly and the ZLP that ends it is consumed by this read.
+        assert expected % 512 == 0 and expected > requested + requested % 2
 
 
 class TestSplitReplyBlocks:
