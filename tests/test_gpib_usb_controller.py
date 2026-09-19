@@ -542,8 +542,8 @@ class TestRawWrite:
         assert controller.write(24, self.LONG, timeout_s=20.0, eos_char=0x0A) == 2050
         transport.assert_done()
 
-    def test_the_threshold_is_the_named_constant(self):
-        assert RAW_WRITE_MIN_BYTES == 2049  # writes longer than 2048 bytes go raw
+    def test_the_threshold_is_ni_s_2048_2049(self):
+        assert RAW_WRITE_MIN_BYTES == 2049  # §10.5.2: 2048 the last 0x0d, 2049 the first 0x0e
         under = bytes(RAW_WRITE_MIN_BYTES - 1)
         at = bytes(RAW_WRITE_MIN_BYTES)
         controller, transport = attached(address_listener() + [
@@ -792,18 +792,20 @@ class TestRawRead:
         assert controller.read(24, max_bytes=4096, timeout_s=3.0, termchar=0x0A) == (IDN_2420, True)
         transport.assert_done()
 
-    def test_the_threshold_is_the_named_constant(self):
+    def test_the_threshold_is_ni_s_1024_1025(self):
+        # §10.1.1: counts.pcap 12.8188 is the last 0x0a (1024), read_thresholds.pcap 0.3160 the
+        # first 0x0b (1025); the instruction blocks below are NI's bytes.
+        assert RAW_READ_MIN_BYTES == 1025
         controller, transport = attached(address_talker() + [
-            ('out', p.read_message(RAW_READ_MIN_BYTES - 1, T3S)),
-            ('in', read_reply(b'x', RAW_READ_MIN_BYTES - 1), p.read_reply_buffer_size(RAW_READ_MIN_BYTES - 1, 512)),
+            ('out', h('0a 00 0a fc 00 fc 00 00') + p.read_message(1024, T3S)[8:]),
+            ('in', read_reply(b'x', 1024), p.read_reply_buffer_size(1024, 512)),
         ] + address_talker() + [
-            ('out', p.read_raw_message(RAW_READ_MIN_BYTES, T3S)),
-            ('raw_in', b'x', 4608),
-            ('in', raw_read_reply(RAW_READ_MIN_BYTES, 1), 512),
+            ('out', h('0b 00 0a fc ff fb ff ff') + p.read_raw_message(1025, T3S)[8:]),
+            ('raw_in', b'x', p.raw_read_buffer_size(1025, 512)),
+            ('in', raw_read_reply(1025, 1), 512),
         ])
-        assert RAW_READ_MIN_BYTES == 4096
-        assert controller.read(22, max_bytes=RAW_READ_MIN_BYTES - 1, timeout_s=3.0) == (b'x', True)
-        assert controller.read(22, max_bytes=RAW_READ_MIN_BYTES, timeout_s=3.0) == (b'x', True)
+        assert controller.read(22, max_bytes=1024, timeout_s=3.0, termchar=0x0A) == (b'x', True)
+        assert controller.read(22, max_bytes=1025, timeout_s=3.0, termchar=0x0A) == (b'x', True)
         transport.assert_done()
 
     def test_data_is_read_before_the_reply_and_the_reply_wait_is_short(self):
