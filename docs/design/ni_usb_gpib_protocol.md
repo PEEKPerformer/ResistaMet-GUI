@@ -886,7 +886,7 @@ bulk instruction immediately and sends its normal reply with error code
 0x01 and a valid partial count. Use this when the host-side USB read
 times out while a long device-side timeout (e.g. code 0xf0) is running,
 then read the bulk reply. Observed 2026-09-19 (§10.6.7, §10.8): the
-request appears nowhere in the 27 captures of NI's driver, its failed and
+request appears nowhere in the 28 captures of NI's driver, its failed and
 timed-out instructions included; those end by themselves with a normal
 reply.
 
@@ -1070,36 +1070,158 @@ Observed 2026-09-19 (§10.1.9): NI-VISA 22.5 maps VI_ATTR_TMO_VALUE 100 ms
 20 s and 30 s -> 0xfe, 100 s -> 0xff, 300 s -> 0x01, 1000 s -> 0x02,
 infinite -> 0xf0, exactly the table above; the report of 0xff for 1000 s
 is wrong. The code the driver programs at session open, before the
-application sets a timeout, is 0xfb. Measured device-side expiry on the
-GPIB-USB-HS: code 0xfc -> 4.20 s (three cases), code 0xfe -> 33.55 s
-(§10.1.8). The code does not bound a whole instruction: 20480-byte
+application sets a timeout, is 0xfb. The limits in the table are
+nominal: what the GPIB-USB-HS actually waits under each code was measured
+and is tabulated in 7.3; one code (0xfa) expires before its nominal
+value. The code does not bound a whole instruction: 20480-byte
 chunks that took 4.0 s each completed with error 0 under code 0xfc.
 
 ### 7.2 Host-side USB wait
 
 The device answers a 0x0a, 0x0c or 0x0d only after the operation
 completes or its own timeout expires, so the host's wait on the bulk IN
-transfer must exceed the device timeout by a margin. Recommended:
+transfer must exceed the device timeout by a margin. Recommended, with
+T the nominal limit of the code sent (7.1):
 
 | Transfer | Host wait |
 |----------|-----------|
-| bulk IN after 0x0a, 0x0c, 0x0d with device timeout T > 0 | T + max(2 s, 0.5 × T) |
+| bulk IN after 0x0a, 0x0c, 0x0d with device timeout T > 0 | T + max(2 s, 0.5 × T) -- **too short for code 0xfd; use the rule below the table** |
 | bulk IN after 0x0a, 0x0c, 0x0d with T = 0 (code 0xf0) | a long finite wait chosen by the application; on expiry send the stop request (5.11) and read the reply |
 | bulk OUT of any instruction; bulk IN after 0x01, 0x06, 0x07, 0x08, 0x09, 0x0f | 1 s minimum |
 | control requests | 1 s (100 ms per readiness-query attempt) |
 
 Reads that may legitimately wait on a slow instrument should use the
 upper end of the margin (T + 50 %) so that a device-side timeout is
-reported through the status block rather than as a USB error. Observed
-2026-09-19 (§10.1.8): the device expires 12-40 % after the nominal value
-(4.20 s for the 3 s code, 33.55 s for the 30 s code), which the margins
-above cover; the 0x88 data transfer of a 0x0b read completes 0.4-0.5 ms
+reported through the status block rather than as a USB error.
+
+Observed 2026-09-19 (7.3, §10.1.8): the first row does not hold for
+every code. The adapter's wait is not the nominal T but the expiry E of
+7.3, and for code 0xfd E = 16.78 s while T + max(2 s, 0.5 × T) = 15 s:
+a host using that row gives up 1.78 s before the adapter would have
+ended the instruction itself with a normal reply and error 0x0a, and is
+then left with an instruction still pending in the adapter, for which
+the only documented recourse is the stop request (5.11).
+For the other five measured codes the row happens to exceed E (2.1 s
+against 0.132, 2.3 against 0.264, 3 against 1.05, 5 against 4.20, 45
+against 33.56). The requirement is therefore stated against the
+measurement, not the nominal value:
+
+- The host wait for the reply to any instruction that carries a timeout
+  code -- and for the 0x88 transfer of a 0x0b -- **must be longer than
+  the measured expiry E of that code in 7.3**: more than 0.133 s for
+  0xf9, 0.264 s for 0xfa, 1.050 s for 0xfb, 4.197 s for 0xfc, 16.779 s
+  for 0xfd, 33.556 s for 0xfe. The code that counts is the one put on
+  the wire, not the timeout the application asked for (2000 ms goes out
+  as 0xfc and runs 4.196 s).
+- Recommended: E + 2 s. The reply was never more than 1.9 ms later than
+  the power of two of 7.3 in twelve timed-out instructions, so a fixed
+  margin is enough; nothing observed scales with T.
+- A message may carry more than one timed block: NI's read messages are
+  a 0x0c with its own code (0xfd, §10.1.9) followed by the 0x0a / 0x0b
+  with the session's code. Each block can run to its own expiry, so the
+  wait for the message's reply must exceed the sum of the E of its timed
+  blocks. Inference from the message structure: no capture has two
+  blocks of one message both expiring, or a 0x0c expiring at all.
+- For a code not measured in 7.3, take E as the larger candidate of
+  7.3's inference column (the smallest power of two in microseconds not
+  below the nominal limit), which no measured code exceeded.
+
+The 0x88 data transfer of a 0x0b read completes 0.4-0.5 ms
 before its 0x84 reply, and for a zero-byte result completes with zero
 bytes, so both transfers must be waited for. OUT transfers are paced by
 the bus as well: the 2049 data bytes of a 0x0e took 368 ms to complete on
 0x06 and the tail of a 2080-byte 0x0d message 103 ms on 0x02 (§10.5.2),
 so the 1 s row above is too short for a long write to a slow listener;
 let the OUT wait follow the device timeout.
+
+### 7.3 Measured expiry per code (GPIB-USB-HS, observed 2026-09-19)
+
+How long the adapter waits before it ends an instruction by itself with
+error 0x0a. Timed on the wire from the submission of the OUT message
+that carries the instruction to the completion of its reply on 0x84,
+with NI-488.2 driving GPIB-USB-HS 013CC9DF and either nothing to read
+or nobody at the address. Packets in §10.1.8.
+
+| VISA timeout asked | Code sent | Nominal (7.1) | Measured expiry (s) | Instruction | Capture |
+|--------------------|-----------|---------------|---------------------|-------------|---------|
+| 100 ms | 0xf9 | 100 ms | 0.132272 | 0x0a | timeout_expiry |
+| 300 ms | 0xfa | 300 ms | 0.263541 | 0x0a | timeout_expiry |
+| 1000 ms | 0xfb | 1 s | 1.049837 | 0x0a | timeout_expiry |
+| 3000 ms | 0xfc | 3 s | 4.195609 | 0x0a | timeout_expiry |
+| 3000 ms | 0xfc | 3 s | 4.195640 | 0x0a | partial |
+| 3000 ms (INTFC session) | 0xfc | 3 s | 4.195316 | 0x0a alone, no 0x0c before it | board_io |
+| 2000 ms | 0xfc | 3 s | 4.196156 (0x88 ends at 4.195673) | 0x0b | nolistener |
+| 2000 ms | 0xfc | 3 s | 4.195943 (0x88 ends at 4.195481) | 0x0b | raw_errors |
+| 2000 ms | 0xfc | 3 s | 4.195767 | 0x10 | raw_errors |
+| 10 000 ms | 0xfd | 10 s | 16.778423 | 0x0a | timeout_expiry |
+| 20 000 ms | 0xfe | 30 s | 33.555345 | 0x0a | eos |
+| 30 000 ms | 0xfe | 30 s | 33.555258 | 0x0a | timeout_expiry |
+| any other | 0xf1..0xf8, 0xff, 0x01, 0x02 | | not measured | | |
+
+Every figure is a power of two in microseconds plus about a
+millisecond:
+
+| Code | Power of two | Measured minus it | Measured against nominal |
+|------|--------------|-------------------|--------------------------|
+| 0xf9 | 2^17 us = 0.131072 s | +1.20 ms | 32 % longer |
+| 0xfa | 2^18 us = 0.262144 s | +1.40 ms | **12 % shorter** (36.5 ms early) |
+| 0xfb | 2^20 us = 1.048576 s | +1.26 ms | 5 % longer |
+| 0xfc | 2^22 us = 4.194304 s | +1.01 to +1.85 ms (six cases) | 40 % longer |
+| 0xfd | 2^24 us = 16.777216 s | +1.21 ms | 68 % longer |
+| 0xfe | 2^25 us = 33.554432 s | +0.83 and +0.91 ms | 12 % longer |
+
+- The excess is 0.8-1.9 ms at 0.13 s and at 33.6 s alike, so it is a
+  fixed cost (USB turnaround, the 0x0c addressing that precedes the read
+  in the same message, the reply's other blocks), not a fraction of the
+  timeout. The one 0x0a sent without a 0x0c in front (board_io) has the
+  smallest excess under 0xfc, 1.01 ms. The parts cannot be separated on
+  the wire.
+- **Code 0xfa is the only measured code that expires before its nominal
+  value**: 0.2635 s for a nominal 300 ms. An application that asks NI
+  for 300 ms gets its timeout error after 0.264 s
+  (timeout_expiry.stdout.txt). The other five run longer than nominal,
+  0xfd by the most (16.78 s for 10 s).
+- The expiry follows the code, not the timeout asked for: 2000 and 3000
+  ms both give 4.196 s, 20 000 and 30 000 ms both 33.555 s. It is the
+  same for 0x0a, 0x0b and 0x10 under 0xfc (the only code timed with more
+  than one instruction).
+- No one rounding of the nominal value yields all six exponents. "The
+  smallest power of two not below nominal" gives 17, 19, 20, 22, 24, 25
+  and is wrong for 0xfa (it would be 0.524 s); "the power of two nearest
+  nominal on a logarithmic scale" gives 17, 18, 20, 22, 23, 25 and is
+  wrong for 0xfd (it would be 8.39 s); nearest on a linear scale is
+  wrong for 0xfc. The exponent per code is a fact of the table, not
+  something to compute.
+- Not measured: codes 0xf1-0xf8, 0xff, 0x01 and 0x02 (0xf0 has no expiry
+  to measure); the expiry of a 0x0c, 0x0d or 0x0e under any code -- no
+  write or command instruction timed out in any capture; any adapter
+  other than this GPIB-USB-HS; whether the expiry restarts with each byte
+  handshaken (7.1's 4.0 s chunks under 0xfc say it does not bound the
+  instruction, nothing more).
+
+Inference, not measurement -- what a power of two in microseconds would
+be for the unmeasured codes, under the two rules that each fit five of
+the six measured codes. Where the rules agree the prediction is the
+firmer; where they differ both are given and a host wait should assume
+the larger:
+
+| Code | Nominal | Smallest power of two not below nominal | Nearest power of two (log scale) |
+|------|---------|------------------------------------------|----------------------------------|
+| 0xf1 | 10 us | 2^4 = 16 us | 2^3 = 8 us |
+| 0xf2 | 30 us | 2^5 = 32 us | same |
+| 0xf3 | 100 us | 2^7 = 128 us | same |
+| 0xf4 | 300 us | 2^9 = 512 us | 2^8 = 256 us |
+| 0xf5 | 1 ms | 2^10 = 1.024 ms | same |
+| 0xf6 | 3 ms | 2^12 = 4.096 ms | same |
+| 0xf7 | 10 ms | 2^14 = 16.384 ms | 2^13 = 8.192 ms |
+| 0xf8 | 30 ms | 2^15 = 32.768 ms | same |
+| 0xff | 100 s | 2^27 = 134.217728 s | same |
+| 0x01 | 300 s | 2^29 = 536.870912 s | 2^28 = 268.435456 s |
+| 0x02 | 1000 s | 2^30 = 1073.741824 s | same |
+
+Below about a millisecond the fixed cost above, not the code, would set
+the time to the reply. Whether 0x01 and 0x02, which break the 0xf0 + n
+numbering, follow the pattern at all is unknown.
 
 ---
 
@@ -1226,8 +1348,9 @@ primary address 24, one VISA operation per scenario, kept in
 `docs/design/captures/ni_usb_gpib_2026-09-19/` with the harness
 (`scenario.py`, `capture.ps1`), the decoder (`usbpcap_dump.py`), each
 scenario's VISA timeline (`<name>.stdout.txt`) and `SHA256SUMS` over the
-27 pcaps (22 from a first batch; read_thresholds, write_thresholds,
-raw_errors, sad_poll and ren_device from a second batch the same day).
+28 pcaps (22 from a first batch; read_thresholds, write_thresholds,
+raw_errors, sad_poll and ren_device from a second batch the same day;
+timeout_expiry, the source of 7.3, after those).
 They record the behaviour of our own adapter under the vendor
 driver; no program source was consulted for them. Where they contradict
 the sources above the observed behaviour is stated next to the original
@@ -1271,10 +1394,11 @@ Source: USBPcap recordings of National Instruments' own NI-488.2 / NI-VISA
 013CC9DF, USB device address 2) connected to a Keithley 2420 at primary
 address 24, one VISA operation per scenario. Files, harness, per-scenario
 VISA timelines and SHA-256 sums are in
-`docs/design/captures/ni_usb_gpib_2026-09-19/` (27 pcaps: 22 in a first
-batch and, the same day, five aimed at what the first batch left open --
-read_thresholds, write_thresholds, raw_errors, sad_poll, ren_device; see
-its README). Provenance of each fact below is `(name.pcap t DIR n B)`:
+`docs/design/captures/ni_usb_gpib_2026-09-19/` (28 pcaps: 22 in a first
+batch; the same day, five aimed at what the first batch left open --
+read_thresholds, write_thresholds, raw_errors, sad_poll, ren_device; then
+timeout_expiry, which times the adapter's wait under six timeout codes;
+see its README). Provenance of each fact below is `(name.pcap t DIR n B)`:
 pcap, seconds from the first packet of that pcap, direction (OUT = bulk OUT
 0x02, IN84 = bulk IN 0x84, IN88 = bulk IN 0x88, OUT06 = bulk OUT 0x06,
 INTR = interrupt IN 0x81, CTRL = control request), payload length.
@@ -1496,11 +1620,51 @@ rounds in counts.pcap discarded the remainder each time.
 
 #### 10.1.8 Timeouts on reads
 
-A read with nothing to read returned error 0x0a after 4.196 s with code
-0xfc (partial.pcap 1.0462 OUT -> 5.2418 IN84; nolistener.pcap 5.6164 ->
-9.8126 in 0x0b form; board_io.pcap 1.9105 -> 6.1058) and after 33.55 s
-with code 0xfe (eos.pcap 1.5682 -> 35.1236). Both exceed the nominal 3 s
-and 30 s of 7.1. The code does not bound the whole instruction: with code
+timeout_expiry.pcap sets `VI_ATTR_TMO_VALUE` to 100, 300, 1000, 3000,
+10 000 and 30 000 ms in turn and calls `viRead(100)` with nothing
+pending. Count 100 is below the 0x0b threshold (10.1.1), so all six are
+framed reads and nothing happens on 0x88. Each message is 32 bytes,
+`03 00 00 00 | 0c fd 00 fd 3f 20 58 00 | 0a 00 0a tt 9c ff 00 00 |
+09 01 00 02 03 01 00 00 | 04 00 00 00`, differing only in `tt`; each
+reply is 60 bytes with the read's block `38 00 64 0a 9c ff ff ff 60 1e
+00 00` -- ibsta 0x0064, error 0x0a, all 100 bytes not transferred.
+Before each read NI writes the same code to bank-2 register 0x07
+(10.2.4), e.g. `02 07 f9` at 0.4146.
+
+| Asked | `tt` | OUT submitted | IN84 completed | Expiry (s) | Error | VISA saw |
+|-------|------|---------------|----------------|------------|-------|----------|
+| 100 ms | 0xf9 | 0.415501 | 0.547773 | 0.132272 | 0x0a | TMO after 0.133 s |
+| 300 ms | 0xfa | 0.950453 | 1.213994 | 0.263541 | 0x0a | 0.264 s |
+| 1000 ms | 0xfb | 1.617318 | 2.667155 | 1.049837 | 0x0a | 1.050 s |
+| 3000 ms | 0xfc | 3.070347 | 7.265956 | 4.195609 | 0x0a | 4.196 s |
+| 10 000 ms | 0xfd | 7.669550 | 24.447973 | 16.778423 | 0x0a | 16.780 s |
+| 30 000 ms | 0xfe | 24.851128 | 58.406386 | 33.555258 | 0x0a | 33.556 s |
+
+(Microsecond timestamps from the pcap records; usbpcap_dump.py prints
+four decimals. The OUT transfer itself completes 0.12-0.20 ms after
+submission, so timing from its completion changes the last column by
+that much.) Afterwards, with the timeout back at 3000 ms, `*CLS` and
+`*IDN?` succeed at once (58.8097 onward, 82 bytes on 0x88 at 58.8247):
+six expiries in a row leave nothing to recover from.
+
+The same expiry in the earlier captures: under 0xfc, partial.pcap
+1.046186 OUT -> 5.241826 IN84 = 4.195640 s (0x0a); board_io.pcap
+1.910505 -> 6.105821 = 4.195316 s (0x0a with no 0x0c in the message);
+nolistener.pcap 5.616437 -> 9.812593 = 4.196156 s (0x0b; its 0x88
+transfer ends with zero bytes at 9.812110); raw_errors.pcap 6.107460 ->
+10.303403 = 4.195943 s (0x0b; 0x88 at 10.302941) and 10.804573 ->
+15.000340 = 4.195767 s (0x10). Under 0xfe, eos.pcap 1.568237 ->
+35.123582 = 33.555345 s (0x0a, session timeout 20 000 ms).
+
+Each is a power of two in microseconds -- 2^17, 2^18, 2^20, 2^22, 2^24,
+2^25 for 0xf9..0xfe -- plus 0.8-1.9 ms; the comparison, the one code
+that expires early (0xfa: 0.2635 s against a nominal 300 ms), what was
+not measured and what the pattern would predict for it are in 7.3. The
+earlier description of this as "12-40 % over nominal" came from 0xfc
+and 0xfe alone and is withdrawn: across the six codes the expiry runs
+from 12 % under nominal to 68 % over.
+
+The code does not bound the whole instruction: with code
 0xfc every 20480-byte chunk of the 61 768-byte read took 4.0 s and
 completed with error 0 (readtimeout_long.pcap 0.5227 -> 4.5212, 4.5223 ->
 8.5142, 8.5152 -> 12.4405). What the code bounds (a per-byte or handshake
@@ -1527,11 +1691,17 @@ the 0x0b of that query):
 | 1 000 000 ms | 0x02 (10.7994) | agrees; the report that NI sends 0xff here is wrong |
 | VI_TMO_INFINITE | 0xf0 (11.2154) | agrees |
 
+timeout_expiry.pcap shows the same codes for 100, 300, 1000, 3000,
+10 000 and 30 000 ms in a 0x0a (10.1.8), the instruction timeouts.pcap
+did not exercise.
+
 The code NI programs at session open, before the application touches
 `VI_ATTR_TMO_VALUE`, is 0xfb (every INSTR open, e.g. open.pcap 0.0070 OUT
 32 B). The 0x0c addressing blocks NI emits inside INSTR operations carry
-0xfd regardless of the session timeout (237 of 250 0x0c blocks captured,
-including the 100 ms session, timeouts.pcap 7.4820); the 13 with 0xfc are
+0xfd regardless of the session timeout (354 of the 367 0x0c blocks in the
+28 captures -- 237 of 250 in the first batch -- including the 100 ms
+sessions, timeouts.pcap 7.4820 and timeout_expiry.pcap 0.4155, where the
+read beside it carries 0xf9); the 13 with 0xfc are
 the board-level `viGpibCommand` calls of INTFC sessions (session timeout
 2000 or 3000 ms) and every 0x0c of srq_poll.pcap after an INTFC session
 had been opened and closed in the same process (3.0392 onward). Meaning of
@@ -1638,7 +1808,7 @@ NI obtains, so this message serves as a status poll.
 #### 10.3.1 The 88-byte initialisation
 
 `09 1a 00` + 26 (bank, addr, value) triplets + `00 00 00` + `04 00 00 00`
-(open.pcap 0.0000 OUT 88 B; byte-identical in all 27 captures, each a new
+(open.pcap 0.0000 OUT 88 B; byte-identical in all 28 captures, each a new
 process). Compared with 2.6, write by write, the order and registers are
 the same and the values agree except one:
 
@@ -2087,7 +2257,7 @@ From 10.6.5 and 10.6.6, with the success paths of 10.1.1 and 10.5.2:
   on 0x06 for a write that cannot start, a zero-length IN on 0x88 for a
   read that got nothing. No host-side cancellation was needed and none
   was recorded (no URB function 0x0002, which usbpcap_dump.py labels
-  `ABORT_PIPE`, in any of the 27 pcaps).
+  `ABORT_PIPE`, in any of the 28 pcaps).
 - The reply on 0x84 always comes, with every block of the message
   answered, and carries the error code and the count. Only the 0x3a block
   of a failed poll is dropped.
@@ -2226,7 +2396,7 @@ deassert, as in 10.7.1.
 - **USB completion of raw transfers.** 0x88: success with the data, or
   success with zero bytes when nothing was read. 0x06: success, or STALL
   when the write could not start (raw_errors.pcap 5.6054). These are the
-  only completions in the 27 pcaps; none was cancelled or timed out by
+  only completions in the 28 pcaps; none was cancelled or timed out by
   the host.
 
 ### 10.9 What an implementer must do to interoperate (from this section)
@@ -2270,8 +2440,18 @@ deassert, as in 10.7.1.
   skipping `11 00 00 00` blocks; do not assume fixed total lengths beyond
   the single-block cases of 3.5.
 - Expect error 7 for 0x01 / 0x06 / 0x0c while not CIC, error 8 for a write
-  with no listener, error 0x0a for a device timeout, and device timeouts
-  that run 12-40 % longer than the nominal 7.1 value.
+  with no listener, and error 0x0a for a device timeout.
+- The adapter's wait under a timeout code is the measured expiry of 7.3,
+  not the nominal value of 7.1: 0.132 s for 0xf9, 0.264 s for 0xfa
+  (shorter than its nominal 300 ms), 1.050 s for 0xfb, 4.196 s for 0xfc,
+  16.778 s for 0xfd, 33.555 s for 0xfe. The host wait for an
+  instruction's reply, and for the 0x88 transfer of a 0x0b, must be
+  longer than the expiry of the code sent (7.2 recommends expiry + 2 s,
+  summed over the timed blocks of the message); a wait derived from the
+  nominal value is too short for 0xfd (15 s against 16.78 s) and makes
+  the host abandon an instruction the adapter is about to end itself.
+  An application that needs "at least N ms" must not pick 0xfa for
+  N = 300.
 - The interrupt push on SRQ is 8 bytes `30 18 00 sb ..` with the status
   byte at offset 3; the adapter polls the device itself and releases SRQ,
   so a later explicit serial poll returns the status byte with RQS clear.
