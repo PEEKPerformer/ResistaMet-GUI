@@ -10,6 +10,7 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import { discoverBackend, type BackendInfo } from "../lib/backend";
 import { ApiClient } from "../lib/api";
 import { EventStream } from "../lib/events";
+import type { AnyEvent } from "../generated/events";
 import { applyEvent, getSessionSnapshot, setBackendReachable, setConnected, setGap, setStatus } from "../state/session";
 import { applySample, getSeries, resetSamples } from "../state/samples";
 import { applySweepSegment, resetSweep } from "../state/sweep";
@@ -26,6 +27,31 @@ interface AppServices {
 const ServicesContext = createContext<AppServices | null>(null);
 
 const STATUS_POLL_MS = 2000;
+
+/** Point the per-run stores at the run an event belongs to.
+ *
+ *  run_started is the announcement, and carries the mode. But not every run
+ *  is announced: van der Pauw runs emit no run_started, and after a reload
+ *  late in a long run the history no longer holds it. Events arrive in order,
+ *  so a run id the stores are not on is a newer run; without this its
+ *  readings were dropped as strays from another run, or joined the previous
+ *  run's series. The mode then comes from the backend's status if that is the
+ *  run it is on. */
+function beginRunIfNew(event: AnyEvent): void {
+  const runId = event.run_id ?? null;
+  let mode: string | null;
+  if (event.type === "run_started") {
+    mode = event.payload.mode;
+  } else if (runId !== null && runId !== getSeries().runId) {
+    const status = getSessionSnapshot().status;
+    mode = status !== null && status.run_id === runId ? status.mode : null;
+  } else {
+    return;
+  }
+  resetSamples(mode, runId);
+  resetSweep(runId);
+  resetVdp(runId);
+}
 
 export function useServices(): AppServices {
   const services = useContext(ServicesContext);
@@ -89,23 +115,8 @@ export function AppProvider({ children, fallback }: ProviderProps) {
           setGap(true);
           return;
         case "event":
-          if (message.event.type === "run_started") {
-            resetSamples(message.event.payload.mode, message.event.run_id ?? null);
-            resetSweep(message.event.run_id ?? null);
-            resetVdp(message.event.run_id ?? null);
-          }
-          if (message.event.type === "sample") {
-            // Samples of a run whose run_started the history no longer holds
-            // (a reload late in a long run) must not join the previous run's
-            // series. They start their own, under the mode the backend
-            // reports if this is the run it is on, and under none otherwise.
-            const runId = message.event.run_id ?? null;
-            if (runId !== getSeries().runId) {
-              const status = getSessionSnapshot().status;
-              resetSamples(status !== null && status.run_id === runId ? status.mode : null, runId);
-            }
-            applySample(message.event);
-          }
+          beginRunIfNew(message.event);
+          if (message.event.type === "sample") applySample(message.event);
           if (message.event.type === "sweep_segment") applySweepSegment(message.event);
           if (message.event.type === "vdp_geometry_complete") applyVdpGeometry(message.event);
           if (message.event.type === "vdp_result") applyVdpResult(message.event);
