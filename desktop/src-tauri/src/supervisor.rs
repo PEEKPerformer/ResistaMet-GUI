@@ -138,6 +138,11 @@ impl Supervisor {
         true
     }
 
+    /// Whether a backend is up right now, without waiting for one.
+    pub fn is_ready(&self) -> bool {
+        matches!(self.lock().lifecycle, Lifecycle::Ready(_))
+    }
+
     /// Block until the backend is up or has failed to come up.
     pub fn wait_info(&self) -> Result<BackendInfo, String> {
         let mut inner = self.lock();
