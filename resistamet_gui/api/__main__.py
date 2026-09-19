@@ -69,6 +69,9 @@ def _parse_args(argv):
     parser.add_argument("--visa-library", default=None, metavar="'' | @ivi | @py | PATH",
                          help="Override the machine's configured VISA backend, for "
                               "--check-visa.")
+    parser.add_argument("--gpib-interface", default=None, metavar="'' | PRLGX-...::INTFC",
+                         help="Override the machine's configured GPIB interface, for "
+                              "--check-visa. Only 'bus' opens it.")
     return parser.parse_args(argv)
 
 
@@ -108,12 +111,15 @@ def check_visa(args) -> int:
     """
     from .. import visa_backend
 
-    if args.visa_library is not None:
-        library = args.visa_library
-    else:
+    library, interface = args.visa_library, args.gpib_interface
+    if library is None or interface is None:
         config = ConfigManager(config_file=args.config) if args.config else ConfigManager()
-        library = config.get_visa_library()
-    report = visa_backend.report(library, probe_bus=(args.check_visa == 'bus'))
+        if library is None:
+            library = config.get_visa_library()
+        if interface is None:
+            interface = config.get_gpib_interface()
+    report = visa_backend.report(library, probe_bus=(args.check_visa == 'bus'),
+                                 gpib_interface=interface)
     print(json.dumps(report), flush=True)
     return 0 if report.get('ok') else 1
 
