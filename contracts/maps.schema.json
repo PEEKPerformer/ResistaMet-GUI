@@ -1,0 +1,357 @@
+{
+  "definitions": {
+    "SpotMap": {
+      "$defs": {
+        "InterSpotStats": {
+          "additionalProperties": false,
+          "description": "The spread of one quantity between the spots of a map.\n\nOver the spots' means, each spot counting once. ``sd`` is the sample\nstandard deviation and needs two spots; ``rsd_pct`` is ``sd / |mean|``.",
+          "properties": {
+            "mean": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Mean"
+            },
+            "n": {
+              "title": "N",
+              "type": "integer"
+            },
+            "rsd_pct": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Rsd Pct"
+            },
+            "sd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Sd"
+            }
+          },
+          "required": [
+            "n"
+          ],
+          "title": "InterSpotStats",
+          "type": "object"
+        },
+        "MapSpot": {
+          "additionalProperties": false,
+          "description": "One spot of a map: the newest run with that index.",
+          "properties": {
+            "angle_deg": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Angle Deg"
+            },
+            "edge_clearance_s": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Edge Clearance S"
+            },
+            "file": {
+              "title": "File",
+              "type": "string"
+            },
+            "index": {
+              "title": "Index",
+              "type": "integer"
+            },
+            "label": {
+              "title": "Label",
+              "type": "string"
+            },
+            "relative_error": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Relative Error"
+            },
+            "sample": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Sample"
+            },
+            "started_at": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Started At"
+            },
+            "stats": {
+              "$ref": "#/$defs/SpotStats"
+            },
+            "superseded": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Superseded",
+              "type": "array"
+            },
+            "x_mm": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "X Mm"
+            },
+            "y_mm": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Y Mm"
+            }
+          },
+          "required": [
+            "index",
+            "label",
+            "file",
+            "stats"
+          ],
+          "title": "MapSpot",
+          "type": "object"
+        },
+        "QuantityStats": {
+          "additionalProperties": false,
+          "description": "One derived quantity over a spot's samples (``session.spot_stats``).\n\n``n`` counts the finite values. Every other field is null on the wire when\nit does not exist: all of them with no finite value, ``sd`` and\n``rsd_pct`` with fewer than two.",
+          "properties": {
+            "mean": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Mean"
+            },
+            "n": {
+              "title": "N",
+              "type": "integer"
+            },
+            "rsd_pct": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Rsd Pct"
+            },
+            "sd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Sd"
+            },
+            "u_inst": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "U Inst"
+            },
+            "u_stat": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "U Stat"
+            },
+            "u_total": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "U Total"
+            }
+          },
+          "required": [
+            "n"
+          ],
+          "title": "QuantityStats",
+          "type": "object"
+        },
+        "SkippedRun": {
+          "additionalProperties": false,
+          "description": "A run that names this map but cannot stand for a spot.",
+          "properties": {
+            "file": {
+              "title": "File",
+              "type": "string"
+            },
+            "reason": {
+              "title": "Reason",
+              "type": "string"
+            }
+          },
+          "required": [
+            "file",
+            "reason"
+          ],
+          "title": "SkippedRun",
+          "type": "object"
+        },
+        "SpotStats": {
+          "additionalProperties": false,
+          "description": "The statistics block of a four-point run, as its file footer has it.\n\n``n`` samples entered the statistics; ``n_excluded`` were in compliance\nand left out, because they record a bound rather than a measurement.",
+          "properties": {
+            "n": {
+              "title": "N",
+              "type": "integer"
+            },
+            "n_excluded": {
+              "default": 0,
+              "title": "N Excluded",
+              "type": "integer"
+            },
+            "rho": {
+              "$ref": "#/$defs/QuantityStats"
+            },
+            "rs": {
+              "$ref": "#/$defs/QuantityStats"
+            },
+            "sigma": {
+              "$ref": "#/$defs/QuantityStats"
+            }
+          },
+          "required": [
+            "n",
+            "rs",
+            "rho",
+            "sigma"
+          ],
+          "title": "SpotStats",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "A map: its spots in index order and the spread between them.",
+      "properties": {
+        "map_id": {
+          "title": "Map Id",
+          "type": "string"
+        },
+        "rho": {
+          "$ref": "#/$defs/InterSpotStats"
+        },
+        "rs": {
+          "$ref": "#/$defs/InterSpotStats"
+        },
+        "sigma": {
+          "$ref": "#/$defs/InterSpotStats"
+        },
+        "skipped": {
+          "items": {
+            "$ref": "#/$defs/SkippedRun"
+          },
+          "title": "Skipped",
+          "type": "array"
+        },
+        "spots": {
+          "items": {
+            "$ref": "#/$defs/MapSpot"
+          },
+          "title": "Spots",
+          "type": "array"
+        }
+      },
+      "required": [
+        "map_id",
+        "rs",
+        "rho",
+        "sigma"
+      ],
+      "title": "SpotMap",
+      "type": "object"
+    }
+  }
+}
