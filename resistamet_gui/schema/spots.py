@@ -12,7 +12,8 @@ convention).
 
 No Qt, no pyvisa: importable from anywhere.
 """
-from typing import Literal, Optional
+import math
+from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -89,3 +90,60 @@ class SpotRequest(BaseModel):
     @property
     def has_position(self) -> bool:
         return self.x_mm is not None and self.y_mm is not None
+
+
+#: Legacy ``fpp_geometry`` value -> length / width of the rectangle it names.
+_LEGACY_ASPECT = {'square': 1.0, 'rectangle_2': 2.0, 'rectangle_3': 3.0, 'rectangle_4': 4.0}
+
+
+def legacy_sample_geometry(measurement: Dict[str, Any]) -> SampleGeometry:
+    """The outline ``fpp_geometry`` and ``fpp_diameter_cm`` describe.
+
+    These two keys feed the F84 and Smits table look-ups. ``fpp_diameter_cm``
+    is the circle's diameter or, for the rectangles, the Smits ``D`` -- the
+    side across the probe array -- with the named aspect ratio giving the side
+    along it. A diameter of 0 means "treat the specimen as infinite".
+    """
+    lateral_mm = float(measurement.get('fpp_diameter_cm') or 0.0) * 10.0
+    if not lateral_mm > 0:
+        return SampleGeometry(shape='unbounded')
+    legacy_shape = str(measurement.get('fpp_geometry') or 'circle')
+    if legacy_shape == 'circle':
+        return SampleGeometry(shape='circle', diameter_mm=lateral_mm)
+    if legacy_shape not in _LEGACY_ASPECT:
+        raise ValueError(f"unknown fpp_geometry '{legacy_shape}'")
+    return SampleGeometry(shape='rectangle', width_mm=lateral_mm,
+                          length_mm=_LEGACY_ASPECT[legacy_shape] * lateral_mm)
+
+
+def sample_geometry_from_settings(measurement: Dict[str, Any]) -> SampleGeometry:
+    """The sample outline a four-point run's settings describe.
+
+    The ``fpp_sample_*`` keys when a shape has been chosen; otherwise the
+    legacy keys, so a profile written before outlines existed describes the
+    same sample it always did. Only the dimensions the chosen shape has are
+    read: a form keeps the width of a rectangle around after the operator
+    switches to a circle, and that is not an error.
+
+    Raises ``ValueError`` (pydantic's ``ValidationError`` is one) when the
+    shape's dimensions are missing.
+    """
+    shape = str(measurement.get('fpp_sample_shape') or 'unbounded')
+    if shape == 'unbounded':
+        return legacy_sample_geometry(measurement)
+    dimensions = {}
+    for name in _DIMENSIONS.get(shape, ()):
+        value = float(measurement.get(f'fpp_sample_{name}') or 0.0)
+        # 0 is the profile's "not entered"; the model reports it as missing.
+        dimensions[name] = value if value > 0 else None
+    return SampleGeometry(shape=shape, **dimensions)
+
+
+def same_outline(first: SampleGeometry, second: SampleGeometry) -> bool:
+    """Equal up to the rounding of a cm -> mm conversion."""
+    if first.shape != second.shape:
+        return False
+    return all(
+        math.isclose(getattr(first, name), getattr(second, name), rel_tol=1e-9)
+        for name in _DIMENSIONS[first.shape]
+    )
