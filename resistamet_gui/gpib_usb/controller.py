@@ -17,6 +17,8 @@ sequence before doing anything else.
 The interrupt endpoint is not armed at attach (§2.5 calls it optional and
 operation without it reliable), so attach skips the interrupt-monitor-mask
 steps 4 and 6 of §2.8 and ``status()`` polls the control endpoint instead.
+``wait_srq`` reads it on demand: the adapter pushes one 8-byte packet there
+when an instrument asserts SRQ, having serial-polled it itself (§10.4.2).
 
 Large transfers take the instructions NI's own driver uses (§10): a read of
 ``RAW_READ_MIN_BYTES`` or more is a 0x0b whose bytes arrive unframed on the
@@ -536,6 +538,48 @@ class Controller:
                                     % (parsed.pad, pad, reply.hex()))
             self._raise_for_error(parsed.status, 'serial poll')
             return parsed.status_byte
+
+    # ------------------------------------------------------------------
+    # service request
+    # ------------------------------------------------------------------
+
+    def wait_srq(self, timeout_s: Optional[float]) -> int:
+        """Block until an instrument requests service; return its status byte (§10.4.2).
+
+        The adapter answers an SRQ by polling the requesting device itself
+        and pushing ``30 18 00 sb ..`` on the interrupt endpoint, ``sb``
+        being the status byte with RQS set; a later explicit poll finds RQS
+        clear (§10.4.2, §10.9). NI's driver then sends control request 0x3b
+        and re-arms its interrupt read; this does the same, the re-arm being
+        the next call.
+
+        The interrupt read is issued only here, and the controller lock is
+        released while it blocks: a permanently pending read would need a
+        thread of its own, and every other operation would have to wait for
+        this one otherwise. The cost is that a push arriving while nobody
+        waits sits in the adapter until the next call (which then returns at
+        once); whether the adapter keeps more than one is not established.
+        ``timeout_s`` None waits the controller's infinite wait. A
+        ``GpibTimeout`` means no request arrived in time.
+        """
+        with self._lock:
+            self._ensure_attached()
+            transport = self._transport
+        wait_s = self._infinite_wait_s if timeout_s is None else timeout_s
+        try:
+            push = transport.interrupt_in(t.INTERRUPT_READ_LENGTH, int(wait_s * 1000))
+        except TransportTimeout as exc:
+            raise GpibTimeout('no service request within %.3g s' % wait_s) from exc
+        except TransportError:
+            with self._lock:
+                self._resync_pending = True
+            raise
+        parsed = p.parse_srq_push(push)  # a malformed push does not put the bulk pipes out of step
+        with self._guard():
+            transport.control_out(t.SRQ_ACKNOWLEDGE.request, t.SRQ_ACKNOWLEDGE.value,
+                                  t.SRQ_ACKNOWLEDGE.index, b'', t.CONTROL_TIMEOUT_MS,
+                                  request_type=t.SRQ_ACKNOWLEDGE.request_type)
+        return parsed.status_byte
 
     # ------------------------------------------------------------------
     # adapter state
