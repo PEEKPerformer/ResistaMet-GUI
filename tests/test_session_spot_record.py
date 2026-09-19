@@ -140,3 +140,23 @@ class TestSpotRecord:
             spot_record_from_settings(_settings(_spot(), fpp_sample_shape='circle'))
         with pytest.raises(ValueError):
             spot_record_from_settings(_settings(_spot(map_id='../x')))
+
+
+class TestPositionCorrectionIsAlwaysWarn:
+    """Nothing but 'warn' is implemented, so nothing else may be recorded."""
+
+    def test_warn_is_recorded_without_comment(self):
+        record = spot_record_from_settings(_settings(_spot()))
+        assert record.position_correction == 'warn'
+        assert record.ignored_position_correction is None
+
+    @pytest.mark.parametrize("value", ['apply', 'APPLY', 'anything'])
+    def test_anything_else_is_recorded_as_warn_and_remembered(self, value):
+        record = spot_record_from_settings(_settings(_spot(), fpp_position_correction=value))
+        assert record.position_correction == 'warn'
+        assert record.header()['position_correction'] == 'warn'
+        assert record.ignored_position_correction == value
+
+    def test_missing_or_empty_means_warn(self):
+        record = spot_record_from_settings(_settings(_spot(), fpp_position_correction=None))
+        assert record.ignored_position_correction is None

@@ -1142,3 +1142,26 @@ class TestKeepingSamplesForStatisticsCannotHurtTheRun:
         finalized = sink.of_type('file_finalized')[0].payload['end_metadata']
         assert finalized['total_samples'] == 3
         assert finalized['spot_stats']['n'] == 3
+
+
+class TestAHandEditedPositionCorrection:
+    def test_the_file_says_warn_and_the_log_says_why(self, sink, fake_rm, profile):
+        """The PySide6 path: settings no schema has validated."""
+        from resistamet_gui.data_export import parse_metadata
+        from resistamet_gui.session.continuous_run import ContinuousRun
+        from resistamet_gui.session.control import RunControl
+        from resistamet_gui.session.emitter import EventEmitter
+
+        settings = _four_point(profile)
+        settings['measurement']['fpp_position_correction'] = 'apply'
+        settings['spot'] = {'map_id': 'wafer7', 'index': 0, 'label': 'centre'}
+        ContinuousRun('four_point', 'wafer1', 'alice', settings, RunControl(),
+                      EventEmitter(sink)).execute()
+
+        ended = sink.of_type('run_ended')[0].payload
+        assert ended['reason'] == 'target_samples'
+        assert parse_metadata(ended['path'])['spot.position_correction'] == 'warn'
+        warnings = [e.payload for e in sink.of_type('log')
+                    if e.payload['code'] == 'position_correction_ignored']
+        assert len(warnings) == 1 and warnings[0]['level'] == 'warning'
+        assert "'apply'" in warnings[0]['message']
