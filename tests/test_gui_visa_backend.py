@@ -94,3 +94,12 @@ def test_an_interface_that_will_not_open_is_reported(py_machine, fake_rm, quiet_
     dialog.detect_gpib_devices()
     assert INTERFACE in quiet_dialogs[-1][1]
     assert dialog.isEnabled()
+
+
+def test_an_unlisted_address_is_not_opened(py_machine, opened, fake_rm, quiet_dialogs):
+    py_machine.user_settings['measurement']['gpib_address'] = 'GPIB0::5::INSTR'
+    py_machine.test_instrument_connection()
+    title, text = quiet_dialogs[-1]
+    assert title == "Connection Failed"
+    assert "GPIB0::5::INSTR" in text and "GPIB0::24::INSTR" in text
+    assert fake_rm.opened == []
