@@ -90,6 +90,10 @@ RAW_READ_MIN_BYTES = 4096
 #: 0x0e at 2050; the boundary in between is not established. 2048 keeps every
 #: write NI was seen frame framed and sends the one it was seen send raw, raw.
 RAW_WRITE_MIN_BYTES = 2048
+#: The interrupt read of ``wait_srq`` is issued in slices of this length so a
+#: ``close`` is noticed between them; the only cost is one extra interrupt
+#: read per slice while nothing is pending.
+SRQ_WAIT_SLICE_S = 1.0
 #: The device timeout code bounds a handshake interval, not the whole
 #: instruction (§10.1.8: 20480-byte chunks took 4.0 s each under the 3 s code
 #: and completed with error 0), so the host wait for a raw transfer must also
@@ -139,6 +143,10 @@ class Controller:
         self._addressed: Optional[Tuple[str, int, Optional[int]]] = None
         #: Set by the last exchange when the host had to stop the device (§5.11).
         self._host_stopped = False
+        #: Clear while a ``wait_srq`` has an interrupt read in flight; ``close``
+        #: waits for it so the transport is not released under a pending transfer.
+        self._srq_idle = threading.Event()
+        self._srq_idle.set()
         #: From the serial-number query (or the USB-B register read).
         self.serial_number: Optional[int] = None
 
@@ -236,11 +244,20 @@ class Controller:
         return int.from_bytes(bytes(values), 'little')
 
     def close(self) -> None:
-        """§2.9: chip reset, the device-level register, release the interface."""
+        """§2.9: chip reset, the device-level register, release the interface.
+
+        A ``wait_srq`` in progress sees ``_closed`` at its next slice and
+        leaves; this waits for that before touching the transport, since
+        releasing the interface under a pending transfer is undefined.
+        """
         with self._lock:
             if self._closed:
                 return
             self._closed = True
+        if not self._srq_idle.wait(SRQ_WAIT_SLICE_S + SHORT_WAIT_S):
+            logger.warning('%s: a wait for a service request did not end; releasing the adapter anyway',
+                           self._model.name)
+        with self._lock:
             try:
                 if self._attached and not self._resync_pending:
                     self._register_write(t.SHUTDOWN_WRITES, 'shutdown')
@@ -566,30 +583,51 @@ class Controller:
         The interrupt read is issued only here, and the controller lock is
         released while it blocks: a permanently pending read would need a
         thread of its own, and every other operation would have to wait for
-        this one otherwise. The cost is that a push arriving while nobody
-        waits sits in the adapter until the next call (which then returns at
-        once); whether the adapter keeps more than one is not established.
+        this one otherwise. The read runs in slices of ``SRQ_WAIT_SLICE_S``
+        so a ``close`` from another thread is noticed between them. The cost
+        is that a push arriving while nobody waits sits in the adapter until
+        the next call (which then returns at once); whether the adapter
+        keeps more than one is not established. One wait at a time.
         ``timeout_s`` None waits the controller's infinite wait. A
         ``GpibTimeout`` means no request arrived in time.
         """
         with self._lock:
             self._ensure_attached()
+            if not self._srq_idle.is_set():
+                raise GpibError('a wait for a service request is already in progress')
+            self._srq_idle.clear()
             transport = self._transport
-        wait_s = self._infinite_wait_s if timeout_s is None else timeout_s
         try:
-            push = transport.interrupt_in(t.INTERRUPT_READ_LENGTH, int(wait_s * 1000))
-        except TransportTimeout as exc:
-            raise GpibTimeout('no service request within %.3g s' % wait_s) from exc
-        except TransportError:
-            with self._lock:
-                self._resync_pending = True
-            raise
+            push = self._interrupt_read_in_slices(transport, timeout_s)
+        finally:
+            self._srq_idle.set()
         parsed = p.parse_srq_push(push)  # a malformed push does not put the bulk pipes out of step
         with self._guard():
+            if self._closed:
+                raise AdapterNotReady('controller is closed')
             transport.control_out(t.SRQ_ACKNOWLEDGE.request, t.SRQ_ACKNOWLEDGE.value,
                                   t.SRQ_ACKNOWLEDGE.index, b'', t.CONTROL_TIMEOUT_MS,
                                   request_type=t.SRQ_ACKNOWLEDGE.request_type)
         return parsed.status_byte
+
+    def _interrupt_read_in_slices(self, transport: Transport, timeout_s: Optional[float]) -> bytes:
+        """The next interrupt push, waited for in slices; called with the lock released."""
+        remaining = self._infinite_wait_s if timeout_s is None else timeout_s
+        while True:
+            if self._closed:
+                raise AdapterNotReady('controller is closed')
+            slice_s = min(SRQ_WAIT_SLICE_S, remaining)
+            try:
+                return transport.interrupt_in(t.INTERRUPT_READ_LENGTH, int(slice_s * 1000))
+            except TransportTimeout as exc:
+                remaining -= slice_s
+                if remaining <= 0:
+                    raise GpibTimeout('no service request within %.3g s'
+                                      % (self._infinite_wait_s if timeout_s is None else timeout_s)) from exc
+            except TransportError:
+                with self._lock:
+                    self._resync_pending = True
+                raise
 
     # ------------------------------------------------------------------
     # adapter state
