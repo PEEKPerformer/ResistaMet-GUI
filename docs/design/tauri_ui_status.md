@@ -1,6 +1,6 @@
 # Tauri Desktop UI — Status (steps 2 and 3)
 
-**Status:** On `phase0/reviewable-baseline`, pushed, CI green; backend bench-checked on the lab 2420 and on a 2400 over the NI USB driver; UI bench report's three blockers and five majors fixed (see `tauri_ui_bench_2026-09-18.md`)
+**Status:** On `phase0/reviewable-baseline`, pushed, CI green; backend bench-checked on the lab 2420 and on a 2400 over the NI USB driver; the UI bench's three blockers and five majors fixed
 **Date:** 2026-09-17
 **Depends on:** step 1 (`tauri_backend_split.md`, `tauri_backend_split_status.md`)
 
@@ -131,23 +131,27 @@ the timeout table was right. The implementer built those paths from §10
 alone, with the framed paths kept and a one-flag switch back to them
 (`RESISTAMET_GPIB_RAW_TRANSFERS=0`); the `GPIB0::INTFC` board resource
 landed the same day. None of it has met the adapter yet — that is Monday's
-first job (`ni_usb_gpib_clean_room.md`, "What it has not had"). The story
-of getting the capture filter attached is in `ni_usb_gpib_oracle.md`.
+first job (`ni_usb_gpib_clean_room.md`, "What it has not had").
 
 ## The UI on the lab PC, 2026-09-18
 
 Installed per-user (2.0.0-1, NSIS) and driven through WebView2's debug
 port; every mode, dialog and shutdown path exercised against the 2420.
-Report and punch list: `tauri_ui_bench_2026-09-18.md`. Three blockers and
-five majors found and fixed the same day; the fixes were verified in the
+Three blockers (string settings fields crashed the settings dialog blank;
+the instrument lock was keyed to the config directory, so a second backend
+could destroy a live run; compliance undetected in resistance mode) and
+five majors (auto-range silently overriding test current and compliance;
+stale vdP results after an abort; identical axis labels; sweep source
+switch reinterpreting units) were found and fixed the same day; the
+sixteen minor and twelve cosmetic items are tracked outside the repo; the fixes were verified in the
 dev UI against the simulator (and on a 2400 for compliance), not yet on the
 PC. The first CI build also lacked a WebSocket implementation entirely
 (`websockets` was never a declared dependency), fixed in `f5d0e29`.
 
 ## Not yet
 
-- **The UI fixes on the lab PC itself**, and the 16 minor and 12 cosmetic
-  items in the bench report.
+- **The UI fixes on the lab PC itself**, and the sixteen minor and twelve
+  cosmetic items from the UI bench.
 - **The new driver paths (raw reads/writes, serial poll, SRQ wait, INTFC) on a real adapter** — written from captures on 2026-09-19, never run.
 - **Prologix / AR488 adapters** need their `PRLGX-ASRL::…::INTFC` resource
   opened before the instrument address resolves; the app does not do that.
