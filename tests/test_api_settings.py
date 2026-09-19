@@ -79,6 +79,95 @@ class TestUsersAndProfiles:
     def test_patch_needs_something_to_change(self, client):
         assert client.patch('/profiles/alice', json={}).status_code == 422
 
+    def test_patch_leaves_the_other_keys_of_the_section_alone(self, client, config):
+        before = client.get('/profiles/alice').json()
+
+        response = client.patch('/profiles/alice',
+                                 json={'measurement': {'res_test_current': 5e-4}})
+
+        assert response.status_code == 200
+        after = response.json()
+        assert after['measurement']['res_test_current'] == 5e-4
+        before['measurement']['res_test_current'] = 5e-4
+        assert after == before
+        stored = config.config['user_settings']['alice']['measurement']
+        assert stored['fpp_current'] == 1e-4
+        assert stored['sampling_rate'] == 50.0
+
+    def test_an_address_only_patch_does_not_touch_the_stored_profile(self, client, config):
+        stored_before = copy.deepcopy(config.config['user_settings']['alice'])
+
+        response = client.patch('/profiles/alice', json={'measurement': {
+            'gpib_address': 'GPIB0::9::INSTR', 'visa_library': '@py', 'gpib_interface': ''}})
+
+        assert response.status_code == 200
+        assert config.config['user_settings']['alice'] == stored_before
+        assert config.get_gpib_address() == 'GPIB0::9::INSTR'
+        assert response.json()['measurement']['fpp_current'] == 1e-4
+        assert response.json()['measurement']['gpib_address'] == 'GPIB0::9::INSTR'
+
+    def test_first_patch_keeps_what_the_user_was_running_on(self, client, config):
+        """A user with no stored overrides runs on the shared sections."""
+        config.update_global_settings({'measurement': {'sampling_rate': 3.0}})
+        config.add_user('bob')
+        assert client.get('/profiles/bob').json()['measurement']['sampling_rate'] == 3.0
+
+        response = client.patch('/profiles/bob', json={'measurement': {'nplc': 2.0}})
+
+        assert response.status_code == 200
+        assert response.json()['measurement']['nplc'] == 2.0
+        assert response.json()['measurement']['sampling_rate'] == 3.0
+
+    def test_patch_for_an_unknown_user_is_not_found(self, client, config):
+        response = client.patch('/profiles/ghost',
+                                 json={'measurement': {'res_test_current': 5e-4}})
+        assert response.status_code == 404
+        assert 'ghost' not in config.config.get('user_settings', {})
+
+    def test_invalid_values_are_refused_and_nothing_is_stored(self, client, config, tmp_path):
+        stored_before = copy.deepcopy(config.config['user_settings']['alice'])
+
+        response = client.patch('/profiles/alice', json={'measurement': {
+            'nplc': 'banana', 'res_test_current': 1e9, 'sampling_rate': 5.0}})
+
+        assert response.status_code == 422
+        keys = {issue['key'] for issue in response.json()['detail']['issues']}
+        assert keys == {'nplc', 'res_test_current'}
+        assert config.config['user_settings']['alice'] == stored_before
+        reloaded = ConfigManager(config_file=str(tmp_path / 'config.json'))
+        assert reloaded.config['user_settings']['alice'] == stored_before
+
+    def test_invalid_values_in_other_sections_are_refused(self, client):
+        response = client.patch('/profiles/alice', json={'output': {'format': 'xlsx'}})
+        assert response.status_code == 422
+        assert response.json()['detail']['issues'][0]['section'] == 'output'
+
+    def test_an_old_out_of_range_value_does_not_block_other_edits(self, client, config):
+        """A drifted profile must stay editable, one key at a time."""
+        config.update_user_settings('alice', {'measurement': {'vdp_current': 5.0}})
+
+        response = client.patch('/profiles/alice', json={'measurement': {'nplc': 2.0}})
+
+        assert response.status_code == 200
+        assert response.json()['measurement']['vdp_current'] == 5.0
+
+    def test_resending_an_old_out_of_range_value_does_not_block_either(self, client, config):
+        """The desktop dialog sends the whole section it edited."""
+        config.update_user_settings('alice', {'measurement': {'vdp_current': 5.0}})
+        section = client.get('/profiles/alice').json()['measurement']
+        section['nplc'] = 2.0
+
+        assert client.patch('/profiles/alice', json={'measurement': section}).status_code == 200
+
+        section['vdp_current'] = 6.0
+        assert client.patch('/profiles/alice', json={'measurement': section}).status_code == 422
+
+    def test_a_bad_interface_name_is_refused(self, client, config):
+        response = client.patch('/profiles/alice',
+                                 json={'measurement': {'gpib_interface': 'COM5'}})
+        assert response.status_code == 422
+        assert config.get_gpib_interface() == ''
+
     def test_address_change_is_refused_during_a_run(self, client, fake_rm):
         client.post('/session/start', json={'mode': 'four_point', 'sample_name': 'w',
                                              'username': 'alice'})

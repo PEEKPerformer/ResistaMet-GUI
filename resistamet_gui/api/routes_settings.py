@@ -7,13 +7,16 @@ Resolution is exposed deliberately. A client should be able to ask "what would
 this run actually use, and does it have problems?" without starting anything,
 which is also how a UI shows validation before the Start button.
 """
-from typing import Any, Dict, Optional
+import math
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .. import visa_backend
 from ..schema.resolve import allowed_override_keys, resolve_run_settings
+from ..schema.settings_common import (AuxSensorSettings, DisplaySettings, FileSettings,
+                                       InstrumentSettings, OutputSettings, SafetySettings)
 from ..schema.settings_modes import MODE_MODELS
 from ..session.manager import MeasurementSession, SessionBusy
 from .app import busy_as_conflict, get_session, require_token
@@ -22,6 +25,15 @@ router = APIRouter(tags=["settings"])
 
 #: Keys that describe this machine rather than this profile.
 MACHINE_LOCAL_KEYS = ('gpib_address', 'visa_library', 'gpib_interface')
+
+#: The models that describe each section of a stored profile.
+SECTION_MODELS = {
+    'measurement': (*MODE_MODELS.values(), InstrumentSettings, AuxSensorSettings,
+                    SafetySettings),
+    'display': (DisplaySettings,),
+    'file': (FileSettings,),
+    'output': (OutputSettings,),
+}
 
 
 class ResolveRequest(BaseModel):
@@ -81,23 +93,72 @@ def read_profile(username: str, request: Request, role: str = Depends(require_to
     return _config(request).get_user_settings(username)
 
 
+def _section_issues(section: str, values: Dict[str, Any]) -> List[Dict[str, str]]:
+    """What the schema models say about one section of a profile."""
+    issues = []
+    for model in SECTION_MODELS[section]:
+        subset = {name: values[name] for name in model.model_fields if name in values}
+        # "Not measured" is NaN in a stored profile and None to the model.
+        if isinstance(subset.get('fpp_temperature_c'), float) and \
+                math.isnan(subset['fpp_temperature_c']):
+            subset['fpp_temperature_c'] = None
+        try:
+            model(**subset)
+        except ValidationError as exc:
+            for error in exc.errors():
+                key = str(error['loc'][0]) if error['loc'] else model.__name__
+                issue = {'section': section, 'key': key, 'message': error['msg']}
+                if issue not in issues:
+                    issues.append(issue)
+    return issues
+
+
+def _refuse_a_worse_profile(sections: Dict[str, Any]):
+    """The check a profile edit has to pass before it is stored.
+
+    An issue blocks the edit when it is on a key the edit changes, or when the
+    profile did not have it before. One that was already there and is not
+    being touched does not: a profile that drifted out of range long ago must
+    still be editable, one key at a time.
+    """
+    def check(current: Dict[str, Any], merged: Dict[str, Any]) -> None:
+        blocking = []
+        for section, sent in sections.items():
+            before = current.get(section, {})
+            changed = {key for key, value in sent.items()
+                       if key not in before or before[key] != value}
+            already = _section_issues(section, before)
+            for issue in _section_issues(section, merged.get(section, {})):
+                if issue['key'] in changed or issue not in already:
+                    blocking.append(issue)
+        if blocking:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                 detail={'message': 'the profile would not be valid',
+                                         'issues': blocking})
+    return check
+
+
 @router.patch("/profiles/{username}")
 def patch_profile(username: str, body: ProfilePatch, request: Request,
                    session: MeasurementSession = Depends(get_session),
                    role: str = Depends(require_token)):
+    """Change the keys sent; every other key of the profile stays as stored."""
     sections = body.sections()
     if not sections:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                              detail="no sections to update")
+    config = _config(request)
+    if username not in config.get_users():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                             detail=f"no user named '{username}'")
     measurement = sections.get('measurement') or {}
     if any(key in measurement for key in MACHINE_LOCAL_KEYS) and session.state != 'idle':
         # Changing the address mid-run would describe a run that is not the
         # one on the bus.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                              detail="cannot change the instrument address during a run")
-    config = _config(request)
-    config.update_user_settings(username, sections)
-    return config.get_user_settings(username)
+    return config.merge_user_settings(username, sections,
+                                       check=_refuse_a_worse_profile(sections))
 
 
 @router.get("/schema/settings")
