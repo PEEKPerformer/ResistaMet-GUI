@@ -39,6 +39,7 @@ Also here: `trace.bat` + `etw_urbs.py`, the earlier header-only method
 | `ren` | every `RENLineOperation` and `ATNLineOperation` on `GPIB0::INTFC` without a prior IFC: only `deassert` and `asrt` succeed; the addressed modes → `VI_ERROR_INV_MODE`; LLO and all ATN modes → `VI_ERROR_NCIC` (a fresh INTFC session is not controller-in-charge) |
 | `board_io` | `viGpibSendIFC`, `viGpibCommand(UNL LAD24 MTA0)`, board-level `viWrite("*IDN?\n")`, `viGpibCommand(UNL TAD24 MLA0)`, board-level `viRead` → `VI_ERROR_TMO` |
 | `two_sessions` | two sessions to the same instrument in one process: `*IDN?` on each, close one, `*IDN?` on the other |
+| `timeout_expiry` | `viRead` with nothing pending at `VI_ATTR_TMO_VALUE` = 100, 300, 1000, 3000, 10000, 30000 ms — `VI_ERROR_TMO` after 0.133, 0.264, 1.050, 4.196, 16.780 and 33.556 s: how long the adapter really waits under each timeout code |
 | `read_thresholds` | `*IDN?` then `viRead` with count 1025, 1500, 2000, 2047, 2048, 2049, 3000, 4095, 4096 — where the framed read gives way to the raw one |
 | `write_thresholds` | `viWrite` of 18, 24, 32, 48, 63, 64, 65, 100, 128, 255, 256, 257, 512, 1024, 1025, 2048, 2049 bytes (`*CLS;` repeated, `\n`-terminated) — where the framed write gives way to the raw one |
 | `raw_errors` | at `GPIB0::5::INSTR` (nothing there): a 2500-byte write → `VI_ERROR_NLISTENERS`; `viRead` 20480 → `VI_ERROR_TMO`; `viReadSTB` → `VI_ERROR_TMO`; then a normal `*IDN?` on the 2420 |
