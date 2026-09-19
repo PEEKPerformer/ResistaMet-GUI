@@ -196,6 +196,7 @@ class ContinuousRun:
                 on_compress=self._emit_compress_status,
                 on_large_file=self._emit_large_file_status,
                 effective=self._effective_settings(),
+                spot=self._spot_record.header() if self._spot_record else None,
             )
             # Hdf5Exporter does not expose them; the schema is still known
             # to the caller, so an empty list means "ask get_column_config".

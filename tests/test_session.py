@@ -541,3 +541,47 @@ class TestSpotGeometry:
         assert fake_rm.opened == []
         assert [e.payload['code'] for e in sink.of_type('error')] == ['spot_invalid']
         assert sink.of_type('run_ended')[0].payload['reason'] == 'spot_refused'
+
+
+class TestSpotInTheFileHeader:
+    def _header(self, sink):
+        from resistamet_gui.data_export import parse_metadata
+        return parse_metadata(sink.of_type('run_ended')[-1].payload['path'])
+
+    def test_a_spot_is_written_with_the_sample_and_the_position_effect(
+            self, session, sink, fake_rm, profile):
+        spot = {'map_id': 'wafer7', 'index': 2, 'label': 'rim', 'x_mm': 20.0, 'y_mm': 0.0,
+                'angle_deg': 90.0}
+        session.start(_on_a_wafer(profile), 'four_point', 'wafer1', 'alice', spot=spot)
+        assert _wait_for(lambda: session.state == 'idle')
+
+        header = self._header(sink)
+        warning = sink.of_type('geometry_warning')[0].payload
+        assert header['spot.map_id'] == 'wafer7'
+        assert header['spot.index'] == 2
+        assert header['spot.label'] == 'rim'
+        assert (header['spot.x_mm'], header['spot.y_mm']) == (20.0, 0.0)
+        assert header['spot.angle_deg'] == 90.0
+        assert header['spot.sample.shape'] == 'circle'
+        assert header['spot.sample.diameter_mm'] == pytest.approx(50.8)
+        assert header['spot.position_correction'] == 'warn'
+        assert header['spot.edge_warn_pct'] == 1.0
+        assert header['spot.factor_here'] == warning['factor_here']
+        assert header['spot.factor_centre'] == warning['factor_centre']
+        assert header['spot.relative_error'] == warning['relative_error']
+        assert header['spot.edge_clearance_s'] == warning['edge_clearance_s']
+
+    def test_a_label_only_spot_has_no_position_effect(self, session, sink, fake_rm, profile):
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice',
+                      spot={'map_id': 'wafer7', 'index': 0, 'label': 'somewhere'})
+        assert _wait_for(lambda: session.state == 'idle')
+        header = self._header(sink)
+        assert header['spot.label'] == 'somewhere'
+        assert header['spot.x_mm'] is None
+        assert header['spot.sample.shape'] == 'unbounded'
+        assert 'spot.factor_here' not in header
+
+    def test_a_run_without_a_spot_has_no_spot_keys(self, session, sink, fake_rm, profile):
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+        assert not [key for key in self._header(sink) if key.startswith('spot.')]

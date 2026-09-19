@@ -58,11 +58,14 @@ def create_base_path(data_directory, username, sample_name, mode, source_value_s
 
 def open_exporter(base_path, mode, settings, measurement_settings, username, sample_name,
                    instrument_idn, start_time, aux_columns, aux_units,
-                   on_compress=None, on_large_file=None, effective=None):
+                   on_compress=None, on_large_file=None, effective=None, spot=None):
     """Build the run's exporter. Returns (exporter, primary filename).
 
     ``effective``: settings the instrument reported back after configuration,
     recorded beside the requested ones (see ``build_metadata``).
+
+    ``spot``: the header block of a four-point run that is one placement of a
+    map; None for every other run.
     """
     columns, units = get_column_config(
         mode, measurement_settings,
@@ -78,6 +81,7 @@ def open_exporter(base_path, mode, settings, measurement_settings, username, sam
         start_time=datetime.fromtimestamp(start_time),
         aux_columns=aux_columns or None,
         effective=effective,
+        spot=spot,
     )
 
     exporter = make_exporter(
