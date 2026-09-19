@@ -231,3 +231,27 @@ class TestCors:
     def test_unknown_origin_gets_no_allowance(self, client):
         response = client.get('/session', headers={'Origin': 'https://example.com'})
         assert 'access-control-allow-origin' not in response.headers
+
+
+class TestStartWithASpot:
+    SPOT = {'map_id': 'wafer7', 'index': 1, 'label': 'centre'}
+
+    def test_the_spot_reaches_the_run_settings(self, client, fake_rm, sink):
+        assert _start(client, spot=self.SPOT).status_code == 202
+        assert _wait_for(lambda: sink.of_type('run_started'))
+        started = sink.of_type('run_started')[0].payload
+        assert started['settings']['spot']['map_id'] == 'wafer7'
+        assert started['settings']['spot']['label'] == 'centre'
+        client.post('/session/stop')
+
+    def test_a_map_id_that_could_build_a_path_is_unprocessable(self, client, fake_rm, sink):
+        for map_id in ('../wafer7', 'a/b', '..', ''):
+            response = _start(client, spot={**self.SPOT, 'map_id': map_id})
+            assert response.status_code == 422, map_id
+        assert sink.events == []
+
+    def test_only_four_point_may_carry_one(self, client, fake_rm, sink):
+        response = _start(client, mode='resistance', spot=self.SPOT)
+        assert response.status_code == 422
+        assert 'four_point' in response.json()['detail']
+        assert sink.events == []
