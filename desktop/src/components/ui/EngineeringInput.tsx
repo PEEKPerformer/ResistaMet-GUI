@@ -9,7 +9,7 @@
 // never committed and never moved to the nearest bound: the text stays on
 // show, marked invalid, beside the value that is still in force.
 
-import { useEffect, useId, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { outOfBounds, parseEngineering } from "../../lib/engineeringParse";
 import { engineering, formatEngineering, prefixFor } from "../../lib/format";
 import { Input } from "./index";
@@ -46,6 +46,10 @@ export function EngineeringInput({
   /** Why the text on show was refused; null when the field shows its value. */
   const [refused, setRefused] = useState<string | null>(null);
   const errorId = useId();
+  /** The text the edit started from, to tell an edit from a visit. */
+  const pristine = useRef("");
+  /** Set by Escape so the blur that follows drops the edit. */
+  const cancelled = useRef(false);
 
   useEffect(() => {
     if (!editing && refused === null) setDraft(value === null ? "" : trimZeros(value));
@@ -56,6 +60,11 @@ export function EngineeringInput({
 
   const commit = () => {
     setEditing(false);
+    if (cancelled.current) {
+      cancelled.current = false;
+      setRefused(null);
+      return; // the effect puts the value back on show
+    }
     const text = draft.trim();
     if (text === "") {
       setRefused(null);
@@ -82,7 +91,12 @@ export function EngineeringInput({
     if (e.key === "Enter") {
       e.currentTarget.blur();
     } else if (e.key === "Escape") {
-      setEditing(false);
+      // blur() runs the blur handler before it returns, with the draft of
+      // this render still in hand, so the cancel has to be on record first.
+      cancelled.current = true;
+      // With an edit to drop, Escape means that and no more: a dialog
+      // around the field stays open.
+      if (draft !== pristine.current) e.stopPropagation();
       e.currentTarget.blur();
     }
   };
@@ -110,7 +124,9 @@ export function EngineeringInput({
         onFocus={() => {
           setEditing(true);
           // Refused text stays so it can be corrected rather than retyped.
-          if (refused === null) setDraft(value === null ? "" : trimZeros(value));
+          const text = value === null ? "" : trimZeros(value);
+          pristine.current = text;
+          if (refused === null) setDraft(text);
         }}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
