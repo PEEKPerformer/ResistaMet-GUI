@@ -287,6 +287,39 @@ def test_close_is_bounded_when_the_backend_does_not_abort_the_read():
     assert not reader.is_alive(), "reader did not exit once its read returned"
 
 
+def test_a_reader_that_outlives_close_leaves_the_sensor_alone():
+    """The line its read finally returns must not refill the cache of a
+    closed sensor."""
+    s, dev, reader = _blocked_in_read(close_aborts_read=False)
+    s.close()
+    dev.release()
+    reader.join(2.0)
+    assert not reader.is_alive()
+    with pytest.raises(SensorReadError, match="No reading"):
+        s.read_latest()
+
+
+def test_reopening_does_not_revive_the_previous_reader():
+    """The old reader is still inside its read when the sensor is reopened.
+    It must exit when that read returns, not start reading the new device
+    alongside the new reader."""
+    s, old_dev, old_reader = _blocked_in_read(close_aborts_read=False)
+    s.close()
+    new_dev = _BlockingDev(close_aborts_read=True)
+    s.dev = new_dev
+    s._start_reader()
+    try:
+        assert new_dev.in_read.wait(2.0)
+        old_dev.release()
+        old_reader.join(2.0)
+        assert not old_reader.is_alive(), "previous reader kept running"
+        with pytest.raises(SensorReadError, match="No reading"):
+            s.read_latest()              # its late line was discarded
+    finally:
+        old_dev.release()
+        s.close()
+
+
 def test_arduino_declares_two_channels():
     s = ArduinoThermocouple("ASRL6::INSTR")
     keys = [c.key for c in s.channels()]
