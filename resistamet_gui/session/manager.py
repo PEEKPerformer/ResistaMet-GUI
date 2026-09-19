@@ -29,6 +29,7 @@ from .continuous_run import ContinuousRun
 from .control import RunControl
 from .emitter import EventEmitter
 from .instrument_lock import HeldInstrument, InstrumentBusy, hold_instrument
+from .status import PendingPrompt, SessionStatus
 from .vdp_run import VdpRun
 
 logger = logging.getLogger(__name__)
@@ -78,20 +79,22 @@ class MeasurementSession:
         with self._lock:
             run_id, mode, run = self._run_id, self._mode, self._run
         prompt = self._control.pending_prompt if self._control else None
-        return {
-            'state': self.state,
-            'run_id': run_id,
-            'mode': mode,
-            'path': getattr(run, 'filename', '') or None,
-            'last_seq': self._last_event_seq,
-            'pending_prompt': None if prompt is None else {
-                'prompt_id': prompt.prompt_id,
-                'kind': prompt.kind,
-                'options': list(prompt.options),
-                'requires_human': prompt.requires_human,
-                'detail': dict(prompt.detail),
-            },
-        }
+        # Built through the model so the reply and its exported contract
+        # cannot drift; callers still get the plain dict they always did.
+        return SessionStatus(
+            state=self.state,
+            run_id=run_id,
+            mode=mode,
+            path=getattr(run, 'filename', '') or None,
+            last_seq=self._last_event_seq,
+            pending_prompt=None if prompt is None else PendingPrompt(
+                prompt_id=prompt.prompt_id,
+                kind=prompt.kind,
+                options=list(prompt.options),
+                requires_human=prompt.requires_human,
+                detail=dict(prompt.detail),
+            ),
+        ).model_dump()
 
     # --- commands ---------------------------------------------------------
 

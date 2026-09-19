@@ -1,0 +1,133 @@
+{
+  "definitions": {
+    "SessionStatus": {
+      "$defs": {
+        "PendingPrompt": {
+          "additionalProperties": false,
+          "description": "The question a run is parked on. Same fields as the ``prompt`` event.",
+          "properties": {
+            "detail": {
+              "additionalProperties": true,
+              "title": "Detail",
+              "type": "object"
+            },
+            "kind": {
+              "enum": [
+                "vdp_geometry",
+                "safety_voltage_ack",
+                "cable_null_shorted"
+              ],
+              "title": "Kind",
+              "type": "string"
+            },
+            "options": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Options",
+              "type": "array"
+            },
+            "prompt_id": {
+              "title": "Prompt Id",
+              "type": "string"
+            },
+            "requires_human": {
+              "title": "Requires Human",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "prompt_id",
+            "kind",
+            "options",
+            "requires_human",
+            "detail"
+          ],
+          "title": "PendingPrompt",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "One session: its state and the run it is on, or was last on.",
+      "properties": {
+        "last_seq": {
+          "title": "Last Seq",
+          "type": "integer"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "resistance",
+                "source_v",
+                "source_i",
+                "four_point",
+                "sweep",
+                "vdp"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Mode"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Path"
+        },
+        "pending_prompt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PendingPrompt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Run Id"
+        },
+        "state": {
+          "enum": [
+            "idle",
+            "identifying",
+            "running",
+            "paused",
+            "awaiting_prompt",
+            "stopping"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "run_id",
+        "mode",
+        "path",
+        "last_seq",
+        "pending_prompt"
+      ],
+      "title": "SessionStatus",
+      "type": "object"
+    }
+  }
+}

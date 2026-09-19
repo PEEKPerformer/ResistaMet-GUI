@@ -187,6 +187,16 @@ async function mapTypes() {
   return BANNER + dedupeInterfaces(parts.join("\n"));
 }
 
+async function sessionTypes() {
+  // What GET /session and the session commands answer with.
+  const contract = JSON.parse(readFileSync(join(contractsDir, "session.schema.json"), "utf8"));
+  const parts = [];
+  for (const [name, schema] of Object.entries(contract.definitions)) {
+    parts.push(await compileDefinition(schema, name));
+  }
+  return BANNER + dedupeInterfaces(parts.join("\n"));
+}
+
 function pascal(snake) {
   return snake.split("_").map((s) => s.charAt(0).toUpperCase() + s.slice(1)).join("");
 }
@@ -196,6 +206,7 @@ async function main() {
     "settings.ts": await settingsTypes(),
     "events.ts": await eventTypes(),
     "maps.ts": await mapTypes(),
+    "session.ts": await sessionTypes(),
   };
   mkdirSync(outDir, { recursive: true });
   let stale = false;

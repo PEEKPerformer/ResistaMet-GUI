@@ -302,6 +302,35 @@ class TestStatus:
         assert status['last_seq'] > 0
         session.stop()
 
+    def test_idle_status_is_exactly_this(self, session):
+        """The reply's shape is a contract (session/status.py); pin it."""
+        assert session.status() == {
+            'state': 'idle', 'run_id': None, 'mode': None, 'path': None,
+            'last_seq': 0, 'pending_prompt': None,
+        }
+
+    def test_a_pending_prompt_is_reported_in_full(self, session, sink, fake_rm, profile):
+        profile['measurement'].update({'vdp_thickness_cm': 0.05})
+        session.start(profile, 'vdp', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.status()['pending_prompt'] is not None)
+        status = session.status()
+        session.stop()
+
+        assert status['state'] == 'awaiting_prompt'
+        assert status['mode'] == 'vdp'
+        prompt = status['pending_prompt']
+        assert sorted(prompt) == ['detail', 'kind', 'options', 'prompt_id', 'requires_human']
+        assert prompt['kind'] == 'vdp_geometry'
+        assert prompt['options'] == ['proceed', 'abort']
+        assert prompt['requires_human'] is True
+        assert prompt['detail']['index'] == 0
+
+    def test_the_status_model_has_the_reply_s_keys(self, session):
+        from resistamet_gui.session.status import PendingPrompt, SessionStatus
+        assert sorted(SessionStatus.model_fields) == sorted(session.status())
+        assert all(field.is_required() for field in SessionStatus.model_fields.values())
+        assert all(field.is_required() for field in PendingPrompt.model_fields.values())
+
     def test_close_joins_the_thread(self, sink, fake_rm, profile):
         session = MeasurementSession(sink)
         session.start(_four_point(profile, samples=0), 'four_point', 'wafer1', 'alice')
