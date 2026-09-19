@@ -29,7 +29,7 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -120,15 +120,20 @@ def _write_metadata_block(f, meta: Dict[str, Any], units: Optional[List[str]] = 
         f.write(f"# units: {','.join(units)}\n")
 
 
-def parse_metadata(path: Union[str, Path]) -> Dict[str, Any]:
+def parse_metadata(path: Union[str, Path], text_keys: Iterable[str] = ()) -> Dict[str, Any]:
     """Parse the ``#`` metadata header (and trailing end block, if present) from a CSV.
 
     Supports plain ``.csv`` and ``.csv.gz``. Returns a flat dict of key/value
     pairs with values coerced back to native Python types. The ``units`` line
     is exposed as a list. End-metadata fields (``ended_at``, ``total_samples``,
     ``duration_s``) merge into the same dict with no special prefix.
+
+    ``text_keys`` names values to return exactly as written. Coercion cannot
+    tell a label from a literal -- an id of ``12_3`` would come back as the
+    integer 123 -- so a caller that compares identifiers asks for the text.
     """
     path = Path(path)
+    text_keys = frozenset(text_keys)
     is_gz = path.suffix == '.gz'
     opener = gzip.open if is_gz else open
     meta: Dict[str, Any] = {}
@@ -144,6 +149,8 @@ def parse_metadata(path: Union[str, Path]) -> Dict[str, Any]:
         value = value.strip()
         if key == 'units':
             meta['units'] = value.split(',')
+        elif key in text_keys:
+            meta.setdefault(key, value)
         else:
             meta.setdefault(key, _parse_scalar(value))
 
