@@ -51,6 +51,8 @@ export function LivePlot({ traces, mode, windowS = 0, fps = 30 }: Props) {
     };
     const axisText = computed.getPropertyValue("--axis-text").trim() || "#888";
     const gridLine = computed.getPropertyValue("--grid-line").trim() || "rgba(255,255,255,.08)";
+    const markColor = computed.getPropertyValue("--fg-muted").trim() || "#999";
+    const monoFont = computed.getPropertyValue("--font-mono");
 
     const hasRight = traces.some((t) => t.rightAxis);
     const seriesDefs: Series[] = [
@@ -118,6 +120,9 @@ export function LivePlot({ traces, mode, windowS = 0, fps = 30 }: Props) {
           : []),
       ],
       series: seriesDefs,
+      // Marks ride on every redraw: samples bump the version, the tick below
+      // calls setData, and uPlot runs this after the traces are down.
+      hooks: { draw: [(u) => drawMarks(u, mode, markColor, monoFont)] },
     };
 
     const plot = new uPlot(options, [[]] as unknown as AlignedData, host);
@@ -179,6 +184,44 @@ export function LivePlot({ traces, mode, windowS = 0, fps = 30 }: Props) {
   }, [traces, mode, windowS, fps]);
 
   return <div className={styles.host} ref={hostRef} />;
+}
+
+/** Labels longer than this are left to the log and the file. */
+const MARK_LABEL_MAX = 12;
+
+/** A thin dashed vertical at each marked sample, with its label when short:
+ *  the on-plot confirmation that Mark (or M) landed, and where. */
+function drawMarks(u: uPlot, mode: string | undefined, color: string, font: string): void {
+  const series = getSeries();
+  if (mode !== undefined && series.mode !== mode) return;
+  const min = u.scales.x?.min;
+  const max = u.scales.x?.max;
+  if (series.marks.length === 0 || min == null || max == null) return;
+  const { ctx, bbox } = u;
+  const px = uPlot.pxRatio;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = px;
+  ctx.setLineDash([4 * px, 3 * px]);
+  ctx.font = `${10 * px}px ${font}`;
+  ctx.textBaseline = "top";
+  for (const mark of series.marks) {
+    if (mark.t < min || mark.t > max) continue;
+    const x = Math.round(u.valToPos(mark.t, "x", true)) + 0.5 * px;
+    ctx.beginPath();
+    ctx.moveTo(x, bbox.top);
+    ctx.lineTo(x, bbox.top + bbox.height);
+    ctx.stroke();
+    if (mark.label.length <= MARK_LABEL_MAX) {
+      // Flip to the left of the line near the right edge so it stays inside.
+      const width = ctx.measureText(mark.label).width;
+      const right = x + 4 * px + width <= bbox.left + bbox.width;
+      ctx.textAlign = right ? "left" : "right";
+      ctx.fillText(mark.label, right ? x + 4 * px : x - 4 * px, bbox.top + 2 * px);
+    }
+  }
+  ctx.restore();
 }
 
 function formatAxisTime(seconds: number): string {
