@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from ..schema.spots import SpotRequest
 from ..session.instrument_lock import InstrumentBusy
 from ..session.manager import MeasurementSession, SessionBusy
 from .app import UI_ROLE, busy_as_conflict, get_session, require_token
@@ -23,6 +24,8 @@ class StartRequest(BaseModel):
     username: str = Field(min_length=1)
     overrides: Dict[str, Any] = Field(default_factory=dict)
     prompt_timeout_s: float = Field(default=900.0, gt=0.0)
+    # Four-point only; the session refuses it for any other mode.
+    spot: Optional[SpotRequest] = None
 
 
 class AnswerRequest(BaseModel):
@@ -77,7 +80,8 @@ def start(body: StartRequest, request: Request,
     try:
         run_id = session.start(profile, body.mode, body.sample_name, body.username,
                                 overrides=body.overrides,
-                                prompt_timeout_s=body.prompt_timeout_s)
+                                prompt_timeout_s=body.prompt_timeout_s,
+                                spot=body.spot)
     except SessionBusy as exc:
         raise busy_as_conflict(exc)
     except InstrumentBusy as exc:

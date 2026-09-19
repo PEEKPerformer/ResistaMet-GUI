@@ -26,6 +26,10 @@ MAP_ID_PATTERN = r'^[A-Za-z0-9_-]{1,64}$'
 #: that line: no control characters.
 LABEL_PATTERN = r'^[^\x00-\x1f\x7f]+$'
 
+#: Modes whose runs may carry a spot. The spot and map model is four-point
+#: only until a second mode needs it.
+SPOT_MODES = ('four_point',)
+
 #: Which dimensions each shape is described by.
 _DIMENSIONS = {
     'unbounded': (),
@@ -90,6 +94,12 @@ class SpotRequest(BaseModel):
     @property
     def has_position(self) -> bool:
         return self.x_mm is not None and self.y_mm is not None
+
+
+def check_spot_mode(mode: str) -> None:
+    """Raise ``ValueError`` when a run of ``mode`` may not carry a spot."""
+    if mode not in SPOT_MODES:
+        raise ValueError(f"a spot belongs to a four_point run, not '{mode}'")
 
 
 #: Legacy ``fpp_geometry`` value -> length / width of the rectangle it names.
