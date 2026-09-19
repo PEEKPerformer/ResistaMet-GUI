@@ -28,6 +28,7 @@ import { LivePlot, type TraceSpec } from "../../components/plot/LivePlot";
 import { FieldRow, SettingsForm } from "../../components/forms/SettingsForm";
 import { FourPointPanel } from "./FourPointPanel";
 import { prepareSpot, useMapSync } from "./fourPointSpot";
+import { MapPanel } from "./MapPanel";
 import styles from "./ContinuousView.module.css";
 
 type ContinuousMode = Exclude<Mode, "sweep" | "vdp">;
@@ -278,7 +279,10 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
         </Panel>
 
         {mode === "four_point" ? (
-          <FourPointPanel running={thisModeRunning} owner={owner} edgeWarnPct={numberSetting(measurement, "fpp_edge_warn_pct", 1)} />
+          <>
+            <FourPointPanel running={thisModeRunning} owner={owner} edgeWarnPct={numberSetting(measurement, "fpp_edge_warn_pct", 1)} />
+            <MapPanel owner={owner} measurement={measurement} />
+          </>
         ) : null}
       </div>
 

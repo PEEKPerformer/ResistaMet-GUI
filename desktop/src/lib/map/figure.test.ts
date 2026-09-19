@@ -89,14 +89,14 @@ test("the nearest-spot fill is drawn only when asked for, and says what it is", 
   assert.doesNotMatch(plain, /<polygon/);
   assert.doesNotMatch(plain, /Voronoi/);
   const filled = sceneToSvg(layoutFigure(model(spots, { cells: true })).scene);
-  assert.match(filled, /<polygon[^>]*clip-path="url\(#sample\)"/);
+  assert.match(filled, /<polygon[^>]*clip-path="url\(#map-sample\)"/);
   assert.match(filled, /nearest spot \(Voronoi cells\), not an interpolation/);
 });
 
 test("the exported SVG is a document with a scale bar and the title escaped", () => {
   const svg = sceneToSvg(layoutFigure(model([spot(1, 0, 0, 5)], { title: 'A&B <"film">' })).scene, 2);
   assert.match(svg, /^<\?xml version="1.0"/);
-  assert.match(svg, /width="1440" height="1000" viewBox="0 0 720 500"/);
+  assert.match(svg, /width="1280" height="920" viewBox="0 0 640 460"/);
   assert.match(svg, /A&amp;B &lt;&quot;film&quot;&gt;/);
   assert.match(svg, />5 mm</);
   assert.doesNotMatch(svg, /var\(--/, "the print palette has no CSS variables");
