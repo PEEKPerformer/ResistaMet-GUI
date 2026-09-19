@@ -85,3 +85,13 @@ test("legs split where the swept quantity turns round", () => {
   assert.deepEqual(sweepLegs([0, 1, 2, 2, 1]), [{ from: 0, to: 3 }, { from: 3, to: 5 }]);
   assert.deepEqual(sweepLegs([0, 0, 0]), [{ from: 0, to: 3 }]);
 });
+
+test("Python's nan and inf cells are numbers, and an empty column is not", () => {
+  const parsed = parseResistametCsv(
+    ["elapsed_s,rho_ohm_cm,sigma_S_cm,compliance,event", "0.1,0,nan,OK,", "0.2,0,inf,OK,", "0.3,0,-inf,OK,", "0.4,0,12.5,OK,"].join("\n"),
+  );
+  assert.deepEqual(parsed.data.sigma_S_cm, [NaN, Infinity, -Infinity, 12.5]);
+  assert.equal("sigma_S_cm" in parsed.text, false);
+  assert.equal("event" in parsed.data, false);
+  assert.deepEqual(parsed.text.event, ["", "", "", ""]);
+});
