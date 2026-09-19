@@ -2,10 +2,11 @@ import copy
 import json
 import logging
 import os
+import secrets
 import shutil
 import socket
-import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -27,6 +28,16 @@ _MACHINE_LOCAL_MEASUREMENT_KEYS = ('gpib_address', 'visa_library', 'gpib_interfa
 _USER_SECTIONS = ('measurement', 'display', 'file', 'output')
 
 
+#: os.replace fails with PermissionError on Windows while another process --
+#: a sync client, a virus scanner, a second ResistaMet -- has the target open.
+_REPLACE_ATTEMPTS = 10
+_REPLACE_RETRY_S = 0.1
+
+
+class ConfigSaveError(OSError):
+    """A settings file could not be written; the change is in memory only."""
+
+
 def default_machine_file() -> str:
     """This machine's own settings file, beside its logs and instrument locks."""
     return str(Path.home() / '.resistamet' / 'machine.json')
@@ -39,10 +50,53 @@ def _current_hostname() -> str:
         return 'unknown_host'
 
 
+def _write_json_atomically(path: str, data: Dict) -> None:
+    """Write ``data`` to ``path`` so a reader sees the old file or the new one.
+
+    The temporary file is created with ordinary permissions and then given
+    the mode of the file it replaces, so a config that other lab accounts can
+    read stays readable. Raises :class:`ConfigSaveError`.
+    """
+    directory = os.path.dirname(os.path.abspath(path)) or '.'
+    temp = None
+    try:
+        os.makedirs(directory, exist_ok=True)
+        temp = os.path.join(directory, f".{os.path.basename(path)}-{secrets.token_hex(6)}.tmp")
+        descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        with os.fdopen(descriptor, 'w') as handle:
+            json.dump(data, handle, indent=4, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if os.path.exists(path):
+            shutil.copymode(path, temp)
+        for attempt in range(_REPLACE_ATTEMPTS):
+            try:
+                # os.replace is atomic on POSIX and on Windows (unlike rename).
+                os.replace(temp, path)
+                return
+            except PermissionError:
+                if attempt == _REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(_REPLACE_RETRY_S)
+    except Exception as e:
+        if temp is not None:
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+        logger.error(f"Error saving '{path}': {str(e)}")
+        raise ConfigSaveError(f"could not save '{path}': {e}") from e
+
+
 class ConfigManager:
     def __init__(self, config_file: str = CONFIG_FILE, hostname: Optional[str] = None,
-                 machine_file: Optional[str] = None):
+                 machine_file: Optional[str] = None, raise_on_save_error: bool = False):
         self.config_file = config_file
+        #: A save that fails is always logged as an error. A caller that can
+        #: tell its user -- the API answers 500 -- also asks for the
+        #: exception; the PySide6 dialogs do not handle one yet, and an
+        #: unwritable config must not stop them from opening a session.
+        self.raise_on_save_error = raise_on_save_error
         #: Where this machine's instrument address, VISA library and GPIB
         #: interface are kept. Not in config.json: that file may be shared
         #: between PCs, and a key derived from the hostname there stops
@@ -67,9 +121,14 @@ class ConfigManager:
             # A migration would "fix" the defaults and save them over the
             # file, which may only be half-synced and whole again in a moment.
             return
-        self._migrate_machine_file()
-        if self._migrate_output_reset():
-            self.save_config()
+        try:
+            self._migrate_machine_file()
+            if self._migrate_output_reset():
+                self.save_config()
+        except ConfigSaveError:
+            # Already logged. The application still opens, on what is in
+            # memory; the migrations are tried again at the next start.
+            pass
 
     # --- machine-local layer ---------------------------------------------
 
@@ -87,25 +146,15 @@ class ConfigManager:
                          f"{str(e)}. Using the instrument address and VISA defaults.")
             return {}
 
-    def _save_machine_file(self) -> None:
-        directory = os.path.dirname(os.path.abspath(self.machine_file)) or '.'
-        handle = None
+    def _write(self, path: str, data: Dict) -> None:
         try:
-            os.makedirs(directory, exist_ok=True)
-            handle = tempfile.NamedTemporaryFile(
-                'w', dir=directory, prefix='.machine-', suffix='.tmp', delete=False)
-            with handle:
-                json.dump(self._machine, handle, indent=4, sort_keys=True)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(handle.name, self.machine_file)
-        except Exception as e:
-            logger.error(f"Error saving machine settings '{self.machine_file}': {str(e)}")
-            if handle is not None:
-                try:
-                    os.unlink(handle.name)
-                except OSError:
-                    pass
+            _write_json_atomically(path, data)
+        except ConfigSaveError:
+            if self.raise_on_save_error:
+                raise
+
+    def _save_machine_file(self) -> None:
+        self._write(self.machine_file, self._machine)
 
     def _legacy_machine_slot(self) -> Dict:
         """What config.json holds for this hostname, from before the machine file."""
@@ -272,7 +321,10 @@ class ConfigManager:
             logger.info(f"Configuration file '{self.config_file}' not found. Creating with defaults.")
             new_config = copy.deepcopy(DEFAULT_SETTINGS)
             self.config = new_config
-            self.save_config()
+            try:
+                self.save_config()
+            except ConfigSaveError:
+                pass  # logged; run on the defaults in memory
             return new_config
 
     def _set_unreadable_file_aside(self) -> bool:
@@ -315,29 +367,20 @@ class ConfigManager:
         ConfigManager — could leave an empty or half-written config.json and
         lose every profile. Writing a sibling temp file and renaming it means
         a reader sees either the old file or the new one.
+
+        A save that fails is logged as an error, and raised as
+        :class:`ConfigSaveError` when the manager was built with
+        ``raise_on_save_error``, so that a caller able to tell its user can
+        say the change was not kept.
         """
         with self._lock:
             if self._unreadable_on_disk and not self._set_unreadable_file_aside():
+                if self.raise_on_save_error:
+                    raise ConfigSaveError(
+                        f"'{self.config_file}' is unreadable and could not be copied "
+                        "aside; it is not being overwritten")
                 return
-            directory = os.path.dirname(os.path.abspath(self.config_file)) or '.'
-            handle = None
-            try:
-                os.makedirs(directory, exist_ok=True)
-                handle = tempfile.NamedTemporaryFile(
-                    'w', dir=directory, prefix='.config-', suffix='.tmp', delete=False)
-                with handle:
-                    json.dump(self.config, handle, indent=4, sort_keys=True)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                # os.replace is atomic on POSIX and on Windows (unlike rename).
-                os.replace(handle.name, self.config_file)
-            except Exception as e:
-                logger.error(f"Error saving configuration: {str(e)}")
-                if handle is not None:
-                    try:
-                        os.unlink(handle.name)
-                    except OSError:
-                        pass
+            self._write(self.config_file, self.config)
 
     # --- user / global settings ------------------------------------------
 
