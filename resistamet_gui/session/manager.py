@@ -23,6 +23,7 @@ import time
 from typing import Any, Callable, Dict, Optional
 
 from ..schema.resolve import resolve_run_settings
+from ..schema.settings_modes import ClientInfo
 from ..schema.spots import SpotRequest, check_spot_mode
 from .continuous_run import ContinuousRun
 from .control import RunControl
@@ -97,13 +98,18 @@ class MeasurementSession:
     def start(self, profile: Dict[str, Any], mode: str, sample_name: str, username: str,
               overrides: Optional[Dict[str, Any]] = None,
               prompt_timeout_s: float = 900.0,
-              spot: Optional[Any] = None) -> str:
+              spot: Optional[Any] = None,
+              client: Optional[Any] = None) -> str:
         """Resolve settings, then run them. Returns the run id immediately.
 
         ``spot`` (a ``SpotRequest`` or its dict) says which placement of the
         four-point probe this run is. It rides in the run settings as
         ``settings['spot']``, beside the sections the profile provides, so the
         run procedure reads it the same way whoever started the run.
+
+        ``client`` (a ``ClientInfo`` or its dict) names the program that asked
+        for the run. It rides the same way, as ``settings['client']``, and
+        ``build_metadata`` writes it into the file header.
 
         Raises ``SessionBusy`` unless idle, ``InstrumentBusy`` when another
         process holds the instrument, and ``ValueError`` when the strict
@@ -117,6 +123,8 @@ class MeasurementSession:
         if spot is not None:
             check_spot_mode(mode)
             resolved.settings['spot'] = SpotRequest.model_validate(spot).model_dump()
+        if client is not None:
+            resolved.settings['client'] = ClientInfo.model_validate(client).model_dump()
 
         with self._lock:
             if self._state != 'idle':

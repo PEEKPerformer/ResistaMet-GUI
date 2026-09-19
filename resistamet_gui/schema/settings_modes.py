@@ -153,6 +153,26 @@ MODE_MODELS = {
 }
 
 
+#: A client's name or version: a short token that is safe on one line of a
+#: CSV header. Letters, digits, space and ``. _ + -``; no control characters.
+CLIENT_TEXT_PATTERN = r'^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,63}$'
+
+
+class ClientInfo(SettingsModel):
+    """Which program asked for the run, recorded in the file header.
+
+    The backend's own version is always written (``software_version``); this
+    says what was driving it -- the desktop app, a script, the MCP layer --
+    so a file written through the API can be told from one the PySide6 app
+    wrote. Self-reported, so it is provenance and not authentication.
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    name: str = Field(pattern=CLIENT_TEXT_PATTERN)
+    version: str = Field(pattern=CLIENT_TEXT_PATTERN)
+
+
 class RunRequest(SettingsModel):
     """What a client asks for. Never persisted.
 
@@ -173,6 +193,8 @@ class RunRequest(SettingsModel):
     prompt_timeout_s: float = Field(default=900.0, gt=0.0)
     # Which placement of the probe this run is (``spots.SPOT_MODES`` only).
     spot: Optional[SpotRequest] = None
+    # Who is asking; absent, the file header says nothing about a client.
+    client: Optional[ClientInfo] = None
 
     @model_validator(mode='after')
     def _only_four_point_has_spots(self):

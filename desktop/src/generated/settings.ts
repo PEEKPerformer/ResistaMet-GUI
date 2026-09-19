@@ -132,12 +132,25 @@ export interface ResistanceSettings {
  * ones the profile owns.
  */
 export interface RunRequest {
+  client?: ClientInfo | null;
   mode: "resistance" | "source_v" | "source_i" | "four_point" | "sweep" | "vdp";
   overrides?: {};
   prompt_timeout_s?: number;
   sample_name: string;
   spot?: SpotRequest | null;
   username: string;
+}
+/**
+ * Which program asked for the run, recorded in the file header.
+ *
+ * The backend's own version is always written (``software_version``); this
+ * says what was driving it -- the desktop app, a script, the MCP layer --
+ * so a file written through the API can be told from one the PySide6 app
+ * wrote. Self-reported, so it is provenance and not authentication.
+ */
+export interface ClientInfo {
+  name: string;
+  version: string;
 }
 /**
  * One placement of the probe, as the client describes it.
@@ -624,6 +637,10 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
     }
   },
   "RunRequest": {
+    "client": {
+      "nullable": true,
+      "default": null
+    },
     "mode": {
       "type": "string",
       "enum": [
