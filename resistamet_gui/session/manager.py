@@ -26,7 +26,7 @@ from ..schema.resolve import resolve_run_settings
 from ..schema.settings_modes import ClientInfo
 from ..schema.spots import SpotRequest, check_spot_mode
 from .continuous_run import ContinuousRun
-from .control import RunControl
+from .control import InvalidPromptChoice, RunControl
 from .emitter import EventEmitter
 from .instrument_lock import HeldInstrument, InstrumentBusy, hold_instrument
 from .status import InstrumentInfo, PendingPrompt, SessionStatus
@@ -143,7 +143,7 @@ class MeasurementSession:
             try:
                 self._run_count += 1
                 run_id = f"run-{self._run_count}"
-                control = RunControl()
+                control = RunControl(run_id=run_id)
                 emitter = EventEmitter(self._record, run_id=run_id, clock=self._clock)
                 if mode == VDP_MODE:
                     run = VdpRun(sample_name, username, resolved.settings, control, emitter,
@@ -208,9 +208,18 @@ class MeasurementSession:
 
     def answer_prompt(self, prompt_id: str, choice: str,
                        fields: Optional[Dict[str, Any]] = None) -> bool:
-        """Answer the pending prompt. False when the id is stale."""
+        """Answer the pending prompt. False when the answer was not taken.
+
+        That is a stale id, a second answer, or a choice the prompt did not
+        offer. The last is logged here because False is all the caller sees,
+        and the prompt is left pending for a real answer.
+        """
         control = self._require_control()
-        return control.answer_prompt(prompt_id, choice, fields)
+        try:
+            return control.answer_prompt(prompt_id, choice, fields)
+        except InvalidPromptChoice as exc:
+            logger.warning("prompt answer refused: %s", exc)
+            return False
 
     def identify(self, address: str, visa_library: str = '',
                  gpib_interface: str = '') -> Dict[str, Any]:

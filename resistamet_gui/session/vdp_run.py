@@ -369,7 +369,9 @@ class VdpRun:
                 self._events.warn('prompt_timeout',
                                    "No answer at this geometry; abandoning the run.")
                 raise _VdpAborted()
-            if not self.running or choice == 'abort':
+            if not self.running or choice != 'proceed':
+                # Only an explicit 'proceed' says the leads are where this
+                # geometry needs them. Anything else leaves the output off.
                 raise _VdpAborted()
 
             self.keithley.write(":OUTP ON")
