@@ -273,13 +273,14 @@ class SimulatedAdapter:
 
     # The alternate pair and the interrupt endpoint; behaviour is added with the
     # instructions that use them.
-    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> None:
+    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> int:
         assert self.pending_raw_write is not None, 'raw bulk OUT with no 0x0e outstanding'
         length, eoi = self.pending_raw_write
         assert len(data) == length, 'the 0x0e announced %d bytes, %d arrived' % (length, len(data))
         self.pending_raw_write = None
         self.raw_writes.append(data)
         self.reply = self._write_raw(data, eoi)
+        return len(data)
 
     def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
         self.raw_in_timeouts.append(timeout_ms)
