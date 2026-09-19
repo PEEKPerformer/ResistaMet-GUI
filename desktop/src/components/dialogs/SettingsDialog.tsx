@@ -10,8 +10,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useApi } from "../../app/AppContext";
 import { FIELD_META } from "../../generated/settings";
 import type { FieldSpec } from "../../lib/fields";
+import { patchIssues, type PatchIssue } from "../../lib/patchIssues";
 import { profilePatch, withMachineLocal } from "../../lib/profilePatch";
-import type { InstrumentInfo, Profile, VisaBackend } from "../../lib/api";
+import type { InstrumentInfo, Issue, Profile, VisaBackend } from "../../lib/api";
 import { ApiError } from "../../lib/api";
 import { setIdentifiedInstrument, useSession } from "../../state/session";
 import { setTheme, useUi } from "../../state/ui";
@@ -76,6 +77,8 @@ export function SettingsDialog({ onClose }: Props) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [draft, setDraft] = useState<Profile>({});
   const [error, setError] = useState<string | null>(null);
+  /** What the backend refused in the last Save, shown at the fields. */
+  const [issues, setIssues] = useState<PatchIssue[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -95,13 +98,21 @@ export function SettingsDialog({ onClose }: Props) {
   const patch = useMemo(() => (profile ? profilePatch(profile, draft) : {}), [draft, profile]);
   const dirtySections = Object.keys(patch);
 
-  const set = (sectionName: string, key: string, value: unknown) =>
+  const set = (sectionName: string, key: string, value: unknown) => {
     setDraft((d) => ({ ...d, [sectionName]: { ...(d[sectionName] ?? {}), [key]: value } }));
+    setIssues((all) => all.filter((i) => !(i.section === sectionName && i.key === key)));
+  };
+
+  const issueFor = (sectionName: string, key: string): Issue | undefined => {
+    const found = issues.find((i) => i.section === sectionName && i.key === key);
+    return found ? { key, message: found.message, severity: "error" } : undefined;
+  };
 
   const save = async () => {
     if (!ui.username) return;
     setSaving(true);
     setError(null);
+    setIssues([]);
     try {
       const updated = await api.patchProfile(ui.username, patch);
       setProfile(updated);
@@ -109,7 +120,16 @@ export function SettingsDialog({ onClose }: Props) {
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } catch (e) {
-      setError(e instanceof ApiError ? e.detail : String(e));
+      const refused = e instanceof ApiError ? patchIssues(e.detail) : [];
+      setIssues(refused);
+      // Nothing was stored. The fields may be in a section that is not open.
+      setError(
+        refused.length > 0
+          ? `Not saved: ${refused.map((i) => i.key).join(", ")}`
+          : e instanceof ApiError
+            ? e.detail
+            : String(e),
+      );
     } finally {
       setSaving(false);
     }
@@ -169,6 +189,7 @@ export function SettingsDialog({ onClose }: Props) {
                     meta={meta("InstrumentSettings")[spec.key] ?? {}}
                     value={measurement[spec.key]}
                     onChange={(v) => set("measurement", spec.key, v)}
+                    issue={issueFor("measurement", spec.key)}
                     disabled={running}
                   />
                 ))
@@ -184,6 +205,7 @@ export function SettingsDialog({ onClose }: Props) {
                     meta={meta("AuxSensorSettings")[spec.key] ?? {}}
                     value={measurement[spec.key]}
                     onChange={(v) => set("measurement", spec.key, v)}
+                    issue={issueFor("measurement", spec.key)}
                     disabled={running}
                   />
                 ))
@@ -197,6 +219,7 @@ export function SettingsDialog({ onClose }: Props) {
                     meta={meta("SafetySettings")[spec.key] ?? {}}
                     value={measurement[spec.key]}
                     onChange={(v) => set("measurement", spec.key, v)}
+                    issue={issueFor("measurement", spec.key)}
                     disabled={running}
                   />
                 ))
@@ -211,6 +234,7 @@ export function SettingsDialog({ onClose }: Props) {
                     meta={meta("FileSettings")[spec.key] ?? {}}
                     value={(draft.file ?? {})[spec.key]}
                     onChange={(v) => set("file", spec.key, v)}
+                    issue={issueFor("file", spec.key)}
                     disabled={running}
                   />
                 ))}
@@ -222,6 +246,7 @@ export function SettingsDialog({ onClose }: Props) {
                     meta={meta("OutputSettings")[spec.key] ?? {}}
                     value={(draft.output ?? {})[spec.key]}
                     onChange={(v) => set("output", spec.key, v)}
+                    issue={issueFor("output", spec.key)}
                     disabled={running}
                   />
                 ))}
