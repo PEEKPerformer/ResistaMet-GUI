@@ -121,10 +121,10 @@ address 3 on this Mac. First contact found two things the specification had
 wrong — the read reply's tail is 16 bytes, not 28, and the 2400 drops
 addressing bytes that arrive within a millisecond of take control, which
 wedged the adapter until it was power-cycled — both fixed on the bench
-(`bc74095`, `beb1db1`). Through the driver: identify, three consecutive
+(`a967f91`, `13d92ca`). Through the driver: identify, three consecutive
 resistance runs (99.51 Ω at 10 mA), stop mid-settle, immediate restart,
 shutdown mid-run with the output confirmed off, and the compliance
-detection of `1568506`.
+detection of `adce01e`.
 
 ## NI's driver as the oracle, 2026-09-19
 
@@ -156,7 +156,7 @@ switch reinterpreting units) were found and fixed the same day; the
 sixteen minor and twelve cosmetic items are tracked outside the repo; the fixes were verified in the
 dev UI against the simulator (and on a 2400 for compliance), not yet on the
 PC. The first CI build also lacked a WebSocket implementation entirely
-(`websockets` was never a declared dependency), fixed in `f5d0e29`.
+(`websockets` was never a declared dependency), fixed in `4fbf2dc`.
 
 ## The punch list and the spot model, 2026-09-19
 
