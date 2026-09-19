@@ -82,6 +82,7 @@ class ContinuousRun:
         # other mode has a per-spot result.
         self._spot_samples = SpotSamples() if mode == 'four_point' else None
         self._spot_sample_warned = False  # debounce: say it once per run
+        self._shut_down_started = False   # _shut_down runs once per run
 
         # Start/stop/pause state and the marker queue, shared with whoever is
         # driving the run.
@@ -646,6 +647,11 @@ class ContinuousRun:
                 except Exception as e:
                     self._events.error('output_on_failed', 'smu', f"Error turning on output: {str(e)}")
                     self._control.finish('output_on_failed')
+                    # The data file is open by now. Leaving through the
+                    # shutdown gives it its footer and the log its closing
+                    # lines; a bare return left both to the silent backstop
+                    # in _cleanup.
+                    self._shut_down(instrument_ready, file_ready, nplc)
                     return
 
             last_save = self.start_time
@@ -993,6 +999,13 @@ class ContinuousRun:
         except Exception as e:
             self._control.finish('worker_error')
             self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self._mode_name}): {str(e)}")
+            # Whatever went wrong, a file that was opened still gets its
+            # footer. A no-op when the fault came after the shutdown began.
+            if file_ready:
+                try:
+                    self._shut_down(instrument_ready, file_ready, nplc)
+                except Exception as shutdown_error:
+                    logger.warning(f"shutdown after a worker error failed: {shutdown_error}")
         finally:
             # Read the counters before cleanup releases the exporter.
             samples = self.exporter.row_count if self.exporter else 0
@@ -1014,7 +1027,14 @@ class ContinuousRun:
         ``_cleanup`` runs after this on every exit and would also turn the
         output off and close the file, but silently and with no footer; it
         is the backstop, this is the record.
+
+        Runs once: every way out of execute() after the file is open comes
+        through here, and a fault inside the shutdown itself must not send
+        the run round it a second time.
         """
+        if self._shut_down_started:
+            return
+        self._shut_down_started = True
         if instrument_ready and self.keithley:
             try:
                 self.keithley.write(":OUTP OFF")
