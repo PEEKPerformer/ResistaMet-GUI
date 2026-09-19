@@ -15,8 +15,11 @@ Two validation modes:
 * **lenient** (a stored profile being opened): out-of-range values are
   reported as issues and passed through unchanged. A lab profile that drifted
   out of range must still open.
-* **strict** (an API run request): the same issues, plus the checks the GUI
-  makes at Start — vdP needs a real thickness, 4PP must not ask for more power
+* **strict** (an API run request): values must have the type they claim --
+  a JSON ``"false"`` is not a bool and ``true`` is not a current -- and the
+  *validated* values are what the run receives, so nothing reaches a worker
+  in a form the models never saw. Then the same issues, plus the checks the
+  GUI makes at Start — vdP needs a real thickness, 4PP must not ask for more power
   than its own hard stop, aux co-logging only exists for the continuous modes —
   and unknown or profile-owned override keys are rejected. The touch-safety
   keys are profile-owned here: whoever may not answer the hazardous-voltage
@@ -124,6 +127,14 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
             elif key not in permitted:
                 issues.append(Issue(key, f"'{key}' is not a setting of mode '{mode}'"))
 
+        # The control keys choose a value, so no model sees them. Truthiness
+        # is not good enough here: the string 'false' is truthy, and would
+        # turn a bounded source-on run into an unbounded one.
+        for key in CONTROL_KEYS:
+            if key in overrides and not isinstance(overrides[key], bool):
+                issues.append(Issue(key, f"'{key}' must be true or false, "
+                                         f"not {overrides[key]!r}"))
+
     # 3. Apply the client's values (the GUI's widget reads).
     for key, value in overrides.items():
         if key not in CONTROL_KEYS:
@@ -141,9 +152,13 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
         m_cfg['auto_zero'] = profile['measurement'].get('auto_zero', 'once')
 
     # 6. "Run until stopped" checkboxes mean a duration of zero.
-    if mode == 'source_v' and overrides.get('vsource_run_continuous'):
+    #    A strict request's flag counts only when it is a real ``true``.
+    def asked_to_run_until_stopped(key: str) -> bool:
+        return overrides.get(key) is True if strict else bool(overrides.get(key))
+
+    if mode == 'source_v' and asked_to_run_until_stopped('vsource_run_continuous'):
         m_cfg['vsource_duration_hours'] = 0.0
-    if mode == 'source_i' and overrides.get('isource_run_continuous'):
+    if mode == 'source_i' and asked_to_run_until_stopped('isource_run_continuous'):
         m_cfg['isource_duration_hours'] = 0.0
 
     # 7. Profile-owned keys.
@@ -175,29 +190,42 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
     )
 
 
-def _model_issues(model, values: Dict[str, Any]) -> List[Issue]:
-    """Validate one group, reporting rather than raising."""
+def _model_issues(model, values: Dict[str, Any], *, strict: bool = False) -> List[Issue]:
+    """Validate one group, reporting rather than raising.
+
+    Lenient validation coerces a copy and leaves ``values`` alone: a stored
+    profile passes through as it is. Strict validation refuses a value of the
+    wrong JSON type (an int is still a fine float) and, when the group is
+    valid, writes the validated values back, so ``1`` reaches the run as
+    ``1.0`` and nothing reaches it that the model did not accept.
+    """
     from pydantic import ValidationError
 
     subset = {name: values[name] for name in model.model_fields if name in values}
     # 'not measured' reaches the models as None; NaN stays in the settings dict
     # because that is what the worker and the F84 code read.
-    if 'fpp_temperature_c' in subset and _is_nan(subset['fpp_temperature_c']):
+    unmeasured = 'fpp_temperature_c' in subset and _is_nan(subset['fpp_temperature_c'])
+    if unmeasured:
         subset['fpp_temperature_c'] = None
     try:
-        model(**subset)
+        validated = model.model_validate(subset, strict=strict)
     except ValidationError as exc:
         return [
             Issue(str(error['loc'][0]) if error['loc'] else model.__name__, error['msg'])
             for error in exc.errors()
         ]
+    if strict:
+        for name in subset:
+            if name == 'fpp_temperature_c' and unmeasured:
+                continue  # stays NaN, as the profile wrote it
+            values[name] = getattr(validated, name)
     return []
 
 
 def _validate(m_cfg: Dict[str, Any], mode: str, *, strict: bool) -> List[Issue]:
     issues: List[Issue] = []
     for model in (MODE_MODELS[mode], InstrumentSettings, AuxSensorSettings, SafetySettings):
-        issues.extend(_model_issues(model, m_cfg))
+        issues.extend(_model_issues(model, m_cfg, strict=strict))
     if mode == 'four_point':
         issues.extend(_sample_geometry_issues(m_cfg))
     if not strict:

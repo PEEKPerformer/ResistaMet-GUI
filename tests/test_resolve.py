@@ -1,5 +1,6 @@
 """Resolver behaviour beyond parity: strict checks, issues, derived values."""
 import copy
+import math
 
 import pytest
 
@@ -127,6 +128,63 @@ class TestSafetyGroupIsProfileOwned:
         assert resolved.settings['measurement']['safety_voltage_warn_v'] == 50.0
 
 
+class TestStrictTyping:
+    """A strict request's values are what they say they are, and the run gets
+    the values the models accepted -- not the text they were parsed from."""
+
+    @pytest.mark.parametrize("mode, override", [
+        ('four_point', {'fpp_stop_on_overpower': 'false'}),  # truthy in Python
+        ('four_point', {'fpp_stop_on_overpower': 0}),
+        ('four_point', {'fpp_current': '1e-4'}),
+        ('four_point', {'fpp_samples': '20'}),
+        ('four_point', {'fpp_samples': True}),
+        ('source_i', {'isource_current': True}),  # lax pydantic reads 1.0 A
+        ('resistance', {'filter_enabled': 'no'}),
+        ('resistance', {'nplc': '1'}),
+    ])
+    def test_a_value_of_the_wrong_json_type_is_an_issue(self, profile, mode, override):
+        resolved = resolve_run_settings(profile, mode, override, strict=True)
+        assert _keys(resolved) == list(override)
+        assert not resolved.ok
+
+    def test_an_integer_is_a_fine_float_and_arrives_as_one(self, profile):
+        resolved = resolve_run_settings(profile, 'source_v', {'vsource_voltage': 5}, strict=True)
+        assert resolved.issues == []
+        value = resolved.settings['measurement']['vsource_voltage']
+        assert value == 5.0 and isinstance(value, float)
+
+    @pytest.mark.parametrize("mode", sorted(MODE_MODELS))
+    def test_the_defaults_are_already_strictly_typed(self, profile, mode):
+        """Every run starts from the profile, so it is held to the same rule."""
+        profile['measurement']['vdp_thickness_cm'] = 0.05
+        assert resolve_run_settings(profile, mode, {}, strict=True).issues == []
+
+    def test_an_unmeasured_temperature_stays_nan(self, profile):
+        """What the profile holds and what the F84 code reads."""
+        resolved = resolve_run_settings(profile, 'four_point', {}, strict=True)
+        assert math.isnan(resolved.settings['measurement']['fpp_temperature_c'])
+
+    def test_a_json_null_temperature_stays_none(self, profile):
+        resolved = resolve_run_settings(profile, 'four_point',
+                                         {'fpp_temperature_c': None}, strict=True)
+        assert resolved.issues == []
+        assert resolved.settings['measurement']['fpp_temperature_c'] is None
+
+    def test_a_measured_temperature_is_a_float(self, profile):
+        resolved = resolve_run_settings(profile, 'four_point',
+                                         {'fpp_temperature_c': 23}, strict=True)
+        value = resolved.settings['measurement']['fpp_temperature_c']
+        assert value == 23.0 and isinstance(value, float)
+
+    def test_the_lenient_path_passes_values_through_untouched(self, profile):
+        """The GUI's own gather: reported perhaps, never rewritten."""
+        resolved = resolve_run_settings(profile, 'four_point',
+                                         {'fpp_current': '1e-4', 'fpp_samples': '20'})
+        assert resolved.issues == []
+        assert resolved.settings['measurement']['fpp_current'] == '1e-4'
+        assert resolved.settings['measurement']['fpp_samples'] == '20'
+
+
 class TestStartTimeChecks:
     def test_vdp_requires_a_thickness(self, profile):
         resolved = resolve_run_settings(profile, 'vdp',
@@ -219,6 +277,27 @@ class TestRunUntilStopped:
     def test_flag_is_not_stored_as_a_setting(self, profile):
         resolved = resolve_run_settings(profile, 'source_v', {'vsource_run_continuous': True})
         assert 'vsource_run_continuous' not in resolved.settings['measurement']
+
+
+    @pytest.mark.parametrize("flag", ['false', 'true', 0, 1, None])
+    def test_a_strict_flag_must_be_a_real_bool(self, profile, flag):
+        """'false' is a truthy string: it used to turn the two hours asked
+        for into a source-on run with no end."""
+        resolved = resolve_run_settings(profile, 'source_v', {
+            'vsource_duration_hours': 2.0, 'vsource_run_continuous': flag}, strict=True)
+        assert _keys(resolved) == ['vsource_run_continuous']
+        assert not resolved.ok
+        assert resolved.settings['measurement']['vsource_duration_hours'] == 2.0
+
+    @pytest.mark.parametrize("mode, prefix", [('source_v', 'vsource'), ('source_i', 'isource')])
+    def test_strict_true_and_false_mean_what_they_say(self, profile, mode, prefix):
+        bounded = resolve_run_settings(profile, mode, {
+            f'{prefix}_duration_hours': 2.0, f'{prefix}_run_continuous': False}, strict=True)
+        unbounded = resolve_run_settings(profile, mode, {
+            f'{prefix}_duration_hours': 2.0, f'{prefix}_run_continuous': True}, strict=True)
+        assert bounded.issues == [] and unbounded.issues == []
+        assert bounded.settings['measurement'][f'{prefix}_duration_hours'] == 2.0
+        assert unbounded.settings['measurement'][f'{prefix}_duration_hours'] == 0.0
 
 
 class TestInvalidMode:
