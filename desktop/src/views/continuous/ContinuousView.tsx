@@ -180,6 +180,9 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
   const maxRate = typeof resolved?.derived.max_rate_hz === "number" ? resolved.derived.max_rate_hz : null;
   const requestedRate = typeof overrides.sampling_rate === "number" ? overrides.sampling_rate : null;
   const rateTooHigh = maxRate !== null && requestedRate !== null && requestedRate > maxRate;
+  // The achievable rate is stated once: in the banner when the request
+  // exceeds it, as a quiet line under the timing fields otherwise.
+  const rateBanner = rateTooHigh && !locked;
 
   return (
     <div className={styles.view}>
@@ -227,7 +230,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
             acknowledge before the output turns on.
           </Notice>
         ) : null}
-        {rateTooHigh && !locked ? (
+        {rateBanner ? (
           <Notice tone="warn">
             {requestedRate} Hz exceeds what these timing settings can deliver (~{maxRate!.toFixed(1)} Hz). The run will sample as fast as it can.
           </Notice>
@@ -282,7 +285,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
               disabled={locked}
             />
           ))}
-          {maxRate !== null ? (
+          {maxRate !== null && !rateBanner ? (
             <div className={styles.derived}>
               Max rate with these settings: <span className="num">{maxRate.toFixed(1)} Hz</span>
             </div>
