@@ -392,6 +392,67 @@ class TestInstruments:
         assert response.status_code == 503
         assert PRLGX in response.json()['detail']
 
+    @pytest.mark.parametrize('library', ['/tmp/evil.dylib', 'C:\\evil.dll', '@sim', 'py'])
+    def test_a_request_cannot_name_a_library_to_load(self, client, fake_rm, monkeypatch,
+                                                     library):
+        """The value goes to ctypes; a request may only pick a known backend."""
+        import pyvisa
+        calls = []
+        factory = pyvisa.ResourceManager
+        monkeypatch.setattr(pyvisa, 'ResourceManager',
+                            lambda *a, **k: (calls.append(a), factory(*a, **k))[1])
+
+        listed = client.get('/instruments/resources', params={'visa_library': library})
+        identified = client.post('/instruments/identify', json={
+            'address': 'GPIB0::24::INSTR', 'visa_library': library})
+
+        assert listed.status_code == 422
+        assert identified.status_code == 422
+        assert calls == []
+
+    def test_a_request_may_repeat_the_library_this_machine_uses(self, client, config, fake_rm,
+                                                                tmp_path):
+        """The desktop dialog sends back what the profile gave it."""
+        library = tmp_path / 'libvisa.so'
+        library.touch()
+        config.set_machine_local('visa_library', str(library))
+
+        response = client.get('/instruments/resources', params={'visa_library': str(library)})
+
+        assert response.status_code == 200
+
+    def test_a_library_path_is_stored_when_the_file_exists(self, client, config, tmp_path):
+        library = tmp_path / 'libvisa.so'
+        library.touch()
+
+        response = client.patch('/profiles/alice',
+                                 json={'measurement': {'visa_library': str(library)}})
+
+        assert response.status_code == 200
+        assert config.get_visa_library() == str(library)
+
+    def test_a_library_path_that_is_not_a_file_is_refused(self, client, config, tmp_path):
+        response = client.patch('/profiles/alice', json={'measurement': {
+            'visa_library': str(tmp_path / 'no-such-libvisa.so')}})
+
+        assert response.status_code == 422
+        assert response.json()['detail']['issues'][0]['key'] == 'visa_library'
+        assert config.get_visa_library() == ''
+
+    def test_a_library_path_needs_the_ui_role(self, session, config, tmp_path):
+        library = tmp_path / 'libvisa.so'
+        library.touch()
+        app = create_app(session, token=TOKEN, role='mcp', config=config)
+        with TestClient(app) as agent:
+            agent.headers.update({'Authorization': f'Bearer {TOKEN}'})
+            path = agent.patch('/profiles/alice',
+                               json={'measurement': {'visa_library': str(library)}})
+            named = agent.patch('/profiles/alice', json={'measurement': {'visa_library': '@py'}})
+
+        assert path.status_code == 403
+        assert named.status_code == 200
+        assert config.get_visa_library() == '@py'
+
     def test_the_interface_is_machine_local(self, client, config, fake_rm):
         client.patch('/profiles/alice', json={'measurement': {'gpib_interface': PRLGX}})
         assert config.get_gpib_interface() == PRLGX

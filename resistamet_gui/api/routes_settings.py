@@ -8,6 +8,7 @@ this run actually use, and does it have problems?" without starting anything,
 which is also how a UI shows validation before the Start button.
 """
 import math
+import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -28,6 +29,10 @@ MACHINE_LOCAL_KEYS = ('gpib_address', 'visa_library', 'gpib_interface')
 
 #: Keys that decide whether the hazardous-voltage prompt is asked.
 SAFETY_KEYS = tuple(SafetySettings.model_fields)
+
+#: VISA backends a client may name. Anything else is a path that pyvisa hands
+#: to ctypes, so it is only ever taken from this machine's stored settings.
+NAMED_VISA_LIBRARIES = (visa_backend.AUTO, visa_backend.IVI, visa_backend.PY)
 
 #: The models that describe each section of a stored profile.
 SECTION_MODELS = {
@@ -66,6 +71,29 @@ class IdentifyRequest(BaseModel):
 
 def _config(request: Request):
     return request.app.state.api.config
+
+
+def _bus_overrides(request: Request, visa_library: Optional[str],
+                   gpib_interface: Optional[str]):
+    """The VISA backend and GPIB interface one bus request will use.
+
+    None means this machine's stored setting. A request may try another
+    backend before saving it, but only one of the named ones: a path would be
+    loaded into this process. The stored value itself is always allowed, so a
+    client can send back what the profile gave it.
+    """
+    config = _config(request)
+    stored_library, stored_interface = config.get_visa_library(), config.get_gpib_interface()
+    if visa_library is None:
+        visa_library = stored_library
+    elif visa_library not in NAMED_VISA_LIBRARIES and visa_library != stored_library:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="visa_library is '', '@ivi' or '@py' here; a library path is set "
+                   "in this machine's settings")
+    if gpib_interface is None:
+        gpib_interface = stored_interface
+    return visa_library, gpib_interface
 
 
 @router.get("/users")
@@ -137,6 +165,17 @@ def _refuse_a_worse_profile(sections: Dict[str, Any], role: str):
                                  detail="the touch-safety settings can only be changed "
                                         "from the user interface")
         blocking = []
+        library = merged['measurement'].get('visa_library', '')
+        if library != current['measurement'].get('visa_library', '') \
+                and library not in NAMED_VISA_LIBRARIES:
+            # A path is loaded into this process the next time the bus opens.
+            if role != UI_ROLE:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                     detail="a VISA library path can only be set from "
+                                            "the user interface")
+            if not os.path.isfile(str(library)):
+                blocking.append({'section': 'measurement', 'key': 'visa_library',
+                                 'message': f"no such file: {library}"})
         for section, sent in sections.items():
             before = current.get(section, {})
             changed = {key for key, value in sent.items()
@@ -227,10 +266,7 @@ def list_resources(request: Request, visa_library: Optional[str] = None,
     if session.state != 'idle':
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                              detail=f"session is {session.state}")
-    if visa_library is None:
-        visa_library = _config(request).get_visa_library()
-    if gpib_interface is None:
-        gpib_interface = _config(request).get_gpib_interface()
+    visa_library, gpib_interface = _bus_overrides(request, visa_library, gpib_interface)
     try:
         rm = visa_backend.resource_manager(visa_library, gpib_interface)
         resources = list(rm.list_resources())
@@ -249,12 +285,8 @@ def list_resources(request: Request, visa_library: Optional[str] = None,
 def identify(body: IdentifyRequest, request: Request,
               session: MeasurementSession = Depends(get_session),
               role: str = Depends(require_token)):
-    visa_library = body.visa_library
-    if visa_library is None:
-        visa_library = _config(request).get_visa_library()
-    gpib_interface = body.gpib_interface
-    if gpib_interface is None:
-        gpib_interface = _config(request).get_gpib_interface()
+    visa_library, gpib_interface = _bus_overrides(request, body.visa_library,
+                                                  body.gpib_interface)
     try:
         return session.identify(body.address, visa_library, gpib_interface)
     except SessionBusy as exc:
