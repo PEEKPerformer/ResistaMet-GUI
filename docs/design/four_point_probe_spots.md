@@ -1,10 +1,11 @@
 # Four-point probe: spots, sample geometry, and maps
 
-**Status:** design, 2026-09-19. Steps 1–4 of §5 have landed: the geometry
-math, the schema, the spot in the file and the events, and the map with its
-API. Step 5 (PySide6) is next and needs no answers; steps 6–7 wait on the
-questions in §7. The position-aware correction is reported, never applied:
-the schema accepts only `warn` until question 1 is answered.
+**Status:** design, 2026-09-19. Steps 1–5 of §5 have landed: the geometry
+math, the schema, the spot in the file and the events, the map with its API,
+and the spot sent with every four-point run the PySide6 window starts.
+Steps 6–7 wait on the questions in §7. The position-aware correction is
+reported, never applied: the schema accepts only `warn` until question 1 is
+answered.
 **Depends on:** `tauri_backend_split.md` (run layer, events, contract)
 
 ## 1. What is wrong today
@@ -248,6 +249,13 @@ identical numbers (a test pins this).
 5. PySide6 *Save Spot* passes `map_id` and label through. The run procedure
    reads the spot from `settings['spot']`, so this is one dict in
    `gather_settings_for_mode`'s caller and no change to the worker.
+   *(landed: `schema/map_session.py`, called from `start_measurement`. The
+   label is the Spot name field as Start is pressed, the index is the spot
+   counter, and there is no position. Until question 3 of §7 is answered a
+   map is the runs of one user on one sample name between two resets: the
+   first run of the process, a run for another user or sample name, and the
+   first run after *Clear All* each start a new map. The window still
+   computes the numbers it shows; it does not yet read `spot_complete`.)*
 6. Tauri: spots panel reads the map; settings form shows the geometry and
    the factor.
 7. Tauri: the map canvas, registration, figure export.
