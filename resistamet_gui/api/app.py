@@ -140,6 +140,7 @@ def create_app(session: MeasurementSession, token: Optional[str] = None,
     """Build the app around an existing session."""
     from .event_hub import EventHub
     from .events_ws import router as events_router
+    from .routes_maps import router as maps_router
     from .routes_results import router as results_router
     from .routes_session import router as session_router
     from .routes_settings import router as settings_router
@@ -161,6 +162,7 @@ def create_app(session: MeasurementSession, token: Optional[str] = None,
     app.include_router(session_router)
     app.include_router(settings_router)
     app.include_router(results_router)
+    app.include_router(maps_router)
     app.include_router(events_router)
 
     @app.on_event("startup")
