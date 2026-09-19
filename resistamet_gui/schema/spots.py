@@ -13,9 +13,9 @@ convention).
 No Qt, no pyvisa: importable from anywhere.
 """
 import math
-from typing import Any, Dict, Literal, Optional
+from typing import Annotated, Any, Dict, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 #: A map id becomes part of a file name (``<map_id>_map.json``) and of a URL,
 #: so it is a plain token: no separators, no dots, nothing a path could be
@@ -80,7 +80,11 @@ class SpotRequest(BaseModel):
 
     map_id: str = Field(pattern=MAP_ID_PATTERN)
     index: int = Field(ge=0, le=9999)
-    label: str = Field(min_length=1, max_length=80, pattern=LABEL_PATTERN)
+    # Stripped first: the header reader strips a value, so a label with outer
+    # spaces would read back different and one of only spaces would read back
+    # empty. After stripping, "at least one character" means a visible one.
+    label: Annotated[str, StringConstraints(
+        strip_whitespace=True, min_length=1, max_length=80, pattern=LABEL_PATTERN)]
     x_mm: Optional[float] = Field(default=None, allow_inf_nan=False)
     y_mm: Optional[float] = Field(default=None, allow_inf_nan=False)
     angle_deg: Optional[float] = Field(default=None, ge=-360.0, le=360.0, allow_inf_nan=False)

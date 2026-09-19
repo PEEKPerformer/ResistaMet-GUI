@@ -71,6 +71,15 @@ class TestSpotRequest:
         with pytest.raises(ValidationError):
             SpotRequest(map_id=map_id, index=0, label='a')
 
+    @pytest.mark.parametrize("label", ['   ', ' \t ', '\u00a0'])
+    def test_a_label_needs_a_visible_character(self, label):
+        """The header reader strips values: these would read back empty."""
+        with pytest.raises(ValidationError):
+            SpotRequest(map_id='m', index=0, label=label)
+
+    def test_outer_spaces_are_dropped_so_the_label_reads_back_the_same(self):
+        assert SpotRequest(map_id='m', index=0, label='  north edge ').label == 'north edge'
+
     @pytest.mark.parametrize("label", ['', 'two\nlines', 'tab\there', 'x' * 81])
     def test_label_stays_on_one_header_line(self, label):
         with pytest.raises(ValidationError):
