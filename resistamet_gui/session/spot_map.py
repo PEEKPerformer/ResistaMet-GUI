@@ -44,6 +44,11 @@ RUN_SUFFIXES = ('.csv', '.csv.gz', '.h5')
 #: other modes that are far larger than any spot.
 _FOUR_POINT_TAG = f"_{MODE_FILE_TAGS['four_point']}_"
 
+#: The end of a map summary's file name: ``<map_id>_map.json``. No run ends
+#: this way (a run's name ends in its source value), so it also tells a
+#: summary from a legacy run's ``.json`` when listing a data directory.
+MAP_SUMMARY_SUFFIX = '_map.json'
+
 #: Header values that are identifiers, read back as written.
 _TEXT_KEYS = ('spot.map_id', 'spot.label', 'sample', 'started_at')
 
@@ -254,7 +259,7 @@ def assemble_map(directory: Union[str, Path], map_id: str) -> SpotMap:
 def map_summary_path(directory: Union[str, Path], map_id: str) -> Path:
     if not re.match(MAP_ID_PATTERN, map_id):
         raise ValueError(f"'{map_id}' is not a valid map id")
-    return Path(directory) / f"{map_id}_map.json"
+    return Path(directory) / f"{map_id}{MAP_SUMMARY_SUFFIX}"
 
 
 def write_map_summary(directory: Union[str, Path], map_id: str) -> Path:
