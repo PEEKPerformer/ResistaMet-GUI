@@ -92,13 +92,15 @@ What this buys:
    | distance from edge | error if the centred factor is used |
    |---|---|
    | 5 s | 1.6 % |
-   | 4 s | 2.8 % |
-   | 3 s | 5.1 % |
-   | 2 s | 10 % |
-   | 1 s | 25 % |
+   | 4 s | 2.9 % |
+   | 3 s | 5.3 % |
+   | 2 s | 11 % |
+   | 1 s | 33 % |
 
-   With the array pointing at the edge the same distances cost 0.3 %, 0.7 %,
-   1.4 %, 3.0 % and 7.3 %. Orientation matters, so a spot carries one.
+   (The error is `factor_centre / factor_here - 1`, the fraction by which the
+   reported Rs is too high — the `relative_error` the code records.) With
+   the array pointing at the edge the same distances cost 0.3 %, 0.7 %,
+   1.4 %, 3.1 % and 7.8 %. Orientation matters, so a spot carries one.
 3. **An optional position-aware correction.** ASTM F84 measures at the
    centre; applying the factor for the actual position is outside the
    standard. It is offered as an explicit, labelled choice
