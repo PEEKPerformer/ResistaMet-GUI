@@ -53,6 +53,13 @@ button:disabled {
   outline-offset: 1px;
 }
 
+/* A quantity symbol inside an uppercased label keeps its case: ρ is not P,
+   σ is not Σ, Rs is not RS, n is not N. */
+.sym {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
 /* Numbers line up in tables and readouts. */
 .num,
 .mono {

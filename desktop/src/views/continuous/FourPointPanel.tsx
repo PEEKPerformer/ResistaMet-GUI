@@ -5,7 +5,7 @@
 // dozen readings, but the arithmetic is over the whole run and there is no
 // need to do it fifty times a second.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getSeries } from "../../state/samples";
 import { addSpot, clearSpots, meanSd, removeSpot, useSpots } from "../../state/spots";
 import { useUi } from "../../state/ui";
@@ -66,12 +66,12 @@ export function FourPointPanel({ running }: { running: boolean }) {
     <div className={styles.row}>
       <Panel title="This spot" className={styles.stats}>
         <div className={styles.statGrid}>
-          <Stat label="n" value={String(stats.n)} />
-          <Stat label="Rs mean" value={formatEngineering(stats.rs.mean, "Ω/sq")} />
-          <Stat label="Rs σ" value={formatEngineering(stats.rs.sd, "Ω/sq")} />
+          <Stat label={<Sym>n</Sym>} value={String(stats.n)} />
+          <Stat label={<><Sym>Rs</Sym> mean</>} value={formatEngineering(stats.rs.mean, "Ω/sq")} />
+          <Stat label={<><Sym>Rs</Sym> SD</>} value={formatEngineering(stats.rs.sd, "Ω/sq")} />
           <Stat label="RSD" value={formatPercent(rsd)} />
-          <Stat label="ρ mean" value={formatEngineering(stats.rho.mean, "Ω·cm")} />
-          <Stat label="σ mean" value={formatEngineering(stats.sigma.mean, "S/cm")} />
+          <Stat label={<><Sym>ρ</Sym> mean</>} value={formatEngineering(stats.rho.mean, "Ω·cm")} />
+          <Stat label={<><Sym>σ</Sym> mean</>} value={formatEngineering(stats.sigma.mean, "S/cm")} />
         </div>
         <div className={styles.saveRow}>
           <Input
@@ -117,10 +117,10 @@ export function FourPointPanel({ running }: { running: boolean }) {
             <thead>
               <tr>
                 <th>Spot</th>
-                <th>n</th>
-                <th>Rs</th>
-                <th>σ</th>
-                <th>ρ</th>
+                <th><Sym>n</Sym></th>
+                <th><Sym>Rs</Sym></th>
+                <th>SD</th>
+                <th><Sym>ρ</Sym></th>
                 <th />
               </tr>
             </thead>
@@ -147,7 +147,12 @@ export function FourPointPanel({ running }: { running: boolean }) {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+/** A quantity symbol in a label that is otherwise uppercased. */
+function Sym({ children }: { children: ReactNode }) {
+  return <span className="sym">{children}</span>;
+}
+
+function Stat({ label, value }: { label: ReactNode; value: string }) {
   return (
     <div className={styles.stat}>
       <span className={styles.statLabel}>{label}</span>
