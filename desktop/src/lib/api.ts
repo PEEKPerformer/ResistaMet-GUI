@@ -6,9 +6,10 @@
 // backend gave rather than one it made up.
 
 import type { BackendInfo } from "./backend";
-import type { ClientInfo, Mode } from "../generated/settings";
+import type { ClientInfo, Mode, SpotRequest } from "../generated/settings";
 import type { EventEnvelope } from "../generated/events";
 import type { InstrumentInfo, SessionStatus } from "../generated/session";
+import type { SpotMap } from "../generated/maps";
 import { version as packageVersion } from "../../package.json";
 
 /** Written into the header of every file a run started from here produces,
@@ -26,6 +27,8 @@ export interface StartRequest {
   username: string;
   overrides?: Record<string, unknown>;
   prompt_timeout_s?: number;
+  /** Four-point only: which spot of which map this run measures. */
+  spot?: SpotRequest;
 }
 
 export interface Issue {
@@ -213,6 +216,18 @@ export class ApiClient {
 
   resultsDirectory(): Promise<{ root: string; exists: boolean; separator: string }> {
     return this.request("GET", "/results/directory");
+  }
+
+  // --- four-point maps ---------------------------------------------------
+
+  /** The map ids the operator's four-point runs name. */
+  maps(user: string): Promise<{ user: string; maps: string[] }> {
+    return this.request("GET", `/maps?user=${encodeURIComponent(user)}`);
+  }
+
+  /** The map as the run files describe it now. 404 until a run names it. */
+  map(mapId: string, user: string): Promise<SpotMap> {
+    return this.request("GET", `/maps/${encodeURIComponent(mapId)}?user=${encodeURIComponent(user)}`);
   }
 
   // --- instruments -------------------------------------------------------
