@@ -230,7 +230,12 @@ function SpotRow({ spot, edgeWarnPct, running, redo }: { spot: MapSpot; edgeWarn
           size="sm"
           variant="ghost"
           disabled={running}
-          onClick={() => setRedo(redo ? null : { index: spot.index, label: spot.label })}
+          onClick={() =>
+            setRedo(
+              redo ? null : { index: spot.index, label: spot.label },
+              typeof spot.x_mm === "number" && typeof spot.y_mm === "number" ? { x_mm: spot.x_mm, y_mm: spot.y_mm } : null,
+            )
+          }
           title="Measure this spot again with the next run. The newer run stands for the spot; the older file stays."
         >
           {redo ? "Cancel" : "Redo"}
