@@ -452,7 +452,9 @@ class TestInstrumentSession:
         # alternate endpoint, as it is under NI's driver (§10.1.1).
         assert adapter.instructions(p.OP_READ) == []
         read = adapter.instructions(p.OP_READ_RAW)[-1]
-        assert read[:8] == h('0b 00 00 fd 00 b0 ff ff')  # EOS disabled, 10 s device timeout, -20480
+        # Compare disabled (m 00) with the default termination character in e, 10 s code, -20480:
+        # the bytes NI sends for the same read (§10.1.2, idn.pcap 0.5160 with code 0xfe).
+        assert read[:8] == h('0b 00 0a fd 00 b0 ff ff')
         assert adapter.raw_in_timeouts[-1] == 15000 + 20480  # host wait + 20480 B at 1000 B/s
         # Addressing: controller talks / instrument listens, then instrument talks.
         commands = adapter.instructions(p.OP_COMMAND)[-2:]
@@ -485,13 +487,26 @@ class TestInstrumentSession:
         assert info.value.error_code == StatusCode.error_no_listeners
         inst.close()
 
+    def test_changing_the_termination_character_changes_e_on_both_read_forms(self, rm, adapter):
+        # eosmodes.pcap: TERMCHAR 0x2c enabled -> 14 2c; disabled the character still rides in e.
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR, 0x2C)
+        inst.write('*IDN?')
+        assert inst.read() == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
+        assert adapter.instructions(p.OP_READ_RAW)[-1][1:3] == h('00 2c')
+        inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR_EN, True)
+        inst.write('*IDN?')
+        assert inst.read() == 'KEITHLEY INSTRUMENTS INC.,'
+        assert adapter.instructions(p.OP_READ_RAW)[-1][1:3] == h('14 2c')
+        inst.close()
+
     def test_a_small_chunk_size_reads_through_the_framed_instruction(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.chunk_size = 256
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         assert adapter.instructions(p.OP_READ_RAW) == []
         read = adapter.instructions(p.OP_READ)[-1]
-        assert read[1:6] == h('00 00 fc 00 ff')  # 3 s default timeout, -256
+        assert read[1:6] == h('00 0a fc 00 ff')  # m 00 e 0a (§10.1.6), 3 s default timeout, -256
         inst.close()
 
     def test_timeout_attribute_reaches_the_instruction(self, rm, adapter):

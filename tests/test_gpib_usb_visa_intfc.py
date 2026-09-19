@@ -345,7 +345,7 @@ class TestData:
         opcodes = [m[0] for m in board.messages[-2:]]
         assert opcodes == [p.OP_GO_TO_STANDBY, p.OP_READ_RAW]  # pyvisa's 20480-byte chunk: 0x0b
         read = board.instructions(p.OP_READ_RAW)[-1]
-        assert read[1:4] == h('00 00 fb')
+        assert read[1:4] == h('00 0a fb')  # m 00, e = the default termination character (§10.1.6)
 
     def test_read_termination_selects_eos(self, rm, board):
         intf = rm.open_resource('GPIB0::INTFC', read_termination='\n')

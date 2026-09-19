@@ -94,7 +94,7 @@ class NiUsbGpibIntfcSession(NiUsbGpibSession):
                 # ATN rule (§5): a 0x06 before the 0x0a; a no-op if ATN is already false.
                 controller.go_to_standby()
                 data, ended = controller.read_raw(count, self._device_timeout(), eos=eos,
-                                                  eos_8bit=True)
+                                                  eos_8bit=True, termchar=self._termchar_byte())
         except GpibTimeout as exc:
             return exc.partial, StatusCode.error_timeout
         except (GpibError, TransportError) as exc:
