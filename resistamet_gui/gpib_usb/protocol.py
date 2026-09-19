@@ -585,14 +585,17 @@ def read_reply_buffer_size(max_bytes: int, max_packet_size: int) -> int:
 def raw_read_buffer_size(max_bytes: int, max_packet_size: int) -> int:
     """Host receive buffer on the alternate bulk IN for a 0x0b of ``max_bytes``.
 
-    Always at least one packet larger than the request. A transfer that fills
-    the request exactly is then ended by the device's zero-length packet, as
-    NI's 32768-byte reads of 20480-byte chunks were (§10.1.4); a buffer equal
-    to the request would leave that packet queued for the next read. The extra
-    room also takes the one observed transfer longer than its count (6 bytes
-    on the wire for a 5-byte reply, trac.pcap 13.0075).
+    At least one packet larger than the longest transfer the device may send
+    for the request: the count itself, or one byte more, since the device
+    pads an odd transfer to an even length (6 bytes on the wire for a 5-byte
+    reply, trac.pcap 13.0075). A transfer that fills whole packets exactly
+    is then ended by the device's zero-length packet, as NI's 32768-byte
+    reads of 20480-byte chunks were (§10.1.4); a buffer the transfer fills
+    exactly would leave that packet queued for the next read, which would
+    return no data. Hence the padded count, not the count, decides: a
+    65535-byte request answered in full arrives as 65536 bytes.
     """
-    return (max_bytes // max_packet_size + 1) * max_packet_size
+    return ((max_bytes + 1) // max_packet_size + 1) * max_packet_size
 
 
 # --------------------------------------------------------------------------

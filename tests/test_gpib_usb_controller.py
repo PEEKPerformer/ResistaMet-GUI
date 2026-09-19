@@ -819,7 +819,7 @@ class TestRawRead:
     def test_request_above_one_instruction_loops_without_readdressing(self):
         first, second = bytes(0xFFFF), b'tail\n'
         controller, transport = attached(address_talker() + [
-            ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', first, 65536),
+            ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', first, 66048),
             ('in', raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
             ('out', p.read_raw_message(70000 - 0xFFFF, T3S)), ('raw_in', second, 4608),
             ('in', raw_read_reply(70000 - 0xFFFF, len(second)), 512),
@@ -829,7 +829,7 @@ class TestRawRead:
 
     def test_loop_stops_at_the_request_and_a_small_last_chunk_is_framed(self):
         controller, transport = attached([
-            ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', bytes(0xFFFF), 65536),
+            ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', bytes(0xFFFF), 66048),
             ('in', raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
             ('out', p.read_message(1, T3S)),   # 1 byte left: below the threshold, so 0x0a
             ('in', read_reply(b'z', 1, end=False), 512),
@@ -862,7 +862,7 @@ class TestRawRead:
 
     def test_timeout_in_a_later_chunk_keeps_the_earlier_ones(self):
         controller, _ = attached([
-            ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', bytes(0xFFFF), 65536),
+            ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', bytes(0xFFFF), 66048),
             ('in', raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
             ('out', p.read_raw_message(4096, T3S)), ('raw_in', b'AB', 4608),
             ('in', raw_read_reply(4096, 2, end=False, error=0x0A), 512),
