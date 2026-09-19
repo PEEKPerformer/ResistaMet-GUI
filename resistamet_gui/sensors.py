@@ -225,6 +225,9 @@ class SerialLineSensor(VisaInstrument):
         self._header_error: Optional[str] = None
 
     def open(self) -> "SerialLineSensor":
+        """Connect and start the reader. The VISA connect (resource listing
+        plus open) runs on the calling thread and takes as long as the
+        backend takes; only the reads that follow are off-thread."""
         self.connect()  # VisaInstrument.connect(): opens dev, sets '\n' terminations
         try:
             for name, value in self._serial_attrs.items():
@@ -257,9 +260,11 @@ class SerialLineSensor(VisaInstrument):
     def _read_loop(self) -> None:
         """Background thread: consume the stream, cache the newest reading.
 
-        A blocking ``dev.read()`` here is fine — it only ever stalls this
-        thread, never the acquisition loop or the GUI. ``close()`` unblocks
-        it by closing the device underneath.
+        A blocking ``dev.read()`` here only ever stalls this thread, never
+        a caller of :meth:`read_latest`. :meth:`close` closes the device
+        underneath it; whether that ends a read already in progress is up to
+        the VISA backend. Where it does not, the read runs out its own
+        timeout and this thread exits then.
         """
         while not self._stop_evt.is_set():
             dev = self.dev
@@ -341,9 +346,18 @@ class SerialLineSensor(VisaInstrument):
         self.wait_for_reading(remaining)
 
     def close(self) -> None:
+        """Close the device and stop the reader. This call can block.
+
+        It closes the VISA session, which is as quick as the backend makes
+        it, then waits up to 1 s for the reader thread. A backend that does
+        not abort a pending ``read()`` when its session closes leaves the
+        reader in that read, so the full second is spent and the thread
+        (a daemon) is still alive on return; it exits when the read times
+        out. Callers on a GUI thread should expect that delay.
+        """
         self._stop_evt.set()
         try:
-            super().close()  # closing dev unblocks a blocked reader read()
+            super().close()  # ends a pending reader read() if the backend allows
         finally:
             reader = self._reader
             if reader is not None and reader.is_alive():
@@ -527,7 +541,7 @@ class StreamSensor(SerialLineSensor):
 
     This is the general case behind the Characterization Bench: one serial link,
     many channels, declared by the device — not hardcoded here. The reader
-    thread captures the header (so :meth:`open` never blocks) and
+    thread captures the header (so :meth:`open` does not wait for it) and
     :meth:`channels` returns the dynamically discovered channels; callers use
     :meth:`wait_ready` to block until discovery completes. The worker /
     exporter / UI build columns from whatever the device reports.
