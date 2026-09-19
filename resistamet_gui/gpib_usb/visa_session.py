@@ -182,8 +182,11 @@ class NiUsbGpibSession(Session):
     def _set_timeout(self, attribute: ResourceAttribute, value: int) -> StatusCode:
         status = super()._set_timeout(attribute, value)
         if self.timeout:
-            # Round to the device's table (§7.1) so pyvisa's own deadline agrees
-            # with what the adapter enforces; above the table, the longest row.
+            # Round to the device's table (§7.1) so the attribute reads back as
+            # the row whose code goes out; above the table, the longest row.
+            # That is the nominal limit. What the adapter then waits is the
+            # expiry of §7.3 (16.78 s for the 10 s row), and the controller
+            # derives the host wait from that, not from this value.
             _, limit = p.effective_timeout(min(self.timeout, t.TIMEOUT_MAX_S))
             self.timeout = limit
         return status

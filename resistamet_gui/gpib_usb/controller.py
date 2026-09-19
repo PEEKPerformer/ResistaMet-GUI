@@ -342,10 +342,9 @@ class Controller:
             self._ensure_attached()
             if not data:
                 return 0
-            code, limit = p.effective_timeout(timeout_s)
-            wait = p.host_wait_s(limit, self._infinite_wait_s)
-            self._address(_LISTEN, pad, sad, code, wait, readdress)
-            return self._write_bytes(data, code, limit, send_eoi, eos_char)
+            code = p.timeout_code(timeout_s)
+            self._address(_LISTEN, pad, sad, code, self._reply_wait_s(code), readdress)
+            return self._write_bytes(data, code, send_eoi, eos_char)
 
     def write_raw(self, data: bytes, *, send_eoi: bool = True,
                   timeout_s: Optional[float], eos_char: Optional[int] = None) -> int:
@@ -358,11 +357,9 @@ class Controller:
             self._ensure_attached()
             if not data:
                 return 0
-            code, limit = p.effective_timeout(timeout_s)
-            return self._write_bytes(data, code, limit, send_eoi, eos_char)
+            return self._write_bytes(data, p.timeout_code(timeout_s), send_eoi, eos_char)
 
-    def _write_bytes(self, data: bytes, code: int, limit: Optional[float], send_eoi: bool,
-                     eos_char: Optional[int]) -> int:
+    def _write_bytes(self, data: bytes, code: int, send_eoi: bool, eos_char: Optional[int]) -> int:
         """Write instructions of at most 0xffff bytes each, EOI only with the last (§5.1).
 
         Framed or raw is decided per chunk, like the read loop, so a short
@@ -375,7 +372,7 @@ class Controller:
             chunk = data[start:start + step]
             eoi = send_eoi and start + len(chunk) == len(data)
             if self._raw and len(chunk) >= RAW_WRITE_MIN_BYTES:
-                written += self._raw_write_instruction(chunk, code, limit, eoi, eos_char)
+                written += self._raw_write_instruction(chunk, code, eoi, eos_char)
             else:
                 # The data rides inside the message, and the adapter takes the
                 # message only as fast as the instrument takes the data: the
@@ -383,26 +380,34 @@ class Controller:
                 # So the OUT follows the device timeout and the byte count, not
                 # the short wait. Once it completes all but the adapter's own
                 # buffer is on the bus, and the reply keeps the §7.2 wait.
-                wait = p.host_wait_s(limit, self._infinite_wait_s)
                 status, _ = self._exchange(p.write_message(chunk, code, eoi), p.STATUS_REPLY_LENGTH,
-                                           wait, 'write',
-                                           out_wait_s=self._transfer_wait_s(limit, len(chunk)))
+                                           self._reply_wait_s(code), 'write',
+                                           out_wait_s=self._transfer_wait_s(code, len(chunk)))
                 written += status.transferred(len(chunk))
         return written
 
-    def _transfer_wait_s(self, limit: Optional[float], byte_count: int) -> float:
+    def _reply_wait_s(self, code: int) -> float:
+        """The host wait for the reply to one instruction sent with timeout ``code`` (§7.2).
+
+        The adapter's measured expiry under that code plus two seconds
+        (``protocol.host_wait_s``), so the adapter always gives up first and
+        says so in its reply; this controller's infinite wait for the
+        disabled code. Every message sent here carries one timed instruction,
+        so no expiries are summed.
+        """
+        return p.host_wait_s(code, self._infinite_wait_s)
+
+    def _transfer_wait_s(self, code: int, byte_count: int) -> float:
         """The host wait for a transfer of ``byte_count`` bytes that the bus paces.
 
-        The §7.2 wait for the effective device timeout -- at least half as
-        long again, where the adapter was measured expiring 12-40 % past the
-        nominal value (§7.1, §10.1.8), so the adapter always gives up first
-        and says so in its reply -- plus the time the bytes themselves take
-        at ``BUS_MIN_RATE_BPS``. Used for the raw IN of a 0x0b, the raw OUT of
-        a 0x0e and its reply, and the OUT of a 0x0d message.
+        The reply wait for ``code``, plus the time the bytes themselves take
+        at ``BUS_MIN_RATE_BPS``: the code bounds a handshake, not the
+        transfer (§10.1.8). Used for the raw IN of a 0x0b, the raw OUT of a
+        0x0e and its reply, and the OUT of a 0x0d message.
         """
-        return p.host_wait_s(limit, self._infinite_wait_s) + byte_count / BUS_MIN_RATE_BPS
+        return self._reply_wait_s(code) + byte_count / BUS_MIN_RATE_BPS
 
-    def _raw_write_instruction(self, chunk: bytes, code: int, limit: Optional[float], send_eoi: bool,
+    def _raw_write_instruction(self, chunk: bytes, code: int, send_eoi: bool,
                                eos_char: Optional[int]) -> int:
         """One 0x0e (§10.5.2): the header on the primary OUT, the bytes raw on the alternate OUT.
 
@@ -419,7 +424,7 @@ class Controller:
         reply and resets the two OUT pipes, and so does this.
         """
         message = p.write_raw_message(len(chunk), code, send_eoi, eos_char)
-        wait_s = self._transfer_wait_s(limit, len(chunk))
+        wait_s = self._transfer_wait_s(code, len(chunk))
         self._host_stopped = False
         self._transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
         refused = False
@@ -491,12 +496,11 @@ class Controller:
             self._ensure_attached()
             if max_bytes < 1:
                 return b'', False
-            code, limit = p.effective_timeout(timeout_s)
-            wait = p.host_wait_s(limit, self._infinite_wait_s)
-            self._address(_TALK, pad, sad, code, wait, readdress)
+            code = p.timeout_code(timeout_s)
+            self._address(_TALK, pad, sad, code, self._reply_wait_s(code), readdress)
             # ATN rule (§5): a 0x06 between the addressing 0x0c and the read.
             self._go_to_standby()
-            return self._read_bytes(max_bytes, code, limit, eos, eos_8bit, termchar, 'read')
+            return self._read_bytes(max_bytes, code, eos, eos_8bit, termchar, 'read')
 
     def read_raw(self, max_bytes: int, timeout_s: Optional[float],
                  eos: Optional[int] = None, eos_8bit: bool = False,
@@ -510,10 +514,9 @@ class Controller:
             self._ensure_attached()
             if max_bytes < 1:
                 return b'', False
-            code, limit = p.effective_timeout(timeout_s)
-            return self._read_bytes(max_bytes, code, limit, eos, eos_8bit, termchar, 'read')
+            return self._read_bytes(max_bytes, p.timeout_code(timeout_s), eos, eos_8bit, termchar, 'read')
 
-    def _read_bytes(self, max_bytes: int, code: int, limit: Optional[float], eos: Optional[int],
+    def _read_bytes(self, max_bytes: int, code: int, eos: Optional[int],
                     eos_8bit: bool, termchar: Optional[int], operation: str) -> Tuple[bytes, bool]:
         """Read instructions until END, the count, or a short result; framed or raw by size.
 
@@ -528,11 +531,10 @@ class Controller:
             count = min(remaining, p.MAX_TRANSFER_BYTES)
             try:
                 if self._raw and count >= RAW_READ_MIN_BYTES:
-                    data, end = self._raw_read_instruction(count, code, limit, eos, eos_8bit, termchar,
-                                                           operation)
+                    data, end = self._raw_read_instruction(count, code, eos, eos_8bit, termchar, operation)
                 else:
-                    wait = p.host_wait_s(limit, self._infinite_wait_s)
-                    data, end = self._read_instruction(count, code, wait, eos, eos_8bit, termchar, operation)
+                    data, end = self._read_instruction(count, code, self._reply_wait_s(code), eos, eos_8bit,
+                                                       termchar, operation)
             except GpibTimeout as exc:
                 exc.partial = b''.join(chunks) + exc.partial
                 raise
@@ -552,12 +554,12 @@ class Controller:
         self._raise_for_error(parsed.status, operation, partial=parsed.data)
         return parsed.data, parsed.end
 
-    def _raw_read_instruction(self, count: int, code: int, limit: Optional[float], eos: Optional[int],
+    def _raw_read_instruction(self, count: int, code: int, eos: Optional[int],
                               eos_8bit: bool, termchar: Optional[int], operation: str) -> Tuple[bytes, bool]:
         """One 0x0b (§10.1.2-10.1.3): the data arrives raw on the alternate bulk IN, the status on the primary."""
         message = p.read_raw_message(count, code, eos, eos_8bit, termchar)
         buffer = p.raw_read_buffer_size(count, self._transport.max_packet_size_raw)
-        wait_s = self._transfer_wait_s(limit, count)
+        wait_s = self._transfer_wait_s(code, count)
         data, reply = self._raw_read_transact(message, buffer, wait_s)
         parsed = p.parse_raw_read_reply(reply, count, data)
         self._raise_for_error(parsed.status, operation, partial=parsed.data)
@@ -605,8 +607,8 @@ class Controller:
             self._ensure_attached()
             # Arbitrary command bytes may change who is addressed.
             self._addressed = None
-            code, limit = p.effective_timeout(timeout_s)
-            wait = p.host_wait_s(limit, self._infinite_wait_s)
+            code = p.timeout_code(timeout_s)
+            wait = self._reply_wait_s(code)
             accepted = 0
             for start in range(0, len(command_bytes), p.MAX_COMMAND_BYTES):
                 chunk = command_bytes[start:start + p.MAX_COMMAND_BYTES]
@@ -638,8 +640,8 @@ class Controller:
         with self._guard():
             self._ensure_attached()
             self._addressed = None
-            code, limit = p.effective_timeout(timeout_s)
-            wait = p.host_wait_s(limit, self._infinite_wait_s)
+            code = p.timeout_code(timeout_s)
+            wait = self._reply_wait_s(code)
             reply = self._transact(p.serial_poll_message(pad, code, sad), p.SMALL_REPLY_BUFFER, wait)
             parsed = p.parse_serial_poll_reply(reply)
             # A failed poll carries no 0x3a block to compare (§10.6.6): the error first.
