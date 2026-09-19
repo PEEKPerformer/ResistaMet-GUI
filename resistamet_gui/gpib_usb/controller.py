@@ -56,12 +56,12 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
-from typing import Callable, Iterator, List, Optional, Sequence, Tuple
+from typing import Callable, Iterator, List, NoReturn, Optional, Sequence, Tuple
 
 from . import protocol as p
 from . import tables as t
 from .protocol import AdapterNotReady, GpibError, GpibTimeout, NoReply, ProtocolError, StatusBlock
-from .transport import Transport, TransportError, TransportStall, TransportTimeout
+from .transport import Transport, TransportError, TransportTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -422,24 +422,24 @@ class Controller:
         the USB level: the raw transfer fails with a STALL a millisecond after
         it was submitted, and the reply arrives by itself with error 8 and
         the count (§10.6.5). NI sends no stop request there; it reads the
-        reply and resets the two OUT pipes, and so does this.
+        reply and resets the two OUT pipes, and so does this
+        (``_refused_raw_write``). Every failure of the raw transfer but a
+        timeout is taken for that refusal until the reply says otherwise:
+        how libusb on macOS reports the STALL has not been seen, and if an
+        unrecognised error skipped this path the reply would stay queued
+        and the alternate OUT halted for every later 0x0e.
         """
         message = p.write_raw_message(len(chunk), code, send_eoi, eos_char)
         wait_s = self._transfer_wait_s(code, len(chunk))
         self._host_stopped = False
         self._transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
-        refused = False
         try:
             accepted = self._transport.bulk_out_raw(chunk, int(wait_s * 1000))
-        except TransportStall:
-            refused, accepted = True, 0
         except TransportTimeout:
             accepted = 0
-        if refused:
-            # The STALL is the adapter saying the instruction is over, so the
-            # reply is already due (NI's came 0.3 ms later).
-            reply_wait = SHORT_WAIT_S
-        elif accepted < len(chunk):
+        except TransportError as refusal:
+            self._refused_raw_write(refusal)
+        if accepted < len(chunk):
             # The host wait ran out with the instrument not accepting: the
             # transport reports bytes moved as a short count, none as a
             # timeout. The device is still mid-instruction, and §5.11 makes it
@@ -451,17 +451,39 @@ class Controller:
             reply_wait = RECOVERY_WAIT_S
         else:
             reply_wait = wait_s
-        try:
-            reply = self._reply_or_stop(p.SMALL_REPLY_BUFFER, reply_wait)
-        finally:
-            if refused:
-                self._reset_out_pipes()
-        parsed = p.parse_raw_write_reply(reply)
+        parsed = p.parse_raw_write_reply(self._reply_or_stop(p.SMALL_REPLY_BUFFER, reply_wait))
         self._raise_for_error(parsed.status, 'write')
-        if refused:
-            raise ProtocolError('0x0e data was refused with a STALL but the reply reports no error: %s'
-                                % reply.hex())
         return parsed.transferred(len(chunk))
+
+    def _refused_raw_write(self, refusal: TransportError) -> NoReturn:
+        """The raw OUT of a 0x0e failed: read the reply, reset the OUT pipes, raise (§10.6.5).
+
+        The failure is the adapter saying the instruction is over, so the
+        reply is already due (NI's came 0.3 ms after the STALL) and gets the
+        short wait. What is raised is the adapter's own error when the reply
+        carries one -- error 8, nobody listens -- and the next operation
+        then follows with nothing else done, as in the capture. Otherwise it
+        is the transport error itself, which the fault rule answers with a
+        re-attach; a reply that is missing or malformed is drained first.
+        The log line names the error as the transport delivered it, which
+        is how the bench learns what a STALL looks like under macOS.
+        """
+        logger.warning('%s: the alternate OUT refused the data of a 0x0e: %s (cause %s, errno %r, '
+                       'backend code %r): %s; reading the reply for the reason',
+                       self._model.name, type(refusal).__name__, type(refusal.__cause__).__name__,
+                       getattr(refusal, 'errno', None), getattr(refusal, 'backend_code', None), refusal)
+        status: Optional[StatusBlock] = None
+        try:
+            status = p.parse_raw_write_reply(self._reply_or_stop(p.SMALL_REPLY_BUFFER, SHORT_WAIT_S)).status
+        except ProtocolError as exc:
+            logger.warning('%s: no usable reply after the refused data: %s', self._model.name, exc)
+            self._resync()
+        except TransportError as exc:
+            logger.warning('%s: reading the reply after the refused data failed: %s', self._model.name, exc)
+        self._reset_out_pipes()
+        if status is not None:
+            self._raise_for_error(status, 'write')
+        raise refusal
 
     def _reset_out_pipes(self) -> None:
         """Clear the halt a refused 0x0e leaves on the alternate OUT, then reset the primary OUT.
@@ -472,13 +494,7 @@ class Controller:
         fails the pipes cannot be trusted, and the next operation re-attaches.
         """
         for endpoint in (self._model.endpoint_out_raw, self._model.endpoint_out):
-            if endpoint is None:
-                continue
-            try:
-                self._transport.clear_halt(endpoint)
-            except TransportError as exc:
-                logger.warning('%s: clearing the halt on endpoint 0x%02x failed: %s',
-                               self._model.name, endpoint, exc)
+            if endpoint is not None and not self._clear_halt(endpoint):
                 self._resync_pending = True
 
     def read(self, pad: int, *, sad: Optional[int] = None, max_bytes: int,

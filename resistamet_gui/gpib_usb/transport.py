@@ -42,7 +42,15 @@ T = TypeVar('T')
 
 
 class TransportError(Exception):
-    """The USB layer failed: device gone, access denied, pipe error."""
+    """The USB layer failed: device gone, access denied, pipe error.
+
+    ``errno`` and ``backend_code`` are those of the pyusb ``USBError``
+    underneath, None when there was none; they are what tells one failure
+    from another in a log (``backend_code`` is libusb's, -9 for a pipe error).
+    """
+
+    errno: Optional[int] = None
+    backend_code: Optional[int] = None
 
 
 class TransportTimeout(TransportError):
@@ -66,16 +74,24 @@ class TransportStall(TransportError):
     """
 
 
-#: How pyusb's libusb-1.0 backend reports a STALL: ``USBError`` with
-#: ``backend_error_code`` LIBUSB_ERROR_PIPE (-9) and ``errno`` EPIPE (its
-#: ``_check`` and ``_libusb_errno``). Either one identifies it; the second
-#: covers a backend that fills only ``errno``.
+#: libusb's code for a pipe error, which is how it reports a STALL. The
+#: installed pyusb libusb-1.0 backend raises every negative libusb return but
+#: a timeout as ``USBError(strerror, ret, _libusb_errno[ret])`` (its
+#: ``_check``), so a pipe error arrives with ``backend_error_code`` -9 and
+#: ``errno`` EPIPE, both filled.
 LIBUSB_ERROR_PIPE = -9
 
 
 def _is_stall(exc: Exception) -> bool:
     return (getattr(exc, 'backend_error_code', None) == LIBUSB_ERROR_PIPE
             or getattr(exc, 'errno', None) == errno.EPIPE)
+
+
+def _carrying_codes(error: TransportError, exc: Exception) -> TransportError:
+    """``error`` with the errno and backend code of the pyusb exception it stands for."""
+    error.errno = getattr(exc, 'errno', None)
+    error.backend_code = getattr(exc, 'backend_error_code', None)
+    return error
 
 
 class Transport(Protocol):
@@ -355,11 +371,11 @@ class PyUsbTransport:
         try:
             return call()
         except self._usb.core.USBTimeoutError as exc:
-            raise TransportTimeout('%s timed out' % what) from exc
+            raise _carrying_codes(TransportTimeout('%s timed out' % what), exc) from exc
         except self._usb.core.USBError as exc:
             if _is_stall(exc):
-                raise TransportStall('%s was refused with a STALL' % what) from exc
-            raise TransportError('%s failed: %s' % (what, exc)) from exc
+                raise _carrying_codes(TransportStall('%s was refused with a STALL' % what), exc) from exc
+            raise _carrying_codes(TransportError('%s failed: %s' % (what, exc)), exc) from exc
 
     def control_in(self, request: int, value: int, index: int, length: int,
                    timeout_ms: int,

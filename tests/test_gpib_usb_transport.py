@@ -444,6 +444,18 @@ class TestPyUsbTransport:
         with pytest.raises(TransportError) as info:
             usb_transport.bulk_out_raw(bytes(2502), 5000)
         assert not isinstance(info.value, TransportStall)
+        # What the controller logs when the raw OUT of a 0x0e fails.
+        assert (info.value.errno, info.value.backend_code) == (errno.ENODEV, -4)
+
+    def test_a_stall_carries_the_errno_and_backend_code_it_came_with(self, monkeypatch):
+        device = HS()
+        fake = install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
+        device.write_error = fake['core'].USBError('Pipe error', -9, errno.EPIPE)
+        with pytest.raises(TransportStall) as info:
+            usb_transport.bulk_out_raw(bytes(2502), 5000)
+        assert (info.value.errno, info.value.backend_code) == (errno.EPIPE, -9)
+        assert (TransportError('made here').errno, TransportError('made here').backend_code) == (None, None)
 
     def test_clear_halt_names_the_endpoint_and_wraps_a_failure(self, monkeypatch):
         device = HS()

@@ -685,28 +685,95 @@ class TestRawWrite:
         controller.write(24, b'A', timeout_s=3.0)
         transport.assert_done()
 
-    def test_the_pipes_are_reset_even_when_the_reply_never_comes(self):
+    def test_a_failure_that_is_not_recognised_as_a_stall_takes_the_same_path(self):
+        # How libusb on macOS reports the adapter's STALL has not been seen. Whatever it is,
+        # the reply is read and the pipes are reset, or the reply stays queued and 0x06 halted.
+        odd = TransportError('raw bulk write failed: [Errno 5] Input/Output Error')
+        controller, transport = attached(address_listener(pad=5) + [
+            ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY, odd),
+            ('in', h('0e 00 28 08 3a f6 ff ff 04 00 00 00'), 512),
+            ('clear_halt', 0x06), ('clear_halt', 0x02),
+        ] + address_listener(pad=24) + [
+            ('out', p.write_message(b'*IDN?\n', T3S, True)), ('in', status_reply(0x0D)),
+        ])
+        with pytest.raises(NoListener) as info:
+            controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
+        assert info.value.code == 8
+        assert ('in', 512, SHORT_MS) in transport.timeouts[-1:]
+        assert controller.write(24, b'*IDN?\n', timeout_s=3.0) == 6   # no stop request, no re-attach
+        transport.assert_done()
+
+    def test_the_refusal_is_logged_with_its_class_errno_and_backend_code(self, caplog):
+        stall = TransportStall('raw bulk write was refused with a STALL')
+        stall.errno, stall.backend_code = 32, -9
+        controller, transport = attached(address_listener(pad=5) + [
+            ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY, stall),
+            ('in', h('0e 00 28 08 3a f6 ff ff 04 00 00 00'), 512),
+            ('clear_halt', 0x06), ('clear_halt', 0x02),
+        ])
+        with caplog.at_level('WARNING', logger='resistamet_gui.gpib_usb.controller'):
+            with pytest.raises(NoListener):
+                controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
+        line = next(r.getMessage() for r in caplog.records if 'refused the data of a 0x0e' in r.getMessage())
+        assert 'TransportStall' in line and 'errno 32' in line and 'backend code -9' in line
+
+    def test_the_pipes_are_reset_and_the_refusal_raised_when_the_reply_never_comes(self):
         controller, transport = attached(address_listener(pad=5) + [
             ('out', p.write_raw_message(2502, T3S, True, 0x0A)),
             ('raw_out', self.NOBODY, self.STALL),
             ('in', TransportTimeout('no reply'), 512), STOP, ('in', TransportTimeout('still none'), 512),
+            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,   # no reply is a fault (§8.2)
             ('clear_halt', 0x06), ('clear_halt', 0x02),
-            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,   # NoReply is a fault (§8.2)
+        ] + reattach_script() + [
+            ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
         ])
-        with pytest.raises(ProtocolError):
+        with pytest.raises(TransportStall):
             controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
+        assert controller.command(b'\x14', timeout_s=3.0) == 1
         transport.assert_done()
 
-    def test_refused_data_with_a_reply_that_reports_success_is_a_fault(self):
+    def test_refused_data_with_a_reply_that_reports_success_raises_the_refusal_and_reattaches(self):
         controller, transport = attached(address_listener(pad=5) + [
             ('out', p.write_raw_message(2502, T3S, True, 0x0A)),
             ('raw_out', self.NOBODY, self.STALL),
             ('in', raw_write_reply(2502, 2502), 512),
             ('clear_halt', 0x06), ('clear_halt', 0x02),
-            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,
+        ] + reattach_script() + [
+            ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
         ])
-        with pytest.raises(ProtocolError):
+        with pytest.raises(TransportStall):
             controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
+        assert controller.command(b'\x14', timeout_s=3.0) == 1
+        transport.assert_done()
+
+    def test_a_reply_read_that_fails_too_still_resets_the_pipes_and_raises_the_first_error(self):
+        gone = TransportError('raw bulk write failed: [Errno 19] No such device')
+        controller, transport = attached(address_listener(pad=5) + [
+            ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY, gone),
+            ('in', TransportError('bulk read failed: [Errno 19] No such device'), 512),
+            ('clear_halt', 0x06, TransportError('no device')), ('clear_halt', 0x02, TransportError('no device')),
+        ])
+        with pytest.raises(TransportError) as info:
+            controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
+        assert info.value is gone
+        transport.assert_done()
+
+    def test_a_transport_without_clear_halt_cannot_mask_the_error_being_reported(self):
+        class NoClearHalt(ScriptedTransport):
+            clear_halt = None  # type: ignore[assignment]
+
+        transport = NoClearHalt(attach_script() + address_listener(pad=5) + [
+            ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY, self.STALL),
+            ('in', h('0e 00 28 08 3a f6 ff ff 04 00 00 00'), 512),
+        ] + attach_script() + [                               # the pipes cannot be trusted: re-attach
+            ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
+        ])
+        controller = Controller(transport, t.PID_HS, sleep=lambda s: None)
+        controller.attach()
+        with pytest.raises(NoListener) as info:
+            controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
+        assert info.value.code == 8
+        assert controller.command(b'\x14', timeout_s=3.0) == 1
         transport.assert_done()
 
     def test_partial_count_is_returned(self):
