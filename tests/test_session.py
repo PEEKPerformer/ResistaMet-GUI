@@ -446,3 +446,98 @@ class TestSpot:
                           spot={**self.SPOT, 'map_id': '../wafer7'})
         assert session.state == 'idle'
         assert fake_rm.opened == []
+
+
+def _on_a_wafer(profile, samples=2):
+    """A 50.8 mm wafer, described by the legacy keys a profile holds today."""
+    _four_point(profile, samples=samples)
+    profile['measurement'].update({'fpp_geometry': 'circle', 'fpp_diameter_cm': 5.08})
+    return profile
+
+
+def _writes(fake_rm):
+    return [cmd.upper() for fake in fake_rm.opened
+            for op, cmd in fake.command_log if op == 'write']
+
+
+class TestSpotGeometry:
+    def test_a_tip_off_the_sample_is_refused_before_the_output_turns_on(
+            self, session, sink, fake_rm, profile):
+        spot = {'map_id': 'wafer7', 'index': 3, 'label': 'too far', 'x_mm': 25.0, 'y_mm': 0.0}
+        session.start(_on_a_wafer(profile), 'four_point', 'wafer1', 'alice', spot=spot)
+        assert _wait_for(lambda: session.state == 'idle')
+
+        # The instrument was never opened, so nothing at all was written to it.
+        assert fake_rm.opened == []
+        assert not any(cmd.startswith(':OUTP ON') for cmd in _writes(fake_rm))
+
+        warning = sink.of_type('geometry_warning')[0].payload
+        assert warning['refused'] is True
+        assert warning['reason'] == 'off_sample'
+        assert warning['spot']['label'] == 'too far'
+        assert warning['edge_clearance_s'] < 0
+        assert warning['factor_here'] is None
+        errors = sink.of_type('error')
+        assert [e.payload['code'] for e in errors] == ['spot_off_sample']
+        assert 'off the sample' in errors[0].payload['message']
+        ended = sink.of_type('run_ended')[0].payload
+        assert (ended['reason'], ended['ok'], ended['path']) == ('spot_refused', False, None)
+        assert sink.of_type('file_opened') == []
+
+    def test_the_instrument_is_free_again_after_a_refusal(self, session, sink, fake_rm, profile):
+        spot = {'map_id': 'wafer7', 'index': 3, 'label': 'too far', 'x_mm': 25.0, 'y_mm': 0.0}
+        session.start(_on_a_wafer(profile), 'four_point', 'wafer1', 'alice', spot=spot)
+        assert _wait_for(lambda: session.state == 'idle')
+        session.start(_on_a_wafer(profile), 'four_point', 'wafer1', 'alice',
+                      spot={**spot, 'x_mm': 0.0})
+        assert _wait_for(lambda: session.state == 'idle')
+        assert sink.of_type('run_ended')[-1].payload['reason'] == 'target_samples'
+
+    def test_a_spot_near_the_edge_warns_and_still_runs(self, session, sink, fake_rm, profile):
+        spot = {'map_id': 'wafer7', 'index': 2, 'label': 'rim', 'x_mm': 20.0, 'y_mm': 0.0,
+                'angle_deg': 90.0}
+        session.start(_on_a_wafer(profile), 'four_point', 'wafer1', 'alice', spot=spot)
+        assert _wait_for(lambda: session.state == 'idle')
+
+        warning = sink.of_type('geometry_warning')[0].payload
+        assert warning['refused'] is False
+        assert warning['reason'] == 'near_edge'
+        assert abs(warning['relative_error']) * 100.0 > warning['edge_warn_pct'] == 1.0
+        assert warning['edge_clearance_s'] > 0
+        assert len(sink.of_type('sample')) == 2
+        assert sink.of_type('run_ended')[0].payload['ok'] is True
+        # Said before the first sample, and before the instrument is touched.
+        types = sink.types()
+        assert types.index('geometry_warning') < types.index('instrument_connected')
+
+    def test_a_centred_spot_raises_nothing(self, session, sink, fake_rm, profile):
+        spot = {'map_id': 'wafer7', 'index': 0, 'label': 'centre', 'x_mm': 0.0, 'y_mm': 0.0}
+        session.start(_on_a_wafer(profile), 'four_point', 'wafer1', 'alice', spot=spot)
+        assert _wait_for(lambda: session.state == 'idle')
+        assert sink.of_type('geometry_warning') == []
+        assert len(sink.of_type('sample')) == 2
+
+    def test_a_raised_threshold_silences_the_warning(self, session, sink, fake_rm, profile):
+        spot = {'map_id': 'wafer7', 'index': 2, 'label': 'rim', 'x_mm': 20.0, 'y_mm': 0.0,
+                'angle_deg': 90.0}
+        session.start(_on_a_wafer(profile), 'four_point', 'wafer1', 'alice', spot=spot,
+                      overrides={'fpp_edge_warn_pct': 50.0})
+        assert _wait_for(lambda: session.state == 'idle')
+        assert sink.of_type('geometry_warning') == []
+
+    def test_an_outline_that_cannot_be_described_refuses_the_run(self, sink, fake_rm, profile):
+        """The strict resolver catches this for a session; a run started with
+        hand-built settings (the PySide6 path) must refuse it too."""
+        from resistamet_gui.session.continuous_run import ContinuousRun
+        from resistamet_gui.session.control import RunControl
+        from resistamet_gui.session.emitter import EventEmitter
+
+        settings = _four_point(profile)
+        settings['measurement']['fpp_sample_shape'] = 'circle'   # and no diameter
+        settings['spot'] = {'map_id': 'wafer7', 'index': 0, 'label': 'centre'}
+        ContinuousRun('four_point', 'wafer1', 'alice', settings, RunControl(),
+                      EventEmitter(sink)).execute()
+
+        assert fake_rm.opened == []
+        assert [e.payload['code'] for e in sink.of_type('error')] == ['spot_invalid']
+        assert sink.of_type('run_ended')[0].payload['reason'] == 'spot_refused'
