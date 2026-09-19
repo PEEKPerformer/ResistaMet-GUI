@@ -165,6 +165,12 @@ class TestGpibInterface:
         assert getattr(rm, visa_backend._INTERFACE_ATTR) == (PRLGX, rm.sessions[0])
         assert rm.sessions[0].closed is False
 
+    def test_the_manager_says_which_interface_it_holds(self, one_rm):
+        rm = one_rm(_InterfaceRM())
+        assert visa_backend.held_gpib_interface(rm) is None
+        visa_backend.resource_manager('@py', PRLGX)
+        assert visa_backend.held_gpib_interface(rm) == PRLGX
+
     def test_a_caller_without_one_leaves_it_open(self, one_rm):
         rm = one_rm(_InterfaceRM())
         visa_backend.resource_manager('@py', PRLGX)
