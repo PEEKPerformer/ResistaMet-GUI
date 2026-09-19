@@ -1,14 +1,15 @@
 // What runs have written: a list of files and a preview of one.
 //
 // The preview parses the CSV in the browser and plots one column against
-// elapsed time; the metadata header is shown as-is, because it is the record
+// elapsed time, or for a sweep file current against voltage; the metadata
+// header is shown as-is, because it is the record
 // of what the run was, and so is the block the run wrote when it ended,
 // which is the only place a van der Pauw result or a spot's statistics are.
 
 import { useEffect, useMemo, useState } from "react";
 import { useApi } from "../../app/AppContext";
 import { ApiError, type ResultFile } from "../../lib/api";
-import { parseResistametCsv, type ParsedCsv } from "../../lib/csv";
+import { parseResistametCsv, sweepPreview, type ParsedCsv } from "../../lib/csv";
 import { useUi } from "../../state/ui";
 import { Badge, Button, Notice, Panel, Select } from "../../components/ui";
 import { Icons } from "../../components/icons";
@@ -19,6 +20,7 @@ const UNIT_BY_COLUMN: Record<string, string> = {
   R_ohm: "Ω",
   R_unc_ohm: "Ω",
   V_meas: "V",
+  V_source: "V",
   I_meas: "A",
   V: "V",
   I: "A",
@@ -77,14 +79,31 @@ export function ResultsView() {
       .catch((e: unknown) => setError(e instanceof ApiError ? e.detail : String(e)));
   };
 
+  // A sweep file has no time axis: it is an I-V curve, one trace per leg.
+  const sweep = useMemo(() => (parsed ? sweepPreview(parsed) : null), [parsed]);
+
   const series = useMemo(() => {
-    if (!parsed || !column) return [];
-    const x = parsed.data["elapsed_s"] ?? parsed.data["Point"] ?? parsed.data[parsed.columns[0] ?? ""] ?? [];
+    if (!parsed) return [];
+    if (sweep) {
+      const x = parsed.data[sweep.x] ?? [];
+      const y = parsed.data[sweep.y] ?? [];
+      return sweep.legs.map((leg, i) => ({
+        label: i === 0 ? "Forward" : "Reverse",
+        color: i === 0 ? "var(--data-v)" : "var(--data-i)",
+        x: x.slice(leg.from, leg.to),
+        y: y.slice(leg.from, leg.to),
+        points: leg.to - leg.from < 400,
+      }));
+    }
+    if (!column) return [];
+    const x = parsed.data["elapsed_s"] ?? parsed.data[parsed.columns[0] ?? ""] ?? [];
     const y = parsed.data[column] ?? [];
     return [{ label: column, color: "var(--data-r)", x, y, points: y.length < 400 }];
-  }, [parsed, column]);
+  }, [parsed, column, sweep]);
 
-  const numericColumns = parsed ? parsed.columns.filter((c) => c in parsed.data && c !== "elapsed_s") : [];
+  const xColumn = sweep ? sweep.x : parsed && "elapsed_s" in parsed.data ? "elapsed_s" : (parsed?.columns[0] ?? "");
+  const yColumn = sweep ? sweep.y : (column ?? "");
+  const numericColumns = parsed && !sweep ? parsed.columns.filter((c) => c in parsed.data && c !== "elapsed_s") : [];
 
   return (
     <div className={styles.view}>
@@ -134,6 +153,11 @@ export function ResultsView() {
             <header className={styles.previewHeader}>
               <h2 className={styles.previewTitle}>{selected.name}</h2>
               {parsed ? <Badge>{parsed.rows} rows</Badge> : null}
+              {sweep ? (
+                <span className={styles.axes}>
+                  {sweep.y} against {sweep.x}
+                </span>
+              ) : null}
               {numericColumns.length > 0 ? (
                 <Select value={column ?? ""} onChange={(e) => setColumn(e.target.value)} className={styles.columnPicker}>
                   {numericColumns.map((c) => (
@@ -150,7 +174,7 @@ export function ResultsView() {
             ) : null}
             {parsed && series.length > 0 ? (
               <Panel className={styles.plotPanel} bodyClassName={styles.plotBody}>
-                <XYPlot series={series} xUnit="s" yUnit={UNIT_BY_COLUMN[column ?? ""] ?? ""} />
+                <XYPlot series={series} xUnit={UNIT_BY_COLUMN[xColumn] ?? ""} yUnit={UNIT_BY_COLUMN[yColumn] ?? ""} />
               </Panel>
             ) : null}
             {parsed ? (
