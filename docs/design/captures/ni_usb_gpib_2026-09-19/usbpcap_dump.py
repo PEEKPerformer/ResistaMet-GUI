@@ -16,7 +16,7 @@ def packets(path):
 FUNC = {0x08: 'CONTROL', 0x09: 'BULK/INTR', 0x0b: 'ISOCH', 0x00: 'SELECT_CONF', 0x01: 'SELECT_IF', 0x02: 'ABORT_PIPE', 0x07: 'GET_DESCRIPTOR', 0x1e: 'RESET_PIPE', 0x20: 'CLASS_IF', 0x1f: 'CLASS_DEV', 0x17: 'VENDOR_DEV', 0x18: 'VENDOR_IF'}
 TRANSFER = {0: 'ISOCH', 1: 'INTR', 2: 'CONTROL', 3: 'BULK', 254: 'IRP_INFO', 255: 'UNKNOWN'}
 
-def dump(path, out=sys.stdout, want_device=None):
+def dump(path, out=sys.stdout, want_device=None, full=False):
     t0 = None
     for ts, pkt in packets(path):
         hdr_len, irp_id, status, function, info, bus, device, endpoint, transfer, data_len = struct.unpack_from('<HQIHBHHBBI', pkt, 0)
@@ -32,12 +32,15 @@ def dump(path, out=sys.stdout, want_device=None):
         line = '%9.4f dev%-2d ep%02x %s %-6s %-5s %-8s len %5d status %08x' % (ts - t0, device, endpoint, direction, TRANSFER.get(transfer, transfer), 'cmpl' if info & 1 else 'req ', stage, data_len, status)
         if payload:
             hx = payload.hex(' ')
-            if len(payload) > 96:
+            if len(payload) > 96 and not full:
                 hx = payload[:64].hex(' ') + ' ... ' + payload[-32:].hex(' ')
             line += '\n            ' + hx
-            printable = bytes(c if 32 <= c < 127 else 46 for c in payload[:96]).decode()
+            printable = bytes(c if 32 <= c < 127 else 46 for c in (payload if full else payload[:96])).decode()
             line += '\n            |' + printable + '|'
         print(line, file=out)
 
 if __name__ == '__main__':
-    dump(sys.argv[1], want_device=int(sys.argv[2]) if len(sys.argv) > 2 else None)
+    # usage: usbpcap_dump.py <file.pcap> [device-address] [--full]
+    #   --full prints whole payloads instead of a 64-byte head and 32-byte tail
+    args = [a for a in sys.argv[1:] if a != '--full']
+    dump(args[0], want_device=int(args[1]) if len(args) > 1 else None, full='--full' in sys.argv)

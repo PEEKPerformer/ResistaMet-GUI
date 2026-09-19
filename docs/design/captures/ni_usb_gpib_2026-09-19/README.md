@@ -39,6 +39,9 @@ Also here: `trace.bat` + `etw_urbs.py`, the earlier header-only method
 | `ren` | every `RENLineOperation` and `ATNLineOperation` on `GPIB0::INTFC` without a prior IFC: only `deassert` and `asrt` succeed; the addressed modes → `VI_ERROR_INV_MODE`; LLO and all ATN modes → `VI_ERROR_NCIC` (a fresh INTFC session is not controller-in-charge) |
 | `board_io` | `viGpibSendIFC`, `viGpibCommand(UNL LAD24 MTA0)`, board-level `viWrite("*IDN?\n")`, `viGpibCommand(UNL TAD24 MLA0)`, board-level `viRead` → `VI_ERROR_TMO` |
 | `two_sessions` | two sessions to the same instrument in one process: `*IDN?` on each, close one, `*IDN?` on the other |
+| `longwrite` | a 2048-byte write (`*CLS;` repeated), then `*IDN?` |
+| `readtimeout_long` | `:TRAC:DATA?` (61 768 bytes, ~12 s) with `VI_ATTR_TMO_VALUE` = 2000 ms — completed anyway; the timeout is not a total-transfer limit |
+| `terminate` | `viTerminate` from another thread 1.5 s into the same read — no effect on the synchronous read, which completed |
 
 Only `srq` and `srq_poll` change instrument state (`*ESE`, `*SRE`); both
 restore `*SRE 0; *ESE 0` and the stdout files show the read-back. `trigger`

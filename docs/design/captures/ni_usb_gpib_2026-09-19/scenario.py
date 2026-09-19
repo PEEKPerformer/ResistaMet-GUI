@@ -288,6 +288,50 @@ def sc_two_sessions(rm):
 SCENARIOS = {n[3:]: f for n, f in globals().items() if n.startswith('sc_')}
 
 
+
+def sc_longwrite(rm):
+    # a write far longer than one bulk message: 2048 bytes of harmless *CLS;
+    k = open_inst(rm)
+    time.sleep(0.5); payload = ('*CLS;' * 410)[:2048]
+    stamp('write %d bytes' % len(payload)); k.write(payload)
+    time.sleep(0.5); stamp('*IDN?'); print(len(k.query('*IDN?')))
+    time.sleep(0.5); k.close()
+
+def sc_readtimeout_long(rm):
+    # a 61 kB read with a 2 s timeout: how NI abandons a transfer in progress
+    k = open_inst(rm, 2000)
+    time.sleep(0.5); stamp('query :TRAC:DATA? with 2 s timeout')
+    try:
+        d = k.query(':TRAC:DATA?'); print('unexpected success', len(d))
+    except Exception as e:
+        print('->', e)
+    time.sleep(1.0); stamp('clear'); k.clear()
+    time.sleep(0.5); stamp('*IDN?'); print(len(k.query('*IDN?')))
+    time.sleep(0.5); k.close()
+
+def sc_terminate(rm):
+    # viTerminate from another thread while a long read is in flight
+    import threading
+    k = open_inst(rm, 20000)
+    time.sleep(0.5)
+    lib, s = k.visalib, k.session
+    def killer():
+        time.sleep(1.5); stamp('viTerminate'); 
+        try: lib.terminate(s, 0, 0)
+        except Exception as e: print('terminate ->', e)
+    threading.Thread(target=killer).start()
+    stamp('query :TRAC:DATA?')
+    try:
+        d = k.query(':TRAC:DATA?'); print('read returned', len(d))
+    except Exception as e:
+        print('->', e)
+    time.sleep(1.0); stamp('clear'); k.clear()
+    time.sleep(0.5); stamp('*IDN?'); print(len(k.query('*IDN?')))
+    time.sleep(0.5); k.close()
+
+SCENARIOS = {n[3:]: f for n, f in globals().items() if n.startswith('sc_')}
+
+
 if __name__ == '__main__':
     name = sys.argv[1]
     rm = pyvisa.ResourceManager()
