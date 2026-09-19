@@ -38,6 +38,11 @@ from typing import Callable, Optional, Protocol, runtime_checkable
 from .constants import AUX_STALE_AFTER_S
 from .instrument import VisaInstrument
 
+# Every sensor column carries this prefix; the provenance column closes the
+# block. See aux_column_names / reading_to_columns.
+AUX_COLUMN_PREFIX = "aux_"
+AUX_FAULT_COLUMN = AUX_COLUMN_PREFIX + "fault"
+
 
 class SensorError(Exception):
     """Base class for auxiliary-sensor failures."""
@@ -45,6 +50,11 @@ class SensorError(Exception):
 
 class SensorReadError(SensorError):
     """Raised when a sensor produces no valid reading."""
+
+
+class SensorHeaderError(SensorError):
+    """Raised when a device's channel description cannot be used. The message
+    names the offending field or key."""
 
 
 @dataclass(frozen=True)
@@ -126,6 +136,9 @@ class SerialLineSensor(VisaInstrument):
         self._lock = threading.Lock()
         self._stop_evt = threading.Event()
         self._reader: Optional[threading.Thread] = None
+        # Why the device's channel description was refused, if it was;
+        # wait_ready() reports it instead of a bare timeout.
+        self._header_error: Optional[str] = None
 
     def open(self) -> "SerialLineSensor":
         self.connect()  # VisaInstrument.connect(): opens dev, sets '\n' terminations
@@ -224,6 +237,11 @@ class SerialLineSensor(VisaInstrument):
         deadline = self._monotonic() + timeout_s
         while not self.channels():
             if self._monotonic() >= deadline:
+                if self._header_error:
+                    raise SensorError(
+                        f"{self.resource_str}: unusable channel description "
+                        f"— {self._header_error}"
+                    )
                 raise SensorError(
                     f"{self.resource_str}: no channel description within "
                     f"{timeout_s:.1f}s — wrong device or driver?"
@@ -299,32 +317,84 @@ class ArduinoThermocouple(SerialLineSensor):
 
 # --- General multi-channel driver: self-describing stream -------------------
 
+# A channel key becomes the column ``aux_<key>`` in the CSV header and a field
+# name in the HDF5 compound dtype, so it is held to identifier characters:
+# no ``/`` (an HDF5 path separator), no ``#`` (the CSV comment marker), no
+# spaces, no leading digit.
+_CHANNEL_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def reserved_channel_keys() -> frozenset:
+    """Keys a sensor may not declare, because ``aux_<key>`` would repeat a
+    column the record already has: the ``aux_fault`` provenance column, or
+    any built-in column of a co-logging mode that carries the aux prefix.
+
+    Computed from the exporter's own column tables rather than listed here,
+    so a built-in column added later is reserved without touching this file.
+    """
+    from .data_export import AUX_LOG_MODES, get_column_config
+
+    taken = {AUX_FAULT_COLUMN}
+    for mode in AUX_LOG_MODES:
+        for settings in (None, {"fpp_delta_mode": True}):
+            taken.update(get_column_config(mode, settings)[0])
+    return frozenset(
+        col[len(AUX_COLUMN_PREFIX):] for col in taken
+        if col.startswith(AUX_COLUMN_PREFIX)
+    )
+
+
+def validate_channel_key(key: str, reserved: Optional[frozenset] = None) -> None:
+    """Raise :class:`SensorHeaderError` naming ``key`` if it cannot be a
+    channel key: wrong characters, or reserved (see
+    :func:`reserved_channel_keys`)."""
+    if not _CHANNEL_KEY_RE.match(key):
+        raise SensorHeaderError(
+            f"channel key {key!r} is not a letter followed by letters, "
+            f"digits or underscores"
+        )
+    if reserved is None:
+        reserved = reserved_channel_keys()
+    if key in reserved:
+        raise SensorHeaderError(
+            f"channel key {key!r} is reserved: its column "
+            f"{AUX_COLUMN_PREFIX}{key} already exists in the record"
+        )
+
+
 def parse_stream_header(line: str) -> Optional[list[SensorChannel]]:
     """Parse a ``HDR,<key>:<unit>,<key>:<unit>,...`` line into channels.
 
-    Returns None for any line that isn't a well-formed header — including a
-    header with DUPLICATE keys (duplicate column names would corrupt the CSV
-    and abort the HDF5 exporter, so a dup-key header is rejected outright and
-    the driver reports "no channel description" instead). Units are ASCII
-    wire tokens (e.g. ``degC``, ``uS/cm``) surfaced verbatim; the label is
-    derived from the key.
+    Returns None for a line that is not a header at all (no ``HDR,`` tag), so
+    the reader can skip it. A line that IS a header but cannot be used raises
+    :class:`SensorHeaderError` naming the offending field or key: a field
+    that is not ``<key>:<unit>`` (an empty header included), a key that
+    fails :func:`validate_channel_key`, or a DUPLICATE key.
+    Duplicate or colliding column names would silently collapse a channel in
+    the CSV and abort the HDF5 exporter mid-run, so they are refused at the
+    source. Units are ASCII wire tokens (e.g. ``degC``, ``uS/cm``) surfaced
+    verbatim; the label is derived from the key.
     """
     if not line.startswith("HDR,"):
         return None
     fields = line.split(",")[1:]
+    reserved = reserved_channel_keys()
     chans: list[SensorChannel] = []
     seen: set[str] = set()
     for f in fields:
         if ":" not in f:
-            return None
+            raise SensorHeaderError(
+                f"header field {f.strip()!r} is not <key>:<unit>"
+            )
         key, _, unit = f.partition(":")
         key = key.strip()
         unit = unit.strip()
-        if not key or key in seen:
-            return None
+        validate_channel_key(key, reserved)
+        if key in seen:
+            raise SensorHeaderError(f"channel key {key!r} is declared twice")
         seen.add(key)
         chans.append(SensorChannel(key, key.replace("_", " ").title(), unit))
-    return chans or None
+    return chans
 
 
 def parse_stream_data(line: str,
@@ -377,8 +447,14 @@ class StreamSensor(SerialLineSensor):
         # described itself, every line is tried as a header; afterwards,
         # rows parse positionally against the discovered channels.
         if not self._channels:
-            chans = parse_stream_header(line)
+            try:
+                chans = parse_stream_header(line)
+            except SensorHeaderError as e:
+                # Keep reading: a later, usable header still wins.
+                self._header_error = str(e)
+                return None
             if chans:
+                self._header_error = None
                 self._channels = chans
             return None
         return parse_stream_data(line, self._channels)
@@ -429,7 +505,8 @@ def aux_column_names(sensor: AuxiliarySensor) -> list[str]:
     Derived purely from ``channels()`` so the exporter builds headers without
     knowing the sensor type.
     """
-    return [f"aux_{ch.key}" for ch in sensor.channels()] + ["aux_fault"]
+    return ([f"{AUX_COLUMN_PREFIX}{ch.key}" for ch in sensor.channels()]
+            + [AUX_FAULT_COLUMN])
 
 
 def format_fault(flags: dict[str, int]) -> str:
@@ -454,6 +531,8 @@ def reading_to_columns(reading: SensorReading) -> dict[str, object]:
     marked, never silently dropped; downstream analysis decides what to do
     with fault-time data.
     """
-    cols: dict[str, object] = {f"aux_{k}": v for k, v in reading.values.items()}
-    cols["aux_fault"] = format_fault(reading.flags)
+    cols: dict[str, object] = {
+        f"{AUX_COLUMN_PREFIX}{k}": v for k, v in reading.values.items()
+    }
+    cols[AUX_FAULT_COLUMN] = format_fault(reading.flags)
     return cols
