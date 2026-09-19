@@ -605,9 +605,15 @@ class Controller:
         is that a push arriving while nobody waits sits in the adapter until
         the next call (which then returns at once); whether the adapter
         keeps more than one is not established. One wait at a time.
-        ``timeout_s`` None waits the controller's infinite wait. A
+        ``timeout_s`` None waits the controller's infinite wait; it must
+        otherwise be positive (``ValueError``): a zero wait would mean "is
+        a push already queued?", which the interrupt endpoint cannot be
+        asked without blocking -- libusb reads a timeout of 0 as no timeout
+        at all -- so pretending to answer it would be wrong either way. A
         ``GpibTimeout`` means no request arrived in time.
         """
+        if timeout_s is not None and not timeout_s > 0:
+            raise ValueError('wait_srq needs a positive timeout or None, not %r' % (timeout_s,))
         with self._lock:
             self._ensure_attached()
             if not self._srq_idle.is_set():

@@ -1247,6 +1247,17 @@ class TestWaitSrq:
             controller.wait_srq(1.0)
         transport.assert_done()
 
+    @pytest.mark.parametrize('timeout_s', [0, 0.0, -1.0, -0.001])
+    def test_a_non_positive_timeout_is_refused_before_any_read(self, timeout_s):
+        # A 0 ms interrupt read would block without limit (libusb: 0 = no timeout), unsliced,
+        # which is the pending-transfer hazard the slicing exists to avoid.
+        controller, transport = attached([])
+        with pytest.raises(ValueError):
+            controller.wait_srq(timeout_s)
+        transport.assert_done()
+        assert [kind for kind, _, _ in transport.timeouts if kind == 'intr'] == []
+        assert controller._srq_idle.is_set()  # nothing was left half-armed
+
     def test_only_one_wait_at_a_time(self):
         import threading
 
