@@ -452,9 +452,9 @@ class TestInstrumentSession:
         # alternate endpoint, as it is under NI's driver (§10.1.1).
         assert adapter.instructions(p.OP_READ) == []
         read = adapter.instructions(p.OP_READ_RAW)[-1]
-        # Compare disabled (m 00) with the default termination character in e, 10 s code, -20480:
-        # the bytes NI sends for the same read (§10.1.2, idn.pcap 0.5160 with code 0xfe).
-        assert read[:8] == h('0b 00 0a fd 00 b0 ff ff')
+        # Compare off: m 00 and e 00 (the bench-proven form under our AUXRA 0x81 init; NI
+        # sends e 0a under its 0x99 init, §10.1.6), 10 s code, -20480.
+        assert read[:8] == h('0b 00 00 fd 00 b0 ff ff')
         assert adapter.raw_in_timeouts[-1] == 15000 + 20480  # host wait + 20480 B at 1000 B/s
         # Addressing: controller talks / instrument listens, then instrument talks.
         commands = adapter.instructions(p.OP_COMMAND)[-2:]
@@ -469,13 +469,18 @@ class TestInstrumentSession:
         assert read[1:3] == h('14 0a')
         inst.close()
 
-    def test_a_long_write_goes_raw_with_the_termination_character_in_the_header(self, rm, adapter):
+    def test_a_long_write_goes_raw(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 20000
         inst.write('*CLS;' * 409 + '*CL')  # 2048 + '\r\n' = 2050 bytes, as longwrite.pcap
         assert adapter.instructions(p.OP_WRITE) == []
         header = adapter.instructions(p.OP_WRITE_RAW)[-1]
-        assert header == h('0e 00 00 fe 00 0a 08 00 fe f7 ff ff 04 00 00 00')
+        # NI's header (longwrite.pcap 1.8914) with e = 0x00 in place of its 0x0a: the character
+        # goes into e only with the compare on (see _termchar_byte).
+        assert header == h('0e 00 00 fe 00 00 08 00 fe f7 ff ff 04 00 00 00')
+        inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR_EN, True)
+        inst.write('*CLS;' * 409 + '*CL')
+        assert adapter.instructions(p.OP_WRITE_RAW)[-1][5] == 0x0A
         assert adapter.raw_writes[-1] == b'*CLS;' * 409 + b'*CL\r\n'
         assert adapter.instruments[24].received[-1] == adapter.raw_writes[-1]
         inst.close()
@@ -487,13 +492,29 @@ class TestInstrumentSession:
         assert info.value.error_code == StatusCode.error_no_listeners
         inst.close()
 
-    def test_changing_the_termination_character_changes_e_on_both_read_forms(self, rm, adapter):
-        # eosmodes.pcap: TERMCHAR 0x2c enabled -> 14 2c; disabled the character still rides in e.
+    def test_plain_reads_send_the_bench_proven_eos_bytes(self, rm, adapter):
+        # The first *IDN? of a bench day, on both read forms: m 00 e 00 with the compare off,
+        # whatever VI_ATTR_TERMCHAR holds (pyvisa's default is 0x0a).
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        assert inst.get_visa_attribute(constants.VI_ATTR_TERMCHAR) == 0x0A
+        assert inst.get_visa_attribute(constants.VI_ATTR_TERMCHAR_EN) is False
+        inst.write('*IDN?')
+        inst.read()
+        assert adapter.instructions(p.OP_READ_RAW)[-1] == h('0b 00 00 fc 00 b0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')
+        inst.chunk_size = 256
+        inst.write('*IDN?')
+        inst.read()
+        assert adapter.instructions(p.OP_READ)[-1] == h(
+            '0a 00 00 fc 00 ff 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')  # §3.6 worked example
+        inst.close()
+
+    def test_changing_the_termination_character_changes_e_only_when_enabled(self, rm, adapter):
+        # eosmodes.pcap: TERMCHAR 0x2c enabled -> 14 2c. Disabled, we keep 00 00 (see _termchar_byte).
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR, 0x2C)
         inst.write('*IDN?')
         assert inst.read() == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
-        assert adapter.instructions(p.OP_READ_RAW)[-1][1:3] == h('00 2c')
+        assert adapter.instructions(p.OP_READ_RAW)[-1][1:3] == h('00 00')
         inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR_EN, True)
         inst.write('*IDN?')
         assert inst.read() == 'KEITHLEY INSTRUMENTS INC.,'
@@ -506,7 +527,7 @@ class TestInstrumentSession:
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         assert adapter.instructions(p.OP_READ_RAW) == []
         read = adapter.instructions(p.OP_READ)[-1]
-        assert read[1:6] == h('00 0a fc 00 ff')  # m 00 e 0a (§10.1.6), 3 s default timeout, -256
+        assert read[1:6] == h('00 00 fc 00 ff')  # compare off: 00 00; 3 s default timeout, -256
         inst.close()
 
     def test_timeout_attribute_reaches_the_instruction(self, rm, adapter):
