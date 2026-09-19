@@ -136,7 +136,24 @@ export interface RunRequest {
   overrides?: {};
   prompt_timeout_s?: number;
   sample_name: string;
+  spot?: SpotRequest | null;
   username: string;
+}
+/**
+ * One placement of the probe, as the client describes it.
+ *
+ * The position is optional -- a spot can be a label and nothing more -- but
+ * ``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the
+ * direction of the probe array, anticlockwise from +x; absent, the run uses
+ * the ``fpp_array_angle_deg`` setting.
+ */
+export interface SpotRequest {
+  angle_deg?: number | null;
+  index: number;
+  label: string;
+  map_id: string;
+  x_mm?: number | null;
+  y_mm?: number | null;
 }
 
 /**
@@ -170,21 +187,6 @@ export interface SampleGeometry {
  * ``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the
  * direction of the probe array, anticlockwise from +x; absent, the run uses
  * the ``fpp_array_angle_deg`` setting.
- */
-export interface SpotRequest {
-  angle_deg?: number | null;
-  index: number;
-  label: string;
-  map_id: string;
-  x_mm?: number | null;
-  y_mm?: number | null;
-}
-
-/**
- * Bulk linear sweep, run by the instrument's own sweep engine.
- *
- * Start/stop keep the +/-200 V bounds for both source types, as the widgets
- * do today; source-aware bounds are a follow-up.
  */
 export interface SweepSettings {
   sweep_compliance?: number;
@@ -645,6 +647,10 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
     "sample_name": {
       "type": "string",
       "required": true
+    },
+    "spot": {
+      "nullable": true,
+      "default": null
     },
     "username": {
       "type": "string",
