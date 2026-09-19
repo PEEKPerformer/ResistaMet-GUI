@@ -37,11 +37,16 @@ pytestmark = pytest.mark.skipif(not CAPTURES.is_dir(), reason='NI capture direct
 # ---------------------------------------------------------------------------
 
 class Transfer:
-    def __init__(self, ts: float, endpoint: int, completion: bool, payload: bytes) -> None:
+    def __init__(self, ts: float, endpoint: int, completion: bool, payload: bytes,
+                 usbd_status: int = 0, function: int = 0) -> None:
         self.ts = ts
         self.endpoint = endpoint
         self.completion = completion
         self.payload = payload
+        #: The Windows USBD status of a completion; 0 is success.
+        self.usbd_status = usbd_status
+        #: The URB function: 0x09 a bulk or interrupt transfer, 0x1e a pipe reset.
+        self.function = function
 
 
 def _packets(path: Path) -> Iterator[Tuple[float, bytes]]:
@@ -60,15 +65,31 @@ def _packets(path: Path) -> Iterator[Tuple[float, bytes]]:
 
 
 def transfers(name: str) -> List[Transfer]:
-    """Every transfer of the adapter in ``name.pcap``, in capture order."""
+    """Every transfer of the adapter in ``name.pcap``, in capture order.
+
+    NI hands a message longer than 512 bytes to USB as two OUT transfers,
+    512 bytes and the remainder, which the adapter sees as one run of
+    packets (§10.5.2). They are joined here into the first of the two, so
+    everything downstream sees whole messages.
+    """
     out: List[Transfer] = []
+    head: Optional[Transfer] = None  # an OUT on 0x02 that is not yet a whole message
     for ts, pkt in _packets(CAPTURES / (name + '.pcap')):
-        hdr_len, _irp, _status, _function, info, _bus, device, endpoint, _transfer, data_len = (
+        hdr_len, _irp, status, function, info, _bus, device, endpoint, _transfer, data_len = (
             struct.unpack_from('<HQIHBHHBBI', pkt, 0))
         if device != ADAPTER_DEVICE_ADDRESS:
             continue
         # info bit 0: 1 = completion (device -> host for IN, done for OUT), 0 = request.
-        out.append(Transfer(ts, endpoint, bool(info & 1), pkt[hdr_len:hdr_len + data_len]))
+        transfer = Transfer(ts, endpoint, bool(info & 1), pkt[hdr_len:hdr_len + data_len], status, function)
+        if endpoint == EP_OUT and not transfer.completion and transfer.payload:
+            if head is not None:
+                head.payload += transfer.payload
+                head = None if _host_blocks(head.payload) is not None else head
+                continue
+            if _host_blocks(transfer.payload) is None:
+                head = transfer
+        out.append(transfer)
+    assert head is None, '%s: an OUT message never reached its termination block' % name
     return out
 
 
@@ -82,10 +103,18 @@ def _pad4(n: int) -> int:
 
 def split_host_blocks(message: bytes) -> List[bytes]:
     """The instruction blocks of a host message, each with its padding, up to the termination."""
+    blocks = _host_blocks(message)
+    assert blocks is not None, 'no termination block in %s' % message.hex(' ')
+    return blocks
+
+
+def _host_blocks(message: bytes) -> Optional[List[bytes]]:
+    """As ``split_host_blocks``; None when ``message`` ends before its termination block."""
     blocks: List[bytes] = []
     off = 0
     while True:
-        assert off < len(message), 'no termination block in %s' % message.hex(' ')
+        if off + 4 > len(message):
+            return None
         opcode = message[off]
         if opcode == p.OP_TERMINATION:
             assert message[off:] == p.TERMINATION_BLOCK, message.hex(' ')
