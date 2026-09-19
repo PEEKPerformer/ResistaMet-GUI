@@ -1,0 +1,16 @@
+858594.757 RM open, scenario timeout_expiry
+858595.256 timeout 100 ms: viRead 100 with nothing pending
+-> VisaIOError after 0.133 s
+858595.791 timeout 300 ms: viRead 100 with nothing pending
+-> VisaIOError after 0.264 s
+858596.458 timeout 1000 ms: viRead 100 with nothing pending
+-> VisaIOError after 1.050 s
+858597.911 timeout 3000 ms: viRead 100 with nothing pending
+-> VisaIOError after 4.196 s
+858602.509 timeout 10000 ms: viRead 100 with nothing pending
+-> VisaIOError after 16.780 s
+858619.691 timeout 30000 ms: viRead 100 with nothing pending
+-> VisaIOError after 33.556 s
+858653.650 *CLS; *IDN?
+82
+858654.168 done

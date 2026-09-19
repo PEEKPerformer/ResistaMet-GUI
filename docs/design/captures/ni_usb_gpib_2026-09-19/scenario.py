@@ -419,6 +419,29 @@ def sc_first_open(rm):
 SCENARIOS = {n[3:]: f for n, f in globals().items() if n.startswith('sc_')}
 
 
+
+def sc_timeout_expiry(rm):
+    # how long does the adapter really wait under each timeout code?  a read
+    # with nothing pending, at each VISA timeout; the capture times the
+    # instruction to its reply
+    k = open_inst(rm)
+    lib, s = k.visalib, k.session
+    for tmo in (100, 300, 1000, 3000, 10000, 30000):
+        time.sleep(0.4)
+        k.timeout = tmo
+        stamp('timeout %d ms: viRead 100 with nothing pending' % tmo)
+        t = time.perf_counter()
+        try:
+            print(lib.read(s, 100))
+        except Exception as e:
+            print('-> %s after %.3f s' % (type(e).__name__, time.perf_counter() - t))
+    time.sleep(0.4); k.timeout = 3000
+    stamp('*CLS; *IDN?'); k.write('*CLS'); print(len(k.query('*IDN?')))
+    time.sleep(0.5); k.close()
+
+SCENARIOS = {n[3:]: f for n, f in globals().items() if n.startswith('sc_')}
+
+
 if __name__ == '__main__':
     name = sys.argv[1]
     rm = pyvisa.ResourceManager()
