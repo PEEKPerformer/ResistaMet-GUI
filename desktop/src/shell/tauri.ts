@@ -9,6 +9,9 @@ export function inTauri(): boolean {
 /** Sent when the backend ends without the shell having asked it to. */
 export const BACKEND_EXITED = "backend-exited";
 
+/** Sent when the window was asked to close and the shell held it open. */
+export const CLOSE_REQUESTED = "close-requested";
+
 export interface BackendExited {
   /** The process's exit code; null when a signal ended it. */
   code: number | null;

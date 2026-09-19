@@ -3,9 +3,15 @@
 // on its views rendering without error.
 
 import { BackendExitAlert } from "./BackendExitAlert";
+import { CloseGuard } from "./CloseGuard";
 import { inTauri } from "./tauri";
 
 export function ShellOverlays() {
   if (!inTauri()) return null;
-  return <BackendExitAlert />;
+  return (
+    <>
+      <CloseGuard />
+      <BackendExitAlert />
+    </>
+  );
 }

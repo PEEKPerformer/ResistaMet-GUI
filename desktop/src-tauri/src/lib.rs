@@ -4,6 +4,7 @@
 //! that to the webview, and makes sure it goes away when the window does.
 
 mod backend;
+mod close;
 mod logs;
 mod supervisor;
 
@@ -11,9 +12,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use backend::{Backend, BackendInfo, SpawnOptions};
+use close::{CloseGate, Verdict};
 use serde::Serialize;
 use supervisor::{ExitHook, Supervisor};
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
+
+/// Sent to the webview when the window was asked to close and did not: the
+/// webview decides, with the operator if a run is active.
+const CLOSE_REQUESTED: &str = "close-requested";
 
 /// Sent to the webview when the backend ends without having been asked to.
 const BACKEND_EXITED: &str = "backend-exited";
@@ -44,6 +50,26 @@ async fn restart_backend(app: AppHandle, supervisor: State<'_, Arc<Supervisor>>)
     tauri::async_runtime::spawn_blocking(move || supervisor.wait_info())
         .await
         .map_err(|e| format!("the shell stopped waiting for the backend: {e}"))?
+}
+
+/// The webview has the close question and will answer it.
+#[tauri::command]
+fn close_request_seen(gate: State<'_, CloseGate>) {
+    gate.seen();
+}
+
+/// The operator chose to keep the app open.
+#[tauri::command]
+fn cancel_close(gate: State<'_, CloseGate>) {
+    gate.keep();
+}
+
+/// Close for real. Exiting runs the ordered shutdown in `run`'s exit handler:
+/// the backend stops the run, turns the output off and finalizes the file.
+#[tauri::command]
+fn confirm_close(app: AppHandle, gate: State<'_, CloseGate>) {
+    gate.confirm();
+    app.exit(0);
 }
 
 /// How the supervisor starts a backend for this app.
@@ -111,9 +137,27 @@ pub fn run() {
             // the window opens at once and shows how the start went.
             let handle = app.handle();
             app.manage(Supervisor::launch(starter(handle), exit_reporter(handle)));
+            app.manage(CloseGate::default());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![backend_info, restart_backend])
+        .on_window_event(|window, event| {
+            // Closing the window ends the app, which stops a run. Ask first.
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let ready = window.try_state::<Arc<Supervisor>>().is_some_and(|s| s.is_ready());
+                let gate = window.state::<CloseGate>();
+                if gate.requested(ready, std::time::Instant::now()) == Verdict::Ask {
+                    api.prevent_close();
+                    let _ = window.emit(CLOSE_REQUESTED, ());
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            backend_info,
+            restart_backend,
+            close_request_seen,
+            cancel_close,
+            confirm_close
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
