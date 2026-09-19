@@ -1488,20 +1488,46 @@ class TestSerialPoll:
         assert controller.serial_poll(22) == 0x60
 
     def test_secondary_address(self):
+        # sad_poll.pcap 0.5152 / 0.5170: S = 0x60 | 1, echoed in the 0x3a block; status byte 4.
         controller, transport = attached([
             ('out', h('10 01 00 00 18 61 fc 00 04 00 00 00')),
-            ('in', h('3a 18 61 20 39 00 74 00 00 00 ff ff 04 00 00 00'), 512),
+            ('in', h('3a 18 61 04 39 00 74 00 00 00 ff ff 04 00 00 00'), 512),
         ])
-        assert controller.serial_poll(24, sad=1) == 0x20
+        assert controller.serial_poll(24, sad=1) == 4
         transport.assert_done()
 
-    def test_device_timeout_raises(self):
+    def test_device_timeout_replies_without_the_0x3a_block(self):
+        # raw_errors.pcap 10.8046 / 15.0003: nothing at address 5; the 0x39 block alone, error 0x0a.
+        controller, transport = attached([
+            ('out', h('10 01 00 00 05 00 fc 00 04 00 00 00')),
+            ('in', h('39 00 74 0a 00 00 00 00 04 00 00 00'), 512),
+            # and the next operation goes out with no stop request and no re-attach (§10.6.7)
+            ('out', p.serial_poll_message(24, T3S)),
+            ('in', h('3a 18 00 00 39 00 74 00 00 00 00 00 04 00 00 00'), 512),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.serial_poll(5)
+        assert info.value.code == 0x0A
+        assert controller.serial_poll(24) == 0
+        transport.assert_done()
+
+    def test_device_timeout_with_a_0x3a_block_raises_too(self):
         controller, _ = attached([
             ('out', p.serial_poll_message(22, T3S)),
             ('in', h('3a 16 00 00 39 00 74 0a ff ff ff ff 04 00 00 00'), 512),
         ])
         with pytest.raises(GpibTimeout):
             controller.serial_poll(22)
+
+    def test_success_without_a_status_byte_is_a_fault(self):
+        controller, transport = attached([
+            ('out', p.serial_poll_message(22, T3S)),
+            ('in', h('39 00 74 00 00 00 ff ff 04 00 00 00'), 512),
+            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,
+        ])
+        with pytest.raises(ProtocolError):
+            controller.serial_poll(22)
+        transport.assert_done()
 
     def test_answer_for_another_address_is_a_fault(self):
         controller, transport = attached([

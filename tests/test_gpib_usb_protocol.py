@@ -827,7 +827,7 @@ class TestSerialPollInstruction:
         assert p.serial_poll_message(24, 0xFE) == h('10 01 00 00 18 00 fe 00 04 00 00 00')
 
     def test_flag_and_secondary_address(self):
-        # srq_poll.pcap 2.5361 carried x = 1; the secondary byte follows the 0x02 probe's form.
+        # srq_poll.pcap 2.5361 carried x = 1; sad_poll.pcap 0.5152 is the secondary-address form.
         assert p.serial_poll_block(24, 0xFE, flag=1) == h('10 01 00 01 18 00 fe 00')
         assert p.serial_poll_block(24, 0xFC, sad=1) == h('10 01 00 00 18 61 fc 00')
         with pytest.raises(ValueError):
@@ -848,11 +848,32 @@ class TestSerialPollInstruction:
         parsed = p.parse_serial_poll_reply(h('3a 18 00 00 39 00 74 00 00 00 ff ff 04 00 00 00'))
         assert parsed.status_byte == 0
 
+    def test_0x10_reply_through_a_secondary_address_echoes_both_bytes(self):
+        # sad_poll.pcap 0.5170: ``3a 18 61 04``, status byte 4.
+        parsed = p.parse_serial_poll_reply(h('3a 18 61 04 39 00 74 00 00 00 ff ff 04 00 00 00'))
+        assert (parsed.pad, parsed.sad_byte, parsed.status_byte) == (24, 0x61, 4)
+
+    def test_0x10_reply_to_a_poll_that_timed_out_has_no_0x3a_block(self):
+        # raw_errors.pcap 15.0003, all 32 bytes: nothing at address 5, error 0x0a after 4.2 s.
+        reply = h('03 00 64 00 00 b0 ff ff 39 00 74 0a 00 00 00 00'
+                  '09 00 74 00 00 00 00 00 01 00 00 00 04 00 00 00')
+        parsed = p.parse_serial_poll_reply(reply)
+        assert parsed.status.id == 0x39 and parsed.status.error == 0x0A and parsed.status.ibsta == 0x0074
+        assert parsed.status_byte is None and parsed.pad is None and parsed.sad_byte is None
+        assert isinstance(p.error_for_code(parsed.status.error, 'serial poll'), p.GpibTimeout)
+
+    def test_0x10_reply_with_an_error_and_a_0x3a_block_is_still_parsed(self):
+        parsed = p.parse_serial_poll_reply(h('3a 18 00 00 39 00 74 0a 00 00 00 00 04 00 00 00'))
+        assert parsed.status.error == 0x0A and parsed.pad == 24
+
     def test_0x10_reply_missing_a_block_raises(self):
         with pytest.raises(p.ProtocolError):
             p.parse_serial_poll_reply(h('3a 18 00 00 04 00 00 00'))
+        # No 0x3a block is only an answer when the status block carries an error.
         with pytest.raises(p.ProtocolError):
             p.parse_serial_poll_reply(h('39 00 74 00 00 00 ff ff 04 00 00 00'))
+        with pytest.raises(p.ProtocolError):
+            p.parse_serial_poll_reply(h('3a 18 00 00 3a 18 00 00 39 00 74 00 00 00 ff ff 04 00 00 00'))
 
 
 class TestSrqPush:
