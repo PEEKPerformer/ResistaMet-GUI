@@ -29,6 +29,7 @@ from .configure import (
 )
 from .run_files import create_base_path, open_exporter
 from .spot_record import spot_record_from_settings
+from .spot_stats import SpotSamples, spot_statistics
 from .samples import (
     build_row, parse_four_point, parse_resistance, parse_source_i, parse_source_v,
 )
@@ -71,6 +72,9 @@ class ContinuousRun:
         # Set before anything is opened: this run's spot resolved against the
         # sample outline, or None for a run that carries no spot.
         self._spot_record = None
+        # The values behind the end-of-run statistics. Four-point only: no
+        # other mode has a per-spot result.
+        self._spot_samples = SpotSamples() if mode == 'four_point' else None
 
         # Start/stop/pause state and the marker queue, shared with whoever is
         # driving the run.
@@ -842,6 +846,12 @@ class ContinuousRun:
                     try:
                         self.exporter.write_row(row_data)
                         self._csv_error_count = 0  # Reset error count on success
+                        # After the write, so the statistics cover exactly the
+                        # rows the file holds. add() cannot raise.
+                        if self._spot_samples is not None:
+                            self._spot_samples.add(
+                                data_dict.get('voltage'), data_dict.get('current'),
+                                derived, compliance_status)
                     except Exception as e:
                         self._csv_error_count += 1
                         error_msg = f"Error writing data ({self._csv_error_count}/{self._max_csv_errors}): {str(e)}"
@@ -928,9 +938,19 @@ class ContinuousRun:
                         'total_samples': self.exporter.row_count,
                         'duration_s': time.time() - self.start_time
                     }
+                    spot_stats = self._spot_statistics(nplc)
+                    if spot_stats is not None:
+                        end_metadata['spot_stats'] = spot_stats
                     self.exporter.finalize(end_metadata)
                     self._events.emit('file_finalized', {
                         'path': self.filename, 'end_metadata': end_metadata})
+                    if spot_stats is not None:
+                        record = self._spot_record
+                        self._events.emit('spot_complete', {
+                            'spot': record.spot.model_dump() if record else None,
+                            'path': self.filename,
+                            'stats': spot_stats,
+                        })
                 except Exception as e:
                     self._events.warn('finalize_failed', f"Warning: Error finalizing export - {str(e)}")
                 final_message = f"Measurement ({self.mode}) completed! Data saved to: {self.filename}"
@@ -958,6 +978,20 @@ class ContinuousRun:
                 'path': self.filename or None,
             })
             self.running = False
+
+    def _spot_statistics(self, nplc):
+        """The four-point statistics for the file footer; None for other modes.
+
+        A failure here is reported and swallowed: the rows are the data, and
+        the file must still be finalized when its summary cannot be computed.
+        """
+        if self._spot_samples is None:
+            return None
+        try:
+            return spot_statistics(self._spot_samples, model=self._model_name, nplc=nplc)
+        except Exception as e:
+            self._events.warn('spot_stats_failed', f"Warning: Could not compute spot statistics - {str(e)}")
+            return None
 
     def _emit_compress_status(self, orig_path: Path, gz_path: Path,
                               orig_mb: float, gz_mb: float) -> None:

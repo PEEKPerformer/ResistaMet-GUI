@@ -585,3 +585,116 @@ class TestSpotInTheFileHeader:
         session.start(_four_point(profile), 'four_point', 'wafer1', 'alice')
         assert _wait_for(lambda: session.state == 'idle')
         assert not [key for key in self._header(sink) if key.startswith('spot.')]
+
+
+def _csv_columns(path):
+    import csv
+    with open(path) as handle:
+        rows = [r for r in csv.reader(handle) if r and not r[0].startswith('#')]
+    header, body = rows[0], rows[1:]
+    return {name: [row[i] for row in body] for i, name in enumerate(header)}
+
+
+class TestSpotStatisticsAtTheEndOfARun:
+    #: What a four-point header held before spots existed. A run without a
+    #: spot must still write exactly this.
+    HEADER_KEYS = {
+        'resistamet_format_version', 'user', 'sample', 'mode', 'started_at',
+        'software_version', 'instrument', 'gpib_address', 'sampling_rate_hz', 'nplc',
+        'settling_time_s', 'units',
+        'params.source_current_A', 'params.voltage_compliance_V',
+        'params.voltage_auto_range', 'params.probe_spacing_cm', 'params.thickness_um',
+        'params.k_factor', 'params.alpha', 'params.model', 'params.target_samples',
+        'params.auto_zero',
+    }
+    FOOTER_KEYS_BEFORE = {'ended_at', 'total_samples', 'duration_s'}
+    #: The one thing that changed for a run without a spot.
+    FOOTER_KEYS_ADDED = {'spot_stats.n', 'spot_stats.n_excluded'} | {
+        f'spot_stats.{quantity}.{field}'
+        for quantity in ('rs', 'rho', 'sigma')
+        for field in ('n', 'mean', 'sd', 'rsd_pct', 'u_stat', 'u_inst', 'u_total')
+    }
+
+    def _run(self, session, sink, profile, mode='four_point', **kwargs):
+        session.start(profile, mode, 'wafer1', 'alice', **kwargs)
+        assert _wait_for(lambda: session.state == 'idle')
+        return sink.of_type('run_ended')[-1].payload['path']
+
+    def test_without_a_spot_only_the_footer_statistics_are_new(
+            self, session, sink, fake_rm, profile):
+        from resistamet_gui.data_export import parse_metadata
+        path = self._run(session, sink, _four_point(profile, samples=3))
+        keys = set(parse_metadata(path))
+        assert keys == self.HEADER_KEYS | self.FOOTER_KEYS_BEFORE | self.FOOTER_KEYS_ADDED
+
+    def test_other_modes_write_the_footer_they_always_did(self, session, sink, fake_rm, profile):
+        profile['measurement'].update({'res_test_current': 1e-3, 'res_voltage_compliance': 5.0})
+        session.start(profile, 'resistance', 'wafer1', 'alice')
+        assert _wait_for(lambda: len(sink.of_type('sample')) >= 2)
+        session.stop()
+        assert _wait_for(lambda: session.state == 'idle')
+        finalized = sink.of_type('file_finalized')[0].payload
+        assert set(finalized['end_metadata']) == self.FOOTER_KEYS_BEFORE
+        assert sink.of_type('spot_complete') == []
+
+    def test_the_footer_equals_the_statistics_of_the_rows(self, session, sink, fake_rm, profile):
+        from resistamet_gui.data_export import parse_metadata
+        profile['measurement']['fpp_thickness_um'] = 100.0
+        path = self._run(session, sink, _four_point(profile, samples=4))
+        footer = parse_metadata(path)
+        columns = _csv_columns(path)
+
+        rs = [float(v) for v in columns['Rs_ohm_sq']]
+        assert footer['spot_stats.n'] == 4 == len(rs)
+        assert footer['spot_stats.n_excluded'] == 0
+        assert footer['spot_stats.rs.n'] == 4
+        assert footer['spot_stats.rs.mean'] == pytest.approx(sum(rs) / 4, rel=1e-5)
+        rho = [float(v) for v in columns['rho_ohm_cm']]
+        assert footer['spot_stats.rho.mean'] == pytest.approx(sum(rho) / 4, rel=1e-5)
+        sigma = [float(v) for v in columns['sigma_S_cm']]
+        assert footer['spot_stats.sigma.mean'] == pytest.approx(sum(sigma) / 4, rel=1e-5)
+        assert footer['spot_stats.rs.u_inst'] > 0
+        assert footer['spot_stats.rs.u_total'] >= footer['spot_stats.rs.u_inst']
+
+    def test_a_quantity_the_rows_do_not_have_is_empty_not_wrong(
+            self, session, sink, fake_rm, profile):
+        """With no thickness entered the rows hold no conductivity."""
+        import math
+        from resistamet_gui.data_export import parse_metadata
+        profile['measurement'].update({'fpp_thickness_um': 0.0, 'fpp_model': 'thin_film'})
+        path = self._run(session, sink, _four_point(profile, samples=2))
+        footer = parse_metadata(path)
+        assert footer['spot_stats.rs.n'] == 2
+        assert footer['spot_stats.sigma.n'] == 0
+        assert math.isnan(footer['spot_stats.sigma.mean'])
+        assert math.isnan(footer['spot_stats.sigma.u_total'])
+
+    def test_spot_complete_carries_the_footer_and_the_spot(self, session, sink, fake_rm, profile):
+        spot = {'map_id': 'wafer7', 'index': 4, 'label': 'D'}
+        path = self._run(session, sink, _four_point(profile, samples=3), spot=spot)
+        complete = sink.of_type('spot_complete')[0].payload
+        finalized = sink.of_type('file_finalized')[0].payload
+
+        assert complete['path'] == path
+        assert complete['spot'] == {**spot, 'x_mm': None, 'y_mm': None, 'angle_deg': None}
+        assert complete['stats']['n'] == 3
+        assert complete['stats']['rs']['mean'] == finalized['end_metadata']['spot_stats']['rs']['mean']
+        types = sink.types()
+        assert types.index('file_finalized') < types.index('spot_complete') < types.index('run_ended')
+
+    def test_a_run_without_a_spot_still_reports_its_statistics(self, session, sink, fake_rm, profile):
+        self._run(session, sink, _four_point(profile, samples=2))
+        complete = sink.of_type('spot_complete')[0].payload
+        assert complete['spot'] is None
+        assert complete['stats']['n'] == 2
+
+    def test_samples_in_compliance_are_counted_and_left_out(self, session, sink, fake_rm, profile):
+        # 100 ohm DUT at 0.1 A wants 10 V; the 5 V limit puts every sample in
+        # compliance, so each row is a bound and none is a measurement.
+        profile = _four_point(profile, samples=2)
+        profile['measurement'].update({'fpp_current': 0.1, 'fpp_power_warn_w': 5.0,
+                                       'fpp_power_stop_w': 10.0})
+        self._run(session, sink, profile)
+        stats = sink.of_type('spot_complete')[0].payload['stats']
+        assert (stats['n'], stats['n_excluded']) == (0, 2)
+        assert stats['rs']['n'] == 0
