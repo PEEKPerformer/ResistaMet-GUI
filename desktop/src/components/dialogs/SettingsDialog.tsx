@@ -30,7 +30,7 @@ const SECTIONS: { id: Section; label: string }[] = [
 ];
 
 const TIMING: FieldSpec[] = [
-  { key: "nplc", label: "NPLC", hint: "Power-line cycles per reading. Tabs may override." },
+  { key: "nplc", label: "NPLC", hint: "Power-line cycles per reading. A mode's own setting overrides this." },
   { key: "sampling_rate", label: "Sampling rate", unit: "Hz" },
   { key: "settling_time", label: "Settle before first reading", unit: "s" },
   { key: "auto_zero", label: "Auto zero", options: { on: "On", once: "Once", off: "Off" } },
