@@ -140,6 +140,12 @@ jobs:
 
       - name: Commit and push if screenshots changed
         run: |
+          # main is what is checked out here. A v* tag cut from another
+          # branch says nothing about main and must not commit to it.
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" HEAD; then
+            echo "${{ github.ref_name }} is not on main; leaving main's screenshots alone."
+            exit 0
+          fi
           if [[ -z "$(git status --porcelain docs/screenshots/)" ]]; then
             echo "Screenshots already match generator output for ${{ github.ref_name }}."
             exit 0
