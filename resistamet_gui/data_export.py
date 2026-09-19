@@ -422,6 +422,21 @@ def build_metadata(
     return meta
 
 
+# --------------------------------- File names --------------------------------
+
+
+def _with_extension(base_path: Path, extension: str) -> Path:
+    """``base_path`` with ``extension`` added to the end of its name.
+
+    Not ``Path.with_suffix``. A run's base name ends in its source value
+    (``..._4PP_0.10mA``, ``..._VSRC_0.500V``, ``..._sweep_0.0to1.0``), and
+    ``with_suffix`` takes everything after the last dot for a suffix to
+    replace: the file came out as ``..._4PP_0.csv`` and the value was lost
+    from the name.
+    """
+    return base_path.with_name(base_path.name + extension)
+
+
 # --------------------------------- Backends ---------------------------------
 
 
@@ -497,7 +512,7 @@ class CsvExporter(_BaseExporter):
         large_file_notify_mb: float = LARGE_FILE_NOTIFY_MB,
     ):
         self.base_path = Path(base_path)
-        self.csv_path = self.base_path.with_suffix('.csv')
+        self.csv_path = _with_extension(self.base_path, '.csv')
         self.metadata = metadata
         self.columns = list(columns)
         self.units = list(units or [])
@@ -593,7 +608,7 @@ class CsvExporter(_BaseExporter):
             return self.csv_path
         if self.compression == "auto" and size_mb < self.threshold_mb:
             return self.csv_path
-        gz_path = self.csv_path.with_suffix('.csv.gz')
+        gz_path = _with_extension(self.csv_path, '.gz')
         try:
             with open(self.csv_path, 'rb') as src, gzip.open(gz_path, 'wb', compresslevel=6) as dst:
                 shutil.copyfileobj(src, dst)
@@ -647,7 +662,7 @@ class Hdf5Exporter(_BaseExporter):
         self._h5py = h5py
 
         self.base_path = Path(base_path)
-        self.h5_path = self.base_path.with_suffix('.h5')
+        self.h5_path = _with_extension(self.base_path, '.h5')
         self.metadata = metadata
         self.columns = list(columns)
         self.units = list(units or [])
@@ -748,8 +763,8 @@ class LegacyDualExporter(_BaseExporter):
         units: Optional[List[str]] = None,
     ):
         self.base_path = Path(base_path)
-        self.json_path = self.base_path.with_suffix('.json')
-        self.csv_path = self.base_path.with_suffix('.csv')
+        self.json_path = _with_extension(self.base_path, '.json')
+        self.csv_path = _with_extension(self.base_path, '.csv')
         self.metadata = metadata
         self.columns = columns
         self.units = units or []
@@ -793,7 +808,7 @@ class LegacyDualExporter(_BaseExporter):
             self._write_checkpoint()
 
     def _write_checkpoint(self) -> None:
-        checkpoint_path = self.base_path.with_suffix('.json.tmp')
+        checkpoint_path = _with_extension(self.base_path, '.json.tmp')
         try:
             checkpoint_data = {
                 "format_version": self.FORMAT_VERSION,
@@ -807,7 +822,7 @@ class LegacyDualExporter(_BaseExporter):
                 "row_count": len(self._data_rows),
                 "data": self._data_rows
             }
-            temp_path = self.base_path.with_suffix('.json.tmp.writing')
+            temp_path = _with_extension(self.base_path, '.json.tmp.writing')
             with open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
             temp_path.replace(checkpoint_path)
@@ -841,7 +856,7 @@ class LegacyDualExporter(_BaseExporter):
         try:
             with open(self.json_path, 'w', encoding='utf-8') as f:
                 json.dump(json_data, f, indent=2, ensure_ascii=False)
-            checkpoint_path = self.base_path.with_suffix('.json.tmp')
+            checkpoint_path = _with_extension(self.base_path, '.json.tmp')
             if checkpoint_path.exists():
                 try:
                     checkpoint_path.unlink()
