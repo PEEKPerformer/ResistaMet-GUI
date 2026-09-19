@@ -38,6 +38,8 @@ export interface SpotsState {
   /** GET /maps/{current.mapId}, or null before the map's first run. */
   map: SpotMap | null;
   mapError: string | null;
+  /** The spot of the four-point run in progress, as run_started reported it. */
+  running: SpotRequest | null;
   /** The backend's statistics for the last four-point run. */
   lastSpot: SpotCompletePayload | null;
   /** What the backend said about the position of the run in progress, or of
@@ -85,6 +87,7 @@ let state: SpotsState = {
   current: loadCurrent(),
   map: null,
   mapError: null,
+  running: null,
   lastSpot: null,
   warning: null,
   completions: 0,
@@ -172,15 +175,28 @@ export function setRedo(redo: SpotsState["redo"]): void {
   publish({ ...state, redo, label: redo ? redo.label : "" });
 }
 
+/** Moving the spot answers a refusal: what the backend said about the old
+ *  position is not about the new one. */
 export function setPending(pending: SpotsState["pending"]): void {
-  publish({ ...state, pending });
+  publish({ ...state, pending, warning: state.warning?.refused ? null : state.warning });
 }
 
 // --- events ---------------------------------------------------------------
 
 export function applySpotRunStarted(event: Event<"run_started">): void {
   if (event.payload.mode !== "four_point") return;
-  publish({ ...state, lastSpot: null, warning: null });
+  publish({ ...state, running: spotOf(event.payload.settings?.spot), lastSpot: null, warning: null });
+}
+
+export function applySpotRunEnded(): void {
+  if (state.running !== null) publish({ ...state, running: null });
+}
+
+function spotOf(raw: unknown): SpotRequest | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const spot = raw as Partial<SpotRequest>;
+  if (typeof spot.map_id !== "string" || typeof spot.index !== "number" || typeof spot.label !== "string") return null;
+  return spot as SpotRequest;
 }
 
 export function applyGeometryWarning(event: Event<"geometry_warning">): void {
@@ -192,61 +208,4 @@ export function applyGeometryWarning(event: Event<"geometry_warning">): void {
  *  operator can move it and try again. */
 export function applySpotComplete(event: Event<"spot_complete">): void {
   publish({ ...state, lastSpot: event.payload, completions: state.completions + 1, label: "", redo: null, pending: null });
-}
-
-// --- the browser-side spot list, until the panel reads the map -------------
-
-export interface Spot {
-  id: number;
-  name: string;
-  sample: string;
-  n: number;
-  rsMean: number;
-  rsSd: number;
-  rhoMean: number;
-  sigmaMean: number;
-  savedAt: number;
-}
-
-let spots: Spot[] = [];
-let nextId = 1;
-const legacyListeners = new Set<() => void>();
-
-function publishLegacy(next: Spot[]): void {
-  spots = next;
-  for (const listener of legacyListeners) listener();
-}
-
-export function useLegacySpots(): Spot[] {
-  return useSyncExternalStore(
-    (listener) => {
-      legacyListeners.add(listener);
-      return () => legacyListeners.delete(listener);
-    },
-    () => spots,
-    () => spots,
-  );
-}
-
-export function addSpot(spot: Omit<Spot, "id" | "savedAt">): void {
-  publishLegacy([...spots, { ...spot, id: nextId++, savedAt: Date.now() }]);
-}
-
-export function removeSpot(id: number): void {
-  publishLegacy(spots.filter((s) => s.id !== id));
-}
-
-export function clearSpots(): void {
-  publishLegacy([]);
-}
-
-/** Mean and sample standard deviation of the finite values. */
-export function meanSd(values: number[]): { mean: number; sd: number; n: number } {
-  const finite = values.filter((v) => Number.isFinite(v));
-  const n = finite.length;
-  if (n === 0) return { mean: NaN, sd: NaN, n: 0 };
-  const mean = finite.reduce((a, b) => a + b, 0) / n;
-  if (n < 2) return { mean, sd: NaN, n };
-  const variance = finite.reduce((a, v) => a + (v - mean) ** 2, 0) / (n - 1);
-  return { mean, sd: Math.sqrt(variance), n };
 }

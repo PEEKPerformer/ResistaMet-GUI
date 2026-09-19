@@ -26,6 +26,7 @@ import { Icons } from "../../components/icons";
 import { LivePlot, type TraceSpec } from "../../components/plot/LivePlot";
 import { FieldRow, SettingsForm } from "../../components/forms/SettingsForm";
 import { FourPointPanel } from "./FourPointPanel";
+import { prepareSpot, useMapSync } from "./fourPointSpot";
 import styles from "./ContinuousView.module.css";
 
 type ContinuousMode = Exclude<Mode, "sweep" | "vdp">;
@@ -137,6 +138,15 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
 
   const onChange = useCallback((key: string, value: unknown) => setOverride(mode, key, value), [mode]);
 
+  // Four-point runs belong to a map of one operator on one sample name.
+  const owner = useMemo(
+    () => (mode === "four_point" && ui.username ? { user: ui.username, sample: ui.sampleName } : null),
+    [mode, ui.username, ui.sampleName],
+  );
+  useMapSync(api, owner);
+  // What the run would use: the backend's resolution, the tab's values until it answers.
+  const measurement = resolved?.settings.measurement ?? overrides;
+
   // M marks the moment, as in the PySide6 app — unless the operator is typing.
   useEffect(() => {
     if (!thisModeRunning) return;
@@ -157,7 +167,9 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
     setBusy(true);
     setStartError(null);
     try {
-      await api.start({ mode, sample_name: ui.sampleName.trim(), username: ui.username, overrides });
+      const request = { mode, sample_name: ui.sampleName.trim(), username: ui.username, overrides };
+      // A four-point run is a spot of a map, and says which.
+      await api.start(owner ? { ...request, spot: await prepareSpot(api, owner) } : request);
     } catch (e) {
       setStartError(e instanceof ApiError ? e.detail : String(e));
     } finally {
@@ -262,7 +274,9 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
           <LivePlot traces={TRACES[mode]} mode={mode} windowS={windowS} />
         </Panel>
 
-        {mode === "four_point" ? <FourPointPanel running={thisModeRunning} /> : null}
+        {mode === "four_point" ? (
+          <FourPointPanel running={thisModeRunning} owner={owner} edgeWarnPct={numberSetting(measurement, "fpp_edge_warn_pct", 1)} />
+        ) : null}
       </div>
 
       <aside className={styles.settings}>
@@ -305,6 +319,11 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
       </aside>
     </div>
   );
+}
+
+function numberSetting(settings: Record<string, unknown>, key: string, fallback: number): number {
+  const value = settings[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 function RunState({ mode }: { mode: Mode }) {

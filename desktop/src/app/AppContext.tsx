@@ -15,7 +15,7 @@ import { applyEvent, getSessionSnapshot, setBackendReachable, setConnected, setG
 import { applySample, getSeries, resetSamples } from "../state/samples";
 import { applySweepSegment, resetSweep } from "../state/sweep";
 import { applyVdpGeometry, applyVdpResult, resetVdp } from "../state/vdp";
-import { applyGeometryWarning, applySpotComplete, applySpotRunStarted } from "../state/spots";
+import { applyGeometryWarning, applySpotComplete, applySpotRunEnded, applySpotRunStarted } from "../state/spots";
 
 interface AppServices {
   api: ApiClient;
@@ -124,6 +124,7 @@ export function AppProvider({ children, fallback }: ProviderProps) {
           if (message.event.type === "run_started") applySpotRunStarted(message.event);
           if (message.event.type === "geometry_warning") applyGeometryWarning(message.event);
           if (message.event.type === "spot_complete") applySpotComplete(message.event);
+          if (message.event.type === "run_ended") applySpotRunEnded();
           applyEvent(message.event);
           return;
       }
