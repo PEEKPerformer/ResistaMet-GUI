@@ -21,11 +21,10 @@ listing does the same.
 (the board handle, timeouts, IFC, raw command bytes, the REN and ATN line
 operations); ``NiUsbGpibInstrSession`` adds the addressed device on top.
 
-Not registered: ``(gpib, "INTFC")``. Everything an INSTR session needs
-(IFC, REN, raw command bytes, trigger, serial poll) is reachable on the
-INSTR session itself. Not supported: ``gpib_pass_control`` (§5.17 leaves
-the adapter's report of the hand-over uncertain) and
-``VI_ATTR_SUPPRESS_END_EN`` set to True.
+The board itself, ``GPIB<n>::INTFC``, is ``visa_intfc``; ``install()``
+here installs both. Not supported on the INSTR session:
+``gpib_pass_control`` (§5.17 leaves the adapter's report of the hand-over
+uncertain) and ``VI_ATTR_SUPPRESS_END_EN`` set to True.
 
 Python: this module is 3.10+ by dependency (pyvisa-py 0.8.1 requires it);
 the rest of the package stays 3.9.
@@ -415,14 +414,15 @@ class NiUsbGpibDispatch(Session):
 
 
 def install() -> None:
-    """Put the dispatcher in front of pyvisa-py's ``(gpib, INSTR)`` class. Idempotent."""
+    """Put our dispatchers in front of pyvisa-py's ``(gpib, INSTR)`` and ``(gpib, INTFC)``. Idempotent."""
     import pyvisa_py  # noqa: F401 - registers pyvisa-py's own session classes first
+    from . import visa_intfc
     current = Session._session_classes.get(GPIB_INSTR)
-    if current is NiUsbGpibDispatch:
-        return
-    NiUsbGpibDispatch.previous = current
-    # Assigned directly: Session.register() logs a warning about overwriting
-    # the existing class, and overwriting it is exactly what this does.
-    Session._session_classes[GPIB_INSTR] = NiUsbGpibDispatch
-    logger.debug('NI GPIB-USB session installed in front of %s',
-                 current.__name__ if current is not None else 'nothing')
+    if current is not NiUsbGpibDispatch:
+        NiUsbGpibDispatch.previous = current
+        # Assigned directly: Session.register() logs a warning about overwriting
+        # the existing class, and overwriting it is exactly what this does.
+        Session._session_classes[GPIB_INSTR] = NiUsbGpibDispatch
+        logger.debug('NI GPIB-USB session installed in front of %s',
+                     current.__name__ if current is not None else 'nothing')
+    visa_intfc.install()
