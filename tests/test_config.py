@@ -123,6 +123,75 @@ class TestUserSettings:
         settings = config_manager.get_user_settings("test_user")
         assert settings.get('measurement', {}).get('sampling_rate') == 50.0
 
+    def test_update_replaces_the_section_it_is_given(self, config_manager):
+        """The PySide6 dialog sends whole sections and relies on this."""
+        config_manager.add_user("test_user")
+        config_manager.update_user_settings(
+            "test_user", {'measurement': {'sampling_rate': 50.0, 'nplc': 2.0}})
+
+        config_manager.update_user_settings("test_user", {'measurement': {'nplc': 5.0}})
+
+        stored = config_manager.config['user_settings']['test_user']['measurement']
+        assert stored == {'nplc': 5.0}
+
+
+class TestMergeUserSettings:
+    """Per-key edits: what a client that sends only its changes needs."""
+
+    @pytest.fixture
+    def manager(self, config_manager):
+        config_manager.add_user("test_user")
+        config_manager.update_user_settings("test_user", {
+            'measurement': {'sampling_rate': 50.0, 'fpp_current': 5e-5},
+            'file': {'auto_save_interval': 120}})
+        return config_manager
+
+    def test_other_keys_of_the_section_survive(self, manager, temp_config_file):
+        merged = manager.merge_user_settings("test_user", {'measurement': {'nplc': 2.0}})
+
+        assert merged['measurement']['nplc'] == 2.0
+        assert merged['measurement']['fpp_current'] == 5e-5
+        stored = ConfigManager(config_file=temp_config_file).config['user_settings']['test_user']
+        assert stored['measurement'] == {'sampling_rate': 50.0, 'fpp_current': 5e-5, 'nplc': 2.0}
+        assert stored['file'] == {'auto_save_interval': 120}
+
+    def test_machine_local_keys_go_to_the_machine_and_nothing_else_moves(self, manager):
+        before = json.loads(json.dumps(manager.config['user_settings']))
+
+        manager.merge_user_settings(
+            "test_user", {'measurement': {'gpib_address': 'GPIB0::7::INSTR'}})
+
+        assert manager.config['user_settings'] == before
+        assert manager.get_gpib_address() == 'GPIB0::7::INSTR'
+
+    def test_a_refused_change_stores_nothing(self, manager):
+        before = json.loads(json.dumps(manager.config))
+        seen = {}
+
+        def check(current, merged):
+            seen['current'] = current['measurement']['nplc']
+            seen['merged'] = merged['measurement']['nplc']
+            seen['address'] = merged['measurement']['gpib_address']
+            raise ValueError("no")
+
+        with pytest.raises(ValueError):
+            manager.merge_user_settings("test_user", {'measurement': {
+                'nplc': 2.0, 'gpib_address': 'GPIB0::7::INSTR'}}, check=check)
+
+        assert seen == {'current': DEFAULT_SETTINGS['measurement']['nplc'], 'merged': 2.0,
+                        'address': 'GPIB0::7::INSTR'}
+        assert json.loads(json.dumps(manager.config)) == before
+
+    def test_first_edit_keeps_the_shared_values_the_user_ran_on(self, config_manager):
+        config_manager.update_global_settings({'measurement': {'sampling_rate': 3.0}})
+        config_manager.add_user("new_user")
+
+        merged = config_manager.merge_user_settings("new_user", {'measurement': {'nplc': 2.0}})
+
+        assert merged['measurement']['sampling_rate'] == 3.0
+        stored = config_manager.config['user_settings']['new_user']['measurement']
+        assert 'gpib_address' not in stored
+
 
 class TestConfigPersistence:
     """Tests for config file persistence."""

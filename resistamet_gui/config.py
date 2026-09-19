@@ -5,7 +5,7 @@ import os
 import socket
 import tempfile
 import threading
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from .constants import CONFIG_FILE, DEFAULT_SETTINGS, OUTPUT_RESET_MIGRATION
 
@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 # config['machines'][hostname] so a NAS-shared config.json works across lab
 # PCs with different instrument wiring.
 _MACHINE_LOCAL_MEASUREMENT_KEYS = ('gpib_address', 'visa_library', 'gpib_interface')
+
+# The sections a user profile can override.
+_USER_SECTIONS = ('measurement', 'display', 'file', 'output')
 
 
 def _current_hostname() -> str:
@@ -76,7 +79,7 @@ class ConfigManager:
         Keys whose default is empty (a "use the default" sentinel) accept it.
         """
         with self._lock:
-            if not value and DEFAULT_SETTINGS['measurement'].get(key, ''):
+            if not self._machine_local_is_settable(key, value):
                 return
             entry = self._machine_entry(create=True)
             entry[key] = value
@@ -87,6 +90,11 @@ class ConfigManager:
                 if isinstance(measurement, dict):
                     measurement.pop(key, None)
             self.save_config()
+
+    @staticmethod
+    def _machine_local_is_settable(key: str, value) -> bool:
+        """False for an empty value of a key that cannot be empty."""
+        return bool(value) or not DEFAULT_SETTINGS['measurement'].get(key, '')
 
     def get_gpib_address(self) -> str:
         """The instrument address for this machine."""
@@ -261,6 +269,61 @@ class ConfigManager:
                             stored.pop(key, None)
                     self.config['user_settings'][username][section] = stored
             self.save_config()
+
+    def merge_user_settings(self, username: str, settings: Dict,
+                            check: Optional[Callable[[Dict, Dict], None]] = None) -> Dict:
+        """Change the keys given and leave every other stored key alone.
+
+        ``update_user_settings`` replaces a section with what it is handed,
+        which is right for a caller that sends whole sections (the PySide6
+        Settings dialog) and wrong for one that sends only the keys it edited:
+        the rest of the section would fall back to the defaults.
+
+        ``check(current, merged)`` sees the user's effective settings before
+        and after the change, inside the lock and before anything is stored.
+        Whatever it raises propagates and the change is dropped. Returns the
+        effective settings after the change.
+        """
+        with self._lock:
+            current = self.get_user_settings(username)
+            changes = {}
+            machine_local = {}
+            for section, incoming in settings.items():
+                if section not in _USER_SECTIONS or not isinstance(incoming, dict):
+                    continue
+                incoming = dict(incoming)
+                if section == 'measurement':
+                    for key in _MACHINE_LOCAL_MEASUREMENT_KEYS:
+                        if key in incoming:
+                            machine_local[key] = incoming.pop(key)
+                if incoming:
+                    changes[section] = incoming
+
+            if check is not None:
+                merged = copy.deepcopy(current)
+                for section, incoming in changes.items():
+                    merged[section].update(incoming)
+                for key, value in machine_local.items():
+                    if self._machine_local_is_settable(key, value):
+                        merged['measurement'][key] = value
+                check(current, merged)
+
+            self._store_machine_local_from(machine_local)
+            if changes:
+                stored = self.config.setdefault('user_settings', {})
+                if username not in stored:
+                    # Until now this user ran on the shared sections; keep
+                    # those values rather than let the first edit swap every
+                    # other key for a default.
+                    stored[username] = {
+                        section: {key: value for key, value in self.config[section].items()
+                                  if key not in _MACHINE_LOCAL_MEASUREMENT_KEYS}
+                        for section in _USER_SECTIONS
+                        if isinstance(self.config.get(section), dict)}
+                for section, incoming in changes.items():
+                    stored[username].setdefault(section, {}).update(incoming)
+                self.save_config()
+            return self.get_user_settings(username)
 
     def update_global_settings(self, settings: Dict) -> None:
         with self._lock:
