@@ -168,6 +168,51 @@ class GeometryWarningPayload(EventModel):
     relative_error: Optional[float] = None
 
 
+class QuantityStats(EventModel):
+    """One derived quantity over a spot's samples (``session.spot_stats``).
+
+    ``n`` counts the finite values. Every other field is null on the wire when
+    it does not exist: all of them with no finite value, ``sd`` and
+    ``rsd_pct`` with fewer than two.
+    """
+
+    n: int
+    mean: Optional[float] = None
+    sd: Optional[float] = None
+    rsd_pct: Optional[float] = None
+    u_stat: Optional[float] = None
+    u_inst: Optional[float] = None
+    u_total: Optional[float] = None
+
+
+class SpotStats(EventModel):
+    """The statistics block of a four-point run, as its file footer has it.
+
+    ``n`` samples entered the statistics; ``n_excluded`` were in compliance
+    and left out, because they record a bound rather than a measurement.
+    """
+
+    n: int
+    n_excluded: int = 0
+    rs: QuantityStats
+    rho: QuantityStats
+    sigma: QuantityStats
+
+
+class SpotCompletePayload(EventModel):
+    """A four-point run's file is closed; these are the numbers in its footer.
+
+    Emitted for every four-point run whose file was finalized, so a client
+    shows the backend's statistics instead of computing its own. ``spot`` is
+    null for a run that was not given one. How the run ended is in the
+    ``run_ended`` event that follows.
+    """
+
+    spot: Optional[SpotRequest] = None
+    path: Optional[str] = None
+    stats: SpotStats
+
+
 class AcquisitionFinishedPayload(EventModel):
     """The acquisition loop ended; cleanup and finalize still follow."""
 
@@ -301,6 +346,7 @@ PAYLOAD_MODELS = {
     'overpower_trip': OverpowerPayload,
     'sweep_segment': SweepSegmentPayload,
     'geometry_warning': GeometryWarningPayload,
+    'spot_complete': SpotCompletePayload,
     'acquisition_finished': AcquisitionFinishedPayload,
     'vdp_geometry_complete': VdpGeometryCompletePayload,
     'vdp_result': VdpResultPayload,
