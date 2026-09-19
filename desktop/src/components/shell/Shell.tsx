@@ -44,7 +44,7 @@ function TopBar({ onOpenSettings, onOpenUser }: Omit<ShellProps, "children">) {
   const backendLabel = !session.backendReachable
     ? "Backend unreachable"
     : session.connected
-      ? "Live"
+      ? "Connected"
       : "Reconnecting";
 
   return (
