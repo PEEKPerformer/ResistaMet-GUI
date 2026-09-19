@@ -11,7 +11,7 @@ import { FIELD_META } from "../../generated/settings";
 import type { FieldSpec } from "../../lib/fields";
 import type { InstrumentInfo, Profile, VisaBackend } from "../../lib/api";
 import { ApiError } from "../../lib/api";
-import { useSession } from "../../state/session";
+import { setIdentifiedInstrument, useSession } from "../../state/session";
 import { setTheme, useUi } from "../../state/ui";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { FieldRow } from "../forms/SettingsForm";
@@ -334,7 +334,9 @@ function InstrumentSection({ running }: { running: boolean }) {
             disabled={busy || running || address.trim() === ""}
             onClick={() =>
               void run(async () => {
-                setInfo(await api.identify(address.trim(), library));
+                const identified = await api.identify(address.trim(), library);
+                setInfo(identified);
+                setIdentifiedInstrument(identified);
                 await save();
               })
             }
