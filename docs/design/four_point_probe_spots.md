@@ -1,7 +1,10 @@
 # Four-point probe: spots, sample geometry, and maps
 
-**Status:** design, 2026-09-19. Layer 1 (geometry math) and the file-level
-half of layer 2 are being built now; the rest waits on the questions in §7.
+**Status:** design, 2026-09-19. Steps 1–4 of §5 have landed: the geometry
+math, the schema, the spot in the file and the events, and the map with its
+API. Step 5 (PySide6) is next and needs no answers; steps 6–7 wait on the
+questions in §7. The position-aware correction is reported, never applied:
+the schema accepts only `warn` until question 1 is answered.
 **Depends on:** `tauri_backend_split.md` (run layer, events, contract)
 
 ## 1. What is wrong today
@@ -224,14 +227,23 @@ identical numbers (a test pins this).
 ## 5. Order of work
 
 1. `calculations_geometry.py` with tests against the F84 and Smits tables.
-   *(unambiguous; in progress)*
+   *(landed)*
 2. `SampleGeometry` and `SpotRequest` in `schema/`; legacy keys mapped;
-   contract export.
+   contract export. *(landed: `schema/spots.py`; the `fpp_sample_*` keys feed
+   the position check only — the per-sample correction still reads
+   `fpp_geometry` / `fpp_diameter_cm` and the tables, and the resolver warns
+   when the two describe different samples)*
 3. Spot block in the file header, spot statistics in the footer and the
    `spot_complete` event; the statistics move from the two UIs into
-   `session/`.
-4. `session/spot_map.py`, `GET /maps/{id}`, the map summary file.
-5. PySide6 *Save Spot* passes `map_id` and label through.
+   `session/`. *(landed: `session/spot_record.py`, `session/spot_stats.py`;
+   `geometry_warning` refuses an off-sample spot before the instrument is
+   opened. The UIs still compute their own numbers until steps 5–6 switch
+   them to the event.)*
+4. `session/spot_map.py`, `GET /maps/{id}`, the map summary file. *(landed,
+   with `GET /maps` and `contracts/maps.schema.json`)*
+5. PySide6 *Save Spot* passes `map_id` and label through. The run procedure
+   reads the spot from `settings['spot']`, so this is one dict in
+   `gather_settings_for_mode`'s caller and no change to the worker.
 6. Tauri: spots panel reads the map; settings form shows the geometry and
    the factor.
 7. Tauri: the map canvas, registration, figure export.
