@@ -431,3 +431,44 @@ class TestSpotBlock:
             assert f.attrs['spot.sample.diameter_mm'] == 50.8
             assert f.attrs['spot.sample.width_mm'] == ""
             assert f.attrs['spot.edge_clearance_s'] == 5.06
+
+
+# ------------------------------- File names ---------------------------------
+
+
+class TestDottedBaseName:
+    """A base name ends in the source value, which has a decimal point.
+
+    ``Path.with_suffix`` read ``.10mA`` as a suffix and replaced it, so
+    ``..._4PP_0.10mA`` was written as ``..._4PP_0.csv``.
+    """
+
+    DOTTED = '1789000000_wafer_4PP_0.10mA'
+
+    def test_csv_keeps_the_whole_name(self, tmp_path, basic_meta):
+        exp = CsvExporter(tmp_path / self.DOTTED, basic_meta, ['elapsed_s', 'R_ohm'])
+        exp.finalize()
+        assert exp.output_paths[0].name == self.DOTTED + '.csv'
+
+    def test_gzipped_csv_keeps_the_whole_name(self, tmp_path, basic_meta):
+        exp = CsvExporter(tmp_path / self.DOTTED, basic_meta, ['elapsed_s', 'R_ohm'],
+                          compression='always')
+        exp.write_row([0.0, 1.05])
+        exp.finalize()
+        assert exp.output_paths[0].name == self.DOTTED + '.csv.gz'
+        assert [p.name for p in tmp_path.iterdir()] == [self.DOTTED + '.csv.gz']
+
+    def test_hdf5_keeps_the_whole_name(self, tmp_path, basic_meta):
+        pytest.importorskip("h5py")
+        exp = Hdf5Exporter(tmp_path / self.DOTTED, basic_meta, ['elapsed_s', 'R_ohm'])
+        exp.finalize()
+        assert exp.output_paths[0].name == self.DOTTED + '.h5'
+
+    def test_legacy_pair_keeps_the_whole_name(self, tmp_path, basic_meta):
+        exp = LegacyDualExporter(tmp_path / self.DOTTED, basic_meta, ['elapsed_s', 'R_ohm'])
+        exp.write_row([0.0, 1.05])
+        exp.flush()
+        assert (tmp_path / (self.DOTTED + '.json.tmp')).exists()
+        exp.finalize()
+        assert sorted(p.name for p in tmp_path.iterdir()) == [
+            self.DOTTED + '.csv', self.DOTTED + '.json']
