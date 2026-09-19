@@ -1622,7 +1622,8 @@ class TestDeviceOps:
     def test_trigger_and_go_to_local_carry_the_given_timeout(self):
         controller, transport = attached([
             ('out', p.command_message(bytes((0x3F, 0x38, 0x08)), 0xFA)), ('in', status_reply(0x0C)),
-            ('out', p.command_message(bytes((0x3F, 0x38, 0x01)), 0xFA)), ('in', status_reply(0x0C)),
+            # ren_device.pcap 1.7255: NI's go to local leads with the talk address.
+            ('out', p.command_message(bytes((0x40, 0x3F, 0x38, 0x01)), 0xFA)), ('in', status_reply(0x0C)),
             ('out', p.command_message(bytes((0x11,)), 0xFA)), ('in', status_reply(0x0C)),
             ('out', p.command_message(bytes((0x3F, 0x38, 0x11)), 0xFA)), ('in', status_reply(0x0C)),
         ])

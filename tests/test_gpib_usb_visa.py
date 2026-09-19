@@ -733,11 +733,42 @@ class TestInstrumentSession:
         inst.control_ren(constants.RENLineOperation.deassert)
         assert adapter.messages[-1] == p.register_write_message([t.REN_OFF_WRITE])
         inst.control_ren(constants.RENLineOperation.address_gtl)
-        assert adapter.instructions(p.OP_COMMAND)[-1][4:7] == bytes((0x3F, 0x38, 0x01))
+        assert adapter.instructions(p.OP_COMMAND)[-1][4:8] == bytes((0x40, 0x3F, 0x38, 0x01))
         assert adapter.instructions(p.OP_COMMAND)[-1][3] == 0xFA
         inst.visalib.gpib_command(inst.session, b'\x14')
         assert adapter.instructions(p.OP_COMMAND)[-1][4:5] == b'\x14'
         assert adapter.instructions(p.OP_COMMAND)[-1][3] == 0xFA
+        inst.close()
+
+    REN_ON = p.register_write_message([t.REN_ON_WRITE])     # 09 01 00 01 0a 1f ..
+    REN_OFF = p.register_write_message([t.REN_OFF_WRITE])   # 09 01 00 01 0a 17 ..
+    LLO = p.command_message(bytes((0x11,)), 0xFA)           # NI: 0c ff 00 fd 11 00 00 00
+    LISTEN_24 = p.command_message(bytes((0x3F, 0x40, 0x38)), 0xFA)
+    GTL_24 = p.command_message(bytes((0x40, 0x3F, 0x38, 0x01)), 0xFA)  # NI: 0c fc 00 fd 40 3f 38 01
+
+    @pytest.mark.parametrize('mode, expected', [
+        # ren_device.pcap, §10.7.4. NI's 0x0c timeout byte is always 0xfd; ours is the session's.
+        (constants.RENLineOperation.asrt, ['REN_ON']),
+        (constants.RENLineOperation.asrt_llo, ['REN_ON', 'LLO']),
+        # NI's "address" step is the 0x02 probe; ours is the listen addressing (see ren_operation).
+        (constants.RENLineOperation.asrt_address, ['REN_ON', 'LISTEN_24']),
+        (constants.RENLineOperation.asrt_address_llo, ['REN_ON', 'LISTEN_24', 'LLO']),
+        (constants.RENLineOperation.address_gtl, ['GTL_24']),
+        (constants.RENLineOperation.deassert_gtl, ['GTL_24', 'REN_OFF']),
+        (constants.RENLineOperation.deassert, ['REN_OFF']),
+    ])
+    def test_every_ren_mode_on_an_instrument_session(self, rm, adapter, mode, expected):
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 300
+        before = len(adapter.messages)
+        inst.control_ren(mode)
+        assert adapter.messages[before:] == [getattr(self, name) for name in expected]
+        inst.close()
+
+    def test_go_to_local_through_a_secondary_address(self, rm, adapter):
+        inst = rm.open_resource('GPIB0::24::1::INSTR')
+        inst.control_ren(constants.RENLineOperation.address_gtl)
+        assert adapter.instructions(p.OP_COMMAND)[-1][4:9] == bytes((0x40, 0x3F, 0x38, 0x61, 0x01))
         inst.close()
 
     def test_unknown_board_is_not_found(self, rm):

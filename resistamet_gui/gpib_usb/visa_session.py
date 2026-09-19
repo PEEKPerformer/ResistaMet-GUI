@@ -74,9 +74,20 @@ def ren_operation(controller: Controller, mode: constants.RENLineOperation,
                   timeout_s: Optional[float], device: Optional[DeviceAddress]) -> None:
     """One ``RENLineOperation`` on the bus; ``ValueError`` when it needs a device and has none.
 
-    REN itself is a register write (§5.6). The modes that address a device
-    or send it GTL/LLO are command bytes (§6) and need ``device``; an
-    interface session has no device to give.
+    The shape of each mode is what NI's driver sends on an instrument
+    session (§10.7.4): the REN register write (§5.6) even when REN is
+    already asserted, then the "address" step, then LLO as a lone
+    universal command byte; the go-to-local modes are command bytes to the
+    addressed device, and for ``deassert_gtl`` REN goes off after them. The
+    modes that involve the device need ``device``; an interface session
+    has none to give, and NI refuses those modes there too (§10.6.4).
+
+    One step differs. NI's "address" step is its presence-probe
+    instruction 0x02, whose effect on the bus §10.6.1 and §10.7.4 call not
+    established: that it addresses the device to listen is inferred, not
+    seen. This driver does not use 0x02 anywhere, so the step stays the
+    explicit listen addressing of §6, which is known to put a device with
+    REN true into remote state.
     """
     if mode == constants.RENLineOperation.asrt:
         controller.remote_enable(True)
@@ -88,14 +99,12 @@ def ren_operation(controller: Controller, mode: constants.RENLineOperation,
     elif device is None:
         raise ValueError(mode)
     elif mode == constants.RENLineOperation.asrt_address:
-        pad, sad = device
         controller.remote_enable(True)
-        controller.command(t.address_listener_command(controller.own_address, pad, sad),
-                           timeout_s)
+        _address_to_listen(controller, device, timeout_s)
     elif mode == constants.RENLineOperation.asrt_address_llo:
-        pad, sad = device
         controller.remote_enable(True)
-        ops.local_lockout(controller, pad, sad, timeout_s)
+        _address_to_listen(controller, device, timeout_s)
+        ops.local_lockout(controller, timeout_s=timeout_s)
     elif mode == constants.RENLineOperation.deassert_gtl:
         pad, sad = device
         ops.go_to_local(controller, pad, sad, timeout_s)
@@ -105,6 +114,12 @@ def ren_operation(controller: Controller, mode: constants.RENLineOperation,
         ops.go_to_local(controller, pad, sad, timeout_s)
     else:
         raise ValueError(mode)
+
+
+def _address_to_listen(controller: Controller, device: DeviceAddress, timeout_s: Optional[float]) -> None:
+    """The "address" step of the REN modes; see ``ren_operation`` for why it is not NI's 0x02."""
+    pad, sad = device
+    controller.command(t.address_listener_command(controller.own_address, pad, sad), timeout_s)
 
 
 def atn_operation(controller: Controller, mode: constants.ATNLineOperation) -> None:
