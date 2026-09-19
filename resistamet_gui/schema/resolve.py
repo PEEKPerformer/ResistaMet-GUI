@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from ..constants import MODE_TIMING_OVERRIDES
+from ..formatting import format_power
 from .settings_common import AuxSensorSettings, InstrumentSettings, SafetySettings
 from .settings_modes import MODE_MODELS
 
@@ -190,8 +191,8 @@ def _validate(m_cfg: Dict[str, Any], mode: str, *, strict: bool) -> List[Issue]:
         stop_w = float(m_cfg.get('fpp_power_stop_w', 0.0))
         if stop_w and worst_case > stop_w:
             issues.append(Issue('fpp_power_stop_w',
-                                 f"worst-case power {worst_case * 1e3:.1f} mW exceeds the "
-                                 f"probe-safety hard stop {stop_w * 1e3:.0f} mW"))
+                                 f"worst-case power {format_power(worst_case)} exceeds the "
+                                 f"probe-safety hard stop {format_power(stop_w)}"))
     if m_cfg.get('aux_log_enabled') and mode not in AUX_LOG_MODES:
         issues.append(Issue('aux_log_enabled',
                              f"auxiliary co-logging is not available for mode '{mode}'"))
