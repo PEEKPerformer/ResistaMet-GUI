@@ -4,6 +4,7 @@
 //! that to the webview, and makes sure it goes away when the window does.
 
 mod backend;
+mod logs;
 
 use std::path::PathBuf;
 
@@ -45,7 +46,18 @@ pub fn run() {
             };
             let simulate = std::env::var("RESISTAMET_SIMULATE").map(|v| v == "1").unwrap_or(false);
 
-            let backend = backend::spawn(SpawnOptions { launch, cwd, config, simulate })
+            // Development keeps the backend's log in the terminal. A packaged
+            // app has no terminal, so each launch writes its own file.
+            let stderr_log = if cfg!(debug_assertions) {
+                None
+            } else {
+                let dir = app.path().app_log_dir().map_err(|e| format!("no app log dir: {e}"))?;
+                let (path, file) = logs::open_backend_log(&dir)?;
+                eprintln!("resistamet: backend log at {}", path.display());
+                Some(file)
+            };
+
+            let backend = backend::spawn(SpawnOptions { launch, cwd, config, simulate, stderr_log })
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             app.manage(backend);
             Ok(())
