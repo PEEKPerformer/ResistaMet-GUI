@@ -126,6 +126,21 @@ class TestStart:
         assert response.status_code == 422
         assert 'vdp_thickness_cm' in response.json()['detail']
 
+    @pytest.mark.parametrize("mode, override", [
+        ('sweep', {'sweep_step': 'abc'}),
+        ('sweep', {'sweep_step': None}),  # was a TypeError, so a 500
+        ('resistance', {'nplc': 'fast'}),
+        ('four_point', {'fpp_current': None}),
+        ('vdp', {'vdp_thickness_cm': None}),
+    ])
+    def test_a_value_that_cannot_be_read_is_unprocessable_by_key(self, client, fake_rm, sink,
+                                                                 mode, override):
+        response = _start(client, mode=mode, overrides=override)
+        assert response.status_code == 422
+        assert next(iter(override)) in response.json()['detail']
+        assert client.get('/session').json()['state'] == 'idle'
+        assert fake_rm.opened == []
+
     def test_unknown_mode_is_unprocessable(self, client, fake_rm):
         assert _start(client, mode='hall').status_code == 422
 

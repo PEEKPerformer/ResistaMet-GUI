@@ -182,11 +182,16 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
     # 9. Validate against the models; strict adds the GUI's Start-time checks.
     issues.extend(_validate(m_cfg, mode, strict=strict))
 
+    # 10-11. Arithmetic only on values that validated. A key with an error
+    #     has already been reported by name; reading it again would raise
+    #     where the caller was promised issues -- and the GUI runs this on
+    #     every gather, where a raise is a Start button that does nothing.
+    failed = {issue.key for issue in issues if issue.severity == 'error'}
     return ResolvedRun(
         settings=settings,
         issues=issues,
-        derived=_derive(m_cfg, mode),
-        hazard=_hazard(settings, mode),
+        derived=_derive(m_cfg, mode, failed, issues),
+        hazard=_hazard(settings, mode, failed, issues),
     )
 
 
@@ -231,13 +236,16 @@ def _validate(m_cfg: Dict[str, Any], mode: str, *, strict: bool) -> List[Issue]:
     if not strict:
         return issues
 
-    # The checks the GUI makes when Start is pressed.
-    if mode == 'vdp' and not float(m_cfg.get('vdp_thickness_cm', 0.0)) > 0:
+    # The checks the GUI makes when Start is pressed. Each reads only values
+    # the models accepted: strict typing has made those real numbers, and a
+    # key that failed is already an issue.
+    failed = {issue.key for issue in issues}
+    if (mode == 'vdp' and 'vdp_thickness_cm' not in failed
+            and not float(m_cfg.get('vdp_thickness_cm', 0.0)) > 0):
         issues.append(Issue('vdp_thickness_cm',
                              'van der Pauw needs a sample thickness greater than 0 cm'))
-    if mode == 'four_point':
-        worst_case = abs(float(m_cfg.get('fpp_current', 0.0))) * abs(
-            float(m_cfg.get('fpp_voltage_compliance', 0.0)))
+    if mode == 'four_point' and not failed.intersection(_POWER_KEYS):
+        worst_case = _worst_case_power_w(m_cfg)
         stop_w = float(m_cfg.get('fpp_power_stop_w', 0.0))
         if stop_w and worst_case > stop_w:
             issues.append(Issue('fpp_power_stop_w',
@@ -285,32 +293,84 @@ def _describe(outline) -> str:
     return 'unbounded'
 
 
-def _derive(m_cfg: Dict[str, Any], mode: str) -> Dict[str, Any]:
-    """Values a client would otherwise recompute: rate ceiling, points, power."""
+#: What each derived value reads. One that names a key with an error is left
+#: out of ``derived`` rather than computed from a value nobody accepted.
+_TIMING_KEYS = ('nplc', 'auto_zero', 'filter_enabled', 'filter_type', 'filter_count',
+                'res_offset_comp')
+_SWEEP_POINT_KEYS = ('sweep_step', 'sweep_start', 'sweep_stop', 'sweep_direction')
+_POWER_KEYS = ('fpp_current', 'fpp_voltage_compliance', 'fpp_power_stop_w')
+_SWEEP_HAZARD_KEYS = ('sweep_source', 'sweep_start', 'sweep_stop')
+
+#: What arithmetic on a settings value can raise.
+_ARITHMETIC_ERRORS = (TypeError, ValueError, ArithmeticError)
+
+
+def _max_rate_hz(m_cfg: Dict[str, Any]) -> float:
     from ..timing import TimingSettings
 
-    derived: Dict[str, Any] = {
-        'max_rate_hz': TimingSettings.from_dict(m_cfg).max_rate_hz(),
-    }
+    return TimingSettings.from_dict(m_cfg).max_rate_hz()
+
+
+def _sweep_points(m_cfg: Dict[str, Any]) -> Optional[int]:
+    step = abs(float(m_cfg.get('sweep_step', 0.0)))
+    if not step > 0:
+        return None
+    span = abs(float(m_cfg.get('sweep_stop', 0.0)) - float(m_cfg.get('sweep_start', 0.0)))
+    points = round(span / step) + 1
+    return points * 2 if m_cfg.get('sweep_direction') == 'up_down' else points
+
+
+def _worst_case_power_w(m_cfg: Dict[str, Any]) -> float:
+    return abs(float(m_cfg.get('fpp_current', 0.0))) * abs(
+        float(m_cfg.get('fpp_voltage_compliance', 0.0)))
+
+
+def _derive(m_cfg: Dict[str, Any], mode: str, failed: set,
+            issues: List[Issue]) -> Dict[str, Any]:
+    """Values a client would otherwise recompute: rate ceiling, points, power.
+
+    Never raises. The model issues already cover every key read here, so the
+    ``except`` is for a value that validates and still cannot be computed
+    with; it is reported under the first key the computation reads.
+    """
+    wanted = [('max_rate_hz', _TIMING_KEYS, _max_rate_hz)]
     if mode == 'sweep':
-        step = abs(float(m_cfg.get('sweep_step', 0.0)))
-        if step > 0:
-            span = abs(float(m_cfg.get('sweep_stop', 0.0)) - float(m_cfg.get('sweep_start', 0.0)))
-            points = round(span / step) + 1
-            if m_cfg.get('sweep_direction') == 'up_down':
-                points *= 2
-            derived['sweep_points'] = points
+        wanted.append(('sweep_points', _SWEEP_POINT_KEYS, _sweep_points))
     if mode == 'four_point':
-        derived['worst_case_power_w'] = abs(float(m_cfg.get('fpp_current', 0.0))) * abs(
-            float(m_cfg.get('fpp_voltage_compliance', 0.0)))
+        wanted.append(('worst_case_power_w', _POWER_KEYS[:2], _worst_case_power_w))
+
+    derived: Dict[str, Any] = {}
+    for name, keys, compute in wanted:
+        if failed.intersection(keys):
+            continue
+        try:
+            value = compute(m_cfg)
+        except _ARITHMETIC_ERRORS as exc:
+            issues.append(Issue(keys[0], f"{name} cannot be computed: {exc}"))
+            continue
+        if value is not None:
+            derived[name] = value
     return derived
 
 
-def _hazard(settings: Dict[str, Any], mode: str):
-    """Touch-safety check on the *resolved* values, not the stored profile."""
-    from ..safety import is_potentially_hazardous
+def _hazard(settings: Dict[str, Any], mode: str, failed: set, issues: List[Issue]):
+    """Touch-safety check on the *resolved* values, not the stored profile.
 
-    return is_potentially_hazardous(settings, mode)
+    (A strict request cannot move the threshold or the silenced flag; see
+    ``SAFETY_KEYS``.) ``None`` when the voltage it would judge has an error:
+    in strict mode that run is refused anyway, and no answer is better than
+    one computed from a value that is not a voltage. Never raises.
+    """
+    from ..safety import _MODE_VOLTAGE_KEYS, is_potentially_hazardous
+
+    keys = (_MODE_VOLTAGE_KEYS[mode][0],) + (_SWEEP_HAZARD_KEYS if mode == 'sweep' else ())
+    if failed.intersection(keys):
+        return None
+    try:
+        return is_potentially_hazardous(settings, mode)
+    except _ARITHMETIC_ERRORS as exc:
+        issues.append(Issue(keys[0], f"the touch-safety check cannot read it: {exc}"))
+        return None
 
 
 def _is_nan(value: Any) -> bool:
