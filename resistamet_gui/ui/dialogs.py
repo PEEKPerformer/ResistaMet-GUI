@@ -370,7 +370,9 @@ class SettingsDialog(QDialog):
 
     def load_settings(self):
         m_cfg = self.settings['measurement']
-        self.gpib_address.setText(m_cfg['gpib_address'])
+        # Machine-local: the measurement block never holds this machine's
+        # address. For Global Settings it holds the default, or nothing.
+        self.gpib_address.setText(self.config_manager.get_gpib_address())
         library = self.config_manager.get_visa_library()
         lib_keys = [k for k, _ in self._visa_library_choices]
         if library not in lib_keys:
