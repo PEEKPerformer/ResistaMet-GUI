@@ -297,6 +297,19 @@ def prologix():
     adapter.close()
 
 
+def _connections(adapter, expected, timeout=2.0):
+    """``adapter.connections`` once it reaches ``expected``, or after ``timeout``.
+
+    The stand-in counts a connection on its accept thread, which can run
+    after the client's connect() has already returned.
+    """
+    import time
+    deadline = time.monotonic() + timeout
+    while adapter.connections < expected and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return adapter.connections
+
+
 #: The stand-in's board. An NI GPIB-USB adapter plugged into the machine
 #: running the tests is GPIB0 (GPIB1 for a second one); nothing here may
 #: name a board a real adapter could own.
@@ -362,7 +375,7 @@ class TestGpibInterfaceOnPyvisaPy:
         rm = visa_backend.resource_manager(visa_backend.PY, prologix.resource(BOARD))
         try:
             assert visa_backend.resource_manager(visa_backend.PY, prologix.resource(BOARD)) is rm
-            assert prologix.connections == 1
+            assert _connections(prologix, 1) == 1
         finally:
             rm.close()
 
@@ -388,7 +401,7 @@ class TestGpibInterfaceOnPyvisaPy:
 
         rm = visa_backend.resource_manager(visa_backend.PY, prologix.resource(BOARD))
         try:
-            assert prologix.connections == 2
+            assert _connections(prologix, 2) == 2
         finally:
             rm.close()
 
