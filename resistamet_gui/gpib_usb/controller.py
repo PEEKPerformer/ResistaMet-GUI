@@ -38,10 +38,13 @@ specification derived (see ``protocol``). The count field of a status reply
 is only meaningful after 0x0a/0x0c/0x0d; other replies carry stale or marker
 bytes there, which is why nothing here reads it elsewhere.
 
-Size: this module runs a little over the 400-line guideline even with the
-device-level sequences moved out. What remains is the attach sequence, the
-three transfer primitives and the exchange/fault machinery they share; the
-fault rule is only correct if it wraps every exchange, so it stays with them.
+Size: this module is well past the 400-line guideline. It holds the attach
+sequence, the framed and raw transfer paths, the serial poll, the SRQ wait
+and the exchange/fault machinery they all share; the fault rule is only
+correct if it wraps every exchange, which is why the transfers have not
+been moved out yet. Once the raw paths have run on hardware, the data
+transfers (``write*``, ``read*`` and their ``_raw_*`` helpers) are the
+natural piece to lift into a module of their own.
 """
 import logging
 import threading
