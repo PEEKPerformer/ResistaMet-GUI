@@ -27,14 +27,15 @@
   gap: var(--sp-3) var(--sp-4);
 }
 
-/* Heading, state and run meta stay on one line. When the line is short the
-   heading gives way with an ellipsis; the state badge and the elapsed time
-   and sample count never do. */
+/* Heading, state and run meta stay on one line. If that line does not fit
+   beside the run buttons, the buttons drop to their own line; if it does not
+   fit a line of its own either, the heading gives way with an ellipsis. The
+   state badge and the elapsed time and sample count never shrink. */
 .title {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  flex: 1 1 260px;
+  flex: 1 1 auto;
   min-width: 0;
   white-space: nowrap;
 }
@@ -69,6 +70,12 @@
   gap: var(--sp-2);
   flex: none;
   margin-left: auto;
+}
+
+/* Three large buttons share the line with the heading while measuring; a
+   little less padding keeps them on it at the default window width. */
+.buttons > button[data-size="lg"] {
+  padding: 0 var(--sp-4);
 }
 
 /* --- readout ------------------------------------------------------------ */
