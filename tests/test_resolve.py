@@ -207,3 +207,47 @@ class TestSampleOutline:
     def test_other_modes_are_not_checked(self, profile):
         profile['measurement']['fpp_sample_shape'] = 'circle'
         assert resolve_run_settings(profile, 'resistance', {}, strict=True).issues == []
+
+
+class TestSweepCompliance:
+    """The compliance is a current on a voltage-sourced sweep and a voltage
+    on a current-sourced one, and is bounded in the unit it is in."""
+
+    I_SWEEP = {'sweep_source': 'current', 'sweep_start': 0.0, 'sweep_stop': 1e-3,
+               'sweep_step': 1e-4}
+    V_SWEEP = {'sweep_source': 'voltage', 'sweep_start': 0.0, 'sweep_stop': 1.0,
+               'sweep_step': 0.1}
+
+    @pytest.mark.parametrize("volts", [2.0, 21.0, 60.0, 210.0])
+    def test_a_current_sourced_sweep_takes_a_voltage_compliance(self, profile, volts):
+        resolved = resolve_run_settings(profile, 'sweep',
+                                         {**self.I_SWEEP, 'sweep_compliance': volts}, strict=True)
+        assert resolved.issues == []
+
+    def test_but_not_above_210_v(self, profile):
+        resolved = resolve_run_settings(profile, 'sweep',
+                                         {**self.I_SWEEP, 'sweep_compliance': 211.0}, strict=True)
+        assert _keys(resolved) == ['sweep_compliance']
+
+    def test_a_voltage_sourced_sweep_takes_up_to_3_15_a(self, profile):
+        resolved = resolve_run_settings(profile, 'sweep',
+                                         {**self.V_SWEEP, 'sweep_compliance': 3.15}, strict=True)
+        assert resolved.issues == []
+
+    @pytest.mark.parametrize("amps", [3.2, 60.0, 210.0])
+    def test_and_no_more(self, profile, amps):
+        """60 is a fine voltage limit and an absurd current limit; the bound
+        raised for one unit must not leak into the other."""
+        resolved = resolve_run_settings(profile, 'sweep',
+                                         {**self.V_SWEEP, 'sweep_compliance': amps}, strict=True)
+        assert _keys(resolved) == ['sweep_compliance']
+        assert '3.15 A' in resolved.issues[0].message
+
+    def test_60_v_of_compliance_is_reported_as_a_hazard(self, profile):
+        resolved = resolve_run_settings(profile, 'sweep',
+                                         {**self.I_SWEEP, 'sweep_compliance': 60.0}, strict=True)
+        source = resolve_run_settings(profile, 'source_v', {'vsource_voltage': 60.0}, strict=True)
+        assert resolved.hazard.hazardous and source.hazard.hazardous
+        assert resolved.hazard.voltage_v == source.hazard.voltage_v == 60.0
+        assert resolved.hazard.threshold_v == source.hazard.threshold_v
+        assert resolved.hazard.reason == 'V compliance'

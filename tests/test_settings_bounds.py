@@ -85,7 +85,13 @@ LOOSER_THAN_WIDGET = {
 }
 
 # field -> why the model's upper bound is deliberately above the widget's
-UPPER_LOOSER_THAN_WIDGET = {}
+UPPER_LOOSER_THAN_WIDGET = {
+    # The PySide6 spin box stops at 3 in either unit. The model bounds the
+    # compliance per source: 3.15 A on a voltage-sourced sweep, 210 V on a
+    # current-sourced one (SweepSettings._compliance_fits_its_unit), and its
+    # ``le`` is the larger of the two.
+    'sweep_compliance': 'widget stops at 3 in either unit; the model bound follows the source',
+}
 
 
 def _bounds(model, field):

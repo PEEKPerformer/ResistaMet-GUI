@@ -752,7 +752,7 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
     "sweep_compliance": {
       "type": "number",
       "min": 1e-7,
-      "max": 3,
+      "max": 210,
       "default": 0.1
     },
     "sweep_delay": {
