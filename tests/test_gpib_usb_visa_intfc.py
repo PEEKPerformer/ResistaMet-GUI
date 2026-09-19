@@ -63,7 +63,6 @@ class IntfcSentinel(Session):
 @pytest.fixture
 def board(monkeypatch, session_registry, enumeration):
     """One fake HS at GPIB0 with an instrument at 24; sentinels in both GPIB slots; installed."""
-    saved_previous = NiUsbGpibIntfcDispatch.previous
     IntfcSentinel.calls = []
     sim = SimulatedAdapter({24: FakeInstrument('KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30')})
     monkeypatch.setattr(gpib_usb, 'available', lambda: True)
@@ -73,8 +72,7 @@ def board(monkeypatch, session_registry, enumeration):
     session_registry[GPIB_INSTR] = Sentinel
     session_registry[GPIB_INTFC] = IntfcSentinel
     gpib_usb.install()
-    yield sim
-    NiUsbGpibIntfcDispatch.previous = saved_previous
+    return sim
 
 
 @pytest.fixture
