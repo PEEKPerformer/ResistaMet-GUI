@@ -855,6 +855,7 @@ class TestSpotInTheFileHeader:
             self, session, sink, fake_rm, profile):
         spot = {'map_id': 'wafer7', 'index': 2, 'label': 'rim', 'x_mm': 20.0, 'y_mm': 0.0,
                 'angle_deg': 90.0}
+        profile['measurement']['fpp_thickness_um'] = 100.0
         session.start(_on_a_wafer(profile), 'four_point', 'wafer1', 'alice', spot=spot)
         assert _wait_for(lambda: session.state == 'idle')
 
@@ -873,6 +874,12 @@ class TestSpotInTheFileHeader:
         assert header['spot.factor_centre'] == warning['factor_centre']
         assert header['spot.relative_error'] == warning['relative_error']
         assert header['spot.edge_clearance_s'] == warning['edge_clearance_s']
+        # The wafer is described by the legacy keys, so the rows use F84
+        # Table 3 for it; with a thickness entered they have an Rs to compare.
+        assert header['spot.factor_rows'] == warning['factor_rows'] == pytest.approx(4.517)
+        assert header['spot.relative_error_rows'] == warning['relative_error_rows']
+        assert header['spot.relative_error_rows'] == pytest.approx(
+            4.517 / header['spot.factor_here'] - 1.0)
 
     def test_a_label_only_spot_has_no_position_effect(self, session, sink, fake_rm, profile):
         session.start(_four_point(profile), 'four_point', 'wafer1', 'alice',
@@ -1165,3 +1172,37 @@ class TestAHandEditedPositionCorrection:
                     if e.payload['code'] == 'position_correction_ignored']
         assert len(warnings) == 1 and warnings[0]['level'] == 'warning'
         assert "'apply'" in warnings[0]['message']
+
+
+class TestTheWarningIsAboutTheFactorTheRowsUse:
+    SQUARE = {'fpp_spacing_cm': 0.1, 'fpp_sample_shape': 'rectangle',
+              'fpp_sample_width_mm': 20.0, 'fpp_sample_length_mm': 20.0}
+
+    def test_rows_that_assume_a_larger_sample_warn_even_at_the_centre(
+            self, session, sink, fake_rm, profile):
+        """Outline: a 20 s square. Rows: K = 4.532, an unbounded sheet. The
+        centre of the outline costs nothing against its own centred factor
+        and 1.8 % against what the file's Rs was computed with."""
+        spot = {'map_id': 'chip3', 'index': 0, 'label': 'centre', 'x_mm': 0.0, 'y_mm': 0.0}
+        session.start(_four_point(profile), 'four_point', 'chip3', 'alice', spot=spot,
+                      overrides=self.SQUARE)
+        assert _wait_for(lambda: session.state == 'idle')
+
+        warning = sink.of_type('geometry_warning')[0].payload
+        assert warning['compared_with'] == 'rows'
+        assert warning['relative_error'] == pytest.approx(0.0, abs=1e-12)
+        assert warning['relative_error_rows'] == pytest.approx(0.0185, abs=5e-4)
+        assert 'the geometry factor this run applies (4.532)' in warning['message']
+        assert '1.8 %' in warning['message']
+        assert sink.of_type('run_ended')[0].payload['ok'] is True
+
+    def test_without_a_rows_factor_the_message_says_centre(self, session, sink, fake_rm, profile):
+        # The F84 path with no thickness has no Rs, so nothing to compare.
+        spot = {'map_id': 'wafer7', 'index': 2, 'label': 'rim', 'x_mm': 20.0, 'y_mm': 0.0,
+                'angle_deg': 90.0}
+        session.start(_on_a_wafer(profile), 'four_point', 'wafer1', 'alice', spot=spot)
+        assert _wait_for(lambda: session.state == 'idle')
+        warning = sink.of_type('geometry_warning')[0].payload
+        assert warning['compared_with'] == 'centre'
+        assert warning['factor_rows'] is None and warning['relative_error_rows'] is None
+        assert 'the factor at the centre of the sample' in warning['message']

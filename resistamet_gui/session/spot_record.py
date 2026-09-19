@@ -9,9 +9,25 @@ The position effect is *reported, never applied*. The per-sample Rs, rho and
 sigma come from the F84 / Smits table look-up exactly as before
 (``session/samples.py``); ASTM F84 measures at the centre, and whether a
 position-aware correction may be offered at all is an open question of
-``docs/design/four_point_probe_spots.md``. Note that ``factor_centre`` is the
-closed-form value, which agrees with the tables to their printed digits except
-for the three entries that document lists.
+``docs/design/four_point_probe_spots.md``.
+
+Three factors are recorded, because two comparisons are possible and only one
+of them is about the numbers in the file:
+
+* ``factor_here``   -- closed form, at the spot, for the ``fpp_sample_*``
+  outline (or the legacy keys mapped onto one).
+* ``factor_centre`` -- closed form, at the centre of that same outline.
+  ``relative_error = factor_centre / factor_here - 1`` is what the position
+  costs *if the rows used the centred factor of this outline*.
+* ``factor_rows``   -- the lateral factor the rows really applied, which comes
+  from ``fpp_geometry`` / ``fpp_diameter_cm`` and the tables, or from K*alpha
+  when no diameter was entered. ``relative_error_rows = factor_rows /
+  factor_here - 1`` is the error actually in the file's Rs. It equals
+  ``relative_error`` when both describe the same sample (to the tables'
+  printed digits) and is much larger when, say, the outline is a 20 mm square
+  and the rows assume an unbounded sheet.
+
+The edge warning uses ``relative_error_rows`` whenever it exists.
 
 Pure: no Qt, no instrument, no I/O.
 """
@@ -20,7 +36,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from .. import calculations_geometry as geo
+from ..calculations import f_thickness_correction
 from ..schema.spots import SampleGeometry, SpotRequest, sample_geometry_from_settings
+from .samples import build_row
 
 
 #: What ``build_row`` takes the probe spacing to be when the settings hold
@@ -67,6 +85,45 @@ def check_spot_position(geometry: SampleGeometry, spacing_mm: float, x_mm: float
                         effect.relative_error)
 
 
+def rows_lateral_factor(measurement: Dict[str, Any]) -> Optional[float]:
+    """The lateral geometry factor the run's rows apply: their Rs / (V/I).
+
+    Asked of ``build_row`` itself, with one made-up reading, rather than
+    worked out again here: which correction path a run takes (F84 tables or
+    K*alpha) and with which inputs is decided in one place, and a second copy
+    of that decision is a second answer waiting to happen. Once per run,
+    before the instrument is opened; the per-sample path is not touched.
+
+    On the F84 path the rows' Rs also carries the thickness term F(w/S). That
+    term is divided out, because the factors this is compared with are
+    thin-sheet, lateral-only values and F84 keeps thickness as a separate
+    multiplicative correction; for w/S < 0.4 it is 1 and nothing changes.
+
+    None when the rows have no finite Rs to speak of (the F84 path with no
+    thickness entered).
+    """
+    reading = {'voltage': 1e-3, 'current': 1e-3}          # V/I = 1 ohm
+    # Model and NPLC only feed the uncertainty columns, not Rs.
+    _, derived = build_row('four_point', 0.0, reading, 'OK', '', measurement,
+                           1.0, False, '2400', None)
+    rs, ratio = derived.get('rs'), derived.get('ratio')
+    if not (_is_finite(rs) and _is_finite(ratio)) or ratio == 0:
+        return None
+    factor = rs / ratio
+    if derived.get('method') == 'f84':
+        thickness_cm = float(measurement.get('fpp_thickness_um') or 0.0) * 1e-4
+        spacing_cm = float(measurement.get('fpp_spacing_cm') or _DEFAULT_SPACING_CM)
+        thickness_term = f_thickness_correction(thickness_cm, spacing_cm)
+        if not _is_finite(thickness_term) or thickness_term == 0:
+            return None
+        factor /= thickness_term
+    return factor if _is_finite(factor) else None
+
+
+def _is_finite(value: Any) -> bool:
+    return isinstance(value, (int, float)) and math.isfinite(value)
+
+
 @dataclass(frozen=True)
 class SpotRecord:
     """A run's spot, resolved against the run's settings."""
@@ -83,17 +140,40 @@ class SpotRecord:
     #: but 'warn' is implemented, so nothing else is ever recorded as in
     #: force; the run says so in its log.
     ignored_position_correction: Optional[str] = None
+    #: See ``rows_lateral_factor``. None when the rows have no finite Rs.
+    factor_rows: Optional[float] = None
 
     @property
     def off_sample(self) -> bool:
         return self.position is not None and self.position.off_sample
 
     @property
+    def relative_error_rows(self) -> Optional[float]:
+        """``factor_rows / factor_here - 1``: the error in the file's own Rs."""
+        if self.position is None or self.position.factor_here is None:
+            return None
+        if self.factor_rows is None:
+            return None
+        return self.factor_rows / self.position.factor_here - 1.0
+
+    @property
+    def warning_error(self) -> Optional[float]:
+        """The error the edge warning is judged on: against the rows' factor
+        when there is one, else against the outline's own centre."""
+        if self.relative_error_rows is not None:
+            return self.relative_error_rows
+        return None if self.position is None else self.position.relative_error
+
+    @property
+    def warning_compares_with(self) -> str:
+        """'rows' or 'centre': which of the two ``warning_error`` is."""
+        return 'rows' if self.relative_error_rows is not None else 'centre'
+
+    @property
     def near_edge(self) -> bool:
-        """Assuming a centred probe costs more here than the operator allows."""
-        if self.position is None or self.position.relative_error is None:
-            return False
-        return abs(self.position.relative_error) * 100.0 > self.edge_warn_pct
+        """The position costs more here than the operator allows."""
+        error = self.warning_error
+        return error is not None and abs(error) * 100.0 > self.edge_warn_pct
 
     def header(self) -> Dict[str, Any]:
         """The ``spot`` block of the file header."""
@@ -113,6 +193,8 @@ class SpotRecord:
                 'factor_here': self.position.factor_here,
                 'factor_centre': self.position.factor_centre,
                 'relative_error': self.position.relative_error,
+                'factor_rows': self.factor_rows,
+                'relative_error_rows': self.relative_error_rows,
                 'edge_clearance_s': self.position.edge_clearance_s,
             })
         return block
@@ -137,6 +219,8 @@ def spot_record_from_settings(settings: Dict[str, Any]) -> Optional[SpotRecord]:
     if spot.has_position:
         spacing_mm = float(measurement.get('fpp_spacing_cm') or _DEFAULT_SPACING_CM) * 10.0
         position = check_spot_position(geometry, spacing_mm, spot.x_mm, spot.y_mm, angle_deg)
+    # Only a checked position has anything to compare the rows' factor with.
+    factor_rows = rows_lateral_factor(measurement) if position is not None else None
     # The schema accepts only 'warn', but the PySide6 path hands over settings
     # no schema has seen. A hand-edited 'apply' must not be written into a
     # file whose numbers had no correction applied.
@@ -149,4 +233,5 @@ def spot_record_from_settings(settings: Dict[str, Any]) -> Optional[SpotRecord]:
         ignored_position_correction=None if requested == 'warn' else requested,
         edge_warn_pct=float(measurement.get('fpp_edge_warn_pct', 1.0)),
         position=position,
+        factor_rows=factor_rows,
     )

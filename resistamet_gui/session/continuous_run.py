@@ -435,6 +435,9 @@ class ContinuousRun:
             'factor_here': position.factor_here,
             'factor_centre': position.factor_centre,
             'relative_error': position.relative_error,
+            'factor_rows': record.factor_rows,
+            'relative_error_rows': record.relative_error_rows,
+            'compared_with': record.warning_compares_with,
         }
         if record.off_sample:
             message = (f"Spot '{record.spot.label}' is off the sample: a probe tip is "
@@ -444,9 +447,14 @@ class ContinuousRun:
             self._events.error('spot_off_sample', 'run', message)
             return True
         if record.near_edge:
+            if record.warning_compares_with == 'rows':
+                compared = (f"the geometry factor this run applies ({record.factor_rows:.4g}) "
+                            f"differs from the factor at the spot ({position.factor_here:.4g})")
+            else:
+                compared = (f"the factor at the centre of the sample ({position.factor_centre:.4g}) "
+                            f"differs from the factor at the spot ({position.factor_here:.4g})")
             message = (f"Spot '{record.spot.label}' is {position.edge_clearance_s:.1f} s from "
-                       f"the edge: the centred geometry factor is off by "
-                       f"{abs(position.relative_error) * 100.0:.1f} % there "
+                       f"the edge: {compared} by {abs(record.warning_error) * 100.0:.1f} % "
                        f"(threshold {record.edge_warn_pct:g} %). No position correction is applied.")
             self._events.emit('geometry_warning', {
                 **payload, 'refused': False, 'reason': 'near_edge', 'message': message})

@@ -152,9 +152,22 @@ What changes:
   `spot: {map_id, index, label, x_mm?, y_mm?, angle_deg?}`. Absent, the run
   is what it is today.
 - **File.** The v2 header gains a `spot` block with those fields, the
-  `SampleGeometry`, and — when a position is known — the geometry factor
-  used, the factor at the position, the relative error, the edge clearance
-  in units of s, and which of `warn` / `apply` was in force. The footer gains
+  `SampleGeometry` (`spot.sample.*`), which of `warn` / `apply` was in force
+  (`spot.position_correction`) and the threshold (`spot.edge_warn_pct`).
+  When a position is known on a bounded sample it also holds
+  `spot.edge_clearance_s` and three factors:
+  `spot.factor_here` (closed form, at the spot), `spot.factor_centre`
+  (closed form, centre of the same outline) and `spot.factor_rows` — the
+  lateral factor the run's rows really applied, which comes from the table
+  look-up on `fpp_geometry` / `fpp_diameter_cm`, or K·α with no diameter,
+  with the F84 thickness term F(w/S) divided out. From them two errors:
+  `spot.relative_error` = `factor_centre / factor_here − 1`, and
+  `spot.relative_error_rows` = `factor_rows / factor_here − 1`, which is the
+  error in the file's own Rs. They agree when the outline and the legacy
+  keys describe the same sample; when they do not, only the second is about
+  the numbers in the file, and it is the one held against
+  `fpp_edge_warn_pct` (`factor_rows` is absent when the rows have no finite
+  Rs — the F84 path with no thickness — and the first is used). The footer gains
   the spot's statistics: n, mean and sample standard deviation of Rs, ρ, σ,
   and the combined (statistical ⊕ instrument) uncertainty from
   `four_point_combined_uncertainty`, which today only the GUI computes.

@@ -8,7 +8,7 @@ from resistamet_gui import calculations_geometry as geo
 from resistamet_gui.constants import DEFAULT_SETTINGS
 from resistamet_gui.schema.spots import SampleGeometry
 from resistamet_gui.session.spot_record import (
-    check_spot_position, spot_record_from_settings,
+    check_spot_position, rows_lateral_factor, spot_record_from_settings,
 )
 
 #: A 20 s x 20 s square with s = 1 mm, the example of the design document.
@@ -110,8 +110,10 @@ class TestSpotRecord:
                 _spot(x_mm=0.0, y_mm=7.0), fpp_spacing_cm=0.1, fpp_edge_warn_pct=warn_pct,
                 fpp_sample_shape='rectangle', fpp_sample_width_mm=20.0,
                 fpp_sample_length_mm=20.0))
-        assert record(5.0).near_edge          # 5.3 % > 5 %
-        assert not record(6.0).near_edge
+        # The rows assume an unbounded sheet (4.532) and the factor here is
+        # 4.225: the file's Rs is 7.3 % off, which is what the threshold meets.
+        assert record(7.0).near_edge
+        assert not record(8.0).near_edge
 
     def test_legacy_keys_give_the_outline(self):
         record = spot_record_from_settings(_settings(
@@ -171,3 +173,102 @@ class TestProbeSpacing:
                              fpp_geometry='circle', fpp_diameter_cm=5.08)
         record = spot_record_from_settings(settings)
         assert record.position.factor_centre == pytest.approx(geo.circle_factor(50.8, 1.016))
+
+
+def _measurement(**values):
+    return _settings(**values)['measurement']
+
+
+class TestRowsLateralFactor:
+    """The factor the rows apply, asked of build_row itself."""
+
+    def test_no_diameter_is_k_times_alpha(self):
+        assert rows_lateral_factor(_measurement()) == pytest.approx(4.532)
+        assert rows_lateral_factor(_measurement(fpp_k_factor=4.4, fpp_alpha=0.9)) == (
+            pytest.approx(4.4 * 0.9))
+
+    def test_a_diameter_is_the_f84_table(self):
+        """S/D = 0.1016 / 5.08 = 0.02, where Table 3 prints 4.517."""
+        factor = rows_lateral_factor(_measurement(
+            fpp_geometry='circle', fpp_diameter_cm=5.08, fpp_thickness_um=100.0))
+        assert factor == pytest.approx(4.517)
+
+    def test_the_thickness_term_is_divided_out(self):
+        """w/S = 1: F(w/S) is about 0.92 and belongs to the thickness, not to
+        where on the sample the probe is."""
+        thin = rows_lateral_factor(_measurement(
+            fpp_geometry='circle', fpp_diameter_cm=5.08, fpp_thickness_um=100.0))
+        thick = rows_lateral_factor(_measurement(
+            fpp_geometry='circle', fpp_diameter_cm=5.08, fpp_thickness_um=1016.0))
+        assert thick == pytest.approx(thin)
+
+    def test_the_temperature_correction_is_not_in_rs(self):
+        factor = rows_lateral_factor(_measurement(
+            fpp_geometry='circle', fpp_diameter_cm=5.08, fpp_thickness_um=100.0,
+            fpp_temperature_c=30.0, fpp_dopant_type='n'))
+        assert factor == pytest.approx(4.517)
+
+    def test_rows_without_an_rs_have_no_factor(self):
+        """The F84 path reports Rs through the thickness; with none it is NaN."""
+        assert rows_lateral_factor(_measurement(
+            fpp_geometry='circle', fpp_diameter_cm=5.08, fpp_thickness_um=0.0)) is None
+
+    def test_it_is_what_a_row_of_the_run_would_hold(self):
+        from resistamet_gui.session.samples import build_row
+        measurement = _measurement(fpp_geometry='square', fpp_diameter_cm=2.0,
+                                   fpp_thickness_um=50.0)
+        row, derived = build_row('four_point', 1.0, {'voltage': 0.0123, 'current': 1e-4},
+                                 'OK', '', measurement, 1.0, False, '2420', None)
+        assert rows_lateral_factor(measurement) == pytest.approx(derived['rs'] / derived['ratio'])
+
+
+class TestErrorAgainstTheRows:
+    def test_same_sample_both_ways_the_two_errors_agree(self):
+        """A 20 s square through the legacy keys: the Smits table and the
+        closed form give the same centred factor to the table's digits."""
+        record = spot_record_from_settings(_settings(
+            _spot(x_mm=0.0, y_mm=7.0), fpp_spacing_cm=0.1, fpp_thickness_um=50.0,
+            fpp_geometry='square', fpp_diameter_cm=2.0))
+        assert record.factor_rows == pytest.approx(record.position.factor_centre, rel=1e-3)
+        assert record.relative_error_rows == pytest.approx(record.position.relative_error,
+                                                           abs=1e-3)
+        assert record.warning_compares_with == 'rows'
+        header = record.header()
+        assert header['factor_rows'] == record.factor_rows
+        assert header['relative_error_rows'] == pytest.approx(
+            header['factor_rows'] / header['factor_here'] - 1.0)
+
+    def test_an_outline_the_rows_do_not_share_shows_the_real_error(self):
+        """Outline: 20 s square. Rows: unbounded sheet. The centred-outline
+        error understates what is in the file."""
+        record = spot_record_from_settings(_settings(
+            _spot(x_mm=0.0, y_mm=7.0), fpp_spacing_cm=0.1,
+            fpp_sample_shape='rectangle', fpp_sample_width_mm=20.0,
+            fpp_sample_length_mm=20.0))
+        assert record.factor_rows == pytest.approx(4.532)
+        assert record.position.relative_error == pytest.approx(0.0532, abs=5e-4)
+        assert record.relative_error_rows == pytest.approx(4.532 / 4.22513 - 1.0, abs=5e-4)
+        assert record.warning_error == record.relative_error_rows
+
+    def test_even_the_centre_warns_when_the_rows_assume_a_larger_sample(self):
+        record = spot_record_from_settings(_settings(
+            _spot(x_mm=0.0, y_mm=0.0), fpp_spacing_cm=0.1,
+            fpp_sample_shape='rectangle', fpp_sample_width_mm=20.0,
+            fpp_sample_length_mm=20.0))
+        assert record.position.relative_error == pytest.approx(0.0, abs=1e-12)
+        assert record.relative_error_rows == pytest.approx(4.532 / 4.44978 - 1.0, abs=1e-4)
+        assert record.near_edge                       # 1.8 % > 1 %
+
+    def test_without_a_rows_factor_the_outline_centre_is_the_comparison(self):
+        record = spot_record_from_settings(_settings(
+            _spot(x_mm=20.0, y_mm=0.0, angle_deg=90.0),
+            fpp_geometry='circle', fpp_diameter_cm=5.08, fpp_thickness_um=0.0))
+        assert record.factor_rows is None and record.relative_error_rows is None
+        assert record.warning_compares_with == 'centre'
+        assert record.warning_error == record.position.relative_error
+        assert record.header()['relative_error_rows'] is None
+
+    def test_no_position_no_rows_factor(self):
+        record = spot_record_from_settings(_settings(_spot()))
+        assert record.factor_rows is None
+        assert 'factor_rows' not in record.header()

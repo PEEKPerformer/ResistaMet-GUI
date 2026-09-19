@@ -273,8 +273,17 @@
         }
       },
       "additionalProperties": false,
-      "description": "A four-point spot's position is a problem, said before the first sample.\n\n``refused`` with ``off_sample``: a probe tip is on or beyond the edge and\nthe run ends without touching the instrument. ``near_edge``: assuming a\ncentred probe costs more than ``edge_warn_pct`` here; the run goes on and\nthe values are recorded as measured, without a position correction.\n\n``relative_error`` is ``factor_centre / factor_here - 1``, a fraction, not\na percentage. The factors are absent off the sample, where they diverge.",
+      "description": "A four-point spot's position is a problem, said before the first sample.\n\n``refused`` with ``off_sample``: a probe tip is on or beyond the edge and\nthe run ends without touching the instrument. ``near_edge``: the position\ncosts more than ``edge_warn_pct`` here; the run goes on and the values are\nrecorded as measured, without a position correction.\n\nTwo errors, both fractions and not percentages. ``relative_error_rows`` is\n``factor_rows / factor_here - 1``, against the lateral factor the run's\nrows really apply (the table look-up, or K*alpha); it is the error in the\nfile's Rs. ``relative_error`` is ``factor_centre / factor_here - 1``,\nagainst the closed-form centre of the sample outline. ``compared_with``\nsays which one was held against the threshold: ``rows`` whenever the rows\nhave a factor, else ``centre``. The factors are absent off the sample,\nwhere they diverge.",
       "properties": {
+        "compared_with": {
+          "default": "centre",
+          "enum": [
+            "rows",
+            "centre"
+          ],
+          "title": "Compared With",
+          "type": "string"
+        },
         "edge_clearance_s": {
           "title": "Edge Clearance S",
           "type": "number"
@@ -307,6 +316,18 @@
           "default": null,
           "title": "Factor Here"
         },
+        "factor_rows": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Factor Rows"
+        },
         "message": {
           "title": "Message",
           "type": "string"
@@ -334,6 +355,18 @@
           ],
           "default": null,
           "title": "Relative Error"
+        },
+        "relative_error_rows": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relative Error Rows"
         },
         "spot": {
           "$ref": "#/$defs/SpotRequest"
