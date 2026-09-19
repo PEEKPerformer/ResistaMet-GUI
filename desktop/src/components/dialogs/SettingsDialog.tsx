@@ -1,14 +1,16 @@
 // Profile settings: the knobs that live with the operator rather than on a
-// tab. Edits go straight to PATCH /profiles/{user} on Save, one section at a
-// time, so the backend's validation is the only validation.
+// tab. Save sends PATCH /profiles/{user} the keys that were edited and no
+// others, so the backend's validation is the only validation.
 //
 // The instrument address is machine-local and shown apart from the profile:
-// the same operator's profile on another PC has a different bus.
+// the same operator's profile on another PC has a different bus. Only the
+// Instrument section stores it; Save never sends it.
 
 import { useEffect, useMemo, useState } from "react";
 import { useApi } from "../../app/AppContext";
 import { FIELD_META } from "../../generated/settings";
 import type { FieldSpec } from "../../lib/fields";
+import { profilePatch, withMachineLocal } from "../../lib/profilePatch";
 import type { InstrumentInfo, Profile, VisaBackend } from "../../lib/api";
 import { ApiError } from "../../lib/api";
 import { setIdentifiedInstrument, useSession } from "../../state/session";
@@ -90,12 +92,8 @@ export function SettingsDialog({ onClose }: Props) {
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   }, [api, ui.username]);
 
-  const dirtySections = useMemo(() => {
-    if (!profile) return [];
-    return (Object.keys(draft) as (keyof Profile)[]).filter(
-      (s) => JSON.stringify(draft[s]) !== JSON.stringify(profile[s]),
-    );
-  }, [draft, profile]);
+  const patch = useMemo(() => (profile ? profilePatch(profile, draft) : {}), [draft, profile]);
+  const dirtySections = Object.keys(patch);
 
   const set = (sectionName: string, key: string, value: unknown) =>
     setDraft((d) => ({ ...d, [sectionName]: { ...(d[sectionName] ?? {}), [key]: value } }));
@@ -105,8 +103,6 @@ export function SettingsDialog({ onClose }: Props) {
     setSaving(true);
     setError(null);
     try {
-      const patch: Partial<Profile> = {};
-      for (const s of dirtySections) patch[s] = draft[s];
       const updated = await api.patchProfile(ui.username, patch);
       setProfile(updated);
       setDraft(structuredClone(updated));
@@ -117,6 +113,13 @@ export function SettingsDialog({ onClose }: Props) {
     } finally {
       setSaving(false);
     }
+  };
+
+  // Identify stored a new address: the loaded profile and the draft take it,
+  // and edits waiting in other sections stay as they are.
+  const onMachineLocalStored = (stored: Profile) => {
+    setProfile((p) => (p ? withMachineLocal(p, stored) : stored));
+    setDraft((d) => withMachineLocal(d, stored));
   };
 
   const measurement = draft.measurement ?? {};
@@ -171,7 +174,7 @@ export function SettingsDialog({ onClose }: Props) {
                 ))
               : null}
 
-            {profile && section === "instrument" ? <InstrumentSection running={running} /> : null}
+            {profile && section === "instrument" ? <InstrumentSection running={running} onStored={onMachineLocalStored} /> : null}
 
             {profile && section === "aux"
               ? AUX.map((spec) => (
@@ -257,7 +260,7 @@ function describeBackend(backend: VisaBackend): string {
 
 /** Address and backend are machine-local; identifying touches the bus, so
  *  it is refused while a run holds it and the backend says so. */
-function InstrumentSection({ running }: { running: boolean }) {
+function InstrumentSection({ running, onStored }: { running: boolean; onStored: (stored: Profile) => void }) {
   const api = useApi();
   const ui = useUi();
   const [address, setAddress] = useState("");
@@ -285,13 +288,14 @@ function InstrumentSection({ running }: { running: boolean }) {
 
   const save = async () => {
     if (!ui.username) return;
-    await api.patchProfile(ui.username, {
+    const stored = await api.patchProfile(ui.username, {
       measurement: {
         gpib_address: address.trim(),
         visa_library: library,
         gpib_interface: gpibInterface.trim(),
       },
     });
+    onStored(stored);
   };
 
   const run = async (fn: () => Promise<void>) => {
