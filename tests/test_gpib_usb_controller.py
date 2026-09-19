@@ -1012,6 +1012,44 @@ class TestRawRead:
         transport.assert_done()
 
 
+class TestRawTransfersSwitch:
+    """Controller(raw_transfers=False): the framed paths on a model that has the alternate pair."""
+
+    def test_default_is_raw_on_a_model_with_the_pair(self):
+        controller, _ = attached([])
+        assert controller.raw_transfers is True
+
+    def test_switched_off_reads_and_writes_stay_framed(self):
+        controller, transport = attached(address_talker() + [
+            ('out', p.read_message(20480, T3S)),
+            ('in', read_reply(b'x', 20480), p.read_reply_buffer_size(20480, 512)),
+        ] + address_listener() + [
+            ('out', p.write_message(bytes(3000), T3S, True)), ('in', status_reply(0x0D)),
+        ], raw_transfers=False)
+        assert controller.raw_transfers is False
+        assert controller.read(22, max_bytes=20480, timeout_s=3.0) == (b'x', True)
+        assert controller.write(22, bytes(3000), timeout_s=3.0) == 3000
+        transport.assert_done()
+
+    def test_switched_off_resync_does_not_touch_the_alternate_endpoint(self):
+        controller, transport = attached([
+            ('out', p.command_message(b'\x14', T3S)), ('in', h('0c 00'), 12),
+            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH),
+        ], raw_transfers=False)
+        with pytest.raises(ProtocolError):
+            controller.command(b'\x14', timeout_s=3.0)
+        transport.assert_done()
+
+    def test_switched_on_without_the_pair_is_still_framed(self):
+        script = [
+            ('out', p.register_read_message(t.USB_B_SERIAL_REGISTERS)),
+            ('in', regread_reply([0x78, 0x56, 0x34, 0x12]), 32),
+        ] + attach_script()[2:]
+        controller = Controller(ScriptedTransport(script), t.PID_USB_B, raw_transfers=True, sleep=lambda s: None)
+        controller.attach()
+        assert controller.raw_transfers is False
+
+
 # ---------------------------------------------------------------------------
 # §7.2 host waits
 # ---------------------------------------------------------------------------
