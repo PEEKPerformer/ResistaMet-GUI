@@ -18,7 +18,9 @@ Two validation modes:
 * **strict** (an API run request): the same issues, plus the checks the GUI
   makes at Start — vdP needs a real thickness, 4PP must not ask for more power
   than its own hard stop, aux co-logging only exists for the continuous modes —
-  and unknown or profile-owned override keys are rejected.
+  and unknown or profile-owned override keys are rejected. The touch-safety
+  keys are profile-owned here: whoever may not answer the hazardous-voltage
+  prompt may not move its threshold or silence it for one run either.
 """
 import logging
 import math
@@ -34,6 +36,14 @@ logger = logging.getLogger(__name__)
 
 #: Keys the profile always wins on, whatever a client sends (MW gather).
 PROFILE_OWNED_KEYS = ('settling_time', 'gpib_address')
+
+#: The touch-safety group. A strict request may not send any of these: the
+#: hazardous-voltage prompt can only be answered by a person at the bench
+#: (design note D4), and a request that raised the threshold or set the
+#: silenced flag would never be asked. They change where the profile is
+#: edited -- the Settings dialog, or the profile route -- and nowhere else.
+#: The PySide6 gather path never sends them; it is left as it was.
+SAFETY_KEYS = tuple(SafetySettings.model_fields)
 
 #: Override keys that are not settings: they select a value rather than be one.
 CONTROL_KEYS = ('vsource_run_continuous', 'isource_run_continuous')
@@ -72,16 +82,16 @@ class ResolvedRun:
 def allowed_override_keys(mode: str) -> set:
     """Keys a strict request may send for ``mode``.
 
-    The mode's own fields plus the shared groups, minus the keys the profile
-    owns. Clients discover this through the schema endpoint rather than by
-    trial and error.
+    The mode's own fields plus the instrument and aux groups, minus the keys
+    the profile owns -- the touch-safety group among them (``SAFETY_KEYS``).
+    Clients discover this through the schema endpoint rather than by trial
+    and error.
     """
     keys = set(MODE_MODELS[mode].model_fields)
     keys |= set(InstrumentSettings.model_fields)
     keys |= set(AuxSensorSettings.model_fields)
-    keys |= set(SafetySettings.model_fields)
     keys |= set(CONTROL_KEYS)
-    return keys - set(PROFILE_OWNED_KEYS)
+    return keys - set(PROFILE_OWNED_KEYS) - set(SAFETY_KEYS)
 
 
 def resolve_run_settings(profile: Dict[str, Any], mode: str,
@@ -108,6 +118,9 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
         for key in sorted(overrides):
             if key in PROFILE_OWNED_KEYS:
                 issues.append(Issue(key, f"'{key}' comes from the profile and cannot be overridden"))
+            elif key in SAFETY_KEYS:
+                issues.append(Issue(key, f"'{key}' is a touch-safety setting of the profile; "
+                                         "a run request cannot change it"))
             elif key not in permitted:
                 issues.append(Issue(key, f"'{key}' is not a setting of mode '{mode}'"))
 
@@ -136,6 +149,15 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
     # 7. Profile-owned keys.
     m_cfg['settling_time'] = profile['measurement']['settling_time']
     m_cfg['gpib_address'] = profile['measurement']['gpib_address']
+    if strict:
+        # The request is already refused above; this makes the settings, the
+        # hazard below and the run's own gate read the stored profile even if
+        # a caller goes on to use a resolution that is not ``ok``.
+        for key in SAFETY_KEYS:
+            if key in profile['measurement']:
+                m_cfg[key] = profile['measurement'][key]
+            else:
+                m_cfg.pop(key, None)
 
     # 8. Accuracy-critical modes force the slow, low-noise timing knobs last,
     #    exactly as gather does before the worker reads the config.

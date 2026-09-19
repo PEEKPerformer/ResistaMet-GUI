@@ -5,6 +5,8 @@ import pytest
 
 from resistamet_gui.constants import DEFAULT_SETTINGS
 from resistamet_gui.schema.resolve import allowed_override_keys, resolve_run_settings
+from resistamet_gui.schema.settings_common import SafetySettings
+from resistamet_gui.schema.settings_modes import MODE_MODELS
 
 
 @pytest.fixture
@@ -56,7 +58,6 @@ class TestStrictKeyChecking:
     def test_shared_groups_accepted(self, profile):
         resolved = resolve_run_settings(profile, 'resistance', {
             'nplc': 2.0, 'filter_count': 20, 'aux_log_enabled': True,
-            'safety_voltage_warn_v': 50.0,
         }, strict=True)
         assert resolved.issues == []
         assert resolved.settings['measurement']['nplc'] == 2.0
@@ -64,6 +65,66 @@ class TestStrictKeyChecking:
     def test_lenient_mode_allows_anything(self, profile):
         resolved = resolve_run_settings(profile, 'resistance', {'smaple_rate': 5})
         assert resolved.issues == []
+
+
+class TestSafetyGroupIsProfileOwned:
+    """Only a person at the bench may answer the hazardous-voltage prompt, so
+    a run request may not arrange never to be asked."""
+
+    SAFETY_OVERRIDES = [
+        {'safety_voltage_warn_silenced': True},
+        {'safety_voltage_warn_v': 200.0},
+        {'safety_voltage_warn_v': 0.0},  # 0 disables the check
+    ]
+
+    def _hazardous(self, profile):
+        profile['measurement'].update({
+            'safety_voltage_warn_v': 30.0, 'safety_voltage_warn_silenced': False})
+        return profile
+
+    @pytest.mark.parametrize("override", SAFETY_OVERRIDES)
+    def test_a_strict_request_naming_one_is_refused_by_key(self, profile, override):
+        resolved = resolve_run_settings(self._hazardous(profile), 'source_v',
+                                         {'vsource_voltage': 60.0, **override}, strict=True)
+        assert not resolved.ok
+        assert _keys(resolved) == list(override)
+        assert 'touch-safety' in resolved.issues[0].message
+
+    @pytest.mark.parametrize("override", SAFETY_OVERRIDES)
+    def test_the_settings_and_the_hazard_keep_the_profile_s_values(self, profile, override):
+        """Refused, and not applied either: a caller that ignored ``ok`` would
+        still hand the run the stored threshold and flag."""
+        resolved = resolve_run_settings(self._hazardous(profile), 'source_v',
+                                         {'vsource_voltage': 60.0, **override}, strict=True)
+        measurement = resolved.settings['measurement']
+        assert measurement['safety_voltage_warn_v'] == 30.0
+        assert measurement['safety_voltage_warn_silenced'] is False
+        assert resolved.hazard.hazardous
+        assert resolved.hazard.threshold_v == 30.0
+
+    def test_a_profile_without_the_keys_gains_none_from_a_request(self, profile):
+        del profile['measurement']['safety_voltage_warn_silenced']
+        resolved = resolve_run_settings(profile, 'source_v',
+                                         {'safety_voltage_warn_silenced': True}, strict=True)
+        assert 'safety_voltage_warn_silenced' not in resolved.settings['measurement']
+
+    @pytest.mark.parametrize("mode", sorted(MODE_MODELS))
+    def test_no_mode_offers_a_safety_key(self, mode):
+        assert not set(SafetySettings.model_fields) & allowed_override_keys(mode)
+
+    def test_the_profile_s_own_silenced_flag_still_resolves(self, profile):
+        """Silencing is the profile owner's decision and stays one."""
+        profile['measurement']['safety_voltage_warn_silenced'] = True
+        resolved = resolve_run_settings(profile, 'source_v',
+                                         {'vsource_voltage': 60.0}, strict=True)
+        assert resolved.ok
+        assert resolved.settings['measurement']['safety_voltage_warn_silenced'] is True
+
+    def test_the_lenient_path_is_as_it_was(self, profile):
+        """The PySide6 gather never sends these; nothing about it changes."""
+        resolved = resolve_run_settings(profile, 'source_v', {'safety_voltage_warn_v': 50.0})
+        assert resolved.issues == []
+        assert resolved.settings['measurement']['safety_voltage_warn_v'] == 50.0
 
 
 class TestStartTimeChecks:
