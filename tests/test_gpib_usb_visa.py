@@ -512,7 +512,10 @@ class TestInstrumentSession:
         assert adapter.halts_cleared == [0x06, 0x02] and not adapter.halted
         assert 0x20 not in adapter.control_requests  # no stop request
         other = rm.open_resource('GPIB0::24::INSTR')  # same board, still attached
-        other.write('y' * 3000)  # the alternate OUT works again, with no re-attach in between
+        # Expected, not observed: the fake un-halts 0x06 on the reset, but no capture has a second
+        # 0x0e after a refused one (§10.6.7) and the raw paths have not run on our adapter. What
+        # is pinned is the driver's side: an ordinary 0x0e, with no re-attach in between.
+        other.write('y' * 3000)
         assert adapter.raw_writes[-1] == b'y' * 3000 + b'\r\n'
         assert len(adapter.instructions(p.OP_INTERFACE_CLEAR)) == 1
         other.close()
