@@ -29,6 +29,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 import pyvisa
 
+# The settings model's grammar for a Prologix interface name. One pattern,
+# so what a profile may store and what this module will open cannot drift.
+from .schema.settings_common import _PRLGX_INTFC
+
 logger = logging.getLogger(__name__)
 
 #: Use pyvisa's own default: the vendor library if installed, else pyvisa-py.
@@ -121,6 +125,12 @@ def open_gpib_interface(rm: Any, gpib_interface: str) -> bool:
     simulator. A failure to open raises :class:`GpibInterfaceError` naming
     the resource, so the operator reads "could not open PRLGX-ASRL…" rather
     than "instrument not found" a step later.
+
+    Only a Prologix interface name is ever opened. The session opened here
+    is held for the life of the manager, so any other resource — the aux
+    sensor's serial port, an instrument — would be taken from whoever it
+    belongs to. Such a name raises :class:`GpibInterfaceError` with nothing
+    opened and the interface already held left as it was.
     """
     name = (gpib_interface or '').strip()
     if not name:
@@ -132,6 +142,11 @@ def open_gpib_interface(rm: Any, gpib_interface: str) -> bool:
         logger.warning("GPIB interface %s ignored: a vendor VISA library has no such "
                        "resource. Choose the pyvisa-py backend to use it.", name)
         return False
+    if not _PRLGX_INTFC.match(name):
+        raise GpibInterfaceError(
+            f"Could not open GPIB interface {name}: not a Prologix interface. "
+            "Expected PRLGX-ASRL[board]::<serial device>::INTFC or "
+            "PRLGX-TCPIP[board]::<host>[::port]::INTFC")
     with _interface_lock:
         held = getattr(rm, _INTERFACE_ATTR, None)
         if held is not None:

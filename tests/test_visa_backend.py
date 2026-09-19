@@ -213,6 +213,33 @@ class TestGpibInterface:
         visa_backend.resource_manager('@py', PRLGX)
         assert rm.opened == [PRLGX]
 
+    @pytest.mark.parametrize('name', [
+        'ASRL/dev/cu.usbmodem1101::INSTR',     # the aux sensor's serial port
+        'GPIB0::24::INSTR',
+        'TCPIP::192.168.1.50::1234::SOCKET',
+        'PRLGX-ASRL::INTFC',
+        'PRLGX-ASRL::5::INSTR',
+    ])
+    def test_only_a_prologix_interface_name_is_opened(self, one_rm, name):
+        rm = one_rm(_InterfaceRM())
+        with pytest.raises(visa_backend.GpibInterfaceError) as raised:
+            visa_backend.resource_manager('@py', name)
+        assert rm.opened == []
+        assert name in str(raised.value)
+        assert 'PRLGX-ASRL[board]' in str(raised.value)
+
+    def test_a_refused_name_leaves_the_open_interface_alone(self, one_rm):
+        rm = one_rm(_InterfaceRM())
+        visa_backend.resource_manager('@py', PRLGX)
+        with pytest.raises(visa_backend.GpibInterfaceError):
+            visa_backend.resource_manager('@py', 'ASRL3::INSTR')
+        assert rm.sessions[0].closed is False
+        assert visa_backend.held_gpib_interface(rm) == PRLGX
+
+    def test_the_settings_model_and_the_backend_share_one_grammar(self):
+        from resistamet_gui.schema import settings_common
+        assert visa_backend._PRLGX_INTFC is settings_common._PRLGX_INTFC
+
     def test_the_simulator_has_no_adapter_to_open(self):
         from resistamet_gui import simulator
         simulator.enable_simulation()
@@ -377,12 +404,25 @@ class TestGpibInterfaceOnPyvisaPy:
         assert 'no-such-adapter' in str(raised.value.__cause__)
 
     def test_a_name_pyvisa_cannot_parse(self):
+        # Past this module's own check, which leaves the middle part to pyvisa.
+        name = 'PRLGX-ASRL::a::b::INTFC'
         try:
             with pytest.raises(visa_backend.GpibInterfaceError) as raised:
-                visa_backend.resource_manager(visa_backend.PY, 'PRLGX-ASRL::INTFC')
+                visa_backend.resource_manager(visa_backend.PY, name)
         finally:
             visa_backend.resource_manager(visa_backend.PY).close()
-        assert 'PRLGX-ASRL::INTFC' in str(raised.value)
+        assert name in str(raised.value)
+        assert 'VI_ERROR_INV_RSRC_NAME' in str(raised.value)  # pyvisa's verdict, not ours
+
+    def test_a_resource_that_is_not_an_interface_is_never_connected_to(self, prologix):
+        # A raw socket to the stand-in: pyvisa-py would open it happily.
+        name = f'TCPIP::127.0.0.1::{prologix.port}::SOCKET'
+        try:
+            with pytest.raises(visa_backend.GpibInterfaceError):
+                visa_backend.resource_manager(visa_backend.PY, name)
+        finally:
+            visa_backend.resource_manager(visa_backend.PY).close()
+        assert prologix.connections == 0
 
 
 class TestInstrumentUsesTheChoice:
