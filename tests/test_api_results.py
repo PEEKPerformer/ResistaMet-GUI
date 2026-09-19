@@ -42,6 +42,14 @@ class TestListing:
         names = sorted(f['name'] for f in files)
         assert names == ['100_wafer_R_1.csv', '200_film_4PP_1.csv']
 
+    def test_map_summaries_are_not_runs(self, client, data_dir):
+        """<map_id>_map.json sits beside the runs and is served by /maps."""
+        (data_dir / 'bob' / 'wafer7_map.json').write_text('{"map_id": "wafer7"}')
+        (data_dir / 'bob' / '300_film_R_1.json').write_text('{"format_version": "1.0"}')
+        names = sorted(f['name'] for f in client.get('/results').json()['files'])
+        # The legacy pair's .json is still a result; the map summary is not.
+        assert names == ['100_wafer_R_1.csv', '200_film_4PP_1.csv', '300_film_R_1.json']
+
     def test_owner_comes_from_the_directory(self, client):
         files = {f['name']: f for f in client.get('/results').json()['files']}
         assert files['100_wafer_R_1.csv']['user'] == 'alice'
