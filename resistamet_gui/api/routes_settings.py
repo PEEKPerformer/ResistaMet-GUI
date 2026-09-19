@@ -21,7 +21,7 @@ from .app import busy_as_conflict, get_session, require_token
 router = APIRouter(tags=["settings"])
 
 #: Keys that describe this machine rather than this profile.
-MACHINE_LOCAL_KEYS = ('gpib_address', 'visa_library')
+MACHINE_LOCAL_KEYS = ('gpib_address', 'visa_library', 'gpib_interface')
 
 
 class ResolveRequest(BaseModel):
@@ -45,6 +45,8 @@ class IdentifyRequest(BaseModel):
     address: str = Field(min_length=1)
     #: None = this machine's configured backend.
     visa_library: Optional[str] = None
+    #: None = this machine's configured GPIB interface; '' = none.
+    gpib_interface: Optional[str] = None
 
 
 def _config(request: Request):
@@ -136,27 +138,36 @@ def resolve(body: ResolveRequest, request: Request, role: str = Depends(require_
 
 @router.get("/instruments/resources")
 def list_resources(request: Request, visa_library: Optional[str] = None,
+                    gpib_interface: Optional[str] = None,
                     session: MeasurementSession = Depends(get_session),
                     role: str = Depends(require_token)):
     """What VISA can see. Refused during a run: enumerating touches the bus.
 
     Uses this machine's configured VISA backend unless ``visa_library`` is
     given, so a client can try a backend before saving it. The reply says
-    which implementation actually answered.
+    which implementation actually answered. ``gpib_interface`` works the same
+    way: the reply names the interface that is open, or None (none asked for,
+    or a vendor library ignored it), and one that does not open is the 503.
     """
     if session.state != 'idle':
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                              detail=f"session is {session.state}")
     if visa_library is None:
         visa_library = _config(request).get_visa_library()
+    if gpib_interface is None:
+        gpib_interface = _config(request).get_gpib_interface()
     try:
-        rm = visa_backend.resource_manager(visa_library)
+        rm = visa_backend.resource_manager(visa_library, gpib_interface)
         resources = list(rm.list_resources())
+    except visa_backend.GpibInterfaceError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                             detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                              detail=f"VISA unavailable: {exc}")
     return {"resources": resources,
-            "backend": visa_backend.describe(rm, visa_library)}
+            "backend": visa_backend.describe(rm, visa_library),
+            "gpib_interface": visa_backend.held_gpib_interface(rm)}
 
 
 @router.post("/instruments/identify")
@@ -166,8 +177,11 @@ def identify(body: IdentifyRequest, request: Request,
     visa_library = body.visa_library
     if visa_library is None:
         visa_library = _config(request).get_visa_library()
+    gpib_interface = body.gpib_interface
+    if gpib_interface is None:
+        gpib_interface = _config(request).get_gpib_interface()
     try:
-        return session.identify(body.address, visa_library)
+        return session.identify(body.address, visa_library, gpib_interface)
     except SessionBusy as exc:
         raise busy_as_conflict(exc)
     except Exception as exc:
