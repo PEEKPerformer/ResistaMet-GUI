@@ -115,6 +115,9 @@ class VdpRun:
         check = is_potentially_hazardous(self.settings, self.MODE)
         if not check.hazardous:
             return False
+        if self._control.stopped():
+            # Stop is already in: there is nobody to ask and nothing to start.
+            return True
 
         prompt = self._control.raise_prompt(
             'safety_voltage_ack', ['acknowledge', 'cancel'], detail={
