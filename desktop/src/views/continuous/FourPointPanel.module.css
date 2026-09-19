@@ -10,9 +10,11 @@
   min-height: 0;
 }
 
+/* As many columns as fit a whole "-24126 Ω/sq"; two at the default window
+   width, three when there is room. */
 .statGrid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
   gap: var(--sp-3) var(--sp-4);
 }
 
@@ -31,11 +33,15 @@
   text-transform: uppercase;
 }
 
+/* Never cut a statistic short: the unit drops to the next line first, and a
+   number longer than the cell wraps rather than ending in an ellipsis. */
 .statValue {
   font-size: var(--text-md);
+  overflow-wrap: anywhere;
+}
+
+.statUnit {
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .saveRow {
