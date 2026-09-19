@@ -219,15 +219,23 @@ def _ivi_version(rm: Any) -> Optional[str]:
         return None
 
 
-def report(visa_library: str = AUTO, probe_bus: bool = False) -> Dict[str, Any]:
+def report(visa_library: str = AUTO, probe_bus: bool = False,
+           gpib_interface: str = '') -> Dict[str, Any]:
     """What VISA this machine has, for a diagnostic that runs without a GUI.
 
     Answers the question a frozen install fails on: is there a VISA
     implementation here at all, which one, and can the NI USB driver load
     libusb. Touches no instrument unless ``probe_bus`` is set — enumerating
     resources puts traffic on the bus and can disturb another process's run.
+
+    ``gpib_interface`` is reported as configured. Opening it takes the
+    adapter's serial port and makes it controller of the bus, so that too
+    waits for ``probe_bus``; then ``opened`` says whether it worked, with
+    the ``error`` when it did not.
     """
-    info: Dict[str, Any] = {'requested': visa_library, 'ni_usb': _ni_usb_report()}
+    interface = (gpib_interface or '').strip()
+    info: Dict[str, Any] = {'requested': visa_library, 'ni_usb': _ni_usb_report(),
+                            'gpib_interface': {'configured': interface}}
     try:
         rm = resource_manager(visa_library)
     except Exception as exc:
@@ -237,6 +245,12 @@ def report(visa_library: str = AUTO, probe_bus: bool = False) -> Dict[str, Any]:
     info['ok'] = True
     info['backend'] = describe(rm, visa_library)
     if probe_bus:
+        if interface:
+            try:
+                info['gpib_interface']['opened'] = open_gpib_interface(rm, interface)
+            except GpibInterfaceError as exc:
+                info['gpib_interface']['opened'] = False
+                info['gpib_interface']['error'] = str(exc)
         try:
             info['resources'] = list(rm.list_resources())
         except Exception as exc:

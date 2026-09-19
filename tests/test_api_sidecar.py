@@ -251,6 +251,37 @@ class TestCheckVisa:
         # The NI USB view is independent of the vendor library and still there.
         assert 'ni_usb' in report
 
+    def test_the_gpib_interface_is_named_but_not_opened(self, tmp_path):
+        name = 'PRLGX-ASRL::/dev/cu.resistamet-no-such-adapter::INTFC'
+        result, report = self._check(tmp_path, '--visa-library', '@py',
+                                     '--gpib-interface', name)
+        assert result.returncode == 0
+        assert report['gpib_interface'] == {'configured': name}
+
+    def test_the_machines_gpib_interface_is_the_default(self, tmp_path):
+        from resistamet_gui.config import ConfigManager
+        name = 'PRLGX-TCPIP::192.0.2.1::1234::INTFC'
+        ConfigManager(config_file=str(tmp_path / 'config.json')).set_machine_local(
+            'gpib_interface', name)
+        _, report = self._check(tmp_path, '--visa-library', '@py')
+        assert report['gpib_interface'] == {'configured': name}
+
+    def test_bus_mode_says_whether_the_gpib_interface_opened(self, tmp_path):
+        pytest.importorskip('serial')
+        name = 'PRLGX-ASRL::/dev/cu.resistamet-no-such-adapter::INTFC'
+        result = subprocess.run(
+            [sys.executable, '-m', 'resistamet_gui.api', '--check-visa', 'bus',
+             '--visa-library', '@py', '--gpib-interface', name,
+             '--config', str(tmp_path / 'config.json')],
+            capture_output=True, text=True, timeout=120,
+            cwd=str(tmp_path), env=_sidecar_env(tmp_path),
+        )
+        report = json.loads(result.stdout)
+        assert result.returncode == 0  # VISA itself is fine
+        assert report['gpib_interface']['configured'] == name
+        assert report['gpib_interface']['opened'] is False
+        assert name in report['gpib_interface']['error']
+
     def test_bus_mode_enumerates(self, tmp_path):
         result = subprocess.run(
             [sys.executable, '-m', 'resistamet_gui.api', '--check-visa', 'bus',
