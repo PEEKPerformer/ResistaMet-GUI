@@ -212,7 +212,8 @@ class MeasurementSession:
         control = self._require_control()
         return control.answer_prompt(prompt_id, choice, fields)
 
-    def identify(self, address: str, visa_library: str = '') -> Dict[str, Any]:
+    def identify(self, address: str, visa_library: str = '',
+                 gpib_interface: str = '') -> Dict[str, Any]:
         """Ask what is at an address. Refused while a run owns the bus."""
         from ..instrument import Keithley2400
 
@@ -222,7 +223,8 @@ class MeasurementSession:
             self._state = 'identifying'
         try:
             with hold_instrument(address):
-                instrument = Keithley2400(address, visa_library=visa_library).connect()
+                instrument = Keithley2400(address, visa_library=visa_library,
+                                          gpib_interface=gpib_interface).connect()
                 try:
                     idn = instrument.query("*IDN?").strip()
                     spec = instrument.detect_model()

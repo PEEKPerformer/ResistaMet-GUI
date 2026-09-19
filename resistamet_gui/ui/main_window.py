@@ -3425,9 +3425,10 @@ class ResistanceMeterApp(QMainWindow):
             return
         addr = self.user_settings['measurement']['gpib_address']
         visa_library = self.user_settings['measurement'].get('visa_library', '')
+        gpib_interface = self.user_settings['measurement'].get('gpib_interface', '')
         try:
             from ..instrument import Keithley2400
-            k = Keithley2400(addr, visa_library=visa_library).connect()
+            k = Keithley2400(addr, visa_library=visa_library, gpib_interface=gpib_interface).connect()
             k.write("*RST"); import time; time.sleep(0.5)
             k.write("*CLS")
             k.write(":SENS:FUNC:CONC OFF")
