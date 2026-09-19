@@ -22,6 +22,7 @@ from ..buffers import EnhancedDataBuffer
 from ..config import ConfigManager
 from ..schema.map_session import MapSession
 from ..schema.resolve import resolve_run_settings
+from ..session.instrument_lock import InstrumentBusy, hold_instrument
 from ..constants import (
     __version__,
     AUX_PREVIEW_GIVEUP_TICKS,
@@ -3428,23 +3429,24 @@ class ResistanceMeterApp(QMainWindow):
         gpib_interface = self.user_settings['measurement'].get('gpib_interface', '')
         try:
             from ..instrument import Keithley2400
-            k = Keithley2400(addr, visa_library=visa_library, gpib_interface=gpib_interface).connect()
-            k.write("*RST"); import time; time.sleep(0.5)
-            k.write("*CLS")
-            k.write(":SENS:FUNC:CONC OFF")
-            k.write(":SENS:FUNC 'RES'")
-            k.write(":SENS:RES:MODE MAN")
-            k.write(":SOUR:FUNC CURR")
-            test_current = self.tab_resistance.res_test_current.value()
-            k.write(f":SOUR:CURR:RANG {abs(test_current)}")
-            k.write(f":SOUR:CURR {test_current}")
-            k.write(":SENS:VOLT:PROT 5")
-            k.write(":SENS:RES:NPLC 10")  # high accuracy for null
-            k.write(":FORM:ELEM RES")
-            k.write(":OUTP ON"); time.sleep(0.5)
-            ref = float(k.query(":READ?").strip().split(',')[0])
-            k.write(":OUTP OFF")
-            k.close()
+            with hold_instrument(addr, wait_s=0):
+                k = Keithley2400(addr, visa_library=visa_library, gpib_interface=gpib_interface).connect()
+                k.write("*RST"); import time; time.sleep(0.5)
+                k.write("*CLS")
+                k.write(":SENS:FUNC:CONC OFF")
+                k.write(":SENS:FUNC 'RES'")
+                k.write(":SENS:RES:MODE MAN")
+                k.write(":SOUR:FUNC CURR")
+                test_current = self.tab_resistance.res_test_current.value()
+                k.write(f":SOUR:CURR:RANG {abs(test_current)}")
+                k.write(f":SOUR:CURR {test_current}")
+                k.write(":SENS:VOLT:PROT 5")
+                k.write(":SENS:RES:NPLC 10")  # high accuracy for null
+                k.write(":FORM:ELEM RES")
+                k.write(":OUTP ON"); time.sleep(0.5)
+                ref = float(k.query(":READ?").strip().split(',')[0])
+                k.write(":OUTP OFF")
+                k.close()
 
             if not np.isfinite(ref) or ref < 0:
                 QMessageBox.warning(self, "Null Failed", f"Invalid reading: {ref}. Ensure probes are shorted.")
@@ -3456,6 +3458,8 @@ class ResistanceMeterApp(QMainWindow):
             self.tab_resistance.null_label.setText(f"Cable null: {format_engineering(ref, ohm)}")
             self.tab_resistance.null_label.setStyleSheet("color: green; font-weight: bold;")
             self.log_status(f"Cable null set: {format_engineering(ref, ohm)} (software subtraction)", color="darkGreen")
+        except InstrumentBusy as e:
+            QMessageBox.warning(self, "Busy", str(e))
         except Exception as e:
             QMessageBox.critical(self, "Null Failed", f"Error during cable null: {e}")
 
@@ -3508,6 +3512,9 @@ class ResistanceMeterApp(QMainWindow):
             QMessageBox.information(self, "Connection OK", f"Connected to:\n{idn}")
             self.log_status(f"Connection test OK: {idn}", color="darkGreen")
             self.statusBar().showMessage(f"Connected: {idn}", 5000)
+        except InstrumentBusy as e:
+            QMessageBox.warning(self, "Busy", str(e))
+            self.statusBar().showMessage("Connection failed", 5000)
         except Exception as e:
             from ..instrument import humanize_connection_error
             QMessageBox.critical(self, "Connection Failed", humanize_connection_error(e, addr))
