@@ -39,6 +39,11 @@ Also here: `trace.bat` + `etw_urbs.py`, the earlier header-only method
 | `ren` | every `RENLineOperation` and `ATNLineOperation` on `GPIB0::INTFC` without a prior IFC: only `deassert` and `asrt` succeed; the addressed modes → `VI_ERROR_INV_MODE`; LLO and all ATN modes → `VI_ERROR_NCIC` (a fresh INTFC session is not controller-in-charge) |
 | `board_io` | `viGpibSendIFC`, `viGpibCommand(UNL LAD24 MTA0)`, board-level `viWrite("*IDN?\n")`, `viGpibCommand(UNL TAD24 MLA0)`, board-level `viRead` → `VI_ERROR_TMO` |
 | `two_sessions` | two sessions to the same instrument in one process: `*IDN?` on each, close one, `*IDN?` on the other |
+| `read_thresholds` | `*IDN?` then `viRead` with count 1025, 1500, 2000, 2047, 2048, 2049, 3000, 4095, 4096 — where the framed read gives way to the raw one |
+| `write_thresholds` | `viWrite` of 18, 24, 32, 48, 63, 64, 65, 100, 128, 255, 256, 257, 512, 1024, 1025, 2048, 2049 bytes (`*CLS;` repeated, `\n`-terminated) — where the framed write gives way to the raw one |
+| `raw_errors` | at `GPIB0::5::INSTR` (nothing there): a 2500-byte write → `VI_ERROR_NLISTENERS`; `viRead` 20480 → `VI_ERROR_TMO`; `viReadSTB` → `VI_ERROR_TMO`; then a normal `*IDN?` on the 2420 |
+| `sad_poll` | through `GPIB0::24::1::INSTR`: `viReadSTB`, `viClear`, `viAssertTrigger`, `*CLS` — the secondary-address forms |
+| `ren_device` | on the instrument session: `viGpibControlREN` with `asrt_address`, `asrt_llo`, `asrt_address_llo`, `address_gtl`, `deassert_gtl`, `asrt`, then `*IDN?` |
 | `longwrite` | a 2048-byte write (`*CLS;` repeated), then `*IDN?` |
 | `readtimeout_long` | `:TRAC:DATA?` (61 768 bytes, ~12 s) with `VI_ATTR_TMO_VALUE` = 2000 ms — completed anyway; the timeout is not a total-transfer limit |
 | `terminate` | `viTerminate` from another thread 1.5 s into the same read — no effect on the synchronous read, which completed |
