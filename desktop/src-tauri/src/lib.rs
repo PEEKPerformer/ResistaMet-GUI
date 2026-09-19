@@ -6,6 +6,8 @@
 mod backend;
 mod close;
 mod logs;
+#[cfg(target_os = "macos")]
+mod menu;
 mod supervisor;
 
 use std::path::PathBuf;
@@ -138,6 +140,20 @@ pub fn run() {
             let handle = app.handle();
             app.manage(Supervisor::launch(starter(handle), exit_reporter(handle)));
             app.manage(CloseGate::default());
+            // Never an error from this hook: a menu that cannot be built
+            // leaves the default one, it does not take the app down.
+            #[cfg(target_os = "macos")]
+            match menu::build(handle) {
+                Ok(menu) => {
+                    let _ = app.set_menu(menu);
+                    app.on_menu_event(|app, event| {
+                        if event.id() == menu::QUIT_ID {
+                            menu::quit_chosen(app);
+                        }
+                    });
+                }
+                Err(e) => eprintln!("resistamet: keeping the default menu: {e}"),
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
