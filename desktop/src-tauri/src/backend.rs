@@ -168,19 +168,23 @@ pub fn spawn(mut options: SpawnOptions) -> Result<Backend, String> {
         }
     });
 
+    // A backend the shell cannot talk to is ended and reaped here, on every
+    // path: the app stays up after a failed start, so its own exit no longer
+    // tidies up behind it.
+    let mut abandon = |reason: String| {
+        let _ = child.kill();
+        let _ = child.wait();
+        reason
+    };
     let line = match rx.recv_timeout(HANDSHAKE_TIMEOUT) {
         Ok(Ok(line)) => line,
-        Ok(Err(e)) => {
-            let _ = child.kill();
-            return Err(e);
-        }
-        Err(_) => {
-            let _ = child.kill();
-            return Err("backend did not answer within 30 s".into());
-        }
+        Ok(Err(e)) => return Err(abandon(e)),
+        Err(_) => return Err(abandon("backend did not answer within 30 s".into())),
     };
-    let info: BackendInfo = serde_json::from_str(line.trim())
-        .map_err(|e| format!("backend handshake was not JSON ({e}): {line}"))?;
+    let info: BackendInfo = match serde_json::from_str(line.trim()) {
+        Ok(info) => info,
+        Err(e) => return Err(abandon(format!("backend handshake was not JSON ({e}): {line}"))),
+    };
 
     Ok(Backend {
         child: Mutex::new(Some(child)),
@@ -263,6 +267,22 @@ mod tests {
         backend.shutdown();
 
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "starting up\n");
+        let _ = std::fs::remove_dir_all(script.parent().unwrap());
+    }
+
+    fn alive(pid: &str) -> bool {
+        Command::new("kill").arg("-0").arg(pid).stderr(Stdio::null()).status().unwrap().success()
+    }
+
+    #[test]
+    fn a_handshake_that_is_not_json_does_not_leave_the_process_behind() {
+        // The stand-in ignores its stdin, so only a kill ends it.
+        let script = fake_backend("badjson", "echo $$ > pid\necho 'not a handshake'\nexec sleep 30");
+        let error = spawn(options(&script)).err().expect("a bad handshake is an error");
+        assert!(error.contains("not JSON"), "{error}");
+
+        let pid = std::fs::read_to_string(script.parent().unwrap().join("pid")).unwrap();
+        assert!(!alive(pid.trim()), "the backend process is still there");
         let _ = std::fs::remove_dir_all(script.parent().unwrap());
     }
 }
