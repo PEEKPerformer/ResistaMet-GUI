@@ -1,12 +1,14 @@
 import copy
 import json
 import logging
+import math
 import os
 import secrets
 import shutil
 import socket
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -28,6 +30,12 @@ _MACHINE_LOCAL_MEASUREMENT_KEYS = ('gpib_address', 'visa_library', 'gpib_interfa
 _USER_SECTIONS = ('measurement', 'display', 'file', 'output')
 
 
+# Top-level lists that are sets of names: two writers' additions are both kept.
+_NAME_LISTS = ('users', 'migrations')
+
+#: How long a save waits for another process's save to finish.
+_FILE_LOCK_WAIT_S = 5.0
+
 #: os.replace fails with PermissionError on Windows while another process --
 #: a sync client, a virus scanner, a second ResistaMet -- has the target open.
 _REPLACE_ATTEMPTS = 10
@@ -48,6 +56,73 @@ def _current_hostname() -> str:
         return socket.gethostname() or 'unknown_host'
     except Exception:
         return 'unknown_host'
+
+
+def _same(a, b) -> bool:
+    """Equality in which NaN equals NaN ("not measured" is a stored value)."""
+    if isinstance(a, float) and isinstance(b, float) and math.isnan(a) and math.isnan(b):
+        return True
+    return a == b
+
+
+def merge_changes(base: Dict, ours: Dict, theirs: Dict) -> Dict:
+    """``theirs`` with the changes made from ``base`` to ``ours`` applied.
+
+    The three-way merge behind :meth:`ConfigManager.save_config`: ``base`` is
+    the config as this process last read or wrote it, ``ours`` is what it has
+    in memory now, ``theirs`` is what is in the file now. Only the keys this
+    process changed are carried over, so another writer's changes to anything
+    else survive. Where both changed the same key, ours wins.
+    """
+    result = copy.deepcopy(theirs)
+    for key in list(base) + [key for key in ours if key not in base]:
+        if key not in ours:
+            result.pop(key, None)
+            continue
+        mine, was = ours[key], base.get(key)
+        if key in base and _same(was, mine):
+            continue
+        if isinstance(mine, dict) and isinstance(result.get(key), dict):
+            result[key] = merge_changes(was if isinstance(was, dict) else {}, mine, result[key])
+        else:
+            result[key] = copy.deepcopy(mine)
+    return result
+
+
+def _merge_name_list(was, mine, theirs) -> List:
+    was = was if isinstance(was, list) else []
+    theirs = theirs if isinstance(theirs, list) else []
+    removed = [name for name in was if name not in mine]
+    merged = [name for name in theirs if name not in removed]
+    merged += [name for name in mine if name not in was and name not in merged]
+    return merged
+
+
+def _with_defaults(loaded: Dict) -> Dict:
+    """A loaded config with every default section and key present."""
+    # deepcopy is required -- dict() would share nested dicts with the module
+    # constant and a later pop would mutate the defaults globally.
+    config = copy.deepcopy(DEFAULT_SETTINGS)
+    for section, defaults in DEFAULT_SETTINGS.items():
+        if section in loaded:
+            if isinstance(defaults, dict):
+                config[section].update(loaded[section])
+            else:
+                config[section] = loaded[section]
+    # Preserve any non-default top-level sections (e.g. machines,
+    # user_settings, users, last_user).
+    for key, value in loaded.items():
+        if key not in config:
+            config[key] = value
+    return config
+
+
+def _read_json_object(path: str) -> Dict:
+    with open(path, 'r') as f:
+        loaded = json.load(f)
+    if not isinstance(loaded, dict):
+        raise ValueError(f"expected a JSON object, found {type(loaded).__name__}")
+    return loaded
 
 
 def _write_json_atomically(path: str, data: Dict) -> None:
@@ -88,6 +163,57 @@ def _write_json_atomically(path: str, data: Dict) -> None:
         raise ConfigSaveError(f"could not save '{path}': {e}") from e
 
 
+@contextmanager
+def _file_lock(path: str):
+    """Hold an OS lock on ``path`` for the block; released if the holder dies.
+
+    Best effort: where the lock cannot be taken -- a file system without
+    locks, a holder that does not let go -- the block runs anyway, with a
+    warning, because a save that never happens loses more than a save that
+    races.
+    """
+    handle = None
+    try:
+        handle = open(path, 'a+')
+        deadline = time.monotonic() + _FILE_LOCK_WAIT_S
+        while True:
+            try:
+                try:
+                    import fcntl
+                except ImportError:  # Windows
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.02)
+    except OSError as e:
+        logger.warning(f"Saving without the lock '{path}' ({e}); a save by another "
+                       "process at the same moment could be lost.")
+        if handle is not None:
+            handle.close()
+            handle = None
+    try:
+        yield
+    finally:
+        if handle is not None:
+            try:
+                import msvcrt
+            except ImportError:
+                pass  # POSIX: closing the handle drops the flock
+            else:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+            handle.close()
+
+
 class ConfigManager:
     def __init__(self, config_file: str = CONFIG_FILE, hostname: Optional[str] = None,
                  machine_file: Optional[str] = None, raise_on_save_error: bool = False):
@@ -112,11 +238,13 @@ class ConfigManager:
         #: app then runs on the defaults, in memory, and the file is left
         #: exactly as found until something is deliberately saved.
         self.load_failed = False
-        # Set with load_failed; cleared once the unreadable file has been
-        # copied aside, which save_config does before it writes over it.
-        self._unreadable_on_disk = False
+        # The config as this manager last read or wrote it: what a save
+        # compares with to tell its own changes from everybody else's.
+        self._baseline: Dict = {}
         self._machine = self._load_machine_file()
         self.config = self.load_config()
+        if not self._baseline:
+            self._baseline = copy.deepcopy(self.config)
         if self.load_failed:
             # A migration would "fix" the defaults and save them over the
             # file, which may only be half-synced and whole again in a moment.
@@ -152,6 +280,9 @@ class ConfigManager:
         except ConfigSaveError:
             if self.raise_on_save_error:
                 raise
+        else:
+            if path == self.config_file:
+                self._baseline = copy.deepcopy(data)
 
     def _save_machine_file(self) -> None:
         self._write(self.machine_file, self._machine)
@@ -279,38 +410,9 @@ class ConfigManager:
     def load_config(self) -> Dict:
         if os.path.exists(self.config_file):
             try:
-                with open(self.config_file, 'r') as f:
-                    loaded_config = json.load(f)
-
-                # Merge with defaults to ensure all keys exist. deepcopy is
-                # required — dict() would share nested dicts with the module
-                # constant and a later set_gpib_address pop would mutate the
-                # defaults globally.
-                config = copy.deepcopy(DEFAULT_SETTINGS)
-                for section, defaults in DEFAULT_SETTINGS.items():
-                    if section in loaded_config:
-                        if isinstance(defaults, dict):
-                            config[section].update(loaded_config[section])
-                        else:
-                            config[section] = loaded_config[section]
-
-                # Ensure nested defaults are present
-                for section, defaults in DEFAULT_SETTINGS.items():
-                    if isinstance(defaults, dict):
-                        for key, value in defaults.items():
-                            if key not in config[section]:
-                                config[section][key] = value
-
-                # Preserve any non-default top-level sections (e.g. machines,
-                # user_settings, users, last_user).
-                for key, value in loaded_config.items():
-                    if key not in config:
-                        config[key] = value
-
-                return config
+                return _with_defaults(_read_json_object(self.config_file))
             except Exception as e:
                 self.load_failed = True
-                self._unreadable_on_disk = True
                 logger.error(
                     f"Configuration file '{self.config_file}' could not be read: {str(e)}. "
                     "Running on the defaults, in memory; no user or profile is loaded. "
@@ -335,9 +437,6 @@ class ConfigManager:
         before the defaults are written in its place. False means the copy
         could not be made, and the caller must not write.
         """
-        if not os.path.exists(self.config_file):
-            self._unreadable_on_disk = False
-            return True
         stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
         try:
             for attempt in range(1, 100):
@@ -351,7 +450,6 @@ class ConfigManager:
                 except FileExistsError:
                     continue
                 logger.error(f"The unreadable configuration was kept as '{copy_path}'.")
-                self._unreadable_on_disk = False
                 return True
             raise OSError("no free name for the copy")
         except OSError as e:
@@ -359,27 +457,67 @@ class ConfigManager:
                          f"'{self.config_file}' is not being overwritten.")
             return False
 
-    def save_config(self) -> None:
-        """Write the config, atomically.
+    def _merged_with_disk(self) -> Optional[Dict]:
+        """What to write: the file as it is now, with this manager's changes.
 
-        The old in-place rewrite truncated the file first, so a crash — or a
-        second writer, now that a session and the GUI can both hold a
-        ConfigManager — could leave an empty or half-written config.json and
-        lose every profile. Writing a sibling temp file and renaming it means
-        a reader sees either the old file or the new one.
+        A missing file gets everything in memory. One that cannot be read is
+        copied aside first and then gets everything in memory too; None when
+        that copy could not be made, and nothing may be written.
+        """
+        if not os.path.exists(self.config_file):
+            return self.config
+        try:
+            theirs = _with_defaults(_read_json_object(self.config_file))
+        except Exception as e:
+            logger.error(f"Configuration file '{self.config_file}' cannot be read "
+                         f"back for saving: {str(e)}")
+            return self.config if self._set_unreadable_file_aside() else None
+        merged = merge_changes(self._baseline, self.config, theirs)
+        for key in _NAME_LISTS:
+            if isinstance(self.config.get(key), list):
+                merged[key] = _merge_name_list(self._baseline.get(key), self.config[key],
+                                               theirs.get(key))
+        if isinstance(merged.get('users'), list):
+            merged['users'].sort()
+        return merged
+
+    def save_config(self) -> None:
+        """Write this manager's changes into the config file, atomically.
+
+        More than one ConfigManager can hold the same file -- the PySide6 app
+        and a sidecar, or two lab PCs on a shared folder -- and each read it
+        once, at start. Writing memory out whole would undo whatever the
+        others saved since. So a save re-reads the file, applies only what
+        this manager changed since it last read or wrote it (``merge_changes``),
+        writes the result and adopts it, all under an OS lock on
+        ``<config>.lock`` so that two saves cannot interleave. Two managers
+        that change the same key still end with the later one's value, and
+        nothing here refreshes a manager that is not saving.
+
+        The lock excludes processes that see the same file system. Across a
+        file-sync service it does not reach the other machine; there the
+        merge only narrows the window to the time a sync takes.
+
+        The write is a sibling temp file renamed into place, so a reader sees
+        the old file or the new one, never a truncated one.
 
         A save that fails is logged as an error, and raised as
         :class:`ConfigSaveError` when the manager was built with
         ``raise_on_save_error``, so that a caller able to tell its user can
         say the change was not kept.
         """
-        with self._lock:
-            if self._unreadable_on_disk and not self._set_unreadable_file_aside():
+        with self._lock, _file_lock(f"{self.config_file}.lock"):
+            merged = self._merged_with_disk()
+            if merged is None:
                 if self.raise_on_save_error:
                     raise ConfigSaveError(
                         f"'{self.config_file}' is unreadable and could not be copied "
                         "aside; it is not being overwritten")
                 return
+            if merged is not self.config:
+                # In place: callers may hold a reference to the top-level dict.
+                self.config.clear()
+                self.config.update(merged)
             self._write(self.config_file, self.config)
 
     # --- user / global settings ------------------------------------------
