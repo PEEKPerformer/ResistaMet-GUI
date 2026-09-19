@@ -1052,16 +1052,34 @@ class TestRawRead:
         assert controller.read(22, max_bytes=70000, timeout_s=3.0) == (first + second, True)
         transport.assert_done()
 
-    def test_loop_stops_at_the_request_and_a_small_last_chunk_is_framed(self):
+    def test_loop_stops_at_the_request_and_a_small_last_chunk_stays_raw(self):
+        # The requested count decides the instruction once per read (§10.1.1): the 1-byte tail
+        # of a 0x0b read is a 0x0b too, not a framed 0x0a in the middle of the message. The
+        # odd byte arrives padded to two on the alternate IN (§10.1.3).
         controller, transport = attached([
             ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', bytes(0xFFFF), 66048),
             ('in', raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
-            ('out', p.read_message(1, T3S)),   # 1 byte left: below the threshold, so 0x0a
-            ('in', read_reply(b'z', 1, end=False), 512),
+            ('out', p.read_raw_message(1, T3S)), ('raw_in', b'z\x00', 512),
+            ('in', raw_read_reply(1, 1, end=False), 512),
         ])
         data, end = controller.read_raw(0x10000, timeout_s=3.0)
         assert len(data) == 0x10000 and data[-1:] == b'z' and not end
         transport.assert_done()
+        assert p.OP_READ not in [message[0] for message in transport.sent]
+
+    def test_a_tail_just_under_the_threshold_stays_raw_and_a_small_request_stays_framed(self):
+        tail = RAW_READ_MIN_BYTES - 1
+        controller, transport = attached([
+            ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', bytes(0xFFFF), 66048),
+            ('in', raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
+            ('out', p.read_raw_message(tail, T3S)), ('raw_in', b'end\n', 1536),
+            ('in', raw_read_reply(tail, 4), 512),
+            ('out', p.read_message(tail, T3S)), ('in', read_reply(b'end\n', tail)),
+        ])
+        data, end = controller.read_raw(0xFFFF + tail, timeout_s=3.0)
+        assert len(data) == 0xFFFF + 4 and end
+        assert controller.read_raw(tail, timeout_s=3.0) == (b'end\n', True)   # the same count asked alone
+        assert [message[0] for message in transport.sent[-3:]] == [p.OP_READ_RAW, p.OP_READ_RAW, p.OP_READ]
 
     def test_zero_length_transfer_on_a_device_timeout(self):
         # nolistener.pcap 9.8121 / 9.8126: IN88 0 B, then error 0x0a with count -20480.

@@ -363,8 +363,9 @@ class Controller:
     def _write_bytes(self, data: bytes, code: int, send_eoi: bool, eos_char: Optional[int]) -> int:
         """Write instructions of at most 0xffff bytes each, EOI only with the last (§5.1).
 
-        Framed or raw is decided per chunk, like the read loop, so a short
-        tail after a raw chunk goes framed.
+        Framed or raw is decided per chunk, so a short tail after a raw
+        chunk goes framed: each write instruction is complete in itself, its
+        data with it. (The read loop decides once per call instead.)
         """
         # Both instructions carry at most 0xffff bytes, so one chunk size serves.
         step = min(p.MAX_TRANSFER_BYTES, p.MAX_RAW_TRANSFER_BYTES)
@@ -563,13 +564,23 @@ class Controller:
         larger request loops; the instrument stays addressed between chunks
         (§10.1.7 shows re-addressing is harmless, and none is needed). A
         timeout mid-loop raises with everything read so far as its partial.
+
+        The requested count decides the instruction, once, as it does for NI
+        (§10.1.1): a request that starts as 0x0b stays 0x0b to its last
+        chunk. Choosing per chunk switched such a read to a framed 0x0a for
+        a tail under the threshold, a change of instruction in the middle
+        of one instrument message that NI's rule never produces. The price
+        is a last 0x0b with a count below 1025, which NI was not captured
+        sending; the count field is a plain 32-bit count either way
+        (§10.1.2).
         """
         chunks: List[bytes] = []
         remaining = max_bytes
+        raw = self._raw and max_bytes >= RAW_READ_MIN_BYTES
         while remaining > 0:
             count = min(remaining, p.MAX_TRANSFER_BYTES)
             try:
-                if self._raw and count >= RAW_READ_MIN_BYTES:
+                if raw:
                     data, end = self._raw_read_instruction(count, code, eos, eos_8bit, termchar, operation)
                 else:
                     data, end = self._read_instruction(count, code, self._reply_wait_s(code), eos, eos_8bit,
