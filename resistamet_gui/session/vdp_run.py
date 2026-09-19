@@ -141,7 +141,16 @@ class VdpRun:
             # owns the profile file, not to a run.
             self._events.log('safety_silenced',
                               "Touch-safety warning silenced for this profile.")
-        return choice != 'acknowledge'
+        if choice != 'acknowledge':
+            # Cancelled, or stopped while the question was open. Without this
+            # line the log's last entry was still the previous run's: nothing
+            # recorded that a run was asked for and refused.
+            self._events.log('safety_declined',
+                              f"Run of '{self.sample_name}' not started: the touch-safety warning "
+                              f"was not acknowledged ({check.reason} = {check.voltage_v:g} V, "
+                              f"threshold {check.threshold_v:g} V).")
+            return True
+        return False
 
     def execute(self) -> None:
         self.running = True
