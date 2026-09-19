@@ -1206,3 +1206,64 @@ class TestTheWarningIsAboutTheFactorTheRowsUse:
         assert warning['compared_with'] == 'centre'
         assert warning['factor_rows'] is None and warning['relative_error_rows'] is None
         assert 'the factor at the centre of the sample' in warning['message']
+
+
+class TestEveryExitAfterTheFileIsOpenFinalizesIt:
+    def _footer(self, sink):
+        from resistamet_gui.data_export import parse_metadata
+        return parse_metadata(sink.of_type('run_ended')[0].payload['path'])
+
+    def test_an_output_that_will_not_turn_on(self, session, sink, fake_rm, profile, monkeypatch):
+        import pyvisa
+        from resistamet_gui._simulator import FakeKeithley
+
+        real_write = FakeKeithley.write
+
+        def refuse_output_on(self, cmd):
+            if cmd.strip().upper() == ':OUTP ON':
+                raise pyvisa.errors.VisaIOError(-1073807339)     # timeout
+            return real_write(self, cmd)
+        monkeypatch.setattr(FakeKeithley, 'write', refuse_output_on)
+
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+
+        ended = sink.of_type('run_ended')[0].payload
+        assert (ended['reason'], ended['ok'], ended['samples']) == ('output_on_failed', False, 0)
+        # The file was open, so it is closed properly: footer, events, log.
+        footer = self._footer(sink)
+        assert footer['total_samples'] == 0
+        assert 'ended_at' in footer
+        assert footer['spot_stats.n'] == 0
+        types = sink.types()
+        assert types.index('file_opened') < types.index('file_finalized') < types.index('run_ended')
+        assert types.count('file_finalized') == 1
+        assert types.count('acquisition_finished') == 1
+        codes = [e.payload['code'] for e in sink.of_type('log')]
+        assert 'output_off' in codes and 'completed' in codes
+        assert any(cmd.upper().startswith(':OUTP OFF')
+                    for op, cmd in fake_rm.opened[-1].command_log if op == 'write')
+
+    def test_an_unexpected_error_in_the_loop(self, session, sink, fake_rm, profile, monkeypatch):
+        from resistamet_gui.session import continuous_run
+
+        calls = {'n': 0}
+        real_build_row = continuous_run.build_row
+
+        def fail_on_the_third(*args, **kwargs):
+            calls['n'] += 1
+            if calls['n'] == 3:
+                raise RuntimeError("something nobody planned for")
+            return real_build_row(*args, **kwargs)
+        monkeypatch.setattr(continuous_run, 'build_row', fail_on_the_third)
+
+        session.start(_four_point(profile, samples=10), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+
+        ended = sink.of_type('run_ended')[0].payload
+        assert (ended['reason'], ended['ok'], ended['samples']) == ('worker_error', False, 2)
+        footer = self._footer(sink)
+        assert footer['total_samples'] == 2
+        assert footer['spot_stats.n'] == 2
+        assert sink.types().count('file_finalized') == 1
+        assert sink.types()[-1] == 'run_ended'
