@@ -49,3 +49,21 @@ def query_idn(config_manager: ConfigManager,
         idn = dev.query("*IDN?").strip()
         dev.close()
         return idn, resources
+
+
+def gpib_interface_problem(name: str) -> Optional[str]:
+    """Why ``name`` cannot be a GPIB interface resource, or None when it can.
+
+    The settings model decides, so the dialog refuses exactly what the API
+    would refuse: a name stored here that the model rejects would make every
+    API run on this machine fail validation.
+    """
+    from pydantic import ValidationError
+
+    from ..schema.settings_common import InstrumentSettings
+    try:
+        InstrumentSettings(gpib_interface=name)
+    except ValidationError as exc:
+        reason = str(exc.errors()[0]['msg']).removeprefix('Value error, ')
+        return reason[:1].upper() + reason[1:]
+    return None
