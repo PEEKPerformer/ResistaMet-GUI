@@ -203,6 +203,11 @@ class SpotStats(EventModel):
 
     n: int
     n_excluded: int = 0
+    #: Why the run ended, as ``run_ended.reason`` has it: 'target_samples'
+    #: for a spot that ran its course, 'user_stop', 'overpower', ... Recorded
+    #: so a reader of the archive can tell a short spot from a whole one.
+    #: Absent in files written before it existed.
+    end_reason: Optional[str] = None
     rs: QuantityStats
     rho: QuantityStats
     sigma: QuantityStats

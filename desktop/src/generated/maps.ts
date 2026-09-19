@@ -57,6 +57,7 @@ export interface MapSpot {
  * and left out, because they record a bound rather than a measurement.
  */
 export interface SpotStats {
+  end_reason?: string | null;
   n: number;
   n_excluded?: number;
   rho: QuantityStats;

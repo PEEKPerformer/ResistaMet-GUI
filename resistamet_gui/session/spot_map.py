@@ -50,7 +50,7 @@ _FOUR_POINT_TAG = f"_{MODE_FILE_TAGS['four_point']}_"
 MAP_SUMMARY_SUFFIX = '_map.json'
 
 #: Header values that are identifiers, read back as written.
-_TEXT_KEYS = ('spot.map_id', 'spot.label', 'sample', 'started_at')
+_TEXT_KEYS = ('spot.map_id', 'spot.label', 'sample', 'started_at', 'spot_stats.end_reason')
 
 QUANTITIES = ('rs', 'rho', 'sigma')
 
@@ -243,6 +243,8 @@ def _spot_stats(meta: Dict[str, Any]) -> Optional[SpotStats]:
     block: Dict[str, Any] = {
         'n': meta['spot_stats.n'],
         'n_excluded': meta.get('spot_stats.n_excluded') or 0,
+        # Absent in files written before it was recorded.
+        'end_reason': meta.get('spot_stats.end_reason') or None,
     }
     for quantity in QUANTITIES:
         prefix = f'spot_stats.{quantity}.'
