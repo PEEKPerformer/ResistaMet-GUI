@@ -9,6 +9,7 @@ from typing import Any, Optional, Tuple
 
 from .. import visa_backend
 from ..config import ConfigManager
+from ..session.instrument_lock import hold_instrument
 
 
 def configured_resource_manager(config_manager: ConfigManager) -> Any:
@@ -28,18 +29,23 @@ def query_idn(config_manager: ConfigManager,
 
     ``idn`` is None, and nothing is opened, when the backend does not list
     ``address``.
+
+    Holds the instrument lock for as long as it is on the bus, and raises
+    :class:`InstrumentBusy` without touching it when another process has
+    the address: an ``*IDN?`` reply can be swapped with a live ``:READ?``.
     """
-    rm = configured_resource_manager(config_manager)
-    resources = tuple(rm.list_resources())
-    if address not in resources:
-        return None, resources
-    dev = rm.open_resource(address)
-    dev.timeout = 5000
-    try:
-        dev.read_termination = '\n'
-        dev.write_termination = '\n'
-    except Exception:
-        pass
-    idn = dev.query("*IDN?").strip()
-    dev.close()
-    return idn, resources
+    with hold_instrument(address, wait_s=0):
+        rm = configured_resource_manager(config_manager)
+        resources = tuple(rm.list_resources())
+        if address not in resources:
+            return None, resources
+        dev = rm.open_resource(address)
+        dev.timeout = 5000
+        try:
+            dev.read_termination = '\n'
+            dev.write_termination = '\n'
+        except Exception:
+            pass
+        idn = dev.query("*IDN?").strip()
+        dev.close()
+        return idn, resources
