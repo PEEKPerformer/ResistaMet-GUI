@@ -171,8 +171,11 @@ export function setSpotLabel(label: string): void {
   if (state.label !== label) publish({ ...state, label });
 }
 
-export function setRedo(redo: SpotsState["redo"]): void {
-  publish({ ...state, redo, label: redo ? redo.label : "" });
+/** Redo takes the spot's name and, when it had one, its position: the same
+ *  spot is the same place unless the operator moves it. Cancelling gives
+ *  both back. */
+export function setRedo(redo: SpotsState["redo"], position: SpotsState["pending"] = null): void {
+  publish({ ...state, redo, label: redo ? redo.label : "", pending: redo ? (position ?? state.pending) : null });
 }
 
 /** Moving the spot answers a refusal: what the backend said about the old
