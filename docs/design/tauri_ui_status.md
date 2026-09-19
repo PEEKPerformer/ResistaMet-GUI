@@ -157,7 +157,6 @@ PC. The first CI build also lacked a WebSocket implementation entirely
   opened before the instrument address resolves; the app does not do that.
 - **Backend items step 2 depends on** but works around for now: the 4PP spot
   model (spots are summarised in the UI), cable null (not in the new UI yet),
-  persisting the safety-silence flag from a headless client, `SessionStatus`
-  in the exported contract (hand-typed in `lib/api.ts`).
+  persisting the safety-silence flag from a headless client.
 - PySide6 remains the shipping UI until the above is closed and the bench
   check passes.
