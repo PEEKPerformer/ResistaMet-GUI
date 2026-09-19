@@ -1227,35 +1227,40 @@ class ContinuousRun:
                 logger.warning("failed to release the instrument lock", exc_info=True)
 
     def _cleanup(self) -> None:
-        # Re-enable system sleep
-        self._sleep_inhibitor.uninhibit()
-        # Released last, after the instrument and aux ports are closed.
-        self._release_instrument_lock()
+        try:
+            # Re-enable system sleep
+            self._sleep_inhibitor.uninhibit()
 
-        if self.keithley:
-            try:
-                self.keithley.write(":OUTP OFF")
-                self.keithley.close()
-                self._events.log('cleanup', "Instrument disconnected.")
-            except Exception as e:
-                self._events.warn('cleanup', f"Warning: Error during instrument cleanup: {str(e)}")
-            finally:
-                self.keithley = None
-        if self._aux_sensor is not None:
-            try:
-                self._aux_sensor.close()
-            except Exception as e:
-                self._events.warn('cleanup', f"Warning: Error during aux-sensor cleanup: {str(e)}")
-            finally:
-                self._aux_sensor = None
-        if self.exporter:
-            try:
-                # Ensure exporter is finalized if not already
-                self.exporter.finalize()
-            except Exception as e:
-                logger.warning(f"Error finalizing exporter during cleanup: {e}")
-            finally:
-                self.exporter = None
+            if self.keithley:
+                try:
+                    self.keithley.write(":OUTP OFF")
+                    self.keithley.close()
+                    self._events.log('cleanup', "Instrument disconnected.")
+                except Exception as e:
+                    self._events.warn('cleanup', f"Warning: Error during instrument cleanup: {str(e)}")
+                finally:
+                    self.keithley = None
+            if self._aux_sensor is not None:
+                try:
+                    self._aux_sensor.close()
+                except Exception as e:
+                    self._events.warn('cleanup', f"Warning: Error during aux-sensor cleanup: {str(e)}")
+                finally:
+                    self._aux_sensor = None
+            if self.exporter:
+                try:
+                    # Ensure exporter is finalized if not already
+                    self.exporter.finalize()
+                except Exception as e:
+                    logger.warning(f"Error finalizing exporter during cleanup: {e}")
+                finally:
+                    self.exporter = None
+        finally:
+            # Released last, after the instrument and aux ports are closed:
+            # on a failure exit the :OUTP OFF above is the only one, and a
+            # process that got the address before it landed could have its
+            # own output turned off under it, or on before ours was off.
+            self._release_instrument_lock()
 
     def _check_instrument_errors(self) -> Optional[str]:
         """Check instrument error queue and return any errors.
