@@ -2,7 +2,8 @@
 //
 // The preview parses the CSV in the browser and plots one column against
 // elapsed time; the metadata header is shown as-is, because it is the record
-// of what the run was.
+// of what the run was, and so is the block the run wrote when it ended,
+// which is the only place a van der Pauw result or a spot's statistics are.
 
 import { useEffect, useMemo, useState } from "react";
 import { useApi } from "../../app/AppContext";
@@ -154,22 +155,36 @@ export function ResultsView() {
             ) : null}
             {parsed ? (
               <Panel title="Metadata" className={styles.meta} bodyClassName={styles.metaBody}>
-                <table className={styles.metaTable}>
-                  <tbody>
-                    {Object.entries(parsed.metadata).map(([key, value]) => (
-                      <tr key={key}>
-                        <th>{key}</th>
-                        <td className="mono">{value}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                {/* The result first: the panel scrolls, and the header is long. */}
+                <div className={styles.metaHeading}>End of run</div>
+                {Object.keys(parsed.footer).length > 0 ? (
+                  <MetadataTable entries={parsed.footer} />
+                ) : (
+                  <div className={styles.muted}>None written: the run did not finish this file.</div>
+                )}
+                <div className={styles.metaHeading}>Header</div>
+                <MetadataTable entries={parsed.metadata} />
               </Panel>
             ) : null}
           </>
         )}
       </div>
     </div>
+  );
+}
+
+function MetadataTable({ entries }: { entries: Record<string, string> }) {
+  return (
+    <table className={styles.metaTable}>
+      <tbody>
+        {Object.entries(entries).map(([key, value]) => (
+          <tr key={key}>
+            <th>{key}</th>
+            <td className="mono">{value}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
