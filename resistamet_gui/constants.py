@@ -191,6 +191,18 @@ MODE_TIMING_OVERRIDES = {
     'vdp':        {'auto_zero': 'on', 'filter_count': 10},
 }
 
+# What each mode is called in front of an operator: the words on the PySide6
+# tabs and the desktop rail. Log messages use these; settings, events, log
+# codes and file metadata keep the internal keys on the left.
+MODE_DISPLAY_NAMES = {
+    'resistance': 'Resistance',
+    'source_v': 'Voltage source',
+    'source_i': 'Current source',
+    'four_point': 'Four-point probe',
+    'sweep': 'I-V sweep',
+    'vdp': 'Van der Pauw',
+}
+
 # Keithley compliance heuristics
 KEITHLEY_COMPLIANCE_MAGIC_NUMBER = 9.9e37
 COMPLIANCE_THRESHOLD_FACTOR = 1.0

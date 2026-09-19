@@ -474,8 +474,8 @@ class VdpRun:
         }
         self._events.emit('vdp_result', result_dict)
         self._events.log('completed', 
-            f"vdP done: Rs={result.sheet_resistance:.4g} Ohm/sq, "
-            f"rho={result.rho_avg:.4g} Ohm.cm, "
+            f"vdP done: Rs={result.sheet_resistance:.4g} Ω/sq, "
+            f"rho={result.rho_avg:.4g} Ω·cm, "
             f"asym={result.asymmetry_pct:.2f}% "
             f"({'homogeneous' if result.homogeneous else 'NON-homogeneous'})"
         )

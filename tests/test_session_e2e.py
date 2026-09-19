@@ -241,7 +241,7 @@ class TestStopInsideTheSettle:
         assert codes.index('stopping') < codes.index('output_off') < codes.index('completed')
         completed = [e.payload['message'] for e in sink.of_type('log')
                      if e.payload['code'] == 'completed']
-        assert completed == [f"Measurement (resistance) completed! Data saved to: {path}"]
+        assert completed == [f"Measurement (Resistance) completed! Data saved to: {path}"]
 
         finalized = sink.of_type('file_finalized')
         assert [e.payload['path'] for e in finalized] == [path]
