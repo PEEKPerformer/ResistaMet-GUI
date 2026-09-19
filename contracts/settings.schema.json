@@ -799,11 +799,11 @@
     },
     "SweepSettings": {
       "additionalProperties": true,
-      "description": "Bulk linear sweep, run by the instrument's own sweep engine.\n\nStart/stop keep the +/-200 V bounds for both source types, as the widgets\ndo today; source-aware bounds are a follow-up.",
+      "description": "Bulk linear sweep, run by the instrument's own sweep engine.\n\nStart/stop keep the +/-200 V bounds for both source types, as the widgets\ndo today; source-aware bounds for them are a follow-up.",
       "properties": {
         "sweep_compliance": {
           "default": 0.1,
-          "maximum": 3.0,
+          "maximum": 210.0,
           "minimum": 1e-07,
           "title": "Sweep Compliance",
           "type": "number"

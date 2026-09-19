@@ -122,6 +122,28 @@ class TestSweep:
         assert check.voltage_v == 100.0
 
 
+    def test_current_sweep_at_60_v_is_the_same_hazard_as_a_60_v_source(self):
+        """The compliance of a current-sourced sweep is the voltage an open
+        circuit puts on the leads, exactly like a source at that voltage."""
+        sweep = is_potentially_hazardous(_settings({
+            'sweep_source': 'current', 'sweep_start': 0.0, 'sweep_stop': 1e-3,
+            'sweep_compliance': 60.0,
+        }), 'sweep')
+        source = is_potentially_hazardous(_settings({'vsource_voltage': 60.0}), 'source_v')
+        assert (sweep.hazardous, sweep.voltage_v, sweep.threshold_v) == (
+            source.hazardous, source.voltage_v, source.threshold_v) == (True, 60.0, 30.0)
+        assert sweep.reason == 'V compliance'
+
+    def test_voltage_sweep_ignores_its_current_compliance(self):
+        # 3 A of compliance is a current; it must not be read as 3 V, nor
+        # hide the 60 V endpoint.
+        check = is_potentially_hazardous(_settings({
+            'sweep_source': 'voltage', 'sweep_start': 0.0, 'sweep_stop': 60.0,
+            'sweep_compliance': 3.0,
+        }), 'sweep')
+        assert (check.hazardous, check.voltage_v, check.reason) == (True, 60.0, 'Sweep V range')
+
+
 class TestThresholdOverride:
     def test_per_profile_threshold(self):
         # User dialled threshold up to 60 V → 50 V compliance no longer warns.

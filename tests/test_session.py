@@ -447,6 +447,66 @@ class TestSafetyPrompt:
         assert _wait_for(lambda: session.state == 'idle')
         assert [e for e in sink.of_type('log') if e.payload['code'] == 'safety_declined'] == []
 
+    def test_a_current_sourced_sweep_asks_about_its_voltage_compliance(self, session, sink,
+                                                                         fake_rm, profile):
+        """An open circuit takes a current source to its compliance: 60 V of
+        compliance is 60 V on the leads, and is asked about exactly as a
+        60 V source is."""
+        profile['measurement'].update({
+            'safety_voltage_warn_v': 30.0, 'safety_voltage_warn_silenced': False})
+        session.start(profile, 'sweep', 'wafer1', 'alice', overrides={
+            'sweep_source': 'current', 'sweep_start': 0.0, 'sweep_stop': 1e-3,
+            'sweep_step': 1e-4, 'sweep_compliance': 60.0})
+        assert _wait_for(lambda: self._pending(session) is not None)
+        sweep_prompt = self._pending(session)
+
+        assert sweep_prompt['kind'] == 'safety_voltage_ack'
+        assert sweep_prompt['requires_human'] is True
+        assert sweep_prompt['options'] == ['acknowledge', 'cancel']
+        assert sweep_prompt['detail']['voltage_v'] == 60.0
+        assert sweep_prompt['detail']['threshold_v'] == 30.0
+        assert sweep_prompt['detail']['reason'] == 'V compliance'
+        # nothing has been energised yet
+        assert sink.of_type('instrument_connected') == []
+
+        session.answer_prompt(sweep_prompt['prompt_id'], 'cancel')
+        assert _wait_for(lambda: session.state == 'idle')
+        assert [e.payload['reason'] for e in sink.of_type('run_ended')] == ['cancelled']
+        assert sink.of_type('instrument_connected') == []
+
+        # The same question a 60 V source raises, field for field.
+        session.start(self._hazardous(profile), 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: self._pending(session) is not None)
+        source_prompt = self._pending(session)
+        session.answer_prompt(source_prompt['prompt_id'], 'cancel')
+        assert _wait_for(lambda: session.state == 'idle')
+        for key in ('kind', 'requires_human', 'options'):
+            assert sweep_prompt[key] == source_prompt[key]
+        for key in ('voltage_v', 'threshold_v'):
+            assert sweep_prompt['detail'][key] == source_prompt['detail'][key]
+        assert sorted(sweep_prompt['detail']) == sorted(source_prompt['detail'])
+
+    def test_acknowledged_the_60_v_sweep_runs(self, session, sink, fake_rm, profile):
+        profile['measurement'].update({
+            'safety_voltage_warn_v': 30.0, 'safety_voltage_warn_silenced': False})
+        session.start(profile, 'sweep', 'wafer1', 'alice', overrides={
+            'sweep_source': 'current', 'sweep_start': 0.0, 'sweep_stop': 1e-3,
+            'sweep_step': 1e-4, 'sweep_compliance': 60.0})
+        assert _wait_for(lambda: self._pending(session) is not None)
+        session.answer_prompt(self._pending(session)['prompt_id'], 'acknowledge')
+        assert _wait_for(lambda: session.state == 'idle')
+        assert [e.payload['reason'] for e in sink.of_type('run_ended')] == ['completed']
+        assert len(sink.of_type('sweep_segment')) == 1
+
+    def test_a_low_voltage_compliance_asks_nothing(self, session, sink, fake_rm, profile):
+        profile['measurement'].update({
+            'safety_voltage_warn_v': 30.0, 'safety_voltage_warn_silenced': False})
+        session.start(profile, 'sweep', 'wafer1', 'alice', overrides={
+            'sweep_source': 'current', 'sweep_start': 0.0, 'sweep_stop': 1e-3,
+            'sweep_step': 1e-4, 'sweep_compliance': 21.0})
+        assert _wait_for(lambda: session.state == 'idle' and sink.of_type('run_ended'))
+        assert sink.of_type('prompt') == []
+
     def test_safe_voltage_asks_nothing(self, session, sink, fake_rm, profile):
         profile['measurement'].update({'safety_voltage_warn_v': 30.0,
                                         'vsource_voltage': 1.0,
