@@ -4,6 +4,7 @@ No Qt anywhere — this is the path the API sidecar and the MCP layer will use.
 """
 import copy
 import os
+import re
 import time
 from pathlib import Path
 
@@ -160,6 +161,52 @@ class TestFileNames:
         assert second.name == '1789000000_wafer1_4PP_0.10mA-2.csv'
         assert first.read_bytes() == before
         assert sink.of_type('file_opened')[-1].payload['path'] == str(second)
+
+
+class TestLogText:
+    """Log messages are read at the bench: they name a mode the way the UIs
+    do, carry no emoji, and write units with their symbols. Log codes are
+    what clients key on, and stay as they were."""
+
+    #: Pictographs and dingbats, including the warning sign this log once used.
+    EMOJI = re.compile('[\u2600-\u27bf\ufe0f\U0001f300-\U0001faff]')
+
+    def _messages(self, sink):
+        return {e.payload['code']: e.payload['message'] for e in sink.of_type('log')}
+
+    def test_every_mode_has_a_display_name(self):
+        from resistamet_gui.constants import MODE_DISPLAY_NAMES
+        from resistamet_gui.schema.settings_modes import MODE_MODELS
+        assert sorted(MODE_DISPLAY_NAMES) == sorted(MODE_MODELS)
+
+    def test_a_probe_run_is_named_as_the_ui_names_it(self, session, sink, fake_rm, profile):
+        # (Not "four_point" in this test's name: the data path, which the
+        # closing message quotes, is built from it.)
+        # 0.1 mA x 5 V = 0.5 mW worst case over a 0.1 mW warning: the run
+        # carries the power-envelope warning that used to open with an emoji.
+        profile = _four_point(profile)
+        profile['measurement']['fpp_power_warn_w'] = 1e-4
+        session.start(profile, 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+
+        messages = self._messages(sink)
+        assert messages['configuring'] == "Configuring instrument for Four-point probe mode..."
+        assert messages['progress'].startswith("Running Four-point probe: ")
+        assert messages['completed'].startswith("Measurement (Four-point probe) completed!")
+        assert messages['power_envelope'].startswith("Warning: 4PP power envelope: ")
+        assert [m for m in messages.values() if 'four_point' in m] == []
+        assert [m for m in messages.values() if self.EMOJI.search(m)] == []
+
+    def test_resistance_progress_uses_the_ohm_sign(self, session, sink, fake_rm, profile):
+        session.start(profile, 'resistance', 'wafer1', 'alice')
+        assert _wait_for(lambda: sink.of_type('sample'))
+        session.stop()
+        assert _wait_for(lambda: session.state == 'idle')
+
+        messages = self._messages(sink)
+        assert re.fullmatch(r"Running Resistance: \d\d:\d\d:\d\d \| R: [\d.]+ \u03a9",
+                            messages['progress']), messages['progress']
+        assert messages['stopping'] == "Stopping measurement (Resistance)..."
 
 
 class TestValidation:

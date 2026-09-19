@@ -16,7 +16,7 @@ from typing import Dict, Optional
 import numpy as np
 import pyvisa
 
-from ..constants import AUX_READY_TIMEOUT_S
+from ..constants import AUX_READY_TIMEOUT_S, MODE_DISPLAY_NAMES
 from ..data_export import AUX_LOG_MODES, splice_before_tail
 from ..instrument import Keithley2400, humanize_connection_error
 from ..sensors import aux_column_names, make_sensor, reading_to_columns
@@ -56,6 +56,8 @@ class ContinuousRun:
         if mode not in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             raise ValueError(f"Invalid measurement mode: {mode}")
         self.mode = mode
+        #: The mode as log messages name it; self.mode stays the internal key.
+        self._mode_name = MODE_DISPLAY_NAMES[mode]
         self.sample_name = sample_name
         self.username = username
         self.settings = settings
@@ -547,7 +549,7 @@ class ContinuousRun:
                 return
 
             # Configure instrument
-            self._events.log('configuring', f"Configuring instrument for {self.mode} mode...")
+            self._events.log('configuring', f"Configuring instrument for {self._mode_name} mode...")
             metadata = {}
             csv_headers = []
             source_value_str = ""
@@ -794,7 +796,7 @@ class ContinuousRun:
                         fault = aux_cols.get('aux_fault', '0')
                         if fault != self._aux_last_fault:
                             if fault != '0':
-                                self._events.warn('aux_fault', f"⚠️ Auxiliary sensor: {fault}")
+                                self._events.warn('aux_fault', f"Warning: Auxiliary sensor: {fault}")
                             self._aux_last_fault = fault
 
                     stop_on_comp = bool(measurement_settings.get('stop_on_compliance', False))
@@ -804,7 +806,7 @@ class ContinuousRun:
                                 'kind': compliance_type,
                                 'stop_on_compliance': stop_on_comp,
                             })
-                            self._events.warn('compliance', f"⚠️ {compliance_type} Compliance Hit!")
+                            self._events.warn('compliance', f"Warning: {compliance_type} Compliance Hit!")
                         except Exception:
                             pass
                         if stop_on_comp:
@@ -843,7 +845,7 @@ class ContinuousRun:
                                 self._control.finish('overpower')
                             elif measured_power > warn_w:
                                 self._events.warn('power_envelope', 
-                                    f"⚠️ 4PP power {measured_power*1e3:.1f} mW above "
+                                    f"Warning: 4PP power {measured_power*1e3:.1f} mW above "
                                     f"warn threshold {warn_w*1e3:.0f} mW"
                                 )
 
@@ -919,10 +921,10 @@ class ContinuousRun:
                     self._periodic_health_check(now)
 
                     elapsed_time_formatted = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
-                    status_msg = f"Running {self.mode}: {elapsed_time_formatted}"
+                    status_msg = f"Running {self._mode_name}: {elapsed_time_formatted}"
                     if self.mode == 'resistance':
                         rv = data_dict.get('resistance', float('nan'))
-                        status_msg += f" | R: {rv:.4f} Ohms" if np.isfinite(rv) else " | R: Invalid"
+                        status_msg += f" | R: {rv:.4f} Ω" if np.isfinite(rv) else " | R: Invalid"
                     elif self.mode == 'source_v':
                         cv = data_dict.get('current', float('nan'))
                         vv = data_dict.get('voltage', float('nan'))
@@ -959,10 +961,10 @@ class ContinuousRun:
                 self._shut_down(instrument_ready, file_ready, nplc)
             except Exception as e:
                 self._control.finish('worker_error')
-                self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self.mode}): {str(e)}")
+                self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self._mode_name}): {str(e)}")
         except Exception as e:
             self._control.finish('worker_error')
-            self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self.mode}): {str(e)}")
+            self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self._mode_name}): {str(e)}")
         finally:
             # Read the counters before cleanup releases the exporter.
             samples = self.exporter.row_count if self.exporter else 0
@@ -992,7 +994,7 @@ class ContinuousRun:
             except Exception as e:
                 self._events.warn('output_off_failed', f"Warning: Could not turn off output - {str(e)}")
 
-        final_message = f"Measurement ({self.mode}) stopped."
+        final_message = f"Measurement ({self._mode_name}) stopped."
         if file_ready and self.exporter:
             try:
                 end_time = datetime.now()
@@ -1018,7 +1020,7 @@ class ContinuousRun:
                         self._write_map_summary(record.spot.map_id)
             except Exception as e:
                 self._events.warn('finalize_failed', f"Warning: Error finalizing export - {str(e)}")
-            final_message = f"Measurement ({self.mode}) completed! Data saved to: {self.filename}"
+            final_message = f"Measurement ({self._mode_name}) completed! Data saved to: {self.filename}"
         self._events.log('completed', final_message)
         self._events.emit('acquisition_finished', {'mode': self.mode})
 
@@ -1070,16 +1072,16 @@ class ContinuousRun:
     def pause_measurement(self) -> None:
         if self.running:
             self.paused = True
-            self._events.log('paused', f"Measurement ({self.mode}) paused")
+            self._events.log('paused', f"Measurement ({self._mode_name}) paused")
 
     def resume_measurement(self) -> None:
         if self.running:
             self.paused = False
-            self._events.log('resumed', f"Measurement ({self.mode}) resumed")
+            self._events.log('resumed', f"Measurement ({self._mode_name}) resumed")
 
     def stop_measurement(self) -> None:
         self._events.emit('stopping', {'reason': 'user_stop'})
-        self._events.log('stopping', f"Stopping measurement ({self.mode})...")
+        self._events.log('stopping', f"Stopping measurement ({self._mode_name})...")
         self._control.finish('user_stop')
 
     def _release_instrument_lock(self) -> None:
