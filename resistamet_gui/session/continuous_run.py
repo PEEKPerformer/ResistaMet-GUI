@@ -221,7 +221,11 @@ class ContinuousRun:
         """Run the instrument's own sweep engine, write the points, report them."""
         # Sweep mode: single atomic operation, then done
         if self.mode == 'sweep':
-            self._events.log('sweep_started', f"Running I-V sweep ({self._mode_state.points} points)...")
+            if self._mode_state.up_down:
+                planned = f"{self._mode_state.points} points each way"
+            else:
+                planned = f"{self._mode_state.points} points"
+            self._events.log('sweep_started', f"Running I-V sweep ({planned})...")
             try:
                 self.keithley.write(":OUTP ON")
                 # Increase timeout for long sweeps
@@ -251,6 +255,11 @@ class ContinuousRun:
                         self.exporter.write_row(row_data)
                     except Exception:
                         pass
+
+                # What the closing log line reports: every point in the file,
+                # both legs of an up-then-down sweep. It used to give the
+                # forward leg's count alone ("41 points" for 82 rows).
+                points_summary = f"{len(voltages)} points acquired"
 
                 # For up_down: run reverse sweep
                 if self._mode_state.up_down:
@@ -288,6 +297,8 @@ class ContinuousRun:
                             self.exporter.write_row(row_data)
                         except Exception:
                             pass
+                    points_summary = (f"{len(voltages) + len(rev_v)} points acquired "
+                                      f"({len(voltages)} forward, {len(rev_v)} reverse)")
                     # Report both directions
                     self._events.emit('sweep_segment', {
                         'direction': 'forward', 'voltages': voltages,
@@ -300,7 +311,7 @@ class ContinuousRun:
                         'direction': 'forward', 'voltages': voltages,
                         'currents': currents, 'compliance': comp_list})
 
-                self._events.log('sweep_finished', f"Sweep complete: {len(voltages)} points acquired")
+                self._events.log('sweep_finished', f"Sweep complete: {points_summary}")
             except Exception as e:
                 self._events.error('sweep_error', 'smu', f"Sweep error: {str(e)}")
             # Sweep is done — skip to finalization
