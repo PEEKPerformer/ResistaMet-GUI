@@ -12,11 +12,17 @@ from ..accuracy import (
     current_source_uncertainty, current_uncertainty,
     resistance_uncertainty, voltage_source_uncertainty, voltage_uncertainty,
 )
+from ..constants import KEITHLEY_COMPLIANCE_MAGIC_NUMBER
 from ..data_export import splice_before_tail
 
 # Keithley 2400 series STATUS word bit masks (24-bit)
 # Bit 3: Compliance — source is in real compliance
 _STAT_BIT_COMPLIANCE = 1 << 3
+
+
+def _is_overflow(reading) -> bool:
+    """True for the 2400's overflow value (+9.9E37; 9.91E37 on some paths)."""
+    return bool(np.isfinite(reading) and abs(reading) >= KEITHLEY_COMPLIANCE_MAGIC_NUMBER)
 
 
 def parse_resistance(parts, stat_word, hw_compliance, measurement_settings, nplc,
@@ -42,10 +48,22 @@ def parse_resistance(parts, stat_word, hw_compliance, measurement_settings, nplc
     # current, so V/I under compliance is a wrong number that looks fine.
     # Detect it the way the source modes do: the measured voltage sitting at
     # the limit the instrument actually has.
-    comp_limit_v = getattr(mode_state, 'voltage_compliance_v', float('inf'))
-    if not np.isfinite(comp_limit_v) or comp_limit_v <= 0:
-        comp_limit_v = float(measurement_settings.get('res_voltage_compliance', float('inf')) or float('inf'))
-    if hw_compliance or (np.isfinite(voltage) and abs(voltage) >= comp_limit_v * 0.99):
+    #
+    # That holds in manual range only, where the limit read back at configure
+    # time is the limit for the whole run. Auto-ohms moves its own limit with
+    # the ohms range (2.1 V on the reset range, 20 V full scale on the top
+    # ones), so a healthy 1 MOhm DUT sits at 10 V and the frozen 2.1 V would
+    # flag every row of it. In auto range the only signs trusted are the
+    # status bit and the overflow value the instrument returns once the top
+    # range is exceeded.
+    if getattr(mode_state, 'auto_range', False):
+        at_limit = _is_overflow(voltage) or _is_overflow(value)
+    else:
+        comp_limit_v = getattr(mode_state, 'voltage_compliance_v', float('inf'))
+        if not np.isfinite(comp_limit_v) or comp_limit_v <= 0:
+            comp_limit_v = float(measurement_settings.get('res_voltage_compliance', float('inf')) or float('inf'))
+        at_limit = np.isfinite(voltage) and abs(voltage) >= comp_limit_v * 0.99
+    if hw_compliance or at_limit:
         compliance_status = 'V_COMP'
     if not np.isfinite(value):
         value = float('nan')
