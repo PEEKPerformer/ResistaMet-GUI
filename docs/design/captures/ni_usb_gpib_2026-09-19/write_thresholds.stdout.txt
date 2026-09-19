@@ -1,0 +1,21 @@
+854910.950 RM open, scenario write_thresholds
+854911.327 write 18 bytes
+854911.631 write 24 bytes
+854911.935 write 32 bytes
+854912.240 write 48 bytes
+854912.546 write 63 bytes
+854912.852 write 64 bytes
+854913.159 write 65 bytes
+854913.466 write 100 bytes
+854913.774 write 128 bytes
+854914.085 write 255 bytes
+854914.406 write 256 bytes
+854914.726 write 257 bytes
+854915.046 write 512 bytes
+854915.384 write 1024 bytes
+854915.757 write 1025 bytes
+854916.131 write 2048 bytes
+854916.753 write 2049 bytes
+854917.868 *IDN?
+82
+854918.666 done

@@ -1,0 +1,10 @@
+854924.549 RM open, scenario raw_errors
+854930.231 long write (2500 B) to absent address
+-> VI_ERROR_NLISTENERS (-1073807265): No listeners condition is detected (both NRFD and NDAC are deasserted).
+854930.734 viRead 20480 from absent address (raw read path)
+-> VI_ERROR_TMO (-1073807339): Timeout expired before operation completed.
+854935.431 read_stb at absent address
+-> VI_ERROR_TMO (-1073807339): Timeout expired before operation completed.
+854940.630 then a normal query on the 2420
+82
+854941.164 done

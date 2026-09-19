@@ -332,6 +332,93 @@ def sc_terminate(rm):
 SCENARIOS = {n[3:]: f for n, f in globals().items() if n.startswith('sc_')}
 
 
+
+# ---- third batch: thresholds, raw error paths, device start ---------------
+
+def sc_read_thresholds(rm):
+    # where does NI switch from the framed 0x0a read to the raw 0x0b read?
+    k = open_inst(rm, 3000)
+    lib, s = k.visalib, k.session
+    for n in (1025, 1500, 2000, 2047, 2048, 2049, 3000, 4095, 4096):
+        time.sleep(0.3); k.write('*IDN?')
+        stamp('viRead count %d' % n)
+        try:
+            d, st = lib.read(s, n); print(n, '->', len(d), st)
+        except Exception as e:
+            print(n, '->', e)
+        time.sleep(0.2); k.clear()
+    time.sleep(0.5); k.close()
+
+def sc_write_thresholds(rm):
+    # where does NI switch from the framed 0x0d write to the raw 0x0e write?
+    k = open_inst(rm, 3000)
+    k.write_termination = None
+    for n in (18, 24, 32, 48, 63, 64, 65, 100, 128, 255, 256, 257, 512, 1024, 1025, 2048, 2049):
+        time.sleep(0.3)
+        payload = ('*CLS;' * ((n // 5) + 2))[:n - 1] + '\n'
+        assert len(payload) == n
+        stamp('write %d bytes' % n); k.write_raw(payload.encode())
+    time.sleep(0.5); stamp('*IDN?'); print(len(k.query('*IDN?')))
+    time.sleep(0.5); k.close()
+
+def sc_raw_errors(rm):
+    # the raw instructions against an address nobody is at
+    try:
+        k = rm.open_resource('GPIB0::5::INSTR'); k.timeout = 2000
+    except Exception as e:
+        print('open GPIB0::5 ->', e); return
+    time.sleep(0.5)
+    stamp('long write (2500 B) to absent address')
+    try:
+        k.write('*CLS;' * 500); print('accepted?!')
+    except Exception as e:
+        print('->', e)
+    time.sleep(0.5); stamp('viRead 20480 from absent address (raw read path)')
+    try:
+        print(k.visalib.read(k.session, 20480))
+    except Exception as e:
+        print('->', e)
+    time.sleep(0.5); stamp('read_stb at absent address')
+    try:
+        print('STB', k.read_stb())
+    except Exception as e:
+        print('->', e)
+    time.sleep(0.5); k.close()
+    time.sleep(0.5); stamp('then a normal query on the 2420')
+    k = open_inst(rm); print(len(k.query('*IDN?'))); time.sleep(0.5); k.close()
+
+def sc_sad_poll(rm):
+    # serial poll and clear through a secondary address
+    k = rm.open_resource('GPIB0::24::1::INSTR'); k.timeout = 3000; time.sleep(0.5)
+    stamp('read_stb via SAD 1'); print('STB', k.read_stb()); time.sleep(0.4)
+    stamp('clear via SAD 1'); k.clear(); time.sleep(0.4)
+    stamp('trigger via SAD 1'); k.assert_trigger(); time.sleep(0.4)
+    stamp('*CLS'); k.write('*CLS'); time.sleep(0.5); k.close()
+
+def sc_ren_device(rm):
+    # the REN modes that need a device, on the instrument session
+    k = open_inst(rm); time.sleep(0.5)
+    for op in ('asrt_address', 'asrt_llo', 'asrt_address_llo', 'address_gtl', 'deassert_gtl', 'asrt'):
+        stamp('control_ren ' + op)
+        try:
+            k.control_ren(getattr(c.RENLineOperation, op))
+        except Exception as e:
+            print('->', e)
+        time.sleep(0.4)
+    stamp('*IDN? afterwards'); print(len(k.query('*IDN?')))
+    time.sleep(0.5); k.close()
+
+def sc_first_open(rm):
+    # run right after the adapter was restarted under capture: the first
+    # session open since device start
+    stamp('list_resources'); print(rm.list_resources())
+    time.sleep(0.5); k = open_inst(rm); time.sleep(0.5)
+    stamp('*IDN?'); print(repr(k.query('*IDN?')))
+    time.sleep(0.5); k.close()
+
+SCENARIOS = {n[3:]: f for n, f in globals().items() if n.startswith('sc_')}
+
+
 if __name__ == '__main__':
     name = sys.argv[1]
     rm = pyvisa.ResourceManager()

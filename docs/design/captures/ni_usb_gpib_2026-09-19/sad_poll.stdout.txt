@@ -1,0 +1,7 @@
+854947.895 RM open, scenario sad_poll
+854948.492 read_stb via SAD 1
+STB 4
+854948.895 clear via SAD 1
+854949.298 trigger via SAD 1
+854949.700 *CLS
+854950.205 done
