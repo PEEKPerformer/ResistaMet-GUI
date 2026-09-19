@@ -392,6 +392,52 @@ def test_four_point_save_spot_then_clear(sim_window, app):
     assert tab.fpp_spots_table.rowCount() == 0
 
 
+def test_four_point_spots_are_linked_in_their_files(sim_window, app):
+    """Two placements from the window are two files of one map: the same
+    ``map_id``, the index and name the spot table shows, and a map summary
+    beside them. Clear All ends the map."""
+    import glob
+    import json
+
+    from resistamet_gui.data_export import parse_metadata
+    from .e2e_utils import newest_csv
+
+    _switch_to(sim_window, "4-Point Probe", app)
+    tab = sim_window.tab_four_point
+
+    def measure_spot():
+        tab.start_button.click()
+        app.processEvents()
+        _pump_for(1.5, app)
+        sim_window.stop_current_measurement()
+        assert _wait_until(
+            lambda: not sim_window.measurement_running, timeout=3.0, app=app
+        )
+        path = newest_csv("measurement_data/**/*_4PP_*.csv")
+        sim_window._save_fpp_spot()
+        app.processEvents()
+        return parse_metadata(path, text_keys=("spot.map_id", "spot.label"))
+
+    tab.fpp_spot_name.setText("centre")
+    first = measure_spot()
+    second = measure_spot()
+
+    assert first["spot.map_id"] == second["spot.map_id"]
+    assert (first["spot.index"], first["spot.label"]) == (1, "centre")
+    assert (second["spot.index"], second["spot.label"]) == (2, "Spot 2")
+    assert [tab.fpp_spots_table.item(row, 0).text() for row in range(2)] == ["centre", "Spot 2"]
+
+    summaries = glob.glob(f"measurement_data/**/{first['spot.map_id']}_map.json", recursive=True)
+    assert len(summaries) == 1
+    with open(summaries[0]) as f:
+        assert [spot["index"] for spot in json.load(f)["spots"]] == [1, 2]
+
+    sim_window._clear_all_fpp_spots()
+    third = measure_spot()
+    assert third["spot.map_id"] != first["spot.map_id"]
+    assert third["spot.index"] == 1
+
+
 # --------------------------------------------------------------------------
 # I-V Sweep direction variants
 # --------------------------------------------------------------------------
