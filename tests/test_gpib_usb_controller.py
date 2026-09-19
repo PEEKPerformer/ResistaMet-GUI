@@ -18,7 +18,7 @@ from resistamet_gui.gpib_usb.controller import (DRAIN_WAIT_S, IFC_SETTLE_S, RAW_
                                                  RAW_TRANSFER_MIN_RATE_BPS, RAW_WRITE_MIN_BYTES, RECOVERY_WAIT_S,
                                                  SHORT_WAIT_S, SRQ_WAIT_SLICE_S, Controller)
 from resistamet_gui.gpib_usb.protocol import AdapterNotReady, GpibError, GpibTimeout, NoListener, ProtocolError
-from resistamet_gui.gpib_usb.transport import TransportError, TransportTimeout
+from resistamet_gui.gpib_usb.transport import TransportError, TransportStall, TransportTimeout
 
 
 def h(text: str) -> bytes:
@@ -40,7 +40,8 @@ class ScriptedTransport:
     expected_length])``, ``('raw_in', ...)`` and ``('intr', ...)`` -- what the
     next bulk IN on the primary / alternate / interrupt endpoint returns (or
     raises); ``('ctrl', params, reply)`` and ``('ctrl_out', params)`` -- the
-    next control request.
+    next control request; ``('clear_halt', endpoint[, exc])`` -- the next
+    pipe reset.
     """
 
     max_packet_size = 512
@@ -122,6 +123,13 @@ class ScriptedTransport:
             raise AssertionError('reply of %d bytes would overflow the %d-byte buffer'
                                  % (len(step[1]), length))
         return step[1]
+
+    def clear_halt(self, endpoint: int) -> None:
+        step = self._next('clear_halt', 'endpoint 0x%02x' % endpoint)
+        if step[1] != endpoint:
+            raise AssertionError('clear_halt on 0x%02x, expected 0x%02x' % (endpoint, step[1]))
+        if len(step) > 2 and isinstance(step[2], Exception):
+            raise step[2]
 
     def close(self) -> None:
         self.closed = True
@@ -604,6 +612,85 @@ class TestRawWrite:
         assert info.value.code == 8
         transport.assert_done()
 
+    #: raw_errors.pcap 5.6041-5.6069: 2502 bytes to address 5, where nothing listens.
+    NOBODY = b'*CLS;' * 500 + b'\r\n'
+    STALL = TransportStall('raw bulk write was refused with a STALL')
+
+    def refused_write(self, tail: List[Tuple[Any, ...]]) -> List[Tuple[Any, ...]]:
+        """NI's instruction and reply blocks for the refused 0x0e, in our bare message."""
+        return address_listener(pad=5) + [
+            ('out', h('0e 00 00 fc 00 0a 08 00 3a f6 ff ff 04 00 00 00')),
+            ('raw_out', self.NOBODY, self.STALL),
+            ('in', h('0e 00 28 08 3a f6 ff ff 04 00 00 00'), 512),
+        ] + tail
+
+    def test_refused_data_reads_the_reply_resets_both_out_pipes_and_carries_on(self):
+        assert len(self.NOBODY) == 2502
+        controller, transport = attached(self.refused_write([
+            ('clear_halt', 0x06), ('clear_halt', 0x02),
+            # The next operation is ordinary: no stop request, no drain, no re-attach (§10.6.7).
+        ]) + address_listener(pad=24) + [
+            ('out', p.write_message(b'*IDN?\n', T3S, True)), ('in', status_reply(0x0D)),
+        ])
+        with pytest.raises(NoListener) as info:
+            controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
+        assert info.value.code == 8
+        assert controller.write(24, b'*IDN?\n', timeout_s=3.0) == 6
+        transport.assert_done()
+
+    def test_the_reply_to_refused_data_is_already_due(self):
+        controller, transport = attached(self.refused_write([('clear_halt', 0x06), ('clear_halt', 0x02)]))
+        with pytest.raises(NoListener):
+            controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
+        assert ('in', 512, SHORT_MS) in transport.timeouts[-1:]
+
+    def test_a_long_raw_write_works_after_a_refused_one(self):
+        controller, transport = attached(self.refused_write([
+            ('clear_halt', 0x06), ('clear_halt', 0x02),
+        ]) + address_listener(pad=24) + [
+            ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY),
+            ('in', raw_write_reply(2502, 2502), 512),
+        ])
+        with pytest.raises(NoListener):
+            controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
+        assert controller.write(24, self.NOBODY, timeout_s=3.0, eos_char=0x0A) == 2502
+        transport.assert_done()
+
+    def test_a_pipe_reset_that_fails_still_reports_no_listener_and_reattaches_next(self):
+        controller, transport = attached(self.refused_write([
+            ('clear_halt', 0x06, TransportError('device gone')), ('clear_halt', 0x02),
+        ]) + attach_script() + address_listener(pad=24) + [
+            ('out', p.write_message(b'A', T3S, True)), ('in', status_reply(0x0D)),
+        ])
+        with pytest.raises(NoListener):
+            controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
+        controller.write(24, b'A', timeout_s=3.0)
+        transport.assert_done()
+
+    def test_the_pipes_are_reset_even_when_the_reply_never_comes(self):
+        controller, transport = attached(address_listener(pad=5) + [
+            ('out', p.write_raw_message(2502, T3S, True, 0x0A)),
+            ('raw_out', self.NOBODY, self.STALL),
+            ('in', TransportTimeout('no reply'), 512), STOP, ('in', TransportTimeout('still none'), 512),
+            ('clear_halt', 0x06), ('clear_halt', 0x02),
+            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,   # NoReply is a fault (§8.2)
+        ])
+        with pytest.raises(ProtocolError):
+            controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
+        transport.assert_done()
+
+    def test_refused_data_with_a_reply_that_reports_success_is_a_fault(self):
+        controller, transport = attached(address_listener(pad=5) + [
+            ('out', p.write_raw_message(2502, T3S, True, 0x0A)),
+            ('raw_out', self.NOBODY, self.STALL),
+            ('in', raw_write_reply(2502, 2502), 512),
+            ('clear_halt', 0x06), ('clear_halt', 0x02),
+            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,
+        ])
+        with pytest.raises(ProtocolError):
+            controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
+        transport.assert_done()
+
     def test_partial_count_is_returned(self):
         controller, _ = attached([
             ('out', p.write_raw_message(2100, T3S, True)), ('raw_out', bytes(2100)),
@@ -624,9 +711,9 @@ class TestRawWrite:
         transport.assert_done()
         assert transport.timeouts[-1] == ('in', 512, int(RECOVERY_WAIT_S * 1000))
 
-    def test_transfer_that_stalls_part_way_stops_the_device_and_reports_the_count_it_took(self):
+    def test_transfer_that_stops_part_way_stops_the_device_and_reports_the_count_it_took(self):
         # pyusb returns the partial count, not a timeout, once some bytes moved; that is the
-        # same situation as a stall at byte zero and takes the same path (§5.11).
+        # same situation as no byte accepted within the wait and takes the same path (§5.11).
         controller, transport = attached([
             ('out', p.write_raw_message(2100, T3S, True)),
             ('raw_out', bytes(2100), 1024),                       # 1024 of 2100 accepted, then the wait expired

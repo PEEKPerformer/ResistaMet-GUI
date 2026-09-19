@@ -17,6 +17,7 @@ every device this module touches during enumeration is disposed before the
 function returns, and ``dispose_adapter`` exists for the registry to call
 when it drops an ``AdapterInfo``.
 """
+import errno
 import glob
 import logging
 import os
@@ -56,6 +57,27 @@ class TransportTimeout(TransportError):
         self.partial = partial
 
 
+class TransportStall(TransportError):
+    """The endpoint answered with a STALL handshake and is now halted.
+
+    On the alternate bulk OUT this is how the adapter refuses the data of a
+    0x0e it cannot start (§10.6.5); the reply still arrives on the primary
+    bulk IN, and the endpoint stays halted until ``Transport.clear_halt``.
+    """
+
+
+#: How pyusb's libusb-1.0 backend reports a STALL: ``USBError`` with
+#: ``backend_error_code`` LIBUSB_ERROR_PIPE (-9) and ``errno`` EPIPE (its
+#: ``_check`` and ``_libusb_errno``). Either one identifies it; the second
+#: covers a backend that fills only ``errno``.
+LIBUSB_ERROR_PIPE = -9
+
+
+def _is_stall(exc: Exception) -> bool:
+    return (getattr(exc, 'backend_error_code', None) == LIBUSB_ERROR_PIPE
+            or getattr(exc, 'errno', None) == errno.EPIPE)
+
+
 class Transport(Protocol):
     """What the controller needs from a USB connection to one adapter.
 
@@ -76,6 +98,10 @@ class Transport(Protocol):
     took the whole wait; a short transfer that came back sooner is the
     device's short packet, i.e. the end of the data. The primary pair
     carries fixed-shape messages, where short means a fault.
+
+    A STALL on any endpoint raises ``TransportStall``. ``clear_halt`` takes
+    the endpoint address (``tables.Model`` has them) and resets that pipe,
+    which is what NI's driver does after a refused 0x0e (§10.6.5).
     """
 
     #: wMaxPacketSize of the primary bulk IN endpoint, for sizing read buffers (§8.6).
@@ -100,6 +126,8 @@ class Transport(Protocol):
     def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes: ...
 
     def interrupt_in(self, length: int, timeout_ms: int) -> bytes: ...
+
+    def clear_halt(self, endpoint: int) -> None: ...
 
     def close(self) -> None: ...
 
@@ -329,6 +357,8 @@ class PyUsbTransport:
         except self._usb.core.USBTimeoutError as exc:
             raise TransportTimeout('%s timed out' % what) from exc
         except self._usb.core.USBError as exc:
+            if _is_stall(exc):
+                raise TransportStall('%s was refused with a STALL' % what) from exc
             raise TransportError('%s failed: %s' % (what, exc)) from exc
 
     def control_in(self, request: int, value: int, index: int, length: int,
@@ -389,6 +419,10 @@ class PyUsbTransport:
         endpoint = self._interrupt
         reply = self._run('interrupt read', lambda: self._device.read(endpoint, length, timeout_ms))
         return bytes(reply)
+
+    def clear_halt(self, endpoint: int) -> None:
+        """Reset a halted pipe: CLEAR_FEATURE(ENDPOINT_HALT) and the host's data toggle."""
+        self._run('clear halt on endpoint 0x%02x' % endpoint, lambda: self._device.clear_halt(endpoint))
 
     def _write(self, endpoint: int, what: str, data: bytes, timeout_ms: int) -> None:
         written = self._run(what, lambda: self._device.write(endpoint, data, timeout_ms))

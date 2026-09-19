@@ -12,7 +12,12 @@ there are no background threads. Sequences built from these primitives
 Faults: a malformed reply or a USB error means the bulk pipes may be out of
 step (§8.2). The offending operation raises, the adapter is sent a stop
 request and its pipe drained, and the next operation re-runs the attach
-sequence before doing anything else.
+sequence before doing anything else. The adapter's own ways of ending an
+instruction are not faults (§10.6.5-10.6.7): a STALL on the alternate OUT
+for a 0x0e that cannot start, a zero-length transfer on the alternate IN
+for a 0x0b that got nothing, a 0x10 reply without its result block. Each
+comes with an ordinary reply carrying the error code, and the next
+operation follows without a stop request or a re-attach.
 
 The interrupt endpoint is not armed at attach (§2.5 calls it optional and
 operation without it reliable), so attach skips the interrupt-monitor-mask
@@ -55,7 +60,7 @@ from typing import Callable, Iterator, List, Optional, Sequence, Tuple
 from . import protocol as p
 from . import tables as t
 from .protocol import AdapterNotReady, GpibError, GpibTimeout, NoReply, ProtocolError, StatusBlock
-from .transport import Transport, TransportError, TransportTimeout
+from .transport import Transport, TransportError, TransportStall, TransportTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -384,30 +389,69 @@ class Controller:
         reply, gets the host wait. What remains buffered when the transfer
         completes still has to reach the instrument, so the reply gets the
         same wait.
+
+        A write the adapter cannot start -- nothing listens -- is refused at
+        the USB level: the raw transfer fails with a STALL a millisecond after
+        it was submitted, and the reply arrives by itself with error 8 and
+        the count (§10.6.5). NI sends no stop request there; it reads the
+        reply and resets the two OUT pipes, and so does this.
         """
         message = p.write_raw_message(len(chunk), code, send_eoi, eos_char)
         wait_s = p.host_wait_s(limit, self._infinite_wait_s) + len(chunk) / RAW_TRANSFER_MIN_RATE_BPS
         self._host_stopped = False
         self._transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
+        refused = False
         try:
             accepted = self._transport.bulk_out_raw(chunk, int(wait_s * 1000))
+        except TransportStall:
+            refused, accepted = True, 0
         except TransportTimeout:
             accepted = 0
-        if accepted < len(chunk):
-            # The instrument stopped accepting mid-transfer (or never started:
-            # nothing listens and the device did not take the bytes). The
-            # transport reports the first as a short count, the second as a
-            # timeout; either way the device is mid-instruction and §5.11
-            # makes it finish, so the reply can say how much reached the bus.
+        if refused:
+            # The STALL is the adapter saying the instruction is over, so the
+            # reply is already due (NI's came 0.3 ms later).
+            reply_wait = SHORT_WAIT_S
+        elif accepted < len(chunk):
+            # The host wait ran out with the instrument not accepting: the
+            # transport reports bytes moved as a short count, none as a
+            # timeout. The device is still mid-instruction, and §5.11 makes it
+            # finish so the reply can say how much reached the bus. NI was not
+            # observed using the stop request (§10.8); none of its captures
+            # has a host wait expiring, which is the one case it is kept for.
             self._host_stopped = True
             self._control(t.STOP_REQUEST)
             reply_wait = RECOVERY_WAIT_S
         else:
             reply_wait = wait_s
-        reply = self._reply_or_stop(p.SMALL_REPLY_BUFFER, reply_wait)
+        try:
+            reply = self._reply_or_stop(p.SMALL_REPLY_BUFFER, reply_wait)
+        finally:
+            if refused:
+                self._reset_out_pipes()
         parsed = p.parse_raw_write_reply(reply)
         self._raise_for_error(parsed.status, 'write')
+        if refused:
+            raise ProtocolError('0x0e data was refused with a STALL but the reply reports no error: %s'
+                                % reply.hex())
         return parsed.transferred(len(chunk))
+
+    def _reset_out_pipes(self) -> None:
+        """Clear the halt a refused 0x0e leaves on the alternate OUT, then reset the primary OUT.
+
+        NI's order (§10.6.5). The primary OUT had reported no error and why
+        NI resets it is not established; it is followed because the next
+        operation was then seen to work without anything else. If a reset
+        fails the pipes cannot be trusted, and the next operation re-attaches.
+        """
+        for endpoint in (self._model.endpoint_out_raw, self._model.endpoint_out):
+            if endpoint is None:
+                continue
+            try:
+                self._transport.clear_halt(endpoint)
+            except TransportError as exc:
+                logger.warning('%s: clearing the halt on endpoint 0x%02x failed: %s',
+                               self._model.name, endpoint, exc)
+                self._resync_pending = True
 
     def read(self, pad: int, *, sad: Optional[int] = None, max_bytes: int,
              timeout_s: Optional[float], eos: Optional[int] = None,
