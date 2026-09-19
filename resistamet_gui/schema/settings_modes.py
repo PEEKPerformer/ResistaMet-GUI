@@ -244,6 +244,10 @@ class ClientInfo(SettingsModel):
 class RunRequest(SettingsModel):
     """What a client asks for. Never persisted.
 
+    This is the body ``POST /session/start`` validates, and the model the
+    desktop's request type is generated from; unknown fields are refused so
+    a misspelt one cannot be silently ignored.
+
     ``overrides`` is flat measurement keys, the same shape the tabs produce
     today, so one request format serves the UI, a script and the MCP layer.
     Strict validation of the keys happens in the resolver, which knows which

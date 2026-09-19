@@ -6,7 +6,7 @@
 // backend gave rather than one it made up.
 
 import type { BackendInfo } from "./backend";
-import type { ClientInfo, Mode, SpotRequest } from "../generated/settings";
+import type { ClientInfo, Mode, RunRequest } from "../generated/settings";
 import type { EventEnvelope } from "../generated/events";
 import type { InstrumentInfo, SessionStatus } from "../generated/session";
 import type { SpotMap } from "../generated/maps";
@@ -21,15 +21,12 @@ const CLIENT: ClientInfo = { name: "resistamet-desktop", version: packageVersion
 export type { InstrumentInfo, PendingPrompt, SessionStatus } from "../generated/session";
 export type SessionState = SessionStatus["state"];
 
-export interface StartRequest {
-  mode: Mode;
-  sample_name: string;
-  username: string;
+/** What a view hands to start(): the backend's RunRequest, which is the model
+ *  POST /session/start validates and which refuses a field it does not know.
+ *  `client` is filled in here, not by the views. `spot` is four-point only. */
+export type StartRequest = Omit<RunRequest, "client" | "overrides"> & {
   overrides?: Record<string, unknown>;
-  prompt_timeout_s?: number;
-  /** Four-point only: which spot of which map this run measures. */
-  spot?: SpotRequest;
-}
+};
 
 export interface Issue {
   key: string;
