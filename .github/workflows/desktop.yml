@@ -52,11 +52,16 @@ jobs:
           - name: macOS arm64
             os: macos-latest
             bundles: dmg
+    # Read-only, and the token is not left in .git/config: pip, npm, cargo
+    # build scripts and third-party actions all run in this job, on every
+    # branch push and pull request. Only the attach job below can write.
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: The tag names the version being built
         # Before the long steps: a bundle must not land on a release whose
@@ -158,10 +163,14 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        # Pinned to a commit of the action's stable branch, which is why the
+        # toolchain has to be named here.
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
 
       - name: Cache cargo
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: desktop/src-tauri
 
@@ -187,9 +196,26 @@ jobs:
             desktop/src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
+  attach:
+    name: Attach the bundles to the release
+    # The only job with a token that can write, and it runs nothing from the
+    # repository: no checkout, no dependency install, no build. It takes the
+    # bundles the build jobs uploaded and hands them to gh. Both platforms
+    # must have built; a release never gets half of its bundles.
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the bundles
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: resistamet-desktop-*
+          path: bundles
+          merge-multiple: true
+
       - name: Attach to the release (upload only)
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
@@ -201,12 +227,15 @@ jobs:
             echo "::error::No release to attach to for $TAG. Create the release first with gh release create $TAG, then re-run this job."
             exit 1
           fi
-          shopt -s nullglob
-          bundles=(desktop/src-tauri/target/release/bundle/msi/*.msi
-                   desktop/src-tauri/target/release/bundle/nsis/*.exe
-                   desktop/src-tauri/target/release/bundle/dmg/*.dmg)
-          if [ "${#bundles[@]}" -eq 0 ]; then
-            echo "::error::No bundle was built to attach."
-            exit 1
-          fi
+          bundles=()
+          while IFS= read -r file; do
+            bundles+=("$file")
+          done < <(find bundles -type f \( -name '*.msi' -o -name '*.exe' -o -name '*.dmg' \) | sort)
+          printf 'found: %s\n' "${bundles[@]}"
+          for kind in msi exe dmg; do
+            if ! printf '%s\n' "${bundles[@]}" | grep -q "\.${kind}\$"; then
+              echo "::error::No .${kind} among the downloaded bundles."
+              exit 1
+            fi
+          done
           gh release upload "$TAG" "${bundles[@]}" --repo "$GITHUB_REPOSITORY" --clobber
