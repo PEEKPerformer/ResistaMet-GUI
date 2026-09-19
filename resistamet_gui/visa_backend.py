@@ -23,6 +23,7 @@ the adapter's own resource (``PRLGX-ASRL<n>::<device>::INTFC`` or
 ``gpib_interface`` setting names that resource and the manager holds it.
 """
 import logging
+import os
 import threading
 from typing import Any, Callable, Dict, List, Optional
 
@@ -43,6 +44,13 @@ CHOICES: Dict[str, str] = {
     IVI: 'Vendor VISA (NI-VISA)',
     PY: 'pyvisa-py',
 }
+
+#: Set to ``1`` to keep the NI GPIB-USB user-space driver out of pyvisa-py
+#: for this process. A test and diagnostic switch, not a setting: with it a
+#: pyvisa-py manager cannot reach an attached NI adapter, so a test that
+#: enumerates a real manager cannot pulse IFC on a bench that is in use, and
+#: a bug report can say whether pyvisa-py alone behaves differently.
+DISABLE_NI_USB_ENV = 'RESISTAMET_DISABLE_NI_USB'
 
 #: Hooks run before a ResourceManager that may be pyvisa-py is handed out.
 #: Used to register sessions pyvisa-py does not ship (see ``gpib_usb``).
@@ -285,7 +293,13 @@ def _ni_usb_report() -> Dict[str, Any]:
 
 
 def _install_ni_usb() -> None:
-    """The NI GPIB-USB user-space driver; a no-op without pyusb and libusb."""
+    """The NI GPIB-USB user-space driver; a no-op without pyusb and libusb.
+
+    Also a no-op while :data:`DISABLE_NI_USB_ENV` is ``1``.
+    """
+    if os.environ.get(DISABLE_NI_USB_ENV, '') == '1':
+        logger.info("NI GPIB-USB driver not installed: %s=1", DISABLE_NI_USB_ENV)
+        return
     from . import gpib_usb
     gpib_usb.install()
 
