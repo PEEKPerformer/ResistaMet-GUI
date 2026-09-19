@@ -576,10 +576,11 @@ class Controller:
             wait = p.host_wait_s(limit, self._infinite_wait_s)
             reply = self._transact(p.serial_poll_message(pad, code, sad), p.SMALL_REPLY_BUFFER, wait)
             parsed = p.parse_serial_poll_reply(reply)
-            if parsed.pad != pad:
-                raise ProtocolError('serial poll answered for address %d, asked %d: %s'
-                                    % (parsed.pad, pad, reply.hex()))
+            # A failed poll carries no 0x3a block to compare (§10.6.6): the error first.
             self._raise_for_error(parsed.status, 'serial poll')
+            if parsed.pad != pad or parsed.status_byte is None:
+                raise ProtocolError('serial poll answered for address %r, asked %d: %s'
+                                    % (parsed.pad, pad, reply.hex()))
             return parsed.status_byte
 
     # ------------------------------------------------------------------
