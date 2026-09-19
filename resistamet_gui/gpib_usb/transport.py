@@ -74,7 +74,7 @@ class Transport(Protocol):
 
     def bulk_in(self, length: int, timeout_ms: int) -> bytes: ...
 
-    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> None: ...
+    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> int: ...
 
     def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes: ...
 
@@ -327,10 +327,19 @@ class PyUsbTransport:
         reply = self._run('bulk read', lambda: self._device.read(self._in, length, timeout_ms))
         return bytes(reply)
 
-    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> None:
+    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> int:
+        """Bytes the device accepted on the alternate OUT; fewer than sent means the wait expired.
+
+        pyusb reports a timeout after some bytes moved as the partial count,
+        not an error (its ``__write``: LIBUSB_ERROR_TIMEOUT with a nonzero
+        count is returned as the count). The device paces this transfer by
+        the instrument's handshake, so a short count is the timeout case
+        and the caller treats it as one.
+        """
         if self._out_raw is None:
             raise TransportError('this adapter has no alternate bulk OUT endpoint')
-        self._write(self._out_raw, 'raw bulk write', data, timeout_ms)
+        endpoint = self._out_raw
+        return int(self._run('raw bulk write', lambda: self._device.write(endpoint, data, timeout_ms)))
 
     def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
         if self._in_raw is None:

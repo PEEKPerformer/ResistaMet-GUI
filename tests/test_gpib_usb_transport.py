@@ -335,13 +335,14 @@ class TestPyUsbTransport:
             usb_transport.interrupt_in(64, 1000)
         assert device.writes == [] and device.reads == []
 
-    def test_short_raw_write_is_an_error(self, monkeypatch):
+    def test_short_raw_write_returns_the_count_accepted(self, monkeypatch):
+        # pyusb hands back the partial count when the wait expires after some bytes moved.
         device = HS()
         install_fake_usb(monkeypatch, [device])
         usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
+        assert usb_transport.bulk_out_raw(bytes(2050), 5000) == 2050
         device.write_returns = 100
-        with pytest.raises(TransportError):
-            usb_transport.bulk_out_raw(bytes(2050), 5000)
+        assert usb_transport.bulk_out_raw(bytes(2050), 5000) == 100
 
     def test_short_write_is_an_error(self, monkeypatch):
         device = HS()

@@ -87,16 +87,19 @@ class ScriptedTransport:
         self.sent.append(data)
         self.timeouts.append(('out', data[0], timeout_ms))
 
-    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> None:
-        self._out('raw_out', data, timeout_ms)
+    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> int:
+        """('raw_out', bytes[, exc_or_accepted_count]): the third item, if an int, is the short count returned."""
+        step = self._out('raw_out', data, timeout_ms)
         self.timeouts.append(('raw_out', len(data), timeout_ms))
+        return step[2] if len(step) > 2 and isinstance(step[2], int) else len(data)
 
-    def _out(self, kind: str, data: bytes, timeout_ms: int) -> None:
+    def _out(self, kind: str, data: bytes, timeout_ms: int) -> Tuple[Any, ...]:
         step = self._next(kind, data[:64].hex(' '))
         if data != step[1]:
             raise AssertionError(hex_diff(step[1][:80], data[:80]))
         if len(step) > 2 and isinstance(step[2], Exception):
             raise step[2]
+        return step
 
     def bulk_in(self, length: int, timeout_ms: int) -> bytes:
         return self._in('in', length, timeout_ms)
@@ -602,6 +605,21 @@ class TestRawWrite:
             ('raw_out', bytes(2100), TransportTimeout('instrument holds NRFD')),
             STOP,
             ('in', raw_write_reply(2100, 512, error=1), 512),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.write_raw(bytes(2100), timeout_s=3.0)
+        assert info.value.code == 1
+        transport.assert_done()
+        assert transport.timeouts[-1] == ('in', 512, int(RECOVERY_WAIT_S * 1000))
+
+    def test_transfer_that_stalls_part_way_stops_the_device_and_reports_the_count_it_took(self):
+        # pyusb returns the partial count, not a timeout, once some bytes moved; that is the
+        # same situation as a stall at byte zero and takes the same path (§5.11).
+        controller, transport = attached([
+            ('out', p.write_raw_message(2100, T3S, True)),
+            ('raw_out', bytes(2100), 1024),                       # 1024 of 2100 accepted, then the wait expired
+            STOP,
+            ('in', raw_write_reply(2100, 900, error=1), 512),    # the device says 900 reached the bus
         ])
         with pytest.raises(GpibTimeout) as info:
             controller.write_raw(bytes(2100), timeout_s=3.0)

@@ -357,18 +357,22 @@ class Controller:
         self._host_stopped = False
         self._transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
         try:
-            self._transport.bulk_out_raw(chunk, int(wait_s * 1000))
-            reply_wait = wait_s
+            accepted = self._transport.bulk_out_raw(chunk, int(wait_s * 1000))
         except TransportTimeout:
-            # The instrument stopped accepting (or nothing listens and the
-            # device did not take the bytes); §5.11 makes the device finish.
+            accepted = 0
+        if accepted < len(chunk):
+            # The instrument stopped accepting mid-transfer (or never started:
+            # nothing listens and the device did not take the bytes). The
+            # transport reports the first as a short count, the second as a
+            # timeout; either way the device is mid-instruction and §5.11
+            # makes it finish, so the reply can say how much reached the bus.
             self._host_stopped = True
             self._control(t.STOP_REQUEST)
             reply_wait = RECOVERY_WAIT_S
+        else:
+            reply_wait = wait_s
         reply = self._reply_or_stop(p.SMALL_REPLY_BUFFER, reply_wait)
         parsed = p.parse_raw_write_reply(reply)
-        if parsed.status.id != p.OP_WRITE_RAW:
-            raise ProtocolError('write: reply id 0x%02x, expected 0x0e: %s' % (parsed.status.id, reply.hex()))
         self._raise_for_error(parsed.status, 'write')
         return parsed.transferred(len(chunk))
 
