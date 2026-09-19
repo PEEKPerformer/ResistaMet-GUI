@@ -181,11 +181,21 @@ class ContinuousRun:
         return True
 
     def _effective_settings(self):
-        """What the instrument reported after configuration, for the file header."""
+        """What the instrument reported after configuration, for the file header.
+
+        ``effective.voltage_compliance_V`` is the voltage limit in force for
+        the run: resistance mode, manual range. In Auto range the same
+        read-back is written as ``effective.voltage_compliance_V_at_configure``
+        instead, because that is all it is. Auto-ohms changes the limit with
+        the ohms range, so the number says what the instrument had before the
+        output came on, not what any row was measured under.
+        """
         state = self._mode_state
         limit = getattr(state, 'voltage_compliance_v', None)
         if limit is None or not math.isfinite(limit):
             return None
+        if getattr(state, 'auto_range', False):
+            return {'voltage_compliance_V_at_configure': limit}
         return {'voltage_compliance_V': limit}
 
     def _open_output_file(self, measurement_settings, source_value_str):
