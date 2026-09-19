@@ -220,9 +220,11 @@ class VdpRun:
         measurement = self.settings['measurement']
         gpib = measurement['gpib_address']
         visa_library = measurement.get('visa_library', '')
+        gpib_interface = measurement.get('gpib_interface', '')
         self._events.log('connecting', f"Connecting to instrument at {gpib}...")
         try:
-            self.keithley = Keithley2400(gpib, visa_library=visa_library).connect()
+            self.keithley = Keithley2400(gpib, visa_library=visa_library,
+                                         gpib_interface=gpib_interface).connect()
         except Exception as e:
             # Re-raise so the run() catch still fires, but with a message
             # the user can actually act on.

@@ -95,6 +95,20 @@ class TestStateMachine:
         assert 'KEITHLEY' in info['idn'].upper()
         assert info['model']
 
+    def test_identify_opens_the_interface_it_is_given(self, session, monkeypatch):
+        from resistamet_gui import visa_backend
+        calls = []
+
+        def refuse(visa_library='', gpib_interface=''):
+            calls.append((visa_library, gpib_interface))
+            raise OSError("no bus in this test")
+
+        monkeypatch.setattr(visa_backend, 'resource_manager', refuse)
+        with pytest.raises(OSError):
+            session.identify('GPIB0::24::INSTR', '@py', 'PRLGX-ASRL::5::INTFC')
+        assert calls == [('@py', 'PRLGX-ASRL::5::INTFC')]
+        assert session.state == 'idle'
+
 
 class TestCommands:
     def test_stop_ends_the_run(self, session, sink, fake_rm, profile):

@@ -245,6 +245,44 @@ class TestDerivedValues:
         assert all(s.payload.get('derived') is None for s in samples)
 
 
+class TestRunsOpenTheMachineInterface:
+    """A run connects with the machine's GPIB interface, like its VISA backend."""
+
+    NAME = 'PRLGX-ASRL::/dev/ttyUSB0::INTFC'
+
+    def _record(self, monkeypatch):
+        from resistamet_gui import visa_backend
+        calls = []
+
+        def refuse(visa_library='', gpib_interface=''):
+            calls.append((visa_library, gpib_interface))
+            raise OSError("no bus in this test")
+
+        monkeypatch.setattr(visa_backend, 'resource_manager', refuse)
+        return calls
+
+    def test_continuous_run(self, tmp_path, monkeypatch):
+        calls = self._record(monkeypatch)
+        run, _, sink = _run(tmp_path, visa_library='@py', gpib_interface=self.NAME)
+        run.execute()
+        assert calls == [('@py', self.NAME)]
+        assert _reasons(sink) == ['connect_failed']
+
+    def test_vdp_run(self, tmp_path, monkeypatch):
+        from resistamet_gui.session.vdp_run import VdpRun
+        calls = self._record(monkeypatch)
+        settings = _settings(tmp_path, vdp_current=1e-3, vdp_voltage_compliance=5.0,
+                             visa_library='@py', gpib_interface=self.NAME)
+        VdpRun("wafer1", "alice", settings, RunControl(), EventEmitter(ListSink())).execute()
+        assert calls == [('@py', self.NAME)]
+
+    def test_a_profile_without_the_key_means_no_interface(self, tmp_path, monkeypatch):
+        calls = self._record(monkeypatch)
+        run, _, _ = _run(tmp_path)
+        run.execute()
+        assert calls == [('', '')]
+
+
 class TestVdpRunStarted:
     """A van der Pauw run announces itself the way every other run does."""
 
@@ -256,7 +294,7 @@ class TestVdpRunStarted:
 
     def _refuse_connection(self, monkeypatch, module):
         """No instrument: the run gets as far as connecting and ends."""
-        def refuse(address, visa_library=''):
+        def refuse(address, visa_library='', gpib_interface=''):
             raise OSError(f"no instrument at {address}")
         monkeypatch.setattr(module, 'Keithley2400', refuse)
 
