@@ -85,16 +85,20 @@ _INTERFACE_ATTR = '_resistamet_gpib_interface'
 _interface_lock = threading.Lock()
 
 
-def resource_manager(visa_library: str = AUTO, gpib_interface: str = '') -> Any:
+def resource_manager(visa_library: str = AUTO,
+                     gpib_interface: Optional[str] = None) -> Any:
     """Open the ResourceManager for ``visa_library``.
 
     ``pyvisa.ResourceManager`` is looked up at call time so the simulator
     and the test fakes, which replace it, keep working.
 
-    A non-empty ``gpib_interface`` is opened on the manager before it is
-    handed out and stays open until the manager closes; see
+    ``gpib_interface`` is the configured interface name. A non-empty one is
+    opened on the manager before it is handed out and stays open until it
+    is released, replaced or the manager closes; an empty one means none is
+    configured, and closes the one the manager holds. See
     :func:`open_gpib_interface`. Raises :class:`GpibInterfaceError` when it
-    cannot be opened.
+    cannot be opened. ``None``, the default, is a caller with no say in the
+    matter: the manager's interface is left as it is.
     """
     library = (visa_library or AUTO).strip()
     if library in (AUTO, PY):
@@ -108,7 +112,8 @@ def resource_manager(visa_library: str = AUTO, gpib_interface: str = '') -> Any:
                                getattr(hook, '__name__', repr(hook)),
                                type(exc).__name__, exc)
     rm = pyvisa.ResourceManager(library) if library else pyvisa.ResourceManager()
-    open_gpib_interface(rm, gpib_interface)
+    if gpib_interface is not None:
+        open_gpib_interface(rm, gpib_interface)
     return rm
 
 
@@ -118,7 +123,10 @@ def open_gpib_interface(rm: Any, gpib_interface: str) -> bool:
     Once per manager: a second call with the same name finds the session
     already there. A different name replaces it, closing the old one first
     because two interfaces on one board number would fight over it. An empty
-    name changes nothing — another caller's interface stays open.
+    name is "none configured" and closes the one that is held: pyvisa hands
+    the same manager back for the life of the process, so an interface
+    nobody closes keeps its serial port — exclusively, on Windows — until
+    the process exits.
 
     False, with nothing opened, under a vendor library (NI-VISA has no
     PRLGX resource class; the name is ignored with a warning) and under the
@@ -134,6 +142,7 @@ def open_gpib_interface(rm: Any, gpib_interface: str) -> bool:
     """
     name = (gpib_interface or '').strip()
     if not name:
+        release_gpib_interface(rm)
         return False
     if _simulating():
         logger.info("Simulating: GPIB interface %s is not opened", name)
@@ -165,6 +174,27 @@ def open_gpib_interface(rm: Any, gpib_interface: str) -> bool:
         return True
 
 
+def release_gpib_interface(rm: Any) -> Optional[str]:
+    """Close the interface ``rm`` holds. Its name, or None when none was held.
+
+    For a caller that opened one only to try it — a scan or an identify
+    with a name that is not saved yet — and for giving the adapter's port
+    back to another program without closing the manager. The next
+    :func:`resource_manager` call that names an interface opens it again.
+    Not for use while a run is on the bus: the run's instrument session
+    is routed through this interface.
+    """
+    with _interface_lock:
+        held = getattr(rm, _INTERFACE_ATTR, None)
+        if held is None:
+            return None
+        name, session = held
+        _close_quietly(session)
+        setattr(rm, _INTERFACE_ATTR, None)
+    logger.info("GPIB interface %s released", name)
+    return name
+
+
 def held_gpib_interface(rm: Any) -> Optional[str]:
     """The interface resource open on ``rm`` right now, or None."""
     held = getattr(rm, _INTERFACE_ATTR, None)
@@ -193,7 +223,7 @@ def _close_quietly(session: Any) -> None:
     try:
         session.close()
     except Exception as exc:
-        logger.debug("closing the previous GPIB interface failed: %s", exc)
+        logger.debug("closing the GPIB interface failed: %s", exc)
 
 
 def _kind(rm: Any) -> str:
