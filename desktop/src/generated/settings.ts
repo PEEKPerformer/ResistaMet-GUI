@@ -144,6 +144,36 @@ export interface SafetySettings {
 }
 
 /**
+ * The lateral outline of a thin sample with insulating edges.
+ *
+ * ``unbounded`` means a sheet large enough that its edges do not matter,
+ * which is what the software assumed before it knew about outlines.
+ */
+export interface SampleGeometry {
+  diameter_mm?: number | null;
+  length_mm?: number | null;
+  shape?: "unbounded" | "circle" | "rectangle";
+  width_mm?: number | null;
+}
+
+/**
+ * One placement of the probe, as the client describes it.
+ *
+ * The position is optional -- a spot can be a label and nothing more -- but
+ * ``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the
+ * direction of the probe array, anticlockwise from +x; absent, the run uses
+ * the ``fpp_array_angle_deg`` setting.
+ */
+export interface SpotRequest {
+  angle_deg?: number | null;
+  index: number;
+  label: string;
+  map_id: string;
+  x_mm?: number | null;
+  y_mm?: number | null;
+}
+
+/**
  * Bulk linear sweep, run by the instrument's own sweep engine.
  *
  * Start/stop keep the +/-200 V bounds for both source types, as the widgets
@@ -581,6 +611,68 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
       "min": 0,
       "max": 200,
       "default": 30
+    }
+  },
+  "SampleGeometry": {
+    "diameter_mm": {
+      "type": "number",
+      "nullable": true,
+      "exclusiveMin": 0,
+      "default": null
+    },
+    "length_mm": {
+      "type": "number",
+      "nullable": true,
+      "exclusiveMin": 0,
+      "default": null
+    },
+    "shape": {
+      "type": "string",
+      "enum": [
+        "unbounded",
+        "circle",
+        "rectangle"
+      ],
+      "default": "unbounded"
+    },
+    "width_mm": {
+      "type": "number",
+      "nullable": true,
+      "exclusiveMin": 0,
+      "default": null
+    }
+  },
+  "SpotRequest": {
+    "angle_deg": {
+      "type": "number",
+      "nullable": true,
+      "min": -360,
+      "max": 360,
+      "default": null
+    },
+    "index": {
+      "type": "integer",
+      "min": 0,
+      "max": 9999,
+      "required": true
+    },
+    "label": {
+      "type": "string",
+      "required": true
+    },
+    "map_id": {
+      "type": "string",
+      "required": true
+    },
+    "x_mm": {
+      "type": "number",
+      "nullable": true,
+      "default": null
+    },
+    "y_mm": {
+      "type": "number",
+      "nullable": true,
+      "default": null
     }
   },
   "SweepSettings": {

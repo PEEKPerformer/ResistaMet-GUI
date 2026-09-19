@@ -29,6 +29,7 @@ def settings_schema():
         OutputSettings, SafetySettings,
     )
     from resistamet_gui.schema.settings_modes import MODE_MODELS, RunRequest
+    from resistamet_gui.schema.spots import SampleGeometry, SpotRequest
 
     models = {
         'InstrumentSettings': InstrumentSettings,
@@ -38,6 +39,8 @@ def settings_schema():
         'OutputSettings': OutputSettings,
         'DisplaySettings': DisplaySettings,
         'RunRequest': RunRequest,
+        'SampleGeometry': SampleGeometry,
+        'SpotRequest': SpotRequest,
     }
     models.update({model.__name__: model for model in MODE_MODELS.values()})
     return {

@@ -16,6 +16,7 @@ from .settings_modes import (
     VdpSettings,
     VoltageSourceSettings,
 )
+from .spots import SampleGeometry, SpotRequest
 from .settings_common import (
     AuxSensorSettings,
     DisplaySettings,
@@ -42,7 +43,9 @@ __all__ = [
     'ResistanceSettings',
     'RunRequest',
     'SafetySettings',
+    'SampleGeometry',
     'SettingsModel',
+    'SpotRequest',
     'SweepSettings',
     'VdpSettings',
     'VoltageSourceSettings',
