@@ -30,7 +30,6 @@ const MODE: Mode = "sweep";
  *  voltage set is the profile default; the current set is its mirror at the
  *  scale a 2400 sources into an unknown DUT without drama. */
 const SWEEP_FOR_VOLTAGE = { sweep_start: 0.0, sweep_stop: 1.0, sweep_step: 0.05, sweep_compliance: 0.1 };
-// sweep_compliance is bounded at 3 in the schema whatever the unit, so 2 V.
 const SWEEP_FOR_CURRENT = { sweep_start: 0.0, sweep_stop: 1e-3, sweep_step: 50e-6, sweep_compliance: 2.0 };
 
 export function SweepView() {
