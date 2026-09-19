@@ -197,6 +197,22 @@ class TestLogText:
         assert [m for m in messages.values() if 'four_point' in m] == []
         assert [m for m in messages.values() if self.EMOJI.search(m)] == []
 
+    def test_power_warnings_keep_sub_milliwatt_thresholds(self, session, sink, fake_rm, profile):
+        # Bench: a 0.5 mW warning threshold was printed as "0 mW". Here
+        # 3 mA into the fake's 100 ohm is 900 µW measured, 15 mW worst case.
+        profile = _four_point(profile)
+        profile['measurement'].update({
+            'fpp_current': 3e-3, 'fpp_power_warn_w': 5e-4, 'fpp_power_stop_w': 5e-2})
+        session.start(profile, 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+
+        warnings = [e.payload['message'] for e in sink.of_type('log')
+                    if e.payload['code'] == 'power_envelope']
+        assert warnings[0] == ("Warning: 4PP power envelope: up to 15 mW (I × V_comp). "
+                               "Above warning threshold 500 µW — proceed with care.")
+        assert re.fullmatch(r"Warning: 4PP power [\d.]+ µW above warn threshold 500 µW",
+                            warnings[1]), warnings[1]
+
     def test_resistance_progress_uses_the_ohm_sign(self, session, sink, fake_rm, profile):
         session.start(profile, 'resistance', 'wafer1', 'alice')
         assert _wait_for(lambda: sink.of_type('sample'))

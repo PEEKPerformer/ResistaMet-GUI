@@ -10,6 +10,8 @@ the 2400-series quirks it works around.
 """
 from dataclasses import dataclass
 
+from ..formatting import format_power
+
 
 @dataclass(frozen=True)
 class ResistanceState:
@@ -235,19 +237,19 @@ def configure_four_point(keithley, events, measurement_settings, nplc):
     worst_case_power = abs(source_current) * abs(voltage_compliance)
     if worst_case_power > state.power_stop_w:
         events.error('power_envelope', 'run',
-            f"Configured 4PP power ({worst_case_power*1e3:.1f} mW = "
+            f"Configured 4PP power ({format_power(worst_case_power)} = "
             f"{abs(source_current)*1e3:.3g} mA × {abs(voltage_compliance):.3g} V) "
             f"exceeds the probe-safety hard stop "
-            f"({state.power_stop_w*1e3:.0f} mW). Lower the source "
+            f"({format_power(state.power_stop_w)}). Lower the source "
             f"current or the voltage compliance, or raise fpp_power_stop_w "
             f"in settings if you've reviewed the probe spec."
         )
         return
     if worst_case_power > state.power_warn_w:
         events.warn('power_envelope',
-            f"Warning: 4PP power envelope: up to {worst_case_power*1e3:.1f} mW "
+            f"Warning: 4PP power envelope: up to {format_power(worst_case_power)} "
             f"(I × V_comp). Above warning threshold "
-            f"{state.power_warn_w*1e3:.0f} mW — proceed with care."
+            f"{format_power(state.power_warn_w)} — proceed with care."
         )
 
     metadata = {

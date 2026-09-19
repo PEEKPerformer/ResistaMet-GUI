@@ -18,6 +18,7 @@ import pyvisa
 
 from ..constants import AUX_READY_TIMEOUT_S, MODE_DISPLAY_NAMES
 from ..data_export import AUX_LOG_MODES, splice_before_tail
+from ..formatting import format_power
 from ..instrument import Keithley2400, humanize_connection_error
 from ..sensors import aux_column_names, make_sensor, reading_to_columns
 from ..system_utils import SleepInhibitor
@@ -834,8 +835,8 @@ class ContinuousRun:
                                     except Exception:
                                         pass
                                 self._events.error('overpower', 'run', 
-                                    f"4PP overpower: {measured_power*1e3:.1f} mW "
-                                    f"exceeds hard stop {stop_w*1e3:.0f} mW. "
+                                    f"4PP overpower: {format_power(measured_power)} "
+                                    f"exceeds hard stop {format_power(stop_w)}. "
                                     f"Stopping to protect probe and sample."
                                 )
                                 try:
@@ -845,8 +846,8 @@ class ContinuousRun:
                                 self._control.finish('overpower')
                             elif measured_power > warn_w:
                                 self._events.warn('power_envelope', 
-                                    f"Warning: 4PP power {measured_power*1e3:.1f} mW above "
-                                    f"warn threshold {warn_w*1e3:.0f} mW"
+                                    f"Warning: 4PP power {format_power(measured_power)} above "
+                                    f"warn threshold {format_power(warn_w)}"
                                 )
 
                     # Atomically get and clear event marker (thread-safe)
