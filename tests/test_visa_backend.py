@@ -302,6 +302,30 @@ class TestInstrumentUsesTheChoice:
             Keithley2400('GPIB0::24::INSTR', visa_library='@py').connect()
         assert recording_rm == [('@py',)]
 
+    def test_the_interface_is_opened_before_the_instrument_is_looked_for(self, one_rm):
+        rm = one_rm(_InterfaceRM())
+        with pytest.raises(RuntimeError):  # this manager lists nothing either
+            Keithley2400('GPIB0::24::INSTR', visa_library='@py', gpib_interface=PRLGX).connect()
+        assert rm.opened == [PRLGX]
+
+    def test_an_interface_that_will_not_open_is_what_connect_reports(self, one_rm):
+        one_rm(_InterfaceRM(error=OSError('could not open port')))
+        with pytest.raises(visa_backend.GpibInterfaceError, match='PRLGX-ASRL'):
+            Keithley2400('GPIB0::24::INSTR', visa_library='@py', gpib_interface=PRLGX).connect()
+
+    @pytest.mark.xfail(strict=True, raises=RuntimeError, reason=(
+        "VisaInstrument.connect refuses an address that list_resources() does "
+        "not return, and pyvisa-py cannot enumerate the instruments behind a "
+        "Prologix adapter (PrologixInstrSession.list_resources returns [])."))
+    def test_a_keithley_connects_through_a_prologix_interface(self, prologix):
+        instrument = Keithley2400('GPIB0::24::INSTR', visa_library=visa_backend.PY,
+                                  gpib_interface=prologix.resource())
+        try:
+            instrument.connect()
+            assert instrument.idn() == IDN
+        finally:
+            visa_backend.resource_manager(visa_backend.PY).close()
+
 
 class TestNiUsbExtensionDegrades:
     """Opening a ResourceManager must not depend on the NI USB driver loading.
