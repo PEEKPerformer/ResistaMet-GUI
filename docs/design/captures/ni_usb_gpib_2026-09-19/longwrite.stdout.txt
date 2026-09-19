@@ -1,0 +1,5 @@
+832269.603 RM open, scenario longwrite
+832277.554 write 2048 bytes
+832278.198 *IDN?
+82
+832278.998 done
