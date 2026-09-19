@@ -417,3 +417,32 @@ class TestInstrumentHeldElsewhere:
         # Free again: a fresh hold succeeds without waiting.
         with instrument_lock.hold_instrument('GPIB0::24::INSTR', wait_s=0.0):
             pass
+
+
+class TestSpot:
+    SPOT = {'map_id': 'wafer7', 'index': 2, 'label': 'edge', 'x_mm': 1.0, 'y_mm': 2.0}
+
+    def test_rides_in_the_run_settings(self, session, sink, fake_rm, profile):
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice', spot=self.SPOT)
+        assert _wait_for(lambda: session.state == 'idle')
+        settings = sink.of_type('run_started')[0].payload['settings']
+        assert settings['spot'] == {**self.SPOT, 'angle_deg': None}
+
+    def test_absent_means_no_key_at_all(self, session, sink, fake_rm, profile):
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+        assert 'spot' not in sink.of_type('run_started')[0].payload['settings']
+
+    def test_other_modes_are_refused_before_anything_starts(self, session, sink, fake_rm, profile):
+        with pytest.raises(ValueError, match="four_point"):
+            session.start(profile, 'resistance', 'wafer1', 'alice', spot=self.SPOT)
+        assert session.state == 'idle'
+        assert sink.events == []
+        assert fake_rm.opened == []
+
+    def test_a_bad_spot_is_refused_before_anything_starts(self, session, sink, fake_rm, profile):
+        with pytest.raises(ValueError):
+            session.start(_four_point(profile), 'four_point', 'wafer1', 'alice',
+                          spot={**self.SPOT, 'map_id': '../wafer7'})
+        assert session.state == 'idle'
+        assert fake_rm.opened == []
