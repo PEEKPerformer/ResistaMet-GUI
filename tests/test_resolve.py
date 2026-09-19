@@ -83,6 +83,15 @@ class TestStartTimeChecks:
         }, strict=True)
         assert _keys(resolved) == ['fpp_power_stop_w']
 
+    def test_power_message_keeps_sub_milliwatt_thresholds(self, profile):
+        # Bench: a 0.1 mW stop was printed as "hard stop 0 mW".
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_current': 1e-4, 'fpp_voltage_compliance': 5.0,
+            'fpp_power_warn_w': 1e-4, 'fpp_power_stop_w': 1e-4,
+        }, strict=True)
+        assert [i.message for i in resolved.issues] == [
+            "worst-case power 500 µW exceeds the probe-safety hard stop 100 µW"]
+
     def test_aux_logging_unavailable_for_sweep(self, profile):
         resolved = resolve_run_settings(profile, 'sweep',
                                          {'aux_log_enabled': True}, strict=True)
