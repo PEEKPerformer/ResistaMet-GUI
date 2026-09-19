@@ -340,6 +340,13 @@ def serial_poll_enable_command(controller: int, pad: int, sad: Optional[int] = N
 SERIAL_POLL_DISABLE_COMMAND = bytes((CMD_SPD, CMD_UNT))
 
 
-def addressed_command(pad: int, command: int, sad: Optional[int] = None) -> bytes:
-    """``3f 20+N [60+S] <command>`` for SDC, GET, GTL, LLO."""
-    return bytes((CMD_UNL,)) + _with_secondary(listen_address(pad), sad) + bytes((command,))
+def addressed_command(pad: int, command: int, sad: Optional[int] = None,
+                      controller: Optional[int] = None) -> bytes:
+    """``[40+C] 3f 20+N [60+S] <command>`` for SDC, GET, GTL, LLO.
+
+    With ``controller`` the adapter's own talk address leads, the order NI
+    sends (``40 3f 38 01`` for go to local, §10.2.3, §10.7.4); without it the
+    sequence is the §6 table's.
+    """
+    lead = b'' if controller is None else bytes((talk_address(controller),))
+    return lead + bytes((CMD_UNL,)) + _with_secondary(listen_address(pad), sad) + bytes((command,))

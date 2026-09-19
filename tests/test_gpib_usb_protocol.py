@@ -53,6 +53,9 @@ class TestWorkedExamplesOut:
         assert t.SERIAL_POLL_DISABLE_COMMAND == bytes((0x19, 0x5F))
         assert t.addressed_command(24, t.CMD_SDC) == bytes((0x3F, 0x38, 0x04))
         assert t.addressed_command(24, t.CMD_GET, sad=1) == bytes((0x3F, 0x38, 0x61, 0x08))
+        # NI's order, talk address first: ren_device.pcap 1.7255, sad_poll.pcap 0.9178.
+        assert t.addressed_command(24, t.CMD_GTL, controller=0) == bytes((0x40, 0x3F, 0x38, 0x01))
+        assert t.addressed_command(24, t.CMD_SDC, sad=1, controller=0) == bytes((0x40, 0x3F, 0x38, 0x61, 0x04))
 
     def test_addresses_are_range_checked(self):
         with pytest.raises(ValueError):

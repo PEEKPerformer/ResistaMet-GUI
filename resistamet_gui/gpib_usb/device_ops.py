@@ -30,7 +30,14 @@ def trigger(controller: Controller, pad: int, sad: Optional[int] = None,
 
 def go_to_local(controller: Controller, pad: int, sad: Optional[int] = None,
                 timeout_s: Optional[float] = DEFAULT_TIMEOUT_S) -> None:
-    controller.command(t.addressed_command(pad, t.CMD_GTL, sad), timeout_s)
+    """GTL to one device, as NI addresses it: ``40+C 3f 20+N [60+S] 01`` (§10.7.4).
+
+    NI writes no register for this (§5.15). Its device clear and trigger
+    lead with the talk address as well (§10.5.3); those two keep the §6
+    form here, which is the one that has run against an instrument.
+    """
+    controller.command(t.addressed_command(pad, t.CMD_GTL, sad, controller=controller.own_address),
+                       timeout_s)
 
 
 def local_lockout(controller: Controller, pad: Optional[int] = None, sad: Optional[int] = None,
