@@ -53,10 +53,17 @@ Optional flags:
 | [Quick Start](quickstart.md) | First-measurement walkthrough, per-mode workflows, useful inputs |
 | [Concepts](concepts.md) | Plain-English glossary for SMU terms (NPLC, compliance, auto-zero, Enhanced R, 4PP, vdP) |
 | [Settings](settings.md) | Settings dialog tour with per-knob explanation and defaults |
-| [Data Outputs](outputs.md) | CSV / HDF5 / legacy JSON reference, every column for every mode |
+| [Data Outputs](outputs.md) | CSV / HDF5 / legacy JSON reference: file names, every header and footer key, every column for every mode, four-point spots and maps |
+| [GPIB and VISA backends](gpib.md) | Choosing a VISA backend, NI GPIB-USB on macOS / Linux, Prologix adapters, the `--check-visa` diagnostic |
+| [Backend API](api.md) | Driving a measurement without a GUI: the localhost HTTP + WebSocket API, events, prompts, a Python example |
+| [Desktop app](desktop.md) | The Tauri desktop app (in development): views, running from source, where data goes |
 | [Troubleshooting](troubleshooting.md) | Common errors and how to resolve them |
 | [Simulator Fidelity](sim_fidelity.md) | What the in-package fake covers, what it doesn't, and how it's validated |
 | [Citation](citation.md) | BibTeX, DOIs, downstream publications |
+
+## Beyond the PySide6 window
+
+The released application is the PySide6 window described above. On the development branch the measuring code has been separated from it: a typed settings schema, a headless run layer, and a localhost API that a second front end (a Tauri desktop app) and your own scripts can drive. All of them write the same files. [Concepts → Architecture](concepts.md#architecture-schema-session-api-clients) has the picture; [Backend API](api.md) has a ten-sample example you can run against the simulator.
 
 ## Source, issues, contributions
 
