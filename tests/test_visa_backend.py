@@ -223,6 +223,44 @@ class TestGpibInterface:
             simulator.disable_simulation()
 
 
+class TestReportGpibInterface:
+    """``--check-visa``: say what is configured; open it only when asked to touch the bus."""
+
+    def test_none_configured(self, one_rm):
+        one_rm(_InterfaceRM())
+        assert visa_backend.report('@py')['gpib_interface'] == {'configured': ''}
+
+    def test_quiet_names_it_without_opening_it(self, one_rm):
+        rm = one_rm(_InterfaceRM())
+        info = visa_backend.report('@py', gpib_interface=PRLGX)
+        assert info['gpib_interface'] == {'configured': PRLGX}
+        assert rm.opened == []
+
+    def test_bus_opens_it_before_enumerating(self, one_rm):
+        rm = one_rm(_InterfaceRM())
+        order = []
+        rm.list_resources = lambda: (order.append('listed'), ())[1]
+        opening = rm.open_resource
+        rm.open_resource = lambda name, **k: (order.append('opened'), opening(name, **k))[1]
+        info = visa_backend.report('@py', probe_bus=True, gpib_interface=PRLGX)
+        assert info['gpib_interface'] == {'configured': PRLGX, 'opened': True}
+        assert order == ['opened', 'listed']
+
+    def test_bus_reports_a_failure_and_still_enumerates(self, one_rm):
+        one_rm(_InterfaceRM(error=OSError('could not open port')))
+        info = visa_backend.report('@py', probe_bus=True, gpib_interface=PRLGX)
+        assert info['ok'] is True  # a VISA implementation did open
+        assert info['gpib_interface']['opened'] is False
+        assert PRLGX in info['gpib_interface']['error']
+        assert info['resources'] == []
+
+    def test_a_vendor_library_does_not_open_it(self, one_rm):
+        rm = one_rm(_InterfaceRM('/Library/Frameworks/VISA.framework/VISA'))
+        info = visa_backend.report('', probe_bus=True, gpib_interface=PRLGX)
+        assert info['gpib_interface'] == {'configured': PRLGX, 'opened': False}
+        assert rm.opened == []
+
+
 @pytest.fixture
 def prologix():
     adapter = FakePrologix()
