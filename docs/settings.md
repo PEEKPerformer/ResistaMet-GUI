@@ -17,28 +17,32 @@ The tab layout below is the PySide6 window's. The [desktop app](desktop.md) edit
 | **NPLC** | `1` | `0.01 – 10` | [Integration time](concepts.md#nplc-number-of-power-line-cycles) per reading. Lower = faster + noisier; higher = slower + cleaner. |
 | **Settling Time** | `0.2 s` | `0 – 10 s` | Delay after output enable before the first reading. Lets DUT + instrument stabilize. |
 
-!!! note "Where to set the VISA backend and the GPIB interface"
-    At this commit only the desktop app has fields for them (Settings ▸ Instrument). The PySide6 Settings dialog does not; it honors the stored values when it connects for a run or for **Test Connection**, but its **Detect Devices** scan always uses pyvisa's default backend. Without the desktop app, set them with `PATCH /profiles/{user}` or by editing `machines.<hostname>` in `config.json`.
+The PySide6 Settings dialog has the three as **GPIB Address**, **VISA Backend** and **GPIB Interface**; the desktop app has them under Settings ▸ Instrument. In both, the scan (**Detect Devices**, **Scan**) goes through the backend and interface shown, as a run does.
 
 ### Machine-local settings
 
-`gpib_address`, `visa_library` and `gpib_interface` describe a PC and its cabling, not an operator. They are stored in `config.json` under `machines.<hostname>`, where `<hostname>` is what the operating system reports for the PC (`socket.gethostname()`), and never in a user's profile or in the shared `measurement` block:
+`gpib_address`, `visa_library` and `gpib_interface` describe a PC and its cabling, not an operator. They are not stored in `config.json` at all. Each PC keeps them in a small file of its own, in the home directory of the user account that runs ResistaMet, beside the instrument locks:
+
+```
+~/.resistamet/machine.json          (Windows: C:\Users\<you>\.resistamet\machine.json)
+```
 
 ```json
-"machines": {
-  "bench-pc-1": {"gpib_address": "GPIB0::24::INSTR"},
-  "office-mac": {"gpib_address": "GPIB0::3::INSTR", "visa_library": "@py"}
+{
+    "gpib_address": "GPIB0::3::INSTR",
+    "visa_library": "@py"
 }
 ```
 
 What that means when one `config.json` is shared between PCs through a synced folder or a network drive:
 
-- Each PC reads and writes only its own entry. Operators, profiles and every other setting are shared; the address, the backend and the interface are not.
-- When a profile is read, the three values for the current PC are filled into its `measurement` section, so a run, the API and both UIs see them as ordinary settings. When a profile is saved, they are taken back out and written to the PC's entry.
-- A PC with no entry yet falls back to a value left in the shared `measurement` block by an older version, then to the default. The first save on that PC moves the value into its own entry and removes the shared copy.
+- Operators, profiles and every other setting travel with `config.json`. The address, the VISA backend and the GPIB interface stay on the PC, because its file is outside the shared folder.
+- When a profile is read, the three values of the current PC are filled into its `measurement` section, so a run, the API and both UIs see them as ordinary settings. When a profile is saved, they are taken back out and written to `machine.json`; stale copies in `config.json` are removed.
+- The file is per user account, not per PC: two accounts on one PC each have their own.
 - An empty `gpib_address` is never stored. An empty `visa_library` or `gpib_interface` is a real choice (Automatic, none) and is stored.
-- Two PCs that report the same hostname share one entry. Rename one of them.
 - Through the API these three keys cannot be changed while a run is in progress (409), and `gpib_address` can never be sent as a run override.
+
+**Coming from an earlier version.** Versions up to 1.12 kept the address in `config.json` under `machines.<hostname>`. That broke whenever the hostname changed, which macOS does on its own depending on the network. The first time this version opens a config on a PC that has no `machine.json`, it copies that PC's old entry (or an even older shared `measurement.gpib_address`) into `machine.json`, skipping values that equal the default. The old entry is left in `config.json`, is still consulted for a key `machine.json` lacks, and is never written again, so an older ResistaMet opening the same file keeps working.
 
 ### Resistance defaults
 
@@ -75,7 +79,7 @@ Applied to the Resistance tab on launch; the tab itself has live widgets that ov
 | **Filter Type** | `repeat` | `repeat` (N readings → 1 result, then repeat) or `moving` (running average) |
 | **Filter Count** | `5` | `1 – 100` |
 | **Enhanced accuracy in Resistance mode** | `True` | Offset-compensated ohms. See [Concepts → Enhanced R mode](concepts.md#enhanced-r-mode). |
-| **Touch-safety warn threshold** (`safety_voltage_warn_v`) | `30 V` | Voltage at or above this triggers the warning before run start. `0` disables. The PySide6 spin box accepts `0 – 1100 V`; the settings schema allows `0 – 200 V`, so a threshold above 200 V is reported as an issue and an API or desktop-app run is refused until it is lowered. See [Concepts → Touch-safety warning](concepts.md#touch-safety-warning). |
+| **Touch-safety warn threshold** (`safety_voltage_warn_v`) | `30 V` | `0 – 1100 V`. Voltage at or above this triggers the warning before run start. `0` disables. It and the *suppress* flag below belong to the profile: an API run request cannot override either. See [Concepts → Touch-safety warning](concepts.md#touch-safety-warning). |
 | **Suppress touch-safety warning for this profile** | `False` | Equivalent to clicking "Don't show again" on the modal. Uncheck to re-enable. |
 
 ### Four-point sample outline and spot position
@@ -99,7 +103,7 @@ Only the dimensions the chosen shape has are read: a width left over from a rect
 - While `fpp_sample_shape` is `unbounded`, the outline is derived from the legacy keys, so an existing profile needs no change: `circle` with `fpp_diameter_cm` = D gives a circle of diameter 10·D mm; `square`, `rectangle_2`, `rectangle_3`, `rectangle_4` give a rectangle whose width is 10·D mm and whose length is 1, 2, 3 or 4 times that; `fpp_diameter_cm` = 0 gives an unbounded sheet, for which no position check is made.
 - When `fpp_sample_shape` names a shape, that outline is used for the position check, with any aspect ratio. The rows still use the legacy keys. If the two describe different samples the run is allowed and `POST /settings/resolve` returns a `warning` issue on `fpp_sample_shape` saying so; the file then shows the disagreement as a large `spot.relative_error_rows`.
 
-At this commit neither UI has fields for these seven settings. Set them as API overrides on a four-point run, with `PATCH /profiles/{user}`, or in `config.json`.
+The desktop app has the first six in the **Sample** group of the four-point settings panel. The PySide6 window has no fields for them at this commit; there, set them in `config.json` (or through `PATCH /profiles/{user}`). An API run can send them as overrides.
 
 ### I-V sweep compliance
 
@@ -162,7 +166,6 @@ Settings are kept in `config.json` in the working directory (gitignored — per-
   "output": {...},
   "users": ["alice", "bob"],
   "last_user": "alice",
-  "machines": {"bench-pc-1": {"gpib_address": "GPIB0::24::INSTR"}},
   "user_settings": {
     "alice": {"measurement": {...}, ...},
     "bob": {"measurement": {...}, ...}
@@ -170,7 +173,7 @@ Settings are kept in `config.json` in the working directory (gitignored — per-
 }
 ```
 
-When a user is selected, their per-user overrides deep-merge on top of the global defaults, and the current PC's [machine-local](#machine-local-settings) values are filled in. The file is written atomically (temporary file, `fsync`, then rename), so a crash during a save leaves the previous file intact. Editing this file by hand works but is error-prone — prefer the dialog. If the file gets corrupted, delete it and ResistaMet will recreate from `DEFAULT_SETTINGS` (in [`resistamet_gui/constants.py`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/resistamet_gui/constants.py)).
+When a user is selected, their per-user overrides deep-merge on top of the global defaults, and the current PC's [machine-local](#machine-local-settings) values are filled in from `~/.resistamet/machine.json`. The file is written atomically (temporary file, `fsync`, then rename), so a crash during a save leaves the previous file intact. Editing this file by hand works but is error-prone — prefer the dialog. A `config.json` that cannot be read (a half-synced file, say) is left exactly as found: ResistaMet runs on the defaults in memory, and copies the unreadable file aside before the first deliberate save writes over it. To start over, delete the file and ResistaMet will recreate it from `DEFAULT_SETTINGS` (in [`resistamet_gui/constants.py`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/resistamet_gui/constants.py)).
 
 ## Profiles menu
 
