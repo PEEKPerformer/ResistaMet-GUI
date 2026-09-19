@@ -34,20 +34,32 @@ class Model:
     product_id: int
     endpoint_out: int        # libusb address of the primary bulk OUT
     endpoint_in: int         # libusb address of the primary bulk IN (0x80 | n)
-    endpoint_interrupt: int  # present but unused here (§2.5)
+    endpoint_interrupt: int  # the SRQ push arrives here (§2.5, §10.4.2)
     needs_firmware: bool     # enumerates but cannot be driven
     readiness_poll: bool     # §2.3 applies (not on the USB-B)
     hs_plus_extras: bool     # the three extra control requests of §2.4
+    #: The alternate bulk pair of §1.2: raw data of 0x0e writes goes out here
+    #: and raw data of 0x0b reads comes in here (§10.1.3, §10.5.2). None where
+    #: the model lacks one of the two (the USB-B has only an alternate IN), in
+    #: which case only the framed 0x0a / 0x0d paths are used.
+    endpoint_out_raw: Optional[int] = None
+    endpoint_in_raw: Optional[int] = None
+
+    @property
+    def raw_endpoints(self) -> bool:
+        return self.endpoint_out_raw is not None and self.endpoint_in_raw is not None
 
 
 MODELS: Dict[int, Model] = {
     PID_USB_B: Model('GPIB-USB-B', PID_USB_B, 0x02, 0x82, 0x84, False, False, False),
     PID_USB_B_PRE_FIRMWARE: Model('GPIB-USB-B (no firmware)', PID_USB_B_PRE_FIRMWARE,
                                   0x02, 0x82, 0x84, True, False, False),
-    PID_HS: Model('GPIB-USB-HS', PID_HS, 0x02, 0x84, 0x81, False, True, False),
-    PID_HS_PLUS: Model('GPIB-USB-HS+', PID_HS_PLUS, 0x01, 0x82, 0x83, False, True, True),
-    PID_KUSB_488A: Model('KUSB-488A', PID_KUSB_488A, 0x02, 0x84, 0x81, False, True, False),
-    PID_MC_USB_488: Model('USB-488', PID_MC_USB_488, 0x02, 0x84, 0x81, False, True, False),
+    # The raw pair was observed on the HS (§10); the KUSB-488A and USB-488 share
+    # its endpoints and protocol (§1.1), the HS+ has its own alternate pair (§1.2).
+    PID_HS: Model('GPIB-USB-HS', PID_HS, 0x02, 0x84, 0x81, False, True, False, 0x06, 0x88),
+    PID_HS_PLUS: Model('GPIB-USB-HS+', PID_HS_PLUS, 0x01, 0x82, 0x83, False, True, True, 0x04, 0x85),
+    PID_KUSB_488A: Model('KUSB-488A', PID_KUSB_488A, 0x02, 0x84, 0x81, False, True, False, 0x06, 0x88),
+    PID_MC_USB_488: Model('USB-488', PID_MC_USB_488, 0x02, 0x84, 0x81, False, True, False, 0x06, 0x88),
 }
 
 # --------------------------------------------------------------------------

@@ -50,8 +50,13 @@ class TransportTimeout(TransportError):
 class Transport(Protocol):
     """What the controller needs from a USB connection to one adapter.
 
-    The specification has no host-to-device control requests, so there is no
-    control-out operation.
+    ``bulk_out`` / ``bulk_in`` are the primary pair that carries messages and
+    replies (§3.1). ``bulk_out_raw`` / ``bulk_in_raw`` are the alternate pair
+    that carries the bytes of 0x0e writes and 0x0b reads unframed (§10.1.3,
+    §10.5.2); a transport for a model without the pair raises
+    ``TransportError`` from them. ``interrupt_in`` receives the SRQ push
+    (§10.4.2) and ``control_out`` sends the one host-to-device request that
+    follows it (§2.2).
     """
 
     #: wMaxPacketSize of the bulk IN endpoint, for sizing read buffers (§8.6).
@@ -61,9 +66,19 @@ class Transport(Protocol):
                    timeout_ms: int,
                    request_type: int = t.REQUEST_TYPE_VENDOR_DEVICE) -> bytes: ...
 
+    def control_out(self, request: int, value: int, index: int, data: bytes,
+                    timeout_ms: int,
+                    request_type: int = t.REQUEST_TYPE_VENDOR_DEVICE_OUT) -> None: ...
+
     def bulk_out(self, data: bytes, timeout_ms: int) -> None: ...
 
     def bulk_in(self, length: int, timeout_ms: int) -> bytes: ...
+
+    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> None: ...
+
+    def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes: ...
+
+    def interrupt_in(self, length: int, timeout_ms: int) -> bytes: ...
 
     def close(self) -> None: ...
 
@@ -84,6 +99,9 @@ class AdapterInfo:
     needs_firmware: bool
     #: The pyusb device; None for fakes, which supply their own transport.
     device: Any = None
+    #: The alternate bulk pair for raw data (§1.2, §10); None on models without one.
+    endpoint_out_raw: Optional[int] = None
+    endpoint_in_raw: Optional[int] = None
 
     @property
     def label(self) -> str:
@@ -175,6 +193,8 @@ def find_adapters() -> List[AdapterInfo]:
                 endpoint_interrupt=model.endpoint_interrupt,
                 needs_firmware=model.needs_firmware,
                 device=device,
+                endpoint_out_raw=model.endpoint_out_raw,
+                endpoint_in_raw=model.endpoint_in_raw,
             ))
     except usb.core.USBError as exc:
         logger.debug('USB enumeration failed: %s', exc)
@@ -217,14 +237,18 @@ def open_transport(info: AdapterInfo) -> Transport:
                               'before it can be driven' % (info.label, info.product_id))
     if info.device is None:
         raise TransportError('%s has no USB device handle' % info.label)
-    return PyUsbTransport(info.device, info.endpoint_out, info.endpoint_in)
+    return PyUsbTransport(info.device, info.endpoint_out, info.endpoint_in,
+                          endpoint_out_raw=info.endpoint_out_raw, endpoint_in_raw=info.endpoint_in_raw,
+                          endpoint_interrupt=info.endpoint_interrupt)
 
 
 class PyUsbTransport:
     """``Transport`` over a pyusb device (§2.1)."""
 
     def __init__(self, device: Any, endpoint_out: int, endpoint_in: int,
-                 interface: int = INTERFACE_NUMBER) -> None:
+                 interface: int = INTERFACE_NUMBER, *,
+                 endpoint_out_raw: Optional[int] = None, endpoint_in_raw: Optional[int] = None,
+                 endpoint_interrupt: Optional[int] = None) -> None:
         usb = _import_usb()
         if usb is None:
             raise TransportError('pyusb is not installed')
@@ -232,6 +256,9 @@ class PyUsbTransport:
         self._device = device
         self._out = endpoint_out
         self._in = endpoint_in
+        self._out_raw = endpoint_out_raw
+        self._in_raw = endpoint_in_raw
+        self._interrupt = endpoint_interrupt
         self._interface = interface
         self.max_packet_size = DEFAULT_MAX_PACKET_SIZE
         try:
@@ -287,14 +314,42 @@ class PyUsbTransport:
             request_type, request, value, index, length, timeout_ms))
         return bytes(reply)
 
+    def control_out(self, request: int, value: int, index: int, data: bytes,
+                    timeout_ms: int,
+                    request_type: int = t.REQUEST_TYPE_VENDOR_DEVICE_OUT) -> None:
+        self._run('control request 0x%02x' % request, lambda: self._device.ctrl_transfer(
+            request_type, request, value, index, data, timeout_ms))
+
     def bulk_out(self, data: bytes, timeout_ms: int) -> None:
-        written = self._run('bulk write', lambda: self._device.write(self._out, data, timeout_ms))
-        if written != len(data):
-            raise TransportError('bulk write sent %d of %d bytes' % (written, len(data)))
+        self._write(self._out, 'bulk write', data, timeout_ms)
 
     def bulk_in(self, length: int, timeout_ms: int) -> bytes:
         reply = self._run('bulk read', lambda: self._device.read(self._in, length, timeout_ms))
         return bytes(reply)
+
+    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> None:
+        if self._out_raw is None:
+            raise TransportError('this adapter has no alternate bulk OUT endpoint')
+        self._write(self._out_raw, 'raw bulk write', data, timeout_ms)
+
+    def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
+        if self._in_raw is None:
+            raise TransportError('this adapter has no alternate bulk IN endpoint')
+        endpoint = self._in_raw
+        reply = self._run('raw bulk read', lambda: self._device.read(endpoint, length, timeout_ms))
+        return bytes(reply)
+
+    def interrupt_in(self, length: int, timeout_ms: int) -> bytes:
+        if self._interrupt is None:
+            raise TransportError('this adapter has no interrupt endpoint')
+        endpoint = self._interrupt
+        reply = self._run('interrupt read', lambda: self._device.read(endpoint, length, timeout_ms))
+        return bytes(reply)
+
+    def _write(self, endpoint: int, what: str, data: bytes, timeout_ms: int) -> None:
+        written = self._run(what, lambda: self._device.write(endpoint, data, timeout_ms))
+        if written != len(data):
+            raise TransportError('%s sent %d of %d bytes' % (what, written, len(data)))
 
     def close(self) -> None:
         try:

@@ -32,7 +32,15 @@ def hex_diff(expected: bytes, actual: bytes) -> str:
 
 
 class ScriptedTransport:
-    """Steps: ('out', bytes) | ('in', bytes_or_exc[, expected_length]) | ('ctrl', params, reply)."""
+    """Steps, in the order the controller must take them:
+
+    ``('out', bytes)`` and ``('raw_out', bytes)`` -- what the next bulk OUT on
+    the primary / alternate endpoint must carry; ``('in', bytes_or_exc[,
+    expected_length])``, ``('raw_in', ...)`` and ``('intr', ...)`` -- what the
+    next bulk IN on the primary / alternate / interrupt endpoint returns (or
+    raises); ``('ctrl', params, reply)`` and ``('ctrl_out', params)`` -- the
+    next control request.
+    """
 
     max_packet_size = 512
 
@@ -64,18 +72,45 @@ class ScriptedTransport:
             raise step[2]
         return step[2]
 
+    def control_out(self, request, value, index, data, timeout_ms,
+                    request_type=t.REQUEST_TYPE_VENDOR_DEVICE_OUT) -> None:
+        step = self._next('ctrl_out', 'request 0x%02x' % request)
+        actual = (request_type, request, value, index, data)
+        if tuple(step[1]) != actual:
+            raise AssertionError('control_out %r, expected %r' % (actual, tuple(step[1])))
+        if len(step) > 2 and isinstance(step[2], Exception):
+            raise step[2]
+
     def bulk_out(self, data: bytes, timeout_ms: int) -> None:
-        step = self._next('out', data.hex(' '))
-        if data != step[1]:
-            raise AssertionError(hex_diff(step[1], data))
+        self._out('out', data, timeout_ms)
         self.sent.append(data)
         self.timeouts.append(('out', data[0], timeout_ms))
 
+    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> None:
+        self._out('raw_out', data, timeout_ms)
+        self.timeouts.append(('raw_out', len(data), timeout_ms))
+
+    def _out(self, kind: str, data: bytes, timeout_ms: int) -> None:
+        step = self._next(kind, data[:64].hex(' '))
+        if data != step[1]:
+            raise AssertionError(hex_diff(step[1][:80], data[:80]))
+        if len(step) > 2 and isinstance(step[2], Exception):
+            raise step[2]
+
     def bulk_in(self, length: int, timeout_ms: int) -> bytes:
-        step = self._next('in', 'bulk_in(%d)' % length)
-        self.timeouts.append(('in', length, timeout_ms))
+        return self._in('in', length, timeout_ms)
+
+    def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
+        return self._in('raw_in', length, timeout_ms)
+
+    def interrupt_in(self, length: int, timeout_ms: int) -> bytes:
+        return self._in('intr', length, timeout_ms)
+
+    def _in(self, kind: str, length: int, timeout_ms: int) -> bytes:
+        step = self._next(kind, '%s(%d)' % (kind, length))
+        self.timeouts.append((kind, length, timeout_ms))
         if len(step) > 2 and step[2] != length:
-            raise AssertionError('bulk_in asked for %d bytes, expected %d' % (length, step[2]))
+            raise AssertionError('%s asked for %d bytes, expected %d' % (kind, length, step[2]))
         if isinstance(step[1], Exception):
             raise step[1]
         if len(step[1]) > length:
