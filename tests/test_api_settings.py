@@ -14,6 +14,7 @@ from resistamet_gui.session.emitter import ListSink
 from resistamet_gui.session.manager import MeasurementSession
 
 TOKEN = 'test-token'
+PRLGX = 'PRLGX-ASRL::/dev/cu.usbserial-PX12345::INTFC'
 
 
 @pytest.fixture
@@ -202,6 +203,68 @@ class TestInstruments:
                                 json={'address': 'GPIB0::24::INSTR', 'visa_library': '@py'})
         assert response.status_code == 200
         assert calls == [('@py',)]
+
+    def test_resources_can_try_an_interface_before_saving_it(self, client, config, fake_rm):
+        opened = []
+        fake_rm.open_resource = lambda name, **k: (opened.append(name), object())[1]
+        body = client.get('/instruments/resources',
+                          params={'gpib_interface': PRLGX}).json()
+        assert opened == [PRLGX]
+        assert body['gpib_interface'] == PRLGX
+        assert config.get_gpib_interface() == ''
+
+    def test_resources_use_the_machine_interface_by_default(self, client, config, fake_rm):
+        config.set_machine_local('gpib_interface', PRLGX)
+        opened = []
+        fake_rm.open_resource = lambda name, **k: (opened.append(name), object())[1]
+        assert client.get('/instruments/resources').json()['gpib_interface'] == PRLGX
+        assert opened == [PRLGX]
+
+    def test_an_empty_interface_overrides_the_machine_one(self, client, config, fake_rm):
+        config.set_machine_local('gpib_interface', PRLGX)
+        opened = []
+        fake_rm.open_resource = lambda name, **k: (opened.append(name), object())[1]
+        body = client.get('/instruments/resources', params={'gpib_interface': ''}).json()
+        assert opened == []
+        assert body['gpib_interface'] is None
+
+    def test_an_interface_that_does_not_open_is_named(self, client, fake_rm):
+        response = client.get('/instruments/resources', params={'gpib_interface': PRLGX})
+        assert response.status_code == 503
+        assert response.json()['detail'].startswith(f'Could not open GPIB interface {PRLGX}')
+
+    def test_identify_opens_the_interface_first(self, client, fake_rm):
+        opened = []
+        opening = fake_rm.open_resource
+
+        def recording(name, **kwargs):
+            opened.append(name)
+            return object() if name == PRLGX else opening(name, **kwargs)
+
+        fake_rm.open_resource = recording
+        response = client.post('/instruments/identify',
+                                json={'address': 'GPIB0::24::INSTR', 'gpib_interface': PRLGX})
+        assert response.status_code == 200
+        assert opened == [PRLGX, 'GPIB0::24::INSTR']
+
+    def test_identify_names_an_interface_that_does_not_open(self, client, fake_rm):
+        response = client.post('/instruments/identify',
+                                json={'address': 'GPIB0::24::INSTR', 'gpib_interface': PRLGX})
+        assert response.status_code == 503
+        assert PRLGX in response.json()['detail']
+
+    def test_the_interface_is_machine_local(self, client, config, fake_rm):
+        client.patch('/profiles/alice', json={'measurement': {'gpib_interface': PRLGX}})
+        assert config.get_gpib_interface() == PRLGX
+        assert client.get('/profiles/alice').json()['measurement']['gpib_interface'] == PRLGX
+
+    def test_the_interface_cannot_change_during_a_run(self, client, fake_rm):
+        client.post('/session/start', json={'mode': 'four_point', 'sample_name': 'w',
+                                             'username': 'alice'})
+        assert _wait_for(lambda: client.get('/session').json()['state'] == 'running')
+        response = client.patch('/profiles/alice', json={'measurement': {'gpib_interface': PRLGX}})
+        assert response.status_code == 409
+        client.post('/session/stop')
 
     def test_identify_is_refused_during_a_run(self, client, fake_rm):
         client.post('/session/start', json={'mode': 'four_point', 'sample_name': 'w',

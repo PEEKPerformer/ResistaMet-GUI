@@ -134,6 +134,14 @@ def open_gpib_interface(rm: Any, gpib_interface: str) -> bool:
         return True
 
 
+def held_gpib_interface(rm: Any) -> Optional[str]:
+    """The interface resource open on ``rm`` right now, or None."""
+    held = getattr(rm, _INTERFACE_ATTR, None)
+    if held is not None and _is_open(held[1]):
+        return held[0]
+    return None
+
+
 def _simulating() -> bool:
     from . import simulator
     return simulator.is_simulating()
