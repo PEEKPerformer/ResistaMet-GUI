@@ -281,6 +281,7 @@ export interface SpotCompletePayload {
  * the ``fpp_array_angle_deg`` setting.
  */
 export interface SpotStats {
+  end_reason?: string | null;
   n: number;
   n_excluded?: number;
   rho: QuantityStats;

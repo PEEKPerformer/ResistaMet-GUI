@@ -296,6 +296,18 @@
           "additionalProperties": false,
           "description": "The statistics block of a four-point run, as its file footer has it.\n\n``n`` samples entered the statistics; ``n_excluded`` were in compliance\nand left out, because they record a bound rather than a measurement.",
           "properties": {
+            "end_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "End Reason"
+            },
             "n": {
               "title": "N",
               "type": "integer"
