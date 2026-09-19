@@ -268,9 +268,13 @@ class TestWhichRunIsNewest:
 
     def test_a_renamed_file_is_placed_by_its_start_time(self, tmp_path):
         from datetime import datetime
-        early = datetime.fromtimestamp(1001).isoformat()
-        late = datetime.fromtimestamp(1003).isoformat()
-        _write_run(tmp_path, 2, 'wafer7', 0, 100.0, started_at=early)
+        # Stamps of a realistic size: Windows cannot turn a local time in the
+        # first day of 1970 back into a timestamp.
+        epoch = 1_789_000_000
+        early = datetime.fromtimestamp(epoch + 1).isoformat()
+        late = datetime.fromtimestamp(epoch + 3).isoformat()
+        _write_run(tmp_path, 2, 'wafer7', 0, 100.0, started_at=early,
+                   base_name=f'{epoch + 2}_wafer7_4PP_1mA')
         _write_run(tmp_path, 9, 'wafer7', 0, 120.0, started_at=late,
                    base_name='redo_of_wafer7_4PP_1mA')
         assert self._files(assemble_map(tmp_path, 'wafer7'))[0] == 'redo_of_wafer7_4PP_1mA.csv'

@@ -263,6 +263,8 @@ class TestReportGpibInterface:
 
 @pytest.fixture
 def prologix():
+    # Python 3.9 resolves a pyvisa-py that predates its Prologix support.
+    pytest.importorskip('pyvisa_py.prologix')
     adapter = FakePrologix()
     yield adapter
     adapter.close()
