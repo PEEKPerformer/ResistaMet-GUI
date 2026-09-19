@@ -106,7 +106,8 @@ export function ResultsView() {
     }
     if (!column) return [];
     const x = parsed.data["elapsed_s"] ?? parsed.data[parsed.columns[0] ?? ""] ?? [];
-    const y = parsed.data[column] ?? [];
+    // An infinite cell would take the y scale with it; it plots as a gap.
+    const y = (parsed.data[column] ?? []).map((v) => (Number.isFinite(v) ? v : NaN));
     return [{ label: column, color: "var(--data-r)", x, y, points: y.length < 400 }];
   }, [parsed, column, sweep]);
 

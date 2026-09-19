@@ -33,6 +33,7 @@ export function parseResistametCsv(source: string): ParsedCsv {
   const data: Record<string, number[]> = {};
   const text: Record<string, string[]> = {};
   const numericColumn = columns.map(() => true);
+  const hasValue = columns.map(() => false);
   const cells: string[][] = [];
   for (; i < lines.length; i++) {
     const line = lines[i] ?? "";
@@ -44,14 +45,28 @@ export function parseResistametCsv(source: string): ParsedCsv {
     const row = splitRow(line);
     cells.push(row);
     row.forEach((cell, c) => {
-      if (numericColumn[c] && cell !== "" && Number.isNaN(Number(cell))) numericColumn[c] = false;
+      if (cell === "") return;
+      hasValue[c] = true;
+      if (numericColumn[c] && cellNumber(cell) === null) numericColumn[c] = false;
     });
   }
   columns.forEach((name, c) => {
-    if (numericColumn[c]) data[name] = cells.map((row) => (row[c] === "" || row[c] === undefined ? NaN : Number(row[c])));
+    // A column with no value at all (no event was marked) is not a quantity.
+    if (numericColumn[c] && hasValue[c]) data[name] = cells.map((row) => cellNumber(row[c] ?? "") ?? NaN);
     else text[name] = cells.map((row) => row[c] ?? "");
   });
   return { metadata, footer, columns, data, text, rows: cells.length };
+}
+
+/** A cell as a number, or null when it is text. The backend writes Python's
+ *  "nan" and "inf" for a quantity it could not compute, such as conductivity
+ *  with no thickness given; those are numbers, and one of them must not turn
+ *  the whole column into text. */
+function cellNumber(cell: string): number | null {
+  const special = /^([-+]?)(nan|inf|infinity)$/i.exec(cell);
+  if (special) return special[2]!.toLowerCase() === "nan" ? NaN : special[1] === "-" ? -Infinity : Infinity;
+  const value = Number(cell);
+  return cell === "" || Number.isNaN(value) ? null : value;
 }
 
 /** "# key: value" into `into`. A line without a key, such as the marker that
