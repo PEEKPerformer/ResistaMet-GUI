@@ -54,7 +54,12 @@ given as raw endpoint numbers and as libusb addresses (IN = 0x80 | n).
 
 Only the primary bulk OUT and bulk IN endpoints are required (on the HS:
 0x02 and 0x84). The interrupt endpoint is optional (2.5). Uncertain: the
-purpose of the alternate endpoints.
+purpose of the alternate endpoints. Observed 2026-09-19 (§10.1.3, §10.5.2):
+on the HS the alternate pair carries raw data -- bulk IN 0x88 the bytes
+read by a 0x0b instruction, bulk OUT 0x06 the bytes written by a 0x0e
+instruction -- while the instruction and its reply stay on 0x02 / 0x84.
+NI's driver uses them for every read above 1024 bytes and for a 2050-byte
+write.
 
 Reply sizes are bounded: the largest single reply this protocol produces
 is the reply to a maximum-length (65535-byte) read, about 70 KB (see 5.2);
@@ -95,6 +100,16 @@ echoing bRequest.
 
 A 1000 ms host timeout suffices for all of these (100 ms per readiness
 query attempt).
+
+Observed 2026-09-19 (§10.3.5, §10.4.2): the 0x21 / 0x0200 status query
+returns `21 ss ss ee cc cc xx xx`, a status block (4.1) with id 0x21, and
+NI uses it to read line states without bulk traffic. One host-to-device
+request not in the table exists: bmRequestType 0x40, bRequest 0x3b,
+wValue 0, wIndex 0, wLength 0, sent once after every interrupt-IN push
+and before the interrupt read is re-armed; its function is not
+established. The 0x40, 0x41, 0x20 and 0x21 / 0x0300 requests do not
+appear in the captures, which all start after the driver already owned
+the adapter.
 
 ### 2.3 Readiness poll (HS, HS+, KUSB-488A, MC USB-488; not USB-B)
 
@@ -162,6 +177,14 @@ Operation without this request and without the interrupt endpoint has
 been observed to be reliable; the mask is only useful for event-driven
 SRQ waits. Placement in the attach sequence: 2.8.
 
+Observed 2026-09-19 (§10.4.2): with NI's driver the adapter pushed one
+8-byte packet on the interrupt endpoint when the instrument asserted SRQ,
+`30 18 00 60 31 a1 01 00`: bytes 1-2 = ibsta 0x1800 (SRQI, RQS), byte 3 =
+the instrument's status byte (0x60) -- the adapter had serial-polled the
+device itself and SRQ was released -- and bytes 4-7 not established. No
+0x21 / 0x0300 request preceded it in any capture. NI answers each push
+with control request 0x3b and re-arms a 64-byte interrupt read.
+
 ### 2.6 Register initialisation sequence
 
 Sent as ONE register-write bulk instruction (3.4) containing all 26 writes
@@ -196,6 +219,15 @@ below, in this order. `P` = the adapter's own primary GPIB address
 | 24 | 1 | 0x0f | 0x11 | not in the TNT4882 one-chip register map; purpose unknown |
 | 25 | 1 | 0x0a | 0x00 | AUXMR: immediate execute power-on (releases pon) |
 | 26 | 1 | 0x0a | 0x01 | AUXMR: clear parallel-poll flag |
+
+Observed 2026-09-19 (§10.3.1): NI-488.2 22.5 sends exactly these 26
+writes in this order, byte-identical in 22 captures, with one value
+difference: rows 3 and 4 carry 0x99 (AUXRA: holdoff-all, XEOS, BIN)
+instead of 0x81 / 0x91. Rows 12-14 were the 500 ns T1 row (0xe9, 0xa4,
+0x00), row 16 = 0x03, rows 18-22 for address 0 without secondary. The
+reply was `09 00 00 00 cc cc ff ff 1a 00 00 00 04 00 00 00` as expected.
+Bank 2 has further registers 0x03..0x07 that NI writes per session
+(§10.2.4).
 
 Note (a): uncertain purpose. In the one-chip / 7210 register map, write
 offset 0x06 is SPMR (serial poll mode). In NI's Turbo+9914 map the
@@ -241,11 +273,26 @@ three writes can be re-sent later on their own to change T1.
 The adapter is then CIC with ATN true and ready for the addressing
 sequences of section 6.
 
+Observed 2026-09-19 (§10.3.2): NI's sequence for an instrument session
+is: step 5 (the 26 writes); a read of bank-1 0x0d, 0x0c, 0x1f; IFC pulse
+(the reply already shows CIC and ATN, no take-control follows); the same
+register read followed in the same message by REN on; then the bank-2
+configuration `02 03 01`, `02 04 01`, `02 05 PAD`, `02 06 SAD-byte-or-0`,
+`02 07 timeout-code`; two bank-2 0x03 writes; a presence probe `02 PAD SAD
+00` (§10.6.1); one more bank-2 0x03 write. Steps 2-4 and 6 are not in the
+captures. A board (INTFC) session sends the 26 writes and five or six
+0x21 / 0x0200 status queries only -- no IFC, no REN -- and is not CIC
+until the application pulses IFC (§10.3.5, §10.6.4).
+
 ### 2.9 Shutdown
 
 One register-write instruction with two writes: bank 1 addr 0x0a value
 0x02 (AUXMR chip reset), then bank 3 addr 0x10 value 0x00. Then release
-the interface. (Sequence captured from NI's Windows driver.)
+the interface. (Sequence captured from NI's Windows driver.) Observed
+2026-09-19 (§10.3.3): confirmed byte for byte, `09 02 00 01 0a 02 03 10 00
+00 00 00 04 00 00 00`, sent about 0.5 s after the last `viClose` at
+process end; the reply reads ibsta 0xffff. `viClose` itself writes bank-2
+0x03 := 1 and 0x04 := 0 (20 bytes).
 
 ---
 
@@ -271,23 +318,31 @@ before sending the next message.
 
 The only multi-instruction message observed is the read instruction with
 its embedded register-write block (5.2). Batching any other combination
-of opcodes in one message is untested.
+of opcodes in one message is untested. Observed 2026-09-19 (§10.2.1): NI
+batches up to five blocks per message (0x03, 0x0c, data instruction,
+0x09, 0x09; also 0x08 + 0x09 and 0x09 + 0x09); blocks execute in order
+and the reply is the concatenation of one reply per block followed by a
+single termination block.
 
 ### 3.2 Host -> device opcodes
 
 | Opcode | Instruction | Fixed header bytes after the opcode | Payload | Reply |
 |--------|-------------|--------------------------------------|---------|-------|
 | 0x01 | Take control (adapter becomes active controller with ATN true) | `s 00 00` where s = 0x01 synchronous, 0x00 asynchronous | none | 12-byte status reply |
-| 0x03 | Reserved / unknown; never observed in use | - | - | - |
+| 0x02 | Presence probe of a GPIB address (observed 2026-09-19, §10.6.1) | `P S 00` (P = primary address, S = 0x60 \| secondary or 0x00) | none | 16 bytes: status block + `01 00 00 00` (present) or `00 00 00 00` (absent) + termination |
+| 0x03 | Reserved / unknown; never observed in use. Observed 2026-09-19 (§10.2.2): `03 00 00 00`, replies with one 8-byte status block carrying the current ibsta; NI puts it first in every instrument-operation message | `00 00 00` | none | 8-byte status block |
 | 0x04 | Termination block | `00 00 00` | none | n/a (also appears at the end of replies) |
-| 0x06 | Go to standby (ATN false) | `00 00 00` | none | 12-byte status reply, id 0x06 |
+| 0x06 | Go to standby (ATN false) | `00 00 00`. Observed 2026-09-19 (§10.7.1): NI sends `00 00 0a`, and `01 00 0a` for the "deassert after handshake" variant; byte 3 = 0x0a meaning not established | none | 12-byte status reply, id 0x06 |
 | 0x07 | Parallel poll | `t 00 00` where t = timeout code (only 0xf0 observed) | none | status block + 1 result byte |
 | 0x08 | Register read | `n` (count of reads) | n × (`bank addr`) | see 3.5 |
 | 0x09 | Register write | `n 00` (count of writes) | n × (`bank addr value`) | 16-byte register-write reply |
 | 0x0a | Read data from bus | `m e t cl ch 00 00` (see 5.2) | an embedded 0x09 block, see 5.2 | data blocks + status, see 5.2 |
+| 0x0b | Read data from bus, data delivered raw on bulk IN 0x88 (observed 2026-09-19, §10.1.2) | `m e t c0 c1 c2 c3` (32-bit negative count) | none | 12-byte block on 0x84: status block + `xx 00 00 00` (xx = 0xe0 EOI seen / 0x60 not); data on 0x88 |
 | 0x0c | Command bytes (adapter drives ATN true for the duration) | `c 00 t` (c = 8-bit count code, t = timeout code) | up to 16 command bytes | 12-byte status reply |
 | 0x0d | Write data to bus | `cl ch t 00 00 f 00` (see 5.1) | data bytes | 12-byte status reply |
+| 0x0e | Write data to bus, data sent raw on bulk OUT 0x06 (observed 2026-09-19, §10.5.2) | `00 00 t 00 e f 00 c0 c1 c2 c3` (32-bit negative count; block is 12 bytes) | none (data on 0x06) | 8-byte status block, id 0x0e |
 | 0x0f | Interface clear pulse (IFC) | `00 00 00` | none | 12-byte status reply |
+| 0x10 | Serial poll of one device (observed 2026-09-19, §10.5.4) | `01 00 x P S t 00` (x = 0x00 or 0x01, meaning not established; P, S as for 0x02; t = timeout code) | none | `3a P S sb` (sb = status byte) + 8-byte status block id 0x39 |
 
 ### 3.3 Count encoding
 
@@ -305,6 +360,12 @@ The count field in a reply status block (4.1) uses the same convention:
 it holds (bytes transferred - bytes requested) as a 16-bit two's
 complement value, so 0x0000 means "all requested bytes were transferred".
 
+Observed 2026-09-19 (§10.1.2, §10.1.3, §10.5.2): the 0x0b and 0x0e
+instructions carry the count as a 32-bit little-endian two's complement
+(`00 b0 ff ff` = -20480, `fe f7 ff ff` = -2050) and their reply status
+blocks hold a 32-bit (transferred - requested) in bytes 4-7 (`00 00 00 00`
+for a full 20480-byte chunk, `52 b0 ff ff` = 82 - 20480).
+
 ### 3.4 Register-access blocks
 
 Register write block (opcode 0x09):
@@ -314,7 +375,11 @@ Register write block (opcode 0x09):
 ```
 - `nn` = number of (bank, addr, value) triplets (1 byte; 26 is known to work).
 - `b` = bank: 1 = TNT4882 controller chip, 2 = unknown bank, 3 = unknown
-  device-level bank.
+  device-level bank. Observed 2026-09-19 (§10.2.4): NI writes bank-2 0x03
+  := 1 before and after almost every operation (and polls with it), 0x04
+  := 1 at session open / 0 at the last close, 0x05 := the instrument's
+  primary address, 0x06 := 0x60 | secondary address or 0, 0x07 := the
+  session's timeout code.
 - `a` = register address within the bank (1 byte).
 - `v` = value (1 byte).
 
@@ -337,7 +402,7 @@ one-chip-mode offsets.
 | 0x06 | SPMR (see 2.6 note a)| SPSR |
 | 0x08 | ADMR                 | ADSR |
 | 0x0a | AUXMR (aux commands and hidden registers AUXRA/B/E/G/I via top bits) | CPTR |
-| 0x0c | ADR                  | ADR0 |
+| 0x0c | ADR                  | ADR0. Observed 2026-09-19 (§10.3.2): the value read here equalled the low byte of the current ibsta in all 50 reads captured (0x00, 0x30, 0x64, 0x74), not an address register |
 | 0x0e | EOSR (never written) | ADR1 |
 | 0x0d | HSSEL                | - |
 | 0x0f | (not in NI's map; written 0x11 at init) | - |
@@ -385,11 +450,14 @@ Reply block ids:
 |----|-------|--------|
 | 0x01, 0x06, 0x07, 0x09, 0x0c, 0x0d, 0x0f | status block echoing the instruction opcode | 8 bytes (4.1) |
 | 0x34 | register-read data chunk: `34 r r r` (up to 3 register values) | 4 bytes |
-| 0x35 | register-read end: `35 k 00 00`; k appears to be a count (uncertain: total or last-chunk; k mod 3 equals the number of reads mod 3) | 4 bytes |
+| 0x35 | register-read end: `35 k 00 00`; k appears to be a count (uncertain: total or last-chunk; k mod 3 equals the number of reads mod 3). Observed 2026-09-19 (§10.8): k = 3 after 3 reads and 2 after 2 reads, i.e. the number of registers read, at least up to 3 | 4 bytes |
 | 0x36 | read-data block: id + 15 data bytes | 16 bytes |
 | 0x37 | extended read-data block: `37 00` + 30 data bytes | 32 bytes |
 | 0x38 | read-data status block (4.1) | 8 bytes |
 | 0x04 | termination `04 00 00 00` | 4 bytes |
+| 0x02, 0x03, 0x0b, 0x0e, 0x21, 0x39 | status blocks of the instructions observed 2026-09-19 (§10.2.1); 0x21 arrives as the control-request reply, 0x39 follows the 0x3a block of a serial poll | 8 bytes |
+| 0x11 | `11 00 00 00`, four in a row before the first 0x37 block of a 0x0a reply that follows other blocks (observed 2026-09-19, §10.1.5); skip | 4 bytes |
+| 0x3a | serial-poll result `3a P S sb` (observed 2026-09-19, §10.5.4) | 4 bytes |
 
 Register-read reply layouts:
 
@@ -410,6 +478,9 @@ Reply sizes to expect:
 | 0x08 register read | up to 32 | 0x34 chunks + 0x35 block (+ termination, uncertain) |
 | 0x07 parallel poll | up to 32 | status block (8) + result byte + padding (+ termination, uncertain) |
 | 0x0a read | see 5.2 | data blocks + 16-byte trailer (observed; the sources implied 28) |
+| 0x02 probe | 16 | status block (8, id 0x02) + `01 00 00 00` / `00 00 00 00` + `04 00 00 00` (observed 2026-09-19, §10.6.1) |
+| 0x0b read | 12 on 0x84 (+ data on 0x88) | status block (8, id 0x0b) + `xx 00 00 00`; no termination block of its own when batched (observed 2026-09-19, §10.1.3) |
+| 0x10 serial poll | 12 | `3a P S sb` + status block (8, id 0x39) (observed 2026-09-19, §10.5.4) |
 
 The 12- and 16-byte reply lengths are exact and can be asserted.
 Observed on the GPIB-USB-HS: the trailing 4 bytes of every such reply are
@@ -513,8 +584,8 @@ IN : 01 ss ss ee 00 00 00 00 04 00 00 00
 | 0 | 1 | id | echoes the instruction opcode; 0x38 for the read-data status |
 | 1 | 2 | ibsta | **big-endian** (byte 1 = high byte) |
 | 3 | 1 | error code | see 4.3; 0 = success |
-| 4 | 2 | count | **little-endian**, two's complement: (transferred - requested). Bytes not transferred = (0x10000 - count) & 0xffff; bytes transferred = requested - that. 0 when everything was transferred. **Meaningful only in replies to 0x0a, 0x0c, 0x0d.** Observed on the GPIB-USB-HS: replies to 0x01 and 0x06 carry `aa 55` here, and replies to 0x09 and 0x0f carry the count left over from the last data operation (`ff ff` after a reset, `52 ff` after a read that transferred 82 of 256). |
-| 6 | 2 | unused | observed 0x00 0x00 (sources); on the GPIB-USB-HS `ff ff` in most replies, `01 00` in a read reply that filled the requested count, `00 00` after a successful 0x0d |
+| 4 | 2 | count | **little-endian**, two's complement: (transferred - requested). Bytes not transferred = (0x10000 - count) & 0xffff; bytes transferred = requested - that. 0 when everything was transferred. **Meaningful only in replies to 0x0a, 0x0c, 0x0d.** Observed on the GPIB-USB-HS: replies to 0x01 and 0x06 carry `aa 55` here, and replies to 0x09 and 0x0f carry the count left over from the last data operation (`ff ff` after a reset, `52 ff` after a read that transferred 82 of 256). Observed 2026-09-19 (§10.8): on unit 013CC9DF the 0x01 / 0x06 / 0x0f / 0x03 / 0x09 replies all carried the stale count of the last data operation (never `aa 55`); the 0x02 probe writes it to 0; 0x0b and 0x0e write 32 bits (bytes 4-7). |
+| 6 | 2 | unused | observed 0x00 0x00 (sources); on the GPIB-USB-HS `ff ff` in most replies, `01 00` in a read reply that filled the requested count, `00 00` after a successful 0x0d. Observed 2026-09-19 (§10.8): `ff ff` in every reply until the first 0x0b / 0x0e of a session, thereafter the high half of that instruction's 32-bit count and `00 00` in later 0x0c / 0x0d replies; ignore |
 
 The same 8-byte layout is returned by control requests 0x20 and 0x21 and
 pushed on the interrupt endpoint.
@@ -555,9 +626,10 @@ the error code rather than from this field.
 | 0x03 | not addressed | read/write as controller while the adapter is not addressed as listener/talker; send the addressing command bytes (section 6) first |
 | 0x04 | EOS configuration rejected / command chunk too long | read with a nonzero EOS mode byte or EOS character while the REOS bit (0x04) is clear; also returned by the USB-B for a 0x0c instruction carrying 17 or more command bytes |
 | 0x05 | no acceptor on the bus | command bytes were not accepted by any device (bus empty or unpowered); harmless after a take-control on an empty bus |
-| 0x08 | no listener addressed | data write as controller with no listener addressed |
+| 0x07 | not controller in charge (observed 2026-09-19, §10.6.4) | 0x01, 0x06 or 0x0c issued while the adapter is not CIC (e.g. a board session before any IFC); ibsta 0x0000 and bytes 4-7 `ff ff ff ff` in the reply; NI-VISA reports VI_ERROR_NCIC |
+| 0x08 | no listener addressed | data write as controller with no listener addressed. Observed 2026-09-19 (§10.6.2): reply `0d 00 28 08 f9 ff ff ff` for a 7-byte write to an empty address, 1 ms after the instruction; NI-VISA reports VI_ERROR_NLISTENERS |
 | 0x0a | device-side timeout | the device timeout (section 7) expired; the partial count is valid |
-| other (6, 7, >= 11) | unknown | treat as a generic I/O error |
+| other (6, >= 11) | unknown | treat as a generic I/O error |
 
 One implementation assigns different meanings to codes 4-7 and appears to
 be wrong; the table above is the one to use.
@@ -578,7 +650,11 @@ ATN rule (applies throughout): after any 0x0c, send a 0x06 (go to
 standby) before the next 0x0a. This is harmless if the firmware has
 already released ATN and avoids error 2. Sending 0x06 before a 0x0d is
 likewise harmless; sequencing 0x0c directly into 0x0d has been observed
-to work.
+to work. Observed 2026-09-19 (§10.1.2, §10.1.5): NI never sends 0x06 in
+instrument sessions; its 0x0c is followed in the same message by 0x0a,
+0x0b or 0x0d, the 0x0c reply shows ATN set and the data instruction's
+reply shows it clear, with error 0 (38 such 0x0a and 45 such 0x0b). The
+0x06 remains harmless.
 
 ### 5.1 Write data (0x0d)
 
@@ -588,6 +664,13 @@ to work.
 - `cl ch` = -(length) 16-bit little-endian (3.3). Max length 0xffff.
 - `t` = timeout code.
 - `f` = 0x08 to assert EOI with the last byte, 0x00 otherwise.
+- Observed 2026-09-19 (§10.5.1): NI fills byte 5 (the second `00`) with
+  the session's termination character (0x0a by default, 0x2c / 0x0d when
+  VI_ATTR_TERMCHAR was changed) on every write, byte 4 stays 0x00; `f`
+  follows VI_ATTR_SEND_END_EN. Whether byte 5 has an effect was not
+  tested. For a 2050-byte write NI used the 0x0e instruction with the
+  data on bulk OUT 0x06 instead (§10.5.2); the longest 0x0d captured
+  carried 17 bytes.
 - Reply: status reply, id 0x0d. Bytes written = length - (bytes not
   transferred from the count field).
 - If a caller's buffer exceeds 0xffff, split it into instructions of at
@@ -607,11 +690,21 @@ to work.
 - `e` = EOS character.
 - `t` = timeout code.
 - `cl ch` = -(max length) 16-bit little-endian. Max 0xffff.
+- Observed 2026-09-19 (§10.1.6): NI sends `m` = 0x00 with `e` = the
+  session's termination character (0x0a) on every read with the
+  character disabled, and `m` = 0x14 with the character when enabled;
+  none of 80 such reads returned error 4 (adapter initialised with AUXRA
+  0x99, §10.3.1). The "both must be 0x00" rule above therefore does not
+  hold at least under that initialisation. An EOS match sets END exactly
+  like EOI; bit 7 of the tail byte (item 3 below) tells them apart.
 - The embedded 0x09 block (two AUXMR writes: 0x51 holdoff immediately,
   0x55 clear END) is always present; its status follows the read status
   in the reply, so it is evidently executed after the read. It stops the
   talker at the byte boundary and clears the END latch for the next read.
-  Total message length: 24 bytes.
+  Total message length: 24 bytes. Observed 2026-09-19 (§10.1.5, §10.1.2):
+  NI's 0x0a carries no embedded 0x09 block at all, and its 0x0b is
+  followed by a separate `09 01 00 01 0a 55` block (clear END only, no
+  0x51); both work.
 - EOS configuration: the per-read bytes `m`/`e` alone select EOS
   termination and the 8-bit compare; they may change from read to read
   without any register write. Init write #3 (2.6) carries the BIN bit only
@@ -638,7 +731,14 @@ to work.
   device does not send them. A parser should accept both forms.
 - Block size: reads of 1 and 5 bytes arrived in 0x36 blocks, a read of up
   to 256 bytes in 0x37 blocks (observed). The filler after the valid bytes
-  of the last block is stale data, not zeros.
+  of the last block is stale data, not zeros. Observed 2026-09-19
+  (§10.1.5): requested counts 1..15 -> 0x36 blocks, 16 and above -> 0x37
+  blocks; the filler is zeros in 0x36 blocks and stale bytes in 0x37
+  blocks. When the 0x0a reply follows other blocks in the same reply and
+  uses 0x37 sizing, four `11 00 00 00` blocks precede the first 0x37 block
+  (also when no data block follows); a timed-out 0x36-sized read still
+  carries one zero-filled 0x36 block. For counts above 1024 NI uses the
+  0x0b instruction with raw data on bulk IN 0x88 (§10.1.1-10.1.4).
 - Bytes actually read = (blocks - 1) × block_size + last_block_count, or
   0 if no data block (the last-block-count byte is then meaningless).
   Cross-check: it must equal requested - (bytes not transferred from the
@@ -654,6 +754,9 @@ to work.
   0x0a means the timeout expired; the partial data is valid.
 - Precondition: adapter listener, target talker (section 6), ATN false
   (send 0x06 after the addressing 0x0c) -- otherwise error 3 or 2.
+  Observed 2026-09-19 (§10.1.5): NI's 0x0a directly after the addressing
+  0x0c in the same message, without 0x06, returned error 0 with ATN
+  released; the instruction evidently drops ATN itself.
 
 ### 5.3 Command bytes (0x0c)
 
@@ -671,7 +774,12 @@ to work.
 - ATN: the adapter drives ATN true for the duration of the instruction.
   Whether it releases ATN afterwards is uncertain; apply the ATN rule of
   section 5 (0x06 before the next 0x0a). A preceding 0x01 (take control)
-  is not required once the adapter is CIC but is harmless.
+  is not required once the adapter is CIC but is harmless. Observed
+  2026-09-19 (§10.2.3, §10.6.4): the 0x0c reply's ibsta shows ATN still
+  set (0x0038 after talk-addressing the adapter, 0x0074 after
+  listen-addressing it); a 0x0c while the adapter is not CIC returns error
+  7. NI's timeout byte in addressing 0x0c blocks is 0xfd regardless of the
+  session timeout; board-level `viGpibCommand` uses the session's code.
 
 ### 5.4 Take control (0x01) / go to standby (0x06)
 
@@ -680,6 +788,10 @@ to work.
   reply. After success ibsta should show CIC (0x20) and ATN (0x10).
 - Go to standby: `06 00 00 00 04 00 00 00`. Reply: status reply with id
   0x06. ATN false; the previously addressed talker may now source data.
+  Observed 2026-09-19 (§10.7.1): NI sends `06 00 00 0a` (reply ibsta
+  0x0020, ATN clear) and `06 01 00 0a` for VI_GPIB_ATN_DEASSERT_HANDSHAKE;
+  byte 3 = 0x0a meaning not established. Both 0x01 and 0x06 return error 7
+  when the adapter is not CIC (§10.6.4).
 
 ### 5.5 Interface clear -- IFC pulse (0x0f)
 
@@ -688,13 +800,18 @@ to work.
 adapter becomes CIC. Only meaningful when the adapter is system
 controller (2.6 row 16 = 0x03). There is no separate "assert IFC" /
 "release IFC" instruction; AUXMR 0x1e / 0x16 can be written via register
-writes for a manual pulse if ever needed.
+writes for a manual pulse if ever needed. Observed 2026-09-19 (§10.3.2,
+§10.7.1): confirmed; the reply ibsta is 0x0030 (CIC, ATN) and BSR reads
+0xa0 (ATN, NDAC) afterwards; NI sends no take-control after it.
 
 ### 5.6 Remote enable on / off
 
 Register write, one write: bank 1 addr 0x0a value 0x1f (REN on) or 0x17
 (REN off). Reply: 16-byte register-write reply. A device enters remote
-state when REN is true and it is addressed to listen.
+state when REN is true and it is addressed to listen. Observed 2026-09-19
+(§10.7.1): confirmed for both values; NI precedes the write in the same
+message with a read of bank-1 0x0d, 0x0c, 0x1f, and BSR bit 0 follows REN
+(0x00 / 0x01 with the bus otherwise idle).
 
 ### 5.7 Take / release system control
 
@@ -708,7 +825,10 @@ Register write:
 Command bytes (5.3):
 - Selected device clear of address N: `3f 20+N 04` (UNL, LAD N, SDC).
 - Universal device clear: `14` (DCL).
-Then re-address before the next data transfer.
+Then re-address before the next data transfer. Observed 2026-09-19
+(§10.5.3): NI sends `40+C 3f 20+N 04` (MTA first) for `viClear`, and
+`40+C 3f 20+N 08` for `viAssertTrigger`; the instrument discarded pending
+output on the SDC (§10.1.7).
 
 ### 5.9 Serial poll
 
@@ -725,6 +845,14 @@ sequence with 5.3, 5.4 and 5.2:
 Adapter's own serial-poll response byte (when the adapter is polled by
 another controller): register write bank 1 addr 0x06 (SPMR) = status
 byte; bit 6 requests service.
+
+Observed 2026-09-19 (§10.5.4): NI does not use the sequence above. It
+sends the dedicated instruction `10 01 00 x P S t 00` (P = device primary
+address, S = 0x00 without secondary, t = timeout code, x = 0x00 or 0x01
+meaning not established) and receives `3a P S sb` (sb = status byte) plus
+a status block with id 0x39. The adapter also polls the device by itself
+when SRQ is asserted and reports the status byte in the interrupt push
+(2.5, §10.4.2), after which the device's RQS is already clear.
 
 ### 5.10 Parallel poll
 
@@ -751,7 +879,12 @@ Control request 0x21 with wValue 0x0200 (wLength 8) returns the current
 SRQI (0x1000) when implementing a wait-for-SRQ, or use the interrupt
 endpoint with the monitor mask (2.5). With a mask set, the interrupt IN
 endpoint delivers one 8-byte status block whenever a monitored bit becomes
-set.
+set. Observed 2026-09-19 (§10.3.5): reply `21 ss ss 00 cc cc xx xx`; NI
+uses it at INTFC open and for the ATN / SRQ / CIC state attributes. SRQI
+was never seen set in it, including right after an SRQ the adapter had
+already polled away (§10.4.4); NI's wait-for-SRQ with nothing pending
+polls ibsta through the 12-byte bank-2 0x03 write every 15 ms instead
+(§10.4.3).
 
 ### 5.13 Bus line status
 
@@ -794,6 +927,13 @@ exactly [3]:
    at N is present; released means none.
 4. 0x01 (take control), then 0x0c `3f` (UNL).
 
+Observed 2026-09-19 (§10.6.1): the adapter has a probe instruction, `02 P
+S 00` (S = 0x60 | secondary or 0x00), reply status block + `01 00 00 00`
+for present / `00 00 00 00` for absent, about 1.8 ms. NI issues it at
+every session open and, for an absent address, 50 times at 104 ms
+intervals (each but the first preceded by `40 3f 20+N 04`) before opening
+the session anyway.
+
 ### 5.17 Pass control (low priority)
 
 Command bytes `40+N 09` (TAD N, TCT) hand control to device N; the
@@ -816,6 +956,16 @@ adapter reports the transition (CIC clearing in ibsta) is uncertain.
 | gpib_command | 5.3 in 16-byte chunks |
 | timeout attribute | section 7 code in every 0x0a/0x0c/0x0d; host wait per 7.2 |
 | close | 2.9 |
+
+Observed 2026-09-19 (§10): NI's own mapping differs in these places --
+addressing is `40+C 3f 20+N [60+S]` / `3f 20+C 40+N [60+S]` with the
+adapter's address first; no 0x06 is sent; reads above 1024 bytes use 0x0b
+(data on 0x88), a 2050-byte write used 0x0e (data on 0x06); read_stb is
+the 0x10 instruction; open includes the 0x02 probe and the bank-2
+0x03..0x07 writes and omits take-control; close writes bank-2 0x04 := 0
+and the 2.9 shutdown comes at process end; enable/disable of the SRQ
+event and the termination-character attributes write nothing but bank-2
+0x03 := 1.
 
 ---
 
@@ -854,7 +1004,11 @@ optional):
 
 The adapter's own address C is the value written to ADR in 2.6 row 18
 (0 by default). The adapter must be CIC for any of this; if ibsta lacks
-CIC, pulse IFC (5.5) or take control (5.4).
+CIC, pulse IFC (5.5) or take control (5.4). Observed 2026-09-19
+(§10.2.3): NI orders the talk case `40+C 3f 20+N [60+S]` (MTA before
+UNL); the listen case, SDC, trigger and the `60+S` placement are as in
+the table (SDC and trigger with `40+C` prepended). A 0x0c while not CIC
+returns error 7 (§10.6.4).
 
 ---
 
@@ -883,6 +1037,16 @@ For codes 0xf1..0xff the code equals 0xf0 + the NI-488.2 T-code
 bench-confirmed on a USB-B; NI's own driver is reported to send 0xff
 there. Requests above 1000 s fall back to 0xf0.
 
+Observed 2026-09-19 (§10.1.9): NI-VISA 22.5 maps VI_ATTR_TMO_VALUE 100 ms
+-> 0xf9, 300 -> 0xfa, 1000 -> 0xfb, 2000 and 3000 -> 0xfc, 10 s -> 0xfd,
+20 s and 30 s -> 0xfe, 100 s -> 0xff, 300 s -> 0x01, 1000 s -> 0x02,
+infinite -> 0xf0, exactly the table above; the report of 0xff for 1000 s
+is wrong. The code the driver programs at session open, before the
+application sets a timeout, is 0xfb. Measured device-side expiry on the
+GPIB-USB-HS: code 0xfc -> 4.20 s (three cases), code 0xfe -> 33.55 s
+(§10.1.8). The code does not bound a whole instruction: 20480-byte
+chunks that took 4.0 s each completed with error 0 under code 0xfc.
+
 ### 7.2 Host-side USB wait
 
 The device answers a 0x0a, 0x0c or 0x0d only after the operation
@@ -898,7 +1062,12 @@ transfer must exceed the device timeout by a margin. Recommended:
 
 Reads that may legitimately wait on a slow instrument should use the
 upper end of the margin (T + 50 %) so that a device-side timeout is
-reported through the status block rather than as a USB error.
+reported through the status block rather than as a USB error. Observed
+2026-09-19 (§10.1.8): the device expires 12-40 % after the nominal value
+(4.20 s for the 3 s code, 33.55 s for the 30 s code), which the margins
+above cover; the 0x88 data transfer of a 0x0b read completes 0.4-0.5 ms
+before its 0x84 reply, and for a zero-byte result completes with zero
+bytes, so both transfers must be waited for.
 
 ---
 
@@ -914,7 +1083,9 @@ reported through the status block rather than as a USB error.
    and a fresh register initialisation.
 3. **EOS bytes on reads.** Nonzero EOS mode or character with REOS clear
    -> error 4 on every read. When the session disables read termination,
-   send `00 00`.
+   send `00 00`. Observed 2026-09-19 (§10.1.6): NI sends mode 0x00 with a
+   nonzero character on every unterminated read and never gets error 4
+   (adapter initialised with AUXRA 0x99); sending `00 00` remains safe.
 4. **16-byte command chunks.** A 0x0c instruction carrying 17 or more
    command bytes fails on the USB-B (error 4); keep the chunk limit on
    all models.
@@ -925,7 +1096,10 @@ reported through the status block rather than as a USB error.
    ceil(N/30) 32-byte blocks (or ceil(N/15) 16-byte blocks) plus the
    28-byte trailer, the larger of the two rounded up to the endpoint's
    max packet size; a smaller request is truncated by libusb with an
-   overflow error.
+   overflow error. Observed 2026-09-19 (§10.1.5): when the 0x0a is
+   batched behind other blocks, add their replies plus 16 bytes of `11 00
+   00 00` padding; a 0x0b read needs a buffer of N on 0x88 and 56 bytes on
+   0x84 for NI's five-block message.
 7. **ibsta is big-endian, counts are little-endian** inside the same
    8-byte status block.
 8. **Readiness poll.** Byte 0 of every control response must echo
@@ -944,13 +1118,21 @@ reported through the status block rather than as a USB error.
     harmless at initialisation.
 13. **Error 2 on read** means ATN is still asserted; send 0x06 first.
     Error 3 means the addressing command bytes were not sent (or were
-    rejected); resend them.
+    rejected); resend them. Observed 2026-09-19 (§10.1.5): a 0x0a or 0x0b
+    placed directly after the addressing 0x0c in the same message did not
+    return error 2 (83 cases); error 7 means the adapter is not CIC
+    (§10.6.4).
 14. **Register-write reply** is exactly 16 bytes and byte 8 must equal the
     number of writes sent; a smaller value means the device stopped at a
     bad (bank, addr) pair.
 15. **Unknown registers.** Bank 3 addr 0x10, bank 2 addrs 0x00-0x02 and
     bank 1 addr 0x0f are written with fixed values at init because NI's
-    driver does; their meaning is unknown. Do not omit them.
+    driver does; their meaning is unknown. Do not omit them. Observed
+    2026-09-19 (§10.2.4): bank 2 addrs 0x03-0x07 are written per session
+    (0x03 := 1 constantly, 0x04 := 1/0 open/close, 0x05 := PAD, 0x06 :=
+    SAD byte, 0x07 := timeout code); the instructions carry the same
+    information themselves, and whether any of these writes is required
+    for the instructions to work is not established.
 16. Absence of serial/parallel poll or SRQ handling in a known working
     implementation is not evidence those instructions fail.
 17. **A hung adapter.** Observed on GPIB-USB-HS 01CEE482, 2026-09-18: the
@@ -1004,6 +1186,18 @@ formats are described from the device's point of view, not the programs'.
 | controller.py (ni-gpib-usb-hs user-space driver, GPL-2.0) | https://raw.githubusercontent.com/embeddedci-com/ni-gpib-usb-hs/main/ni_gpib_usb_hs/controller.py | 2af24c179860e277269c5e711a16538cc04bc31af080e27b414e036cfbb151b4 |
 | gpib_user.h (linux-gpib public API header; used only to confirm NI-488.2 ibsta bit numbers, EOS flag values and command bytes) | https://sourceforge.net/p/linux-gpib/code/HEAD/tree/trunk/linux-gpib-kernel/drivers/gpib/include/gpib_user.h?format=raw | 8680bb597a799f19ab6d96551100aa2705954eab6fd1f1e7645eb2b28def1dbc |
 | TNT4882 Programmer Reference Manual, NI part 370872A-01 (July 1995) | https://docs-be.ni.com/bundle/tnt4882-programmer-reference/raw/resource/enus/370872a.pdf | 11a790cc4050cb330c0a1654dca5e49ccb9d548ed5b12ab3363d9e161f79d9fb |
+
+USB captures of NI's driver: statements marked "Observed 2026-09-19" and
+all of section 10 come from USBPcap recordings of NI-488.2 / NI-VISA 22.5
+on Windows 10 driving GPIB-USB-HS serial 013CC9DF with a Keithley 2420 at
+primary address 24, one VISA operation per scenario, kept in
+`docs/design/captures/ni_usb_gpib_2026-09-19/` with the harness
+(`scenario.py`, `capture.ps1`), the decoder (`usbpcap_dump.py`), each
+scenario's VISA timeline (`<name>.stdout.txt`) and `SHA256SUMS` over the
+22 pcaps. They record the behaviour of our own adapter under the vendor
+driver; no program source was consulted for them. Where they contradict
+the sources above the observed behaviour is stated next to the original
+text, never in its place.
 
 Bench observations: statements marked "observed on GPIB-USB-HS 01CEE482"
 were recorded on 2026-09-18 from a GPIB-USB-HS (USB 3923:709b, bcdDevice
