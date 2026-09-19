@@ -796,7 +796,11 @@ def host_wait_s(device_limit_s: Optional[float], infinite_wait_s: float) -> floa
     """How long the host waits for the bulk reply to a 0x0a/0x0c/0x0d (§7.2).
 
     ``device_limit_s`` is the effective device timeout from ``effective_timeout``,
-    not the requested one: the device waits the full table row.
+    not the requested one: the device waits the full table row, and longer.
+    Measured on the GPIB-USB-HS, the 3 s code expired after 4.20 s and the
+    30 s code after 33.55 s, 12-40 % past nominal (§7.1, §10.1.8). The
+    margin here is never under 50 %, so the device's own timeout, reported
+    in its reply, always comes before the host gives up.
     """
     if device_limit_s is None:
         return infinite_wait_s
