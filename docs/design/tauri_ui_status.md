@@ -148,15 +148,44 @@ dev UI against the simulator (and on a 2400 for compliance), not yet on the
 PC. The first CI build also lacked a WebSocket implementation entirely
 (`websockets` was never a declared dependency), fixed in `f5d0e29`.
 
+## The punch list and the spot model, 2026-09-19
+
+Of the UI bench's sixteen minor and twelve cosmetic items, all but four are
+closed, verified against the simulator (layout at 1284, 1100 and 950 px):
+marks on the live plot, a sweep legend, the instrument badge and the log
+surviving a reload (the UI backfills from the backend's event ring), an
+in-view notice with Retry when the backend is unreachable, final totals kept
+on screen, Greek symbols no longer uppercased, hints and headers that fit,
+and the copy. On the backend: file names keep their source value and a run
+can never be written over an existing file; a stop during the settle
+finalizes its file; van der Pauw announces `run_started`; log messages use
+the operator's words; files record which client wrote them; `SessionStatus`
+is in the exported contract; sweep compliance is bounded in its own unit,
+with the hazardous-voltage prompt proven to cover a current-sourced sweep.
+
+Four-point spots are now part of the record rather than of a widget
+(`four_point_probe_spots.md`): a run carries its spot and map, the file
+records it with per-spot statistics, maps are assembled from the run files
+and served at `/maps`, the PySide6 window sends the spot too, and the
+correction factor is known at any position on a circular or rectangular
+sample, so a spot near an edge is warned about with the error it costs.
+
+Left for a decision or for bench data: the runtime power stop that
+validation makes unreachable, the predicted maximum rate, ρ shown as 0 when
+the thickness is unknown, and the 45 s watchdog grace after the window dies.
+
 ## Not yet
 
-- **The UI fixes on the lab PC itself**, and the sixteen minor and twelve
-  cosmetic items from the UI bench.
-- **The new driver paths (raw reads/writes, serial poll, SRQ wait, INTFC) on a real adapter** — written from captures on 2026-09-19, never run.
+- **The UI fixes on the lab PC itself** — everything above was verified
+  against the simulator.
+- **The new driver paths (raw reads/writes, serial poll, SRQ wait, INTFC) on
+  a real adapter** — written from captures on 2026-09-19, never run.
+- **The map in the Tauri UI** (spots panel from `/maps`, the sample outline,
+  the optional photo, the figure) — waits on the open questions in the spots
+  design.
 - **Prologix / AR488 adapters** need their `PRLGX-ASRL::…::INTFC` resource
   opened before the instrument address resolves; the app does not do that.
-- **Backend items step 2 depends on** but works around for now: the 4PP spot
-  model (spots are summarised in the UI), cable null (not in the new UI yet),
-  persisting the safety-silence flag from a headless client.
+- **Cable null** is not in the new UI yet; **persisting the safety-silence
+  flag** from a headless client is not done.
 - PySide6 remains the shipping UI until the above is closed and the bench
   check passes.
