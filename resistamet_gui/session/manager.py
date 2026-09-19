@@ -61,6 +61,8 @@ class MeasurementSession:
         #: The instrument as last seen by a run or by identify(); see status().
         self._instrument: Optional[InstrumentInfo] = None
         self._mode: Optional[str] = None
+        #: Whether the current run has sent its run_ended; read by _execute.
+        self._run_ended_seen = False
 
     # --- state ------------------------------------------------------------
 
@@ -154,16 +156,28 @@ class MeasurementSession:
                                          control, emitter, safety_ack='prompt',
                                          prompt_timeout_s=prompt_timeout_s,
                                          instrument_lock=held)
-                thread = threading.Thread(target=self._execute, args=(run,),
+                thread = threading.Thread(target=self._execute, args=(run, held, emitter),
                                            name=f"resistamet-{run_id}", daemon=True)
             except Exception:
                 held.release()
                 raise
+            previous = (self._run_id, self._mode, self._run, self._thread)
             self._state = 'running'
             self._run_id, self._mode = run_id, mode
             self._control, self._run, self._thread = control, run, thread
+            self._run_ended_seen = False
 
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            # No thread means no _execute to put any of this back: without
+            # it the session stayed 'running' and the instrument stayed held.
+            held.release()
+            with self._lock:
+                self._state = 'idle'
+                self._control = None
+                self._run_id, self._mode, self._run, self._thread = previous
+            raise
         return run_id
 
     def stop(self) -> None:
@@ -262,7 +276,7 @@ class MeasurementSession:
 
     # --- internals --------------------------------------------------------
 
-    def _execute(self, run) -> None:
+    def _execute(self, run, held: HeldInstrument, emitter: EventEmitter) -> None:
         try:
             run.execute()
         except Exception:
@@ -270,12 +284,33 @@ class MeasurementSession:
             # resort so a crash cannot leave the session wedged in 'running'.
             logger.exception("run thread died")
         finally:
+            # The run releases the instrument in its own cleanup. Releasing
+            # again is a no-op; after a run that died before its cleanup it
+            # is what stops every later start being refused as "in use by
+            # another process" by a lock this process still holds.
+            held.release()
+            if not self._run_ended_seen:
+                self._end_for(run, emitter)
             with self._lock:
                 self._state = 'idle'
                 self._control = None
 
+    def _end_for(self, run, emitter: EventEmitter) -> None:
+        """Send the run_ended a run died without sending."""
+        try:
+            emitter.error('worker_error', 'run',
+                          "The run ended unexpectedly; see the application log.")
+            emitter.emit('run_ended', {
+                'reason': 'worker_error', 'ok': False, 'samples': 0,
+                'duration_s': 0.0, 'path': getattr(run, 'filename', '') or None,
+            })
+        except Exception:
+            logger.exception("could not report the end of a run that died")
+
     def _record(self, event) -> None:
         self._last_event_seq = event.seq
+        if event.type == 'run_ended':
+            self._run_ended_seen = True
         if event.type == 'instrument_connected':
             # Kept for status(): the event itself is gone for a client that
             # connects, or reloads, after it was sent.
