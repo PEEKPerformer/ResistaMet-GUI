@@ -6,8 +6,13 @@
 // backend gave rather than one it made up.
 
 import type { BackendInfo } from "./backend";
-import type { Mode } from "../generated/settings";
+import type { ClientInfo, Mode } from "../generated/settings";
 import type { EventEnvelope } from "../generated/events";
+import { version as packageVersion } from "../../package.json";
+
+/** Written into the header of every file a run started from here produces,
+ *  so desktop output can be told from the PySide6 app's. */
+const CLIENT: ClientInfo = { name: "resistamet-desktop", version: packageVersion };
 
 export type SessionState =
   | "idle"
@@ -130,7 +135,7 @@ export class ApiClient {
   }
 
   start(request: StartRequest): Promise<{ run_id: string }> {
-    return this.request("POST", "/session/start", request);
+    return this.request("POST", "/session/start", { ...request, client: CLIENT });
   }
 
   stop(): Promise<SessionStatus> {
