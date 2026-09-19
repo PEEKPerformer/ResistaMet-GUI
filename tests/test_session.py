@@ -1290,3 +1290,55 @@ class TestASpotThatCannotBeAnnounced:
         path = sink.of_type('run_ended')[0].payload['path']
         assert parse_metadata(path)['spot_stats.n'] == 2           # the file is whole
         assert 'map_summary' in codes                               # and still mapped
+
+
+class TestTheMapIsAssembledAfterTheRunHasLetGo:
+    SPOT = {'map_id': 'wafer7', 'index': 0, 'label': 'centre'}
+
+    def test_the_lock_is_free_and_the_instrument_closed_by_then(
+            self, session, sink, fake_rm, profile, monkeypatch):
+        from resistamet_gui.session import continuous_run
+        from resistamet_gui.session.instrument_lock import HeldInstrument
+
+        seen = {}
+        real_write = continuous_run.write_map_summary
+
+        def slow_share(directory, map_id):
+            # Another process could take the instrument now ...
+            HeldInstrument(profile['measurement']['gpib_address']).release()
+            seen['lock_was_free'] = True
+            seen['instrument_closed'] = 'cleanup' in [
+                e.payload['code'] for e in sink.of_type('log')]
+            seen['events_so_far'] = sink.types()
+            return real_write(directory, map_id)
+        monkeypatch.setattr(continuous_run, 'write_map_summary', slow_share)
+
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice', spot=self.SPOT)
+        assert _wait_for(lambda: session.state == 'idle')
+
+        assert seen['lock_was_free'] and seen['instrument_closed']
+        # ... and the ordering clients rely on still holds.
+        assert 'spot_complete' in seen['events_so_far']
+        assert 'run_ended' not in seen['events_so_far']
+        types = sink.types()
+        assert types.index('spot_complete') < types.index('run_ended')
+        assert types[-1] == 'run_ended'
+        codes = [e.payload['code'] for e in sink.of_type('log')]
+        assert codes.index('cleanup') < codes.index('map_summary')
+
+    def test_a_failed_summary_is_a_warning_with_its_own_code(
+            self, session, sink, fake_rm, profile, monkeypatch):
+        from resistamet_gui.session import continuous_run
+
+        def share_is_down(directory, map_id):
+            raise OSError("share is down")
+        monkeypatch.setattr(continuous_run, 'write_map_summary', share_is_down)
+
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice', spot=self.SPOT)
+        assert _wait_for(lambda: session.state == 'idle')
+
+        codes = [e.payload['code'] for e in sink.of_type('log')]
+        assert 'map_summary_failed' in codes and 'finalize_failed' not in codes
+        ended = sink.of_type('run_ended')[0].payload
+        assert (ended['reason'], ended['ok']) == ('target_samples', True)
+        assert sink.types()[-1] == 'run_ended'

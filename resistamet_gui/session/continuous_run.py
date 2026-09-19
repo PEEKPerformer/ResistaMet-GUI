@@ -83,6 +83,9 @@ class ContinuousRun:
         self._spot_samples = SpotSamples() if mode == 'four_point' else None
         self._spot_sample_warned = False  # debounce: say it once per run
         self._shut_down_started = False   # _shut_down runs once per run
+        # Set when a spot's file is finalized; its map summary is written
+        # once the instrument has been let go.
+        self._pending_map_id = None
 
         # Start/stop/pause state and the marker queue, shared with whoever is
         # driving the run.
@@ -1010,6 +1013,7 @@ class ContinuousRun:
             # Read the counters before cleanup releases the exporter.
             samples = self.exporter.row_count if self.exporter else 0
             self._cleanup()
+            self._write_pending_map_summary()
             reason = self._control.finish_reason or 'completed'
             self._events.emit('run_ended', {
                 'reason': reason,
@@ -1145,20 +1149,33 @@ class ContinuousRun:
             self._events.warn('spot_complete_failed',
                 f"Warning: The data file is complete, but its statistics could not be reported - {str(e)}")
         if record is not None:
-            self._write_map_summary(record.spot.map_id)
+            # Written later, by _write_pending_map_summary.
+            self._pending_map_id = record.spot.map_id
 
-    def _write_map_summary(self, map_id):
-        """Refresh ``<map_id>_map.json`` beside this run's file.
+    def _write_pending_map_summary(self):
+        """Refresh ``<map_id>_map.json`` beside this run's file, if it has a spot.
 
-        After the file is finalized, so this run is part of what is read. The
-        summary is derived from the run files and can be rebuilt at any time,
-        so failing to write it is a warning and never the run's failure.
+        Called after _cleanup and before run_ended. After _cleanup, because
+        assembling a map reads every four-point file in the directory and the
+        directory may be a slow network share: the instrument is closed and
+        its lock released first, so nothing waits on the share but this run's
+        own last event. Before run_ended, because run_ended is promised to be
+        the last event of a run and the map_summary log line is one.
+
+        The summary is derived from the run files and can be rebuilt at any
+        time, so failing to write it is a warning and never the run's failure.
         """
+        map_id, self._pending_map_id = self._pending_map_id, None
+        if map_id is None:
+            return
         try:
             path = write_map_summary(Path(self.filename).parent, map_id)
             self._events.log('map_summary', f"Map summary: {path.name}")
         except Exception as e:
-            self._events.warn('map_summary_failed', f"Warning: Could not write the map summary - {str(e)}")
+            try:
+                self._events.warn('map_summary_failed', f"Warning: Could not write the map summary - {str(e)}")
+            except Exception:
+                logger.warning("could not report a failed map summary", exc_info=True)
 
     def _emit_compress_status(self, orig_path: Path, gz_path: Path,
                               orig_mb: float, gz_mb: float) -> None:
