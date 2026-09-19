@@ -316,6 +316,27 @@ class TestPyUsbTransport:
         assert usb_transport.interrupt_in(64, 1000) == device.next_read
         assert device.reads[-1] == (0x81, 64, 1000)
 
+    def test_short_raw_read_that_used_the_whole_wait_is_a_timeout_with_the_partial_bytes(self, monkeypatch):
+        device = HS()
+        install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
+        clock = iter([0.0, 0.05, 0.0, 5.0])  # first read: 50 ms of a 5 s wait; second: the full 5 s
+        monkeypatch.setattr(transport.time, 'monotonic', lambda: next(clock))
+        device.next_read = b'short packet'
+        assert usb_transport.bulk_in_raw(4608, 5000) == b'short packet'      # the device's short packet
+        device.next_read = b'PART'
+        with pytest.raises(TransportTimeout) as info:                          # pyusb's partial count
+            usb_transport.bulk_in_raw(4608, 5000)
+        assert info.value.partial == b'PART'
+
+    def test_full_raw_read_at_the_deadline_is_not_a_timeout(self, monkeypatch):
+        device = HS()
+        install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
+        monkeypatch.setattr(transport.time, 'monotonic', iter([0.0, 9.0]).__next__)
+        device.next_read = bytes(512)
+        assert usb_transport.bulk_in_raw(512, 5000) == bytes(512)
+
     def test_control_out_uses_the_host_to_device_vendor_type(self, monkeypatch):
         device = HS()
         install_fake_usb(monkeypatch, [device])

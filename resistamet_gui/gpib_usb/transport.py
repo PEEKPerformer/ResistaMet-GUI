@@ -21,6 +21,7 @@ import glob
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional, Protocol, TypeVar
 
@@ -44,7 +45,15 @@ class TransportError(Exception):
 
 
 class TransportTimeout(TransportError):
-    """No reply within the host wait; the device may still owe one (§5.11)."""
+    """No reply within the host wait; the device may still owe one (§5.11).
+
+    ``partial`` holds whatever a raw bulk IN had received before its wait
+    expired (see ``Transport.bulk_in_raw``); empty for every other transfer.
+    """
+
+    def __init__(self, message: str, partial: bytes = b'') -> None:
+        super().__init__(message)
+        self.partial = partial
 
 
 class Transport(Protocol):
@@ -57,6 +66,16 @@ class Transport(Protocol):
     ``TransportError`` from them. ``interrupt_in`` receives the SRQ push
     (§10.4.2) and ``control_out`` sends the one host-to-device request that
     follows it (§2.2).
+
+    Short raw transfers: pyusb reports a bulk transfer whose wait expired
+    after some bytes moved as the partial count, not as a timeout. On the
+    raw pair that matters, because the device paces both transfers by the
+    instrument's handshake. ``bulk_out_raw`` therefore returns the count
+    accepted (short = the wait expired) and ``bulk_in_raw`` raises
+    ``TransportTimeout`` carrying the partial bytes when a short transfer
+    took the whole wait; a short transfer that came back sooner is the
+    device's short packet, i.e. the end of the data. The primary pair
+    carries fixed-shape messages, where short means a fault.
     """
 
     #: wMaxPacketSize of the bulk IN endpoint, for sizing read buffers (§8.6).
@@ -342,11 +361,22 @@ class PyUsbTransport:
         return int(self._run('raw bulk write', lambda: self._device.write(endpoint, data, timeout_ms)))
 
     def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
+        """The next transfer on the alternate IN; a short one that used the whole wait is a timeout.
+
+        pyusb returns partial data as success when the wait expires after
+        some bytes arrived (its ``__read``), which is indistinguishable by
+        length from the device's terminating short packet. Elapsed time
+        tells them apart: a short packet completes the read the moment it
+        arrives, a timeout only at the deadline.
+        """
         if self._in_raw is None:
             raise TransportError('this adapter has no alternate bulk IN endpoint')
         endpoint = self._in_raw
-        reply = self._run('raw bulk read', lambda: self._device.read(endpoint, length, timeout_ms))
-        return bytes(reply)
+        started = time.monotonic()
+        reply = bytes(self._run('raw bulk read', lambda: self._device.read(endpoint, length, timeout_ms)))
+        if len(reply) < length and (time.monotonic() - started) * 1000 >= timeout_ms:
+            raise TransportTimeout('raw bulk read timed out after %d of %d bytes' % (len(reply), length), reply)
+        return reply
 
     def interrupt_in(self, length: int, timeout_ms: int) -> bytes:
         if self._interrupt is None:
