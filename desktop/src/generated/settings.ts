@@ -56,16 +56,23 @@ export interface FileSettings {
  */
 export interface FourPointSettings {
   fpp_alpha?: number;
+  fpp_array_angle_deg?: number;
   fpp_current?: number;
   fpp_delta_mode?: boolean;
   fpp_delta_settling?: number;
   fpp_diameter_cm?: number;
   fpp_dopant_type?: "none" | "n" | "p";
+  fpp_edge_warn_pct?: number;
   fpp_geometry?: "circle" | "square" | "rectangle_2" | "rectangle_3" | "rectangle_4";
   fpp_k_factor?: number;
   fpp_model?: "thin_film" | "semi_infinite" | "finite_thin" | "finite_alpha";
+  fpp_position_correction?: "warn";
   fpp_power_stop_w?: number;
   fpp_power_warn_w?: number;
+  fpp_sample_diameter_mm?: number;
+  fpp_sample_length_mm?: number;
+  fpp_sample_shape?: "unbounded" | "circle" | "rectangle";
+  fpp_sample_width_mm?: number;
   fpp_samples?: number;
   fpp_spacing_cm?: number;
   fpp_stop_on_overpower?: boolean;
@@ -342,6 +349,12 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
       "max": 10,
       "default": 1
     },
+    "fpp_array_angle_deg": {
+      "type": "number",
+      "min": -360,
+      "max": 360,
+      "default": 0
+    },
     "fpp_current": {
       "type": "number",
       "min": -3,
@@ -373,6 +386,12 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
       ],
       "default": "none"
     },
+    "fpp_edge_warn_pct": {
+      "type": "number",
+      "min": 0,
+      "max": 100,
+      "default": 1
+    },
     "fpp_geometry": {
       "type": "string",
       "enum": [
@@ -400,6 +419,10 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
       ],
       "default": "thin_film"
     },
+    "fpp_position_correction": {
+      "type": "string",
+      "default": "warn"
+    },
     "fpp_power_stop_w": {
       "type": "number",
       "min": 0.0001,
@@ -411,6 +434,33 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
       "min": 0.0001,
       "max": 10,
       "default": 0.01
+    },
+    "fpp_sample_diameter_mm": {
+      "type": "number",
+      "min": 0,
+      "max": 1000,
+      "default": 0
+    },
+    "fpp_sample_length_mm": {
+      "type": "number",
+      "min": 0,
+      "max": 1000,
+      "default": 0
+    },
+    "fpp_sample_shape": {
+      "type": "string",
+      "enum": [
+        "unbounded",
+        "circle",
+        "rectangle"
+      ],
+      "default": "unbounded"
+    },
+    "fpp_sample_width_mm": {
+      "type": "number",
+      "min": 0,
+      "max": 1000,
+      "default": 0
     },
     "fpp_samples": {
       "type": "integer",

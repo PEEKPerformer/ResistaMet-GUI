@@ -2,7 +2,10 @@
 import pytest
 from pydantic import ValidationError
 
-from resistamet_gui.schema.spots import SampleGeometry, SpotRequest
+from resistamet_gui.schema.spots import (
+    SampleGeometry, SpotRequest, legacy_sample_geometry, same_outline,
+    sample_geometry_from_settings,
+)
 
 
 class TestSampleGeometry:
@@ -86,3 +89,78 @@ class TestSpotRequest:
     def test_unknown_key_is_refused(self):
         with pytest.raises(ValidationError):
             SpotRequest(map_id='m', index=0, label='a', z_mm=1.0)
+
+
+class TestLegacyKeysDescribeTheSameSample:
+    """``fpp_geometry`` / ``fpp_diameter_cm`` map onto an outline.
+
+    These pin the mapping, not the numbers: the per-sample Rs still comes
+    from the table look-up those two keys have always fed.
+    """
+
+    def test_nothing_set_is_unbounded(self):
+        from resistamet_gui.constants import DEFAULT_SETTINGS
+        geometry = sample_geometry_from_settings(DEFAULT_SETTINGS['measurement'])
+        assert geometry == SampleGeometry(shape='unbounded')
+        assert sample_geometry_from_settings({}) == SampleGeometry(shape='unbounded')
+
+    def test_a_shape_without_a_diameter_is_still_unbounded(self):
+        """Diameter 0 means 'treat as infinite' whatever the shape says."""
+        geometry = sample_geometry_from_settings({'fpp_geometry': 'square', 'fpp_diameter_cm': 0.0})
+        assert geometry.shape == 'unbounded'
+
+    def test_circle_keeps_its_diameter(self):
+        geometry = sample_geometry_from_settings({'fpp_geometry': 'circle', 'fpp_diameter_cm': 5.08})
+        assert geometry.shape == 'circle'
+        assert geometry.diameter_mm == pytest.approx(50.8)
+
+    @pytest.mark.parametrize("legacy, ratio", [
+        ('square', 1.0), ('rectangle_2', 2.0), ('rectangle_3', 3.0), ('rectangle_4', 4.0)])
+    def test_rectangles_are_width_d_and_length_n_d(self, legacy, ratio):
+        geometry = sample_geometry_from_settings({'fpp_geometry': legacy, 'fpp_diameter_cm': 1.2})
+        assert geometry.shape == 'rectangle'
+        assert geometry.width_mm == pytest.approx(12.0)
+        assert geometry.length_mm == pytest.approx(12.0 * ratio)
+        assert geometry.diameter_mm is None
+
+    def test_unknown_legacy_shape_is_an_error(self):
+        with pytest.raises(ValueError, match="unknown fpp_geometry"):
+            sample_geometry_from_settings({'fpp_geometry': 'hexagon', 'fpp_diameter_cm': 1.0})
+
+
+class TestNewKeysWinOnceAShapeIsChosen:
+    def test_circle(self):
+        geometry = sample_geometry_from_settings({
+            'fpp_sample_shape': 'circle', 'fpp_sample_diameter_mm': 76.2,
+            'fpp_geometry': 'square', 'fpp_diameter_cm': 1.0})
+        assert geometry == SampleGeometry(shape='circle', diameter_mm=76.2)
+
+    def test_rectangle_of_any_aspect_ratio(self):
+        geometry = sample_geometry_from_settings({
+            'fpp_sample_shape': 'rectangle', 'fpp_sample_width_mm': 10.0,
+            'fpp_sample_length_mm': 17.5})
+        assert geometry == SampleGeometry(shape='rectangle', width_mm=10.0, length_mm=17.5)
+
+    def test_dimensions_of_another_shape_are_ignored(self):
+        geometry = sample_geometry_from_settings({
+            'fpp_sample_shape': 'circle', 'fpp_sample_diameter_mm': 50.0,
+            'fpp_sample_width_mm': 10.0, 'fpp_sample_length_mm': 20.0})
+        assert geometry == SampleGeometry(shape='circle', diameter_mm=50.0)
+
+    def test_a_dimension_left_at_zero_is_missing(self):
+        with pytest.raises(ValidationError, match="needs diameter_mm"):
+            sample_geometry_from_settings({'fpp_sample_shape': 'circle'})
+        with pytest.raises(ValidationError, match="needs length_mm"):
+            sample_geometry_from_settings({
+                'fpp_sample_shape': 'rectangle', 'fpp_sample_width_mm': 10.0})
+
+
+class TestSameOutline:
+    def test_survives_the_cm_to_mm_rounding(self):
+        legacy = legacy_sample_geometry({'fpp_geometry': 'circle', 'fpp_diameter_cm': 5.08})
+        assert same_outline(legacy, SampleGeometry(shape='circle', diameter_mm=50.8))
+
+    def test_different_shape_or_size_is_different(self):
+        circle = SampleGeometry(shape='circle', diameter_mm=50.8)
+        assert not same_outline(circle, SampleGeometry(shape='circle', diameter_mm=50.9))
+        assert not same_outline(circle, SampleGeometry(shape='unbounded'))

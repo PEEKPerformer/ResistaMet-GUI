@@ -110,6 +110,19 @@ class FourPointSettings(SettingsModel):
     fpp_geometry: Literal[
         'circle', 'square', 'rectangle_2', 'rectangle_3', 'rectangle_4'
     ] = _M['fpp_geometry']
+    # The sample outline, for the position check of a spot. While the shape is
+    # 'unbounded' the two legacy keys above describe the outline instead; see
+    # ``spots.sample_geometry_from_settings``. 0 = dimension not entered.
+    fpp_sample_shape: Literal['unbounded', 'circle', 'rectangle'] = _M['fpp_sample_shape']
+    fpp_sample_diameter_mm: float = Field(default=_M['fpp_sample_diameter_mm'], ge=0.0, le=1000.0)
+    fpp_sample_width_mm: float = Field(default=_M['fpp_sample_width_mm'], ge=0.0, le=1000.0)
+    fpp_sample_length_mm: float = Field(default=_M['fpp_sample_length_mm'], ge=0.0, le=1000.0)
+    # Only 'warn' exists: whether a position-aware correction ('apply') may be
+    # offered at all is an open question of the design, and until it is
+    # answered every number in a file is F84 as written.
+    fpp_position_correction: Literal['warn'] = _M['fpp_position_correction']
+    fpp_edge_warn_pct: float = Field(default=_M['fpp_edge_warn_pct'], ge=0.0, le=100.0)
+    fpp_array_angle_deg: float = Field(default=_M['fpp_array_angle_deg'], ge=-360.0, le=360.0)
     fpp_temperature_c: Optional[float] = Field(default=None, ge=-50.0, le=200.0)
     fpp_dopant_type: Literal['none', 'n', 'p'] = _M['fpp_dopant_type']
     fpp_delta_mode: bool = _M['fpp_delta_mode']

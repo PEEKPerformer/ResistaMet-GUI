@@ -155,3 +155,46 @@ class TestInvalidMode:
     def test_unknown_mode_raises(self, profile):
         with pytest.raises(ValueError):
             resolve_run_settings(profile, 'hall', {})
+
+
+class TestSampleOutline:
+    """The outline must be describable; the position-correction mode is fixed."""
+
+    def test_defaults_raise_nothing(self, profile):
+        assert resolve_run_settings(profile, 'four_point', {}, strict=True).issues == []
+
+    def test_a_legacy_outline_raises_nothing(self, profile):
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_geometry': 'rectangle_2', 'fpp_diameter_cm': 1.0}, strict=True)
+        assert resolved.issues == []
+
+    def test_a_shape_without_its_dimensions_is_an_error(self, profile):
+        resolved = resolve_run_settings(profile, 'four_point',
+                                         {'fpp_sample_shape': 'circle'}, strict=True)
+        assert _keys(resolved) == ['fpp_sample_shape']
+        assert 'needs diameter_mm' in resolved.issues[0].message
+        assert not resolved.ok
+
+    def test_an_outline_the_look_up_does_not_share_is_a_warning(self, profile):
+        """The rows still use the legacy keys; the client is told, not stopped."""
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_sample_shape': 'circle', 'fpp_sample_diameter_mm': 50.8}, strict=True)
+        assert [(i.key, i.severity) for i in resolved.issues] == [('fpp_sample_shape', 'warning')]
+        assert 'unbounded' in resolved.issues[0].message
+        assert resolved.ok
+
+    def test_matching_legacy_and_new_outline_raises_nothing(self, profile):
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_sample_shape': 'circle', 'fpp_sample_diameter_mm': 50.8,
+            'fpp_geometry': 'circle', 'fpp_diameter_cm': 5.08}, strict=True)
+        assert resolved.issues == []
+
+    def test_position_correction_can_only_warn_for_now(self, profile):
+        resolved = resolve_run_settings(profile, 'four_point',
+                                         {'fpp_position_correction': 'apply'}, strict=True)
+        assert _keys(resolved) == ['fpp_position_correction']
+        assert not resolved.ok
+
+    def test_other_modes_are_not_checked(self, profile):
+        profile['measurement']['fpp_sample_shape'] = 'circle'
+        assert resolve_run_settings(profile, 'resistance', {}, strict=True).issues == []
