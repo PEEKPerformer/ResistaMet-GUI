@@ -141,3 +141,22 @@ class TestSpotSamples:
         samples.add('garbage', None, {'rs': 'x'})
         assert len(samples) == 1
         assert math.isnan(samples.voltage[0]) and math.isnan(samples.rs[0])
+
+    def test_a_missing_derived_dict_is_a_sample_without_derived_values(self):
+        samples = SpotSamples()
+        samples.add(0.1, CURRENT, None)
+        samples.add(0.1, CURRENT, 'not a dict')
+        assert len(samples) == 2
+        assert math.isnan(samples.rs[0]) and math.isnan(samples.sigma[1])
+        assert samples.voltage[0] == 0.1
+
+    def test_a_sample_is_kept_whole_or_not_at_all(self):
+        """The columns stay the same length whatever the values were."""
+        samples = SpotSamples()
+        samples.add(10 ** 400, CURRENT, {'rs': [1, 2], 'rho': object(), 'sigma': '1e3'})
+        lengths = {len(getattr(samples, name))
+                   for name in ('voltage', 'current', 'rs', 'rho', 'sigma')}
+        assert lengths == {1}
+        assert math.isnan(samples.voltage[0])      # too large for a double
+        assert samples.sigma[0] == 1000.0
+        assert spot_statistics(samples)['n'] == 1
