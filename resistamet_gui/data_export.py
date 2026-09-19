@@ -291,6 +291,7 @@ def build_metadata(
     start_time: Optional[datetime] = None,
     aux_columns: Optional[List[str]] = None,
     effective: Optional[Dict[str, Any]] = None,
+    spot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build metadata dictionary for export. Shared schema across all backends.
 
@@ -301,6 +302,10 @@ def build_metadata(
     that differs from what was asked — the voltage limit auto-ohms imposes,
     for one. ``params`` stays the request; a reader comparing the two sees
     exactly what the instrument overrode.
+
+    ``spot`` is the block a four-point run writes when it is one placement of
+    a map (``session.spot_record.SpotRecord.header``). Absent, the header has
+    no ``spot`` keys at all.
     """
     from .constants import __version__
 
@@ -403,6 +408,9 @@ def build_metadata(
 
     if effective:
         meta['effective'] = dict(effective)
+
+    if spot:
+        meta['spot'] = dict(spot)
 
     return meta
 
