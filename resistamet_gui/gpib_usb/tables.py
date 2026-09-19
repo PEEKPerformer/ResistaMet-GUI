@@ -178,6 +178,51 @@ TIMEOUT_TABLE: Tuple[Tuple[float, int], ...] = (
 #: The longest finite device timeout the table offers.
 TIMEOUT_MAX_S = TIMEOUT_TABLE[-1][0]
 
+#: §7.3: how long a GPIB-USB-HS really waits under a code before it ends the
+#: instruction itself with error 0x0a, in seconds, timed on the wire with
+#: NI's driver. The limits above are nominal; these are what a host wait has
+#: to outlast. Where a code was timed more than once the longest figure is
+#: kept (0xfc: six cases, 4.195316-4.196156; 0xfe: two). Each is a power of
+#: two in microseconds plus 0.8-1.9 ms, but no rounding of the nominal value
+#: gives all six exponents, so the figures are table facts, not computed.
+TIMEOUT_EXPIRY_MEASURED_S: Dict[int, float] = {
+    0xF9: 0.132272,    # nominal 100 ms
+    0xFA: 0.263541,    # nominal 300 ms: the one code that expires early
+    0xFB: 1.049837,    # nominal 1 s
+    0xFC: 4.196156,    # nominal 3 s
+    0xFD: 16.778423,   # nominal 10 s
+    0xFE: 33.555345,   # nominal 30 s
+}
+#: The most a reply was seen to trail the power of two behind its expiry, in
+#: twelve timed-out instructions (§7.2).
+TIMEOUT_EXPIRY_JITTER_S = 1.9e-3
+
+#: §7.3, inference and not measurement: for the codes nobody timed, the
+#: smallest power of two in microseconds not below the nominal limit. It is
+#: the larger of the specification's two candidates, which §7.2 says a host
+#: wait should assume, and no measured code exceeded it.
+TIMEOUT_EXPIRY_INFERRED_S: Dict[int, float] = {
+    0xF1: 16e-6, 0xF2: 32e-6, 0xF3: 128e-6, 0xF4: 512e-6,
+    0xF5: 1024e-6, 0xF6: 4096e-6, 0xF7: 16384e-6, 0xF8: 32768e-6,
+    0xFF: 134.217728, 0x01: 536.870912, 0x02: 1073.741824,
+}
+
+
+def timeout_expiry_s(code: int) -> Optional[float]:
+    """The adapter's own wait under ``code``: measured if it was, else inferred (§7.3).
+
+    None for the disabled code 0xf0, which never expires.
+    """
+    if code == TIMEOUT_DISABLED_CODE:
+        return None
+    measured = TIMEOUT_EXPIRY_MEASURED_S.get(code)
+    if measured is not None:
+        return measured
+    try:
+        return TIMEOUT_EXPIRY_INFERRED_S[code]
+    except KeyError:
+        raise ValueError('0x%02x is not a device timeout code' % code) from None
+
 # --------------------------------------------------------------------------
 # §2.6 / §2.7 / §2.9 register sequences
 # --------------------------------------------------------------------------

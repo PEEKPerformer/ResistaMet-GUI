@@ -552,8 +552,34 @@ class TestErrorPaths:
             waits.append(reply.ts - out.ts)
         code, limit = p.effective_timeout(2.0)  # the scenario's VI_ATTR_TMO_VALUE
         assert code == 0xFC and limit == 3.0
-        assert all(limit < wait < p.host_wait_s(limit, 600.0) for wait in waits), waits
+        assert all(limit < wait < p.host_wait_s(code, 600.0) for wait in waits), waits
         assert all(abs(wait - 4.196) < 0.01 for wait in waits), waits
+
+    def test_the_expiry_table_is_what_the_timing_capture_shows(self):
+        # §7.3, §10.1.8: six framed reads with nothing pending, one per code 0xf9..0xfe, timed
+        # from the submission of the OUT to the completion of the reply on 0x84.
+        timed = {}
+        everything = transfers('timeout_expiry')
+        for out in everything:
+            if out.endpoint != EP_OUT or out.completion or not out.payload:
+                continue
+            read = next((b for b in split_host_blocks(out.payload) if b[0] == p.OP_READ), None)
+            if read is None:
+                continue
+            reply = next(x for x in everything if x.endpoint == EP_IN and x.completion and x.payload
+                         and x.ts > out.ts)
+            status = next(b for i, b in p.split_reply_blocks(reply.payload) if i == p.BLOCK_READ_STATUS)
+            if p.parse_status_block(status).error == t.ERR_TIMEOUT:
+                timed[read[3]] = reply.ts - out.ts
+        assert sorted(timed) == [0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE]
+        for code, seen in timed.items():
+            # The table keeps the longest figure per code; 0xfc and 0xfe were also timed in
+            # other captures, 0.6 ms and 0.1 ms longer than here. Timestamps are epoch seconds
+            # in a float, good to a microsecond or so.
+            assert -2e-6 < t.TIMEOUT_EXPIRY_MEASURED_S[code] - seen < 1e-3, (hex(code), seen)
+            assert p.host_wait_s(code, 600.0) > seen + 1.9e-3
+        # What nominal + max(2 s, 50 %) would have been for 0xfd: shorter than the adapter ran.
+        assert 10.0 + 5.0 < timed[0xFD] < p.host_wait_s(0xFD, 600.0)
 
     def test_serial_poll_that_timed_out_has_no_result_block(self):
         exchange = next(e for e in exchanges('raw_errors') if e.block(p.OP_SERIAL_POLL) is not None)

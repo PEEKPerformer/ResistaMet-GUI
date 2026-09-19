@@ -322,17 +322,18 @@ class TestTimeouts:
         (150.0, 0x01, 300.0), (1000.0, 0x02, 1000.0), (None, 0xF0, None), (0, 0xF0, None),
         (5000.0, 0xF0, None),
     ])
-    def test_effective_timeout_reports_the_limit_the_device_enforces(self, seconds, code, limit):
+    def test_effective_timeout_reports_the_nominal_limit_of_the_code(self, seconds, code, limit):
         assert p.effective_timeout(seconds) == (code, limit)
 
-    def test_host_wait_is_derived_from_the_effective_limit(self):
-        assert p.host_wait_s(1.0, 600) == 3.0
-        assert p.host_wait_s(3.0, 600) == 5.0
-        assert p.host_wait_s(10.0, 600) == 15.0
-        assert p.host_wait_s(None, 600) == 600
-        # A 5 s request runs on the 10 s row, so the host waits 15 s, not 7.
-        _, limit = p.effective_timeout(5.0)
-        assert p.host_wait_s(limit, 600) == 15.0
+    def test_host_wait_is_the_measured_expiry_of_the_code_plus_two_seconds(self):
+        # §7.2, §7.3: not the nominal limit. The figures are the specification's.
+        assert p.host_wait_s(0xFB, 600) == pytest.approx(1.049837 + 2.0)
+        assert p.host_wait_s(0xFC, 600) == pytest.approx(4.196156 + 2.0)
+        assert p.host_wait_s(0xFE, 600) == pytest.approx(33.555345 + 2.0)
+        assert p.host_wait_s(0xF0, 600) == 600
+        # A 5 s request goes out as 0xfd, which the adapter runs for 16.78 s: the host
+        # waits 18.78 s, not the 15 s of nominal + 50 %, and not 7.
+        assert p.host_wait_s(p.timeout_code(5.0), 600) == pytest.approx(16.778423 + 2.0)
 
     def test_timeout_max(self):
         assert t.TIMEOUT_MAX_S == 1000.0
