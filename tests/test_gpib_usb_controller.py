@@ -1191,47 +1191,76 @@ class TestDeviceOps:
         ops.local_lockout(controller, 24, timeout_s=0.3)
         transport.assert_done()
 
-    def test_serial_poll_sequence(self):
-        controller, transport = attached([
-            ('out', p.command_message(bytes((0x3F, 0x20, 0x18, 0x56)), T3S)), ('in', status_reply(0x0C)),
-            ('out', p.go_to_standby_message()), ('in', status_reply(0x06)),
-            ('out', p.read_message(1, T3S)), ('in', read_reply(b'\x40', 1), 512),
-            ('out', p.command_message(bytes((0x19, 0x5F)), T3S)), ('in', status_reply(0x0C)),
-        ])
-        assert ops.serial_poll(controller, 22) == 0x40
-        transport.assert_done()
 
-    def test_serial_poll_leaves_poll_mode_even_when_the_read_times_out(self):
-        controller, transport = attached([
-            ('out', p.command_message(bytes((0x3F, 0x20, 0x18, 0x56)), T3S)), ('in', status_reply(0x0C)),
-            ('out', p.go_to_standby_message()), ('in', status_reply(0x06)),
-            ('out', p.read_message(1, T3S)), ('in', read_reply(b'', 1, end=False, error=0x0A), 512),
-            ('out', p.command_message(bytes((0x19, 0x5F)), T3S)), ('in', status_reply(0x0C)),
-        ])
-        with pytest.raises(GpibTimeout):
-            ops.serial_poll(controller, 22)
-        transport.assert_done()
+class TestSerialPoll:
+    """The 0x10 instruction (§10.5.4), not the §5.9 command sequence."""
 
-    def test_serial_poll_cleanup_failure_does_not_mask_the_read_failure(self):
+    def test_poll_with_ni_bytes(self):
+        # stb.pcap 0.5134 / 0.5151 (code 0xfe, status byte 0), minus the blocks NI batches around it.
         controller, transport = attached([
-            ('out', p.command_message(bytes((0x3F, 0x20, 0x18, 0x56)), T3S)), ('in', status_reply(0x0C)),
-            ('out', p.go_to_standby_message()), ('in', status_reply(0x06)),
-            ('out', p.read_message(1, T3S)), ('in', read_reply(b'', 1, end=False, error=0x0A), 512),
-            ('out', p.command_message(bytes((0x19, 0x5F)), T3S)), ('in', status_reply(0x0C, error=5, count=-2)),
+            ('out', h('10 01 00 00 18 00 fe 00 04 00 00 00')),
+            ('in', h('3a 18 00 00 39 00 74 00 00 00 ff ff 04 00 00 00'), 512),
         ])
-        with pytest.raises(GpibTimeout):
-            ops.serial_poll(controller, 22)
+        assert controller.serial_poll(24, timeout_s=20.0) == 0
         transport.assert_done()
+        assert transport.timeouts[-1] == ('in', 512, 45000)  # 30 s row + 15 s
 
-    def test_serial_poll_cleanup_failure_alone_is_raised(self):
+    def test_status_byte_with_rqs(self):
+        # srq_poll.pcap 2.5379 reported 0x20 after the adapter had polled RQS away; 0x60 is what
+        # a device still requesting service would give.
         controller, _ = attached([
-            ('out', p.command_message(bytes((0x3F, 0x20, 0x18, 0x56)), T3S)), ('in', status_reply(0x0C)),
-            ('out', p.go_to_standby_message()), ('in', status_reply(0x06)),
-            ('out', p.read_message(1, T3S)), ('in', read_reply(b'\x40', 1), 512),
-            ('out', p.command_message(bytes((0x19, 0x5F)), T3S)), ('in', status_reply(0x0C, error=5, count=-2)),
+            ('out', p.serial_poll_message(22, T3S)),
+            ('in', h('3a 16 00 60 39 00 74 00 00 00 ff ff 04 00 00 00'), 512),
         ])
-        with pytest.raises(NoListener):
-            ops.serial_poll(controller, 22)
+        assert controller.serial_poll(22) == 0x60
+
+    def test_secondary_address(self):
+        controller, transport = attached([
+            ('out', h('10 01 00 00 18 61 fc 00 04 00 00 00')),
+            ('in', h('3a 18 61 20 39 00 74 00 00 00 ff ff 04 00 00 00'), 512),
+        ])
+        assert controller.serial_poll(24, sad=1) == 0x20
+        transport.assert_done()
+
+    def test_device_timeout_raises(self):
+        controller, _ = attached([
+            ('out', p.serial_poll_message(22, T3S)),
+            ('in', h('3a 16 00 00 39 00 74 0a ff ff ff ff 04 00 00 00'), 512),
+        ])
+        with pytest.raises(GpibTimeout):
+            controller.serial_poll(22)
+
+    def test_answer_for_another_address_is_a_fault(self):
+        controller, transport = attached([
+            ('out', p.serial_poll_message(22, T3S)),
+            ('in', h('3a 18 00 00 39 00 74 00 00 00 ff ff 04 00 00 00'), 512),
+            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,
+        ])
+        with pytest.raises(ProtocolError):
+            controller.serial_poll(22)
+        transport.assert_done()
+
+    def test_poll_forgets_who_was_addressed(self):
+        controller, transport = attached(address_listener() + [
+            ('out', p.write_message(b'A', T3S, True)), ('in', status_reply(0x0D)),
+            ('out', p.serial_poll_message(22, T3S)),
+            ('in', h('3a 16 00 00 39 00 74 00 00 00 ff ff 04 00 00 00'), 512),
+        ] + address_listener() + [
+            ('out', p.write_message(b'B', T3S, True)), ('in', status_reply(0x0D)),
+        ])
+        controller.write(22, b'A', timeout_s=3.0, readdress=False)
+        controller.serial_poll(22)
+        controller.write(22, b'B', timeout_s=3.0, readdress=False)
+        transport.assert_done()
+
+    def test_host_wait_expiry_takes_the_stop_path(self):
+        controller, transport = attached([
+            ('out', p.serial_poll_message(22, T3S)), ('in', TransportTimeout('host wait'), 512),
+            STOP, ('in', h('3a 16 00 00 39 00 74 01 ff ff ff ff 04 00 00 00'), 512),
+        ])
+        with pytest.raises(GpibTimeout):
+            controller.serial_poll(22)
+        transport.assert_done()
 
 
 def probe_steps(pad: int, ndac: bool) -> List[Tuple[Any, ...]]:

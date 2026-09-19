@@ -7,7 +7,7 @@ bytes and a read (the ATN rule at the top of §5), 16-byte command chunks
 (§5.3), and turning a nonzero error code into an exception in exactly one
 place. Everything is synchronous and serialised behind one re-entrant lock;
 there are no background threads. Sequences built from these primitives
-(device clear, serial poll, the presence probe) live in ``device_ops``.
+(device clear, trigger, the presence probe) live in ``device_ops``.
 
 Faults: a malformed reply or a USB error means the bulk pipes may be out of
 step (§8.2). The offending operation raises, the adapter is sent a stop
@@ -360,7 +360,7 @@ class Controller:
             self._host_stopped = True
             self._control(t.STOP_REQUEST)
             reply_wait = RECOVERY_WAIT_S
-        reply = self._reply_or_stop(p.RAW_REPLY_BUFFER, reply_wait)
+        reply = self._reply_or_stop(p.SMALL_REPLY_BUFFER, reply_wait)
         parsed = p.parse_raw_write_reply(reply)
         if parsed.status.id != p.OP_WRITE_RAW:
             raise ProtocolError('write: reply id 0x%02x, expected 0x0e: %s' % (parsed.status.id, reply.hex()))
@@ -485,7 +485,7 @@ class Controller:
                 # established (a timed-out one does, with zero bytes). The
                 # reply's count decides whether anything was lost.
                 data = b''
-        return data, self._reply_or_stop(p.RAW_REPLY_BUFFER, reply_wait)
+        return data, self._reply_or_stop(p.SMALL_REPLY_BUFFER, reply_wait)
 
     def command(self, command_bytes: bytes,
                 timeout_s: Optional[float] = DEFAULT_TIMEOUT_S) -> int:
@@ -515,6 +515,27 @@ class Controller:
             command = t.address_talker_command(self._own_address, pad, sad)
         self._status_exchange(p.command_message(command, code), wait_s, 'address to %s' % direction)
         self._addressed = target
+
+    def serial_poll(self, pad: int, sad: Optional[int] = None,
+                    timeout_s: Optional[float] = DEFAULT_TIMEOUT_S) -> int:
+        """The status byte of device ``pad`` through the 0x10 instruction (§10.5.4).
+
+        NI's driver polls this way rather than with the IEEE-488.1 command
+        sequence of §5.9. The adapter addresses the bus itself for the poll,
+        so whoever was addressed before is forgotten here.
+        """
+        with self._guard():
+            self._ensure_attached()
+            self._addressed = None
+            code, limit = p.effective_timeout(timeout_s)
+            wait = p.host_wait_s(limit, self._infinite_wait_s)
+            reply = self._transact(p.serial_poll_message(pad, code, sad), p.SMALL_REPLY_BUFFER, wait)
+            parsed = p.parse_serial_poll_reply(reply)
+            if parsed.pad != pad:
+                raise ProtocolError('serial poll answered for address %d, asked %d: %s'
+                                    % (parsed.pad, pad, reply.hex()))
+            self._raise_for_error(parsed.status, 'serial poll')
+            return parsed.status_byte
 
     # ------------------------------------------------------------------
     # adapter state
