@@ -492,6 +492,28 @@
     },
     "RunRequest": {
       "$defs": {
+        "ClientInfo": {
+          "additionalProperties": false,
+          "description": "Which program asked for the run, recorded in the file header.\n\nThe backend's own version is always written (``software_version``); this\nsays what was driving it -- the desktop app, a script, the MCP layer --\nso a file written through the API can be told from one the PySide6 app\nwrote. Self-reported, so it is provenance and not authentication.",
+          "properties": {
+            "name": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,63}$",
+              "title": "Name",
+              "type": "string"
+            },
+            "version": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,63}$",
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "version"
+          ],
+          "title": "ClientInfo",
+          "type": "object"
+        },
         "SpotRequest": {
           "additionalProperties": false,
           "description": "One placement of the probe, as the client describes it.\n\nThe position is optional -- a spot can be a label and nothing more -- but\n``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the\ndirection of the probe array, anticlockwise from +x; absent, the run uses\nthe ``fpp_array_angle_deg`` setting.",
@@ -565,6 +587,17 @@
       "additionalProperties": false,
       "description": "What a client asks for. Never persisted.\n\n``overrides`` is flat measurement keys, the same shape the tabs produce\ntoday, so one request format serves the UI, a script and the MCP layer.\nStrict validation of the keys happens in the resolver, which knows which\nones the profile owns.",
       "properties": {
+        "client": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClientInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "mode": {
           "enum": [
             "resistance",

@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from ..schema.settings_modes import ClientInfo
 from ..schema.spots import SpotRequest
 from ..session.instrument_lock import InstrumentBusy
 from ..session.manager import MeasurementSession, SessionBusy
@@ -26,6 +27,8 @@ class StartRequest(BaseModel):
     prompt_timeout_s: float = Field(default=900.0, gt=0.0)
     # Four-point only; the session refuses it for any other mode.
     spot: Optional[SpotRequest] = None
+    # Which program is asking, for the file header. Optional.
+    client: Optional[ClientInfo] = None
 
 
 class AnswerRequest(BaseModel):
@@ -81,7 +84,7 @@ def start(body: StartRequest, request: Request,
         run_id = session.start(profile, body.mode, body.sample_name, body.username,
                                 overrides=body.overrides,
                                 prompt_timeout_s=body.prompt_timeout_s,
-                                spot=body.spot)
+                                spot=body.spot, client=body.client)
     except SessionBusy as exc:
         raise busy_as_conflict(exc)
     except InstrumentBusy as exc:

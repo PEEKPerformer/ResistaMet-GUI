@@ -8,6 +8,7 @@ enforces that, because the headless session and the API depend on it.
 from .resolve import Issue, ResolvedRun, allowed_override_keys, resolve_run_settings
 from .settings_modes import (
     MODE_MODELS,
+    ClientInfo,
     CurrentSourceSettings,
     FourPointSettings,
     ResistanceSettings,
@@ -34,6 +35,7 @@ __all__ = [
     'allowed_override_keys',
     'resolve_run_settings',
     'AuxSensorSettings',
+    'ClientInfo',
     'CurrentSourceSettings',
     'DisplaySettings',
     'FileSettings',

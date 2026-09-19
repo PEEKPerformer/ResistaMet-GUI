@@ -433,6 +433,33 @@ class TestSpotBlock:
             assert f.attrs['spot.edge_clearance_s'] == 5.06
 
 
+class TestClientBlock:
+    """``settings['client']``: the program that asked for the run."""
+
+    CLIENT = {'name': 'resistamet-desktop', 'version': '2.0.0-1'}
+
+    def _meta(self, mode, settings):
+        from datetime import datetime
+        return build_metadata(user='alice', sample_name='wafer7', mode=mode,
+                              settings=settings, start_time=datetime(2026, 9, 19, 12, 0, 0))
+
+    @pytest.mark.parametrize("mode", ['resistance', 'four_point', 'sweep', 'vdp'])
+    def test_the_block_is_the_only_difference(self, mode):
+        plain = self._meta(mode, {'measurement': {}})
+        with_client = self._meta(mode, {'measurement': {}, 'client': self.CLIENT})
+        assert 'client' not in plain
+        assert with_client.pop('client') == self.CLIENT
+        assert with_client == plain
+
+    def test_csv_header_lines(self, base_path):
+        meta = self._meta('resistance', {'measurement': {}, 'client': self.CLIENT})
+        exp = CsvExporter(base_path, meta, ['elapsed_s', 'R_ohm'])
+        exp.finalize()
+        text = exp.output_paths[0].read_text(encoding='utf-8')
+        assert "# client.name: resistamet-desktop\n" in text
+        assert "# client.version: 2.0.0-1\n" in text
+
+
 # ------------------------------- File names ---------------------------------
 
 
