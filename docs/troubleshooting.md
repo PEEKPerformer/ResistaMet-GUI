@@ -4,6 +4,27 @@ Common failures and how to resolve them. If you hit a message not listed here, p
 
 ## Connection failures
 
+### No instruments detected, or the scan list has no GPIB entry
+
+**Symptom:** **Detect Devices** (PySide6) or **Scan** (desktop app, Settings ▸ Instrument) says VISA sees no resources, or lists only serial ports.
+
+**Cause:** Either no VISA implementation loads, or one loads that has no driver for your GPIB adapter. The second is the normal state of a Mac with NI-VISA installed, and of a PC with NI-VISA but without NI-488.2.
+
+**Fix:** Ask the backend what it has. No GUI and no development tools needed:
+
+```bash
+python -m resistamet_gui.api --check-visa          # source install
+resistamet-api --check-visa                        # the frozen backend inside the desktop app
+resistamet-api --check-visa bus --visa-library @py # also list resources, through pyvisa-py
+```
+
+It prints one JSON line: which VISA library answered and its version, whether the built-in NI GPIB-USB driver can load libusb, which NI adapters are on USB, and with `bus` the resource list. [GPIB → Diagnosing](gpib.md#diagnosing-with-check-visa) explains each field. Typical readings:
+
+- `"ok": false`: no VISA implementation at all. Install NI-VISA (Windows) or use pyvisa-py.
+- `"kind": "ivi"` on a Mac: the vendor library was chosen and cannot see GPIB. Set the VISA backend to **pyvisa-py**.
+- `"ni_usb": {"available": false}`: libusb or pyusb is missing (`brew install libusb`, `pip install -e ".[usb]"`).
+- The adapter is under `adapters` but no `GPIB0::…::INSTR` under `resources`: the bus was scanned and nothing listened. Instrument power, cable, GPIB address on the front panel.
+
 ### "Instrument at … was not detected"
 
 **Cause:** The configured GPIB address doesn't match any instrument PyVISA can see.
@@ -21,13 +42,9 @@ ResistaMet GUI auto-escalates this: when a measurement fails to connect with an 
 
 **Cause:** Running on macOS without `pyvisa-py` installed. NI-VISA was dropped on macOS after NI-VISA 18.5 (2020).
 
-**Fix:** Either run on the lab Windows PC (recommended for routine use), or:
+**Fix:** Either run on a Windows PC with NI-VISA and NI-488.2, or use pyvisa-py, which is installed with ResistaMet. With pyvisa-py a Mac reaches a Keithley through an NI GPIB-USB-HS and the built-in driver, over RS-232, or over Ethernet; see [GPIB and VISA backends](gpib.md) for what each needs and for what has and has not been checked on hardware. A Prologix adapter does not work for runs yet ([why](gpib.md#current-limitation-a-run-does-not-connect-through-it-yet)).
 
-```bash
-pip install pyvisa-py
-```
-
-`pyvisa-py` is reportedly compatible with Prologix USB-GPIB adapters but is not bench-verified in-house — your mileage may vary.
+The wording of this message predates the built-in driver. If NI-VISA *is* installed on the Mac you will not see this message at all; you will see an empty scan instead (previous entry).
 
 ### "NI-VISA isn't installed on this PC" (Windows / Linux)
 
@@ -45,17 +62,61 @@ pip install pyvisa-py
 2. If the timeout persists, double-check the GPIB address against the front panel.
 3. If the issue is reproducible after fresh power-cycle, capture the full stderr and open an issue.
 
+### "… is in use by another ResistaMet process"
+
+**Symptom:** Start is refused with `GPIB0::24::INSTR is in use by another ResistaMet process`; through the API, `POST /session/start` answers 409 with that text after about 3 s.
+
+**Cause:** The instrument lock. Every ResistaMet process (the PySide6 window, the desktop app's backend, a script) takes an operating-system file lock on the instrument address for the length of a run, so that two of them cannot interleave commands on one bus. The lock files are in `~/.resistamet/locks/` (on Windows under your user folder), one per address, for example `GPIB0__24__INSTR.lock`.
+
+**Fix:** Find the other ResistaMet that is running and stop its run or close it: a second window, a desktop app left open, a backend that outlived its window (`resistamet-api` or `python` in the process list). The operating system drops the lock the moment its holder exits, so there is never a stale lock to clean up, and deleting the `.lock` files does nothing. A Start pressed right after a Stop waits up to 3 s for the previous run to finish its cleanup before it gives this message.
+
+The lock only knows about ResistaMet. Another program holding the instrument shows up as the next entry instead.
+
 ### "The instrument … is busy"
 
 **Cause:** Another program (Kickstart, LabVIEW, an older ResistaMet window) has the instrument open and PyVISA can't acquire it.
 
 **Fix:** Close the other program. On Windows, **Task Manager → Details** can confirm — look for `KickStart.exe`, `LabVIEW.exe`, or another `python.exe` holding a VISA handle.
 
+On a Mac or Linux PC using the built-in NI GPIB-USB driver, see also [A timeout takes about 17 s](#a-timeout-takes-about-17-s-although-5-s-or-10-s-was-asked) and [the hung adapter](#the-ni-gpib-usb-adapter-stops-answering).
+
 ### "VISA backend not found": `ValueError: Could not locate a VISA implementation`
 
 **Cause:** You launched without `--simulate` but no VISA backend is installed. See [Installation → VISA backend](installation.md#visa-backend-real-hardware-only).
 
 **Fix:** Install either NI-VISA (Windows/Linux) or `pip install pyvisa-py` (cross-platform). Or, if you're just kicking the tires and have no hardware, relaunch with `--simulate`.
+
+## NI GPIB-USB adapter with the built-in driver
+
+These apply only when the pyvisa-py backend drives an NI GPIB-USB-HS through ResistaMet's own driver (macOS, Linux). They do not apply to NI-VISA on Windows.
+
+### The NI GPIB-USB adapter stops answering
+
+**Symptom:** Connecting fails with `GPIB-USB-HS accepted the initialisation message but never replied: the adapter is hung. Unplug it and plug it back in.`, or the first command after connecting never returns.
+
+**Cause:** The adapter's firmware has stopped replying on its data endpoints. It still enumerates on USB and still shows up under `adapters` in `--check-visa`. Seen once on the bench (2026-09-18).
+
+**Fix:** Unplug the adapter from USB and plug it back in. Nothing software can send recovers it; a USB reset was tried and does not. Restarting ResistaMet or the Keithley does not help either.
+
+### A timeout takes about 17 s although 5 s or 10 s was asked
+
+**Symptom:** With the instrument off, disconnected or at the wrong address, the timeout error arrives after roughly 16.8 s, not after the 5 s ResistaMet asks for. A long sweep that times out takes about 33.6 s.
+
+**Cause:** The adapter, not the computer, times a GPIB handshake, and it offers a fixed ladder of timeouts. The driver must round the requested timeout up to the next rung, and the adapter's real wait on each rung is a power of two in microseconds, which is longer than the rung's nominal value in every measured case but one:
+
+| Timeout asked of VISA | Rung (nominal) | Adapter really waits |
+|---|---|---|
+| up to 100 ms | 100 ms | 0.13 s |
+| up to 300 ms | 300 ms | 0.26 s (the one rung that expires early) |
+| up to 1 s | 1 s | 1.05 s |
+| up to 3 s | 3 s | 4.20 s |
+| up to 10 s (ResistaMet's 5 s default lands here) | 10 s | **16.78 s** |
+| up to 30 s | 30 s | 33.56 s |
+| longer | 100 s, 300 s, 1000 s | not measured |
+
+The waits were measured on the wire on 2026-09-19 with NI's own Windows driver driving a GPIB-USB-HS, so they are a property of the adapter and NI's software shows the same delays. The built-in driver sends the same rung codes and sizes its own USB wait to these figures; the delays have not been re-timed through the built-in driver. I-V sweeps ask for `max(10 s, 1 s per point)`, so a sweep of 11 to 30 points waits on the 30 s rung and a longer one on the 100 s rung, which was not measured.
+
+**Fix:** None needed; the reading is not affected, only how long a failure takes to report. Pressing Stop during the wait is honored once the read returns. If the delay is a nuisance while you hunt for the right GPIB address, use **Scan** instead of repeated connection attempts.
 
 ## Compliance and reading anomalies
 
@@ -67,11 +128,43 @@ pip install pyvisa-py
 
 **Fix:** Raise the compliance setting for that channel, or lower the source level. If you intended to discover the compliance limit (e.g. you're tracing a diode breakdown), this is the expected behavior — just be aware that the rows with the sentinel are not real measurements.
 
+### A four-point spot is refused: "Spot '…' is off the sample"
+
+**Symptom:** A four-point run started with a spot position ends at once with `Spot 'edge-3' is off the sample: a probe tip is 0.42 s beyond the edge.` The run's end reason is `spot_refused`. No file is written and the instrument is never opened.
+
+**Cause:** With the position (`x_mm`, `y_mm`), the array angle and the probe spacing as given, at least one of the four tips lies on or outside the sample outline. Distances in the message are in probe spacings `s`. The geometry factor diverges at the edge, so the run is refused before the output is turned on.
+
+**Fix:** Check, in this order: the outline (`fpp_sample_shape` and its dimensions in **mm**; when the shape is `unbounded` the outline comes from `fpp_geometry` and `fpp_diameter_cm` in **cm**), that positions are measured from the **center** of the sample, the array angle (`fpp_array_angle_deg`, counterclockwise from +x, which is the rectangle's length direction), and `fpp_spacing_cm`. The four tips span 3 s along the array. See [Settings → Four-point sample outline](settings.md#four-point-sample-outline-and-spot-position).
+
+A spot *near* an edge is not refused. It runs with a warning such as `Spot 'east edge' is 5.8 s from the edge: … differs … by 1.1 % (threshold 1 %). No position correction is applied.`, and the file records the size of the effect under [`spot.*`](outputs.md#spot-four-point-runs-that-carry-a-spot). Raise `fpp_edge_warn_pct` if the threshold is too strict for your work.
+
 ### 4PP run aborts immediately with "Power envelope exceeded"
 
 **Cause:** The pre-flight check refused to start because the worst-case product `I_source × V_compliance` exceeds `fpp_power_stop_w` (default 100 mW). This protects tungsten-carbide probe tips from melting.
 
 **Fix:** Either lower `I_source` (typical 100 µA is safe for unknown films), lower `V_compliance`, or — if you genuinely want to run with more power — raise `fpp_power_stop_w` in the 4PP tab Advanced section. The warn threshold (`fpp_power_warn_w`, default 10 mW) is non-blocking; only the stop threshold aborts.
+
+## Desktop app
+
+### "The measurement backend did not start"
+
+**Symptom:** The desktop app opens on a card with this title and an error text instead of the measurement views.
+
+**Cause:** The app's shell could not launch the Python backend or did not get its handshake. The text says which: `could not start the measurement backend (…)` (nothing to run at that path), `backend exited before its handshake` (it crashed on startup), `backend did not answer within 30 s`, or `backend handshake was not JSON`.
+
+**Fix:** An installed build carries its own backend; reinstall if it is missing or damaged. From a source checkout the shell looks for, in order, `RESISTAMET_PYTHON`, a frozen `resistamet-api` next to the app, the repository's `.venv`, then `python3` on the PATH; the interpreter it finds needs the API extra (`pip install -e ".[api]"`). Run the same command by hand to see the traceback:
+
+```bash
+python -m resistamet_gui.api --port 0 --config config.json --no-watchdog
+```
+
+### "Backend unreachable" / "The measurement backend is not answering"
+
+**Symptom:** The chip in the top bar turns to **Backend unreachable**, a red notice appears in the view, and Start is disabled.
+
+**Cause:** The backend process stopped answering HTTP: it crashed, was killed, or the PC has just woken from sleep and the connection has not recovered yet. The app polls every 2 s and the event stream reconnects by itself.
+
+**Fix:** Press **Retry** in the notice. If it stays unreachable, the backend process is gone; restart the app. If a run was in progress when the backend died, the instrument was not told to turn its output off: check the front panel, and expect the run's file to end without its `# --- run completed ---` block. A run is not lost when only the *window* is closed; see [Desktop app → Closing the window](desktop.md#closing-the-window).
 
 ## Plot / display
 
@@ -136,7 +229,7 @@ By default the simulator returns perfect Ohm's-law readings (`--sim-noise-rsd 0.
 
 If the error message doesn't match anything here:
 
-1. Check the log file at `~/.resistamet/logs/resistamet_YYYYMMDD.log` (one per UTC date, rotated at 5 MB × 3 backups) for the full traceback.
+1. Get the full traceback from the terminal. At this commit neither the PySide6 app nor the backend writes a log file (`~/.resistamet/logs/` is provided for in the code, but nothing turns file logging on). Start `resistamet-gui` from a terminal and read its stderr; the backend logs to its stderr as well (`python -m resistamet_gui.api … 2> backend.log`). An installed desktop app redirects its backend's stderr to a file per launch, `backend-<milliseconds since 1970>.log`, in the app's log directory (see [Desktop app → Where things are](desktop.md#where-things-are)), and keeps the newest ten; the **Log** panel at the bottom of the window holds the run's messages.
 2. [Open an issue](https://github.com/PEEKPerformer/ResistaMet-GUI/issues/new/choose) with:
     - ResistaMet GUI version (`resistamet-gui --version`)
     - OS + Python version
