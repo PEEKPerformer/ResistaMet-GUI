@@ -313,6 +313,12 @@ def build_metadata(
     ``spot`` is the block a four-point run writes when it is one placement of
     a map (``session.spot_record.SpotRecord.header``). Absent, the header has
     no ``spot`` keys at all.
+
+    ``settings['client']`` (``{'name', 'version'}``) is the program that asked
+    for the run through the API; the session puts it there. It is written as
+    ``client.name`` / ``client.version``; ``software_version`` stays the
+    backend's own. A run started any other way has no such key and its header
+    is unchanged.
     """
     from .constants import __version__
 
@@ -418,6 +424,10 @@ def build_metadata(
 
     if spot:
         meta['spot'] = dict(spot)
+
+    client = settings.get('client')
+    if client:
+        meta['client'] = {'name': client.get('name'), 'version': client.get('version')}
 
     return meta
 
