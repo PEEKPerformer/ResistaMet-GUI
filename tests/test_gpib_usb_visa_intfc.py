@@ -363,6 +363,38 @@ class TestData:
             intf.read()
         assert info.value.error_code == StatusCode.error_timeout
 
+    def test_usb_fault_during_write_is_error_io_and_the_adapter_recovers(self, intf, board):
+        intf.send_command(bytes((UNL, MTA0, LAD24)))
+        board.fail_next = TransportError('pipe stalled')
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            intf.write('*IDN?')
+        assert info.value.error_code == StatusCode.error_io
+        assert board.instruments[24].received == []
+        # The re-attach (IFC) unaddressed the bus; the caller addresses again.
+        intf.send_command(bytes((UNL, MTA0, LAD24)))
+        assert board.control_requests.count(0x41) == 2
+        assert intf.write('*IDN?') == 7
+        assert board.instruments[24].received == [b'*IDN?\r\n']
+
+    def test_usb_fault_during_read_is_error_io(self, intf, board):
+        intf.send_command(bytes((UNL, MTA0, LAD24)))
+        intf.write('*IDN?')
+        intf.send_command(bytes((UNL, MLA0, TAD24)))
+        board.fail_next = TransportError('pipe stalled')
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            intf.read()
+        assert info.value.error_code == StatusCode.error_io
+        assert board.instructions(p.OP_READ) == []  # the fault hit the standby, nothing was read
+
+    def test_termchar_outside_a_byte_is_rejected_before_the_bus_is_touched(self, intf, board):
+        intf.send_command(bytes((UNL, MLA0, TAD24)))
+        before = len(board.messages)
+        session = intf.visalib.sessions[intf.session]
+        session.attrs[constants.ResourceAttribute.termchar_enabled] = True
+        session.attrs[constants.ResourceAttribute.termchar] = 0x100
+        assert session.read(64) == (b'', StatusCode.error_nonsupported_attribute_state)
+        assert len(board.messages) == before
+
     def test_clear_is_a_universal_device_clear(self, intf, board):
         intf.timeout = 300
         board.instruments[24].pending = b'stale'
@@ -398,7 +430,9 @@ class TestAttributes:
 
     def test_ndac_follows_a_listener_once_atn_drops(self, intf, board):
         intf.send_command(bytes((UNL, LAD24)))
-        assert intf.ndac_state == constants.LineState.unasserted  # ATN still true
+        # The fake keeps ATN true after command bytes; §5.3 leaves what the real
+        # adapter does with ATN after a 0x0c uncertain.
+        assert intf.ndac_state == constants.LineState.unasserted
         intf.control_atn(ATN.deassert)
         assert intf.ndac_state == constants.LineState.asserted
         intf.control_atn(ATN.asrt)
