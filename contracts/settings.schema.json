@@ -335,7 +335,7 @@
     },
     "InstrumentSettings": {
       "additionalProperties": true,
-      "description": "Knobs that apply to every mode, wherever the value comes from.\n\n``gpib_address`` and ``visa_library`` are machine-local \u2014 ``ConfigManager``\nkeeps them under ``machines[hostname]`` and injects them into the profile\non read, so they are never stored per user (``config.py``).",
+      "description": "Knobs that apply to every mode, wherever the value comes from.\n\n``gpib_address``, ``visa_library`` and ``gpib_interface`` are machine-local\n\u2014 ``ConfigManager`` keeps them under ``machines[hostname]`` and injects\nthem into the profile on read, so they are never stored per user\n(``config.py``).",
       "properties": {
         "auto_zero": {
           "default": "once",
@@ -372,6 +372,12 @@
           "default": "GPIB0::24::INSTR",
           "minLength": 1,
           "title": "Gpib Address",
+          "type": "string"
+        },
+        "gpib_interface": {
+          "default": "",
+          "description": "Interface resource of a Prologix-style GPIB adapter (Prologix GPIB-USB / GPIB-ETHERNET, AR488), opened before the instrument so that GPIB<board>::<addr>::INSTR resolves; pyvisa-py only. Empty = none. Serial: PRLGX-ASRL[board]::<device>::INTFC, where <device> is the port path on macOS and Linux (PRLGX-ASRL::/dev/cu.usbserial-PX12345::INTFC, PRLGX-ASRL::/dev/ttyUSB0::INTFC) and the COM port number alone on Windows (PRLGX-ASRL::5::INTFC for COM5). Ethernet: PRLGX-TCPIP[board]::<host>[::port]::INTFC, port 1234 by default. [board] defaults to 0 and is the <board> of the instrument address.",
+          "title": "Gpib Interface",
           "type": "string"
         },
         "nplc": {

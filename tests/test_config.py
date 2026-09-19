@@ -431,3 +431,43 @@ class TestMachineLocalVisaLibrary:
 
         other_host = ConfigManager(config_file=temp_config_file, hostname='HOST-B')
         assert other_host.get_user_settings('alice')['measurement']['visa_library'] == ''
+
+
+class TestMachineLocalGpibInterface:
+    """A Prologix adapter hangs off one PC's serial port or one lab's network."""
+
+    NAME = 'PRLGX-ASRL::/dev/cu.usbserial-PX12345::INTFC'
+
+    def test_default_is_none(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        assert manager.get_gpib_interface() == ''
+
+    def test_set_writes_to_machine_slot(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        manager.set_machine_local('gpib_interface', self.NAME)
+
+        with open(temp_config_file) as f:
+            saved = json.load(f)
+        assert saved['machines']['HOST-A']['gpib_interface'] == self.NAME
+        reopened = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        assert reopened.get_gpib_interface() == self.NAME
+
+    def test_empty_means_no_adapter_again(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        manager.set_machine_local('gpib_interface', self.NAME)
+        manager.set_machine_local('gpib_interface', '')
+        assert manager.get_gpib_interface() == ''
+
+    def test_profile_carries_the_machine_interface_not_the_users(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        manager.update_user_settings('alice', {'measurement': {'gpib_interface': self.NAME,
+                                                                'sampling_rate': 50.0}})
+
+        with open(temp_config_file) as f:
+            saved = json.load(f)
+        assert 'gpib_interface' not in saved['user_settings']['alice']['measurement']
+        assert saved['machines']['HOST-A']['gpib_interface'] == self.NAME
+        assert manager.get_user_settings('alice')['measurement']['gpib_interface'] == self.NAME
+
+        other_host = ConfigManager(config_file=temp_config_file, hostname='HOST-B')
+        assert other_host.get_user_settings('alice')['measurement']['gpib_interface'] == ''
