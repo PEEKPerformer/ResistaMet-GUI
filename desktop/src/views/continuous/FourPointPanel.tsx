@@ -7,7 +7,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getSeries } from "../../state/samples";
-import { addSpot, clearSpots, meanSd, removeSpot, useSpots } from "../../state/spots";
+import { addSpot, clearSpots, meanSd, removeSpot, useLegacySpots as useSpots } from "../../state/spots";
 import { useUi } from "../../state/ui";
 import { engineering, formatEngineering, formatPercent } from "../../lib/format";
 import { Button, IconButton, Input, Panel } from "../../components/ui";
