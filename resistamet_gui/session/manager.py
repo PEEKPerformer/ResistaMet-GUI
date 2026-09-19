@@ -29,7 +29,7 @@ from .continuous_run import ContinuousRun
 from .control import RunControl
 from .emitter import EventEmitter
 from .instrument_lock import HeldInstrument, InstrumentBusy, hold_instrument
-from .status import PendingPrompt, SessionStatus
+from .status import InstrumentInfo, PendingPrompt, SessionStatus
 from .vdp_run import VdpRun
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,8 @@ class MeasurementSession:
         self._control: Optional[RunControl] = None
         self._thread: Optional[threading.Thread] = None
         self._last_event_seq = 0
+        #: The instrument as last seen by a run or by identify(); see status().
+        self._instrument: Optional[InstrumentInfo] = None
         self._mode: Optional[str] = None
 
     # --- state ------------------------------------------------------------
@@ -94,6 +96,7 @@ class MeasurementSession:
                 requires_human=prompt.requires_human,
                 detail=dict(prompt.detail),
             ),
+            instrument=self._instrument,
         ).model_dump()
 
     # --- commands ---------------------------------------------------------
@@ -225,7 +228,7 @@ class MeasurementSession:
                     spec = instrument.detect_model()
                 finally:
                     instrument.close()
-            return {
+            found = {
                 'address': address,
                 'idn': idn,
                 'model': spec.model if spec else None,
@@ -233,6 +236,8 @@ class MeasurementSession:
                 'max_source_i': spec.max_source_i if spec else None,
                 'max_power_w': spec.max_power_w if spec else None,
             }
+            self._instrument = InstrumentInfo(**found)
+            return found
         finally:
             with self._lock:
                 self._state = 'idle'
@@ -260,6 +265,10 @@ class MeasurementSession:
 
     def _record(self, event) -> None:
         self._last_event_seq = event.seq
+        if event.type == 'instrument_connected':
+            # Kept for status(): the event itself is gone for a client that
+            # connects, or reloads, after it was sent.
+            self._instrument = InstrumentInfo(**event.payload)
         self._sink(event)
 
     def _require_run(self):
