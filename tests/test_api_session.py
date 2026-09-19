@@ -144,6 +144,21 @@ class TestStart:
     def test_unknown_mode_is_unprocessable(self, client, fake_rm):
         assert _start(client, mode='hall').status_code == 422
 
+    def test_the_body_is_the_exported_contract(self, client):
+        """The desktop's types are generated from RunRequest; a second model
+        here could drift from it without anything failing."""
+        body = client.app.openapi()['paths']['/session/start']['post']['requestBody']
+        assert body['content']['application/json']['schema']['$ref'].endswith('/RunRequest')
+
+    @pytest.mark.parametrize("typo", ['sample', 'override', 'prompt_timeout', 'acknowledge'])
+    def test_a_misspelt_field_fails_loudly(self, client, fake_rm, sink, typo):
+        """It used to be dropped, and the run started without it."""
+        response = _start(client, **{typo: 'x'})
+        assert response.status_code == 422
+        assert [error['loc'] for error in response.json()['detail']] == [['body', typo]]
+        assert sink.events == []
+        assert fake_rm.opened == []
+
 
 class TestCommands:
     def test_stop_returns_to_idle(self, client, fake_rm, sink):
@@ -288,7 +303,7 @@ class TestStartWithASpot:
     def test_only_four_point_may_carry_one(self, client, fake_rm, sink):
         response = _start(client, mode='resistance', spot=self.SPOT)
         assert response.status_code == 422
-        assert 'four_point' in response.json()['detail']
+        assert 'four_point' in str(response.json()['detail'])
         assert sink.events == []
 
 

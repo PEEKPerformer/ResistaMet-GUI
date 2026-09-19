@@ -591,7 +591,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "What a client asks for. Never persisted.\n\n``overrides`` is flat measurement keys, the same shape the tabs produce\ntoday, so one request format serves the UI, a script and the MCP layer.\nStrict validation of the keys happens in the resolver, which knows which\nones the profile owns.",
+      "description": "What a client asks for. Never persisted.\n\nThis is the body ``POST /session/start`` validates, and the model the\ndesktop's request type is generated from; unknown fields are refused so\na misspelt one cannot be silently ignored.\n\n``overrides`` is flat measurement keys, the same shape the tabs produce\ntoday, so one request format serves the UI, a script and the MCP layer.\nStrict validation of the keys happens in the resolver, which knows which\nones the profile owns.",
       "properties": {
         "client": {
           "anyOf": [

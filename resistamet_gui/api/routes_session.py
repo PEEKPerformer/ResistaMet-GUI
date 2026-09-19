@@ -5,30 +5,17 @@ calls the session, and maps the two failure modes: ``SessionBusy`` is 409
 (the instrument is doing something else) and a rejected run request is 422
 (the settings could not be resolved).
 """
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from ..schema.settings_modes import ClientInfo
-from ..schema.spots import SpotRequest
+from ..schema.settings_modes import RunRequest
 from ..session.instrument_lock import InstrumentBusy
 from ..session.manager import MeasurementSession, SessionBusy
 from .app import UI_ROLE, busy_as_conflict, get_session, require_token
 
 router = APIRouter(prefix="/session", tags=["session"])
-
-
-class StartRequest(BaseModel):
-    mode: str
-    sample_name: str = Field(min_length=1)
-    username: str = Field(min_length=1)
-    overrides: Dict[str, Any] = Field(default_factory=dict)
-    prompt_timeout_s: float = Field(default=900.0, gt=0.0)
-    # Four-point only; the session refuses it for any other mode.
-    spot: Optional[SpotRequest] = None
-    # Which program is asking, for the file header. Optional.
-    client: Optional[ClientInfo] = None
 
 
 class AnswerRequest(BaseModel):
@@ -76,9 +63,15 @@ def read_events(request: Request, since_seq: int = 0, run_id: str = "",
 
 
 @router.post("/start", status_code=status.HTTP_202_ACCEPTED)
-def start(body: StartRequest, request: Request,
+def start(body: RunRequest, request: Request,
            session: MeasurementSession = Depends(get_session),
            role: str = Depends(require_token)):
+    """Start a run. The body is the exported ``RunRequest`` contract itself.
+
+    Not a look-alike of it: the desktop's types are generated from that
+    model, and it forbids unknown fields, so a misspelt one is a 422 naming
+    it rather than a run that quietly ignored what the client asked for.
+    """
     profile = request.app.state.api.profile_provider(body.username)
     try:
         run_id = session.start(profile, body.mode, body.sample_name, body.username,
