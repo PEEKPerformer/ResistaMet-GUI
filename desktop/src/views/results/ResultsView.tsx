@@ -6,7 +6,7 @@
 // of what the run was, and so is the block the run wrote when it ended,
 // which is the only place a van der Pauw result or a spot's statistics are.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useApi } from "../../app/AppContext";
 import { ApiError, type ResultFile } from "../../lib/api";
 import { parseResistametCsv, sweepPreview, type ParsedCsv } from "../../lib/csv";
@@ -59,7 +59,13 @@ export function ResultsView() {
 
   useEffect(refresh, [api, onlyMine, ui.username]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Replies can arrive out of order, and a large file is slow. Only the
+  // reply to the latest click may fill the preview, or one file's data is
+  // shown under another file's name.
+  const latestOpen = useRef(0);
+
   const open = (file: ResultFile) => {
+    const request = ++latestOpen.current;
     setSelected(file);
     setParsed(null);
     setError(null);
@@ -67,6 +73,7 @@ export function ResultsView() {
     api
       .resultFile(file.path)
       .then((text) => {
+        if (request !== latestOpen.current) return;
         const result = parseResistametCsv(text);
         setParsed(result);
         // The quantity the run was about, when the file has it.
@@ -76,7 +83,9 @@ export function ResultsView() {
           result.columns.find((c) => c !== "elapsed_s" && c in result.data && !c.includes("unc"));
         setColumn(first ?? null);
       })
-      .catch((e: unknown) => setError(e instanceof ApiError ? e.detail : String(e)));
+      .catch((e: unknown) => {
+        if (request === latestOpen.current) setError(e instanceof ApiError ? e.detail : String(e));
+      });
   };
 
   // A sweep file has no time axis: it is an I-V curve, one trace per leg.
