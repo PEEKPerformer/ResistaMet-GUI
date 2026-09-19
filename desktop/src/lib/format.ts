@@ -106,3 +106,15 @@ export function parseEngineering(text: string): number | null {
   const key = suffix === "M" || suffix === "m" ? suffix : suffix.toLowerCase() === "k" ? "k" : suffix;
   return base * (factor[key] ?? 1);
 }
+
+/** A mean with its uncertainty under one prefix, the mean carried to the
+ *  uncertainty's second significant figure: "5.6512 ± 0.0036 Ω/sq". Without
+ *  a usable uncertainty it is the plain value. */
+export function formatWithUncertainty(mean: number | null | undefined, u: number | null | undefined, unit = ""): string {
+  if (typeof mean !== "number" || !Number.isFinite(mean)) return "—";
+  if (typeof u !== "number" || !Number.isFinite(u) || u <= 0) return formatEngineering(mean, unit);
+  const { scale, prefix } = prefixFor(Math.max(Math.abs(mean), u), unit);
+  const decimals = Math.min(9, Math.max(0, 1 - Math.floor(Math.log10(u / scale))));
+  const suffix = prefix + unit ? ` ${prefix}${unit}` : "";
+  return `${(mean / scale).toFixed(decimals)} ± ${(u / scale).toFixed(decimals)}${suffix}`;
+}
