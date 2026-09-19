@@ -241,10 +241,12 @@ class SerialLineSensor(VisaInstrument):
     def _start_reader(self) -> None:
         """Start the background reader thread (split from open() so tests can
         inject a fake ``dev`` and start the loop without a VISA connect)."""
-        self._stop_evt.clear()
+        # A new event per reader, not clear(): a previous reader that outlived
+        # close() still holds its own, set, and must not be woken by a reopen.
+        self._stop_evt = threading.Event()
         self._reader = threading.Thread(
-            target=self._read_loop, name=f"aux-reader:{self.resource_str}",
-            daemon=True,
+            target=self._read_loop, args=(self._stop_evt,),
+            name=f"aux-reader:{self.resource_str}", daemon=True,
         )
         self._reader.start()
 
@@ -257,33 +259,37 @@ class SerialLineSensor(VisaInstrument):
         Subclasses implement this."""
         raise NotImplementedError
 
-    def _read_loop(self) -> None:
+    def _read_loop(self, stop: threading.Event) -> None:
         """Background thread: consume the stream, cache the newest reading.
 
         A blocking ``dev.read()`` here only ever stalls this thread, never
         a caller of :meth:`read_latest`. :meth:`close` closes the device
         underneath it; whether that ends a read already in progress is up to
         the VISA backend. Where it does not, the read runs out its own
-        timeout and this thread exits then.
+        timeout and this thread exits then, discarding what it read.
         """
-        while not self._stop_evt.is_set():
+        while not stop.is_set():
             dev = self.dev
             if dev is None:
                 return
             try:
                 raw = dev.read()
             except Exception:
-                if self._stop_evt.is_set() or self.dev is None:
+                if stop.is_set() or self.dev is None:
                     return
                 # Timeout / decode hiccup: brief pause so a persistently
                 # failing device can't spin this thread hot.
                 time.sleep(0.005)
                 continue
+            if stop.is_set():
+                return  # closed while reading: this line belongs to nobody
             line = raw.strip() if isinstance(raw, str) else str(raw).strip()
             reading = self.parse_line(line)
             if reading is not None:
                 stamped = replace(reading, timestamp=self._clock())
                 with self._lock:
+                    if stop.is_set():
+                        return  # close() cleared the cache; leave it clear
                     self._latest = (stamped, self._monotonic())
 
     def read_latest(self) -> SensorReading:
