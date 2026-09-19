@@ -9,7 +9,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getSeries } from "../../state/samples";
 import { addSpot, clearSpots, meanSd, removeSpot, useSpots } from "../../state/spots";
 import { useUi } from "../../state/ui";
-import { formatEngineering, formatPercent } from "../../lib/format";
+import { engineering, formatEngineering, formatPercent } from "../../lib/format";
 import { Button, IconButton, Input, Panel } from "../../components/ui";
 import { Icons } from "../../components/icons";
 import styles from "./FourPointPanel.module.css";
@@ -67,11 +67,11 @@ export function FourPointPanel({ running }: { running: boolean }) {
       <Panel title="This spot" className={styles.stats}>
         <div className={styles.statGrid}>
           <Stat label={<Sym>n</Sym>} value={String(stats.n)} />
-          <Stat label={<><Sym>Rs</Sym> mean</>} value={formatEngineering(stats.rs.mean, "Ω/sq")} />
-          <Stat label={<><Sym>Rs</Sym> SD</>} value={formatEngineering(stats.rs.sd, "Ω/sq")} />
+          <Stat label={<><Sym>Rs</Sym> mean</>} {...quantity(stats.rs.mean, "Ω/sq")} />
+          <Stat label={<><Sym>Rs</Sym> SD</>} {...quantity(stats.rs.sd, "Ω/sq")} />
           <Stat label="RSD" value={formatPercent(rsd)} />
-          <Stat label={<><Sym>ρ</Sym> mean</>} value={formatEngineering(stats.rho.mean, "Ω·cm")} />
-          <Stat label={<><Sym>σ</Sym> mean</>} value={formatEngineering(stats.sigma.mean, "S/cm")} />
+          <Stat label={<><Sym>ρ</Sym> mean</>} {...quantity(stats.rho.mean, "Ω·cm")} />
+          <Stat label={<><Sym>σ</Sym> mean</>} {...quantity(stats.sigma.mean, "S/cm")} />
         </div>
         <div className={styles.saveRow}>
           <Input
@@ -152,11 +152,21 @@ function Sym({ children }: { children: ReactNode }) {
   return <span className="sym">{children}</span>;
 }
 
-function Stat({ label, value }: { label: ReactNode; value: string }) {
+/** Number and unit apart, so a narrow cell can put the unit on its own line
+ *  instead of cutting the value short. */
+function quantity(value: number, unit: string): { value: string; unit: string } {
+  const e = engineering(value, unit);
+  return { value: e.mantissa, unit: e.unit };
+}
+
+function Stat({ label, value, unit }: { label: ReactNode; value: string; unit?: string }) {
   return (
     <div className={styles.stat}>
       <span className={styles.statLabel}>{label}</span>
-      <span className={`${styles.statValue} num`}>{value}</span>
+      <span className={`${styles.statValue} num`}>
+        {value}
+        {unit ? <> <span className={styles.statUnit}>{unit}</span></> : null}
+      </span>
     </div>
   );
 }
