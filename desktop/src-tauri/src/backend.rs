@@ -97,10 +97,17 @@ pub struct SpawnOptions {
     /// Explicit config path, so the backend never guesses from its cwd.
     pub config: PathBuf,
     pub simulate: bool,
+    /// Where the backend's stderr goes. `None` inherits the shell's, which is
+    /// the terminal in development; a packaged app has none and passes a file.
+    pub stderr_log: Option<std::fs::File>,
 }
 
+/// Windows `CREATE_NO_WINDOW`: start a console program without a console.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// Start the backend and wait for its handshake.
-pub fn spawn(options: SpawnOptions) -> Result<Backend, String> {
+pub fn spawn(mut options: SpawnOptions) -> Result<Backend, String> {
     let mut command = match &options.launch {
         Launch::Executable(path) => Command::new(path),
         Launch::Interpreter(python) => {
@@ -115,8 +122,23 @@ pub fn spawn(options: SpawnOptions) -> Result<Backend, String> {
         .current_dir(&options.cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        // The backend logs to stderr; let it show in the terminal in dev.
-        .stderr(Stdio::inherit());
+        // The backend logs to stderr.
+        .stderr(match options.stderr_log.take() {
+            Some(file) => Stdio::from(file),
+            None => Stdio::inherit(),
+        });
+    // The frozen backend is a console program, and the release shell is not:
+    // Windows would give the child a console window of its own, and closing
+    // that window kills the backend without its shutdown path, so the run is
+    // not finalized and the source output stays on.
+    // A development shell has a terminal, and the child shares it.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        if !cfg!(debug_assertions) {
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+    }
     if options.simulate {
         command.arg("--simulate");
     }
@@ -198,5 +220,49 @@ impl Backend {
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A stand-in backend: a shell script run the way the sidecar is.
+    fn fake_backend(name: &str, body: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("resistamet-shell-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("resistamet-api");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn options(script: &Path) -> SpawnOptions {
+        let dir = script.parent().unwrap().to_path_buf();
+        SpawnOptions {
+            launch: Launch::Executable(script.to_path_buf()),
+            config: dir.join("config.json"),
+            cwd: dir,
+            simulate: false,
+            stderr_log: None,
+        }
+    }
+
+    const HANDSHAKE: &str = r#"echo '{"url":"http://127.0.0.1:1","token":"t","pid":1}'"#;
+
+    #[test]
+    fn stderr_lands_in_the_log_file() {
+        let script = fake_backend("stderr", &format!("echo 'starting up' >&2\n{HANDSHAKE}\ncat >/dev/null"));
+        let log = script.parent().unwrap().join("backend.log");
+        let mut opts = options(&script);
+        opts.stderr_log = Some(std::fs::File::create(&log).unwrap());
+
+        let backend = spawn(opts).unwrap();
+        backend.shutdown();
+
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "starting up\n");
+        let _ = std::fs::remove_dir_all(script.parent().unwrap());
     }
 }
