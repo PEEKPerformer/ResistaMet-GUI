@@ -36,6 +36,8 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Callable, Optional, Protocol, runtime_checkable
 
+from pyvisa.constants import Parity, StopBits
+
 from .constants import AUX_STALE_AFTER_S
 from .instrument import VisaInstrument
 
@@ -124,6 +126,56 @@ class AuxiliarySensor(Protocol):
     def close(self) -> None: ...
 
 
+_STOP_BITS = {1: StopBits.one, 1.5: StopBits.one_and_a_half, 2: StopBits.two}
+
+
+def serial_session_attributes(baud_rate: Optional[int] = None,
+                              data_bits: Optional[int] = None,
+                              parity: Optional[str] = None,
+                              stop_bits: Optional[float] = None,
+                              termination: Optional[str] = None) -> dict:
+    """Turn serial-line settings into the VISA session attributes to set.
+
+    Only the settings that are given appear in the result, so a link left
+    unconfigured keeps whatever the VISA backend defaults to. ``parity`` is
+    one of none / odd / even / mark / space; ``stop_bits`` is 1, 1.5 or 2;
+    ``termination`` is the character(s) that end a line from the device.
+    Raises ValueError naming the setting that is out of range.
+    """
+    attrs: dict = {}
+    if baud_rate is not None:
+        if isinstance(baud_rate, bool) or not isinstance(baud_rate, int) or baud_rate <= 0:
+            raise ValueError(f"baud_rate must be a positive integer, got {baud_rate!r}")
+        attrs["baud_rate"] = baud_rate
+    if data_bits is not None:
+        if data_bits not in (5, 6, 7, 8):
+            raise ValueError(f"data_bits must be 5, 6, 7 or 8, got {data_bits!r}")
+        attrs["data_bits"] = int(data_bits)
+    if parity is not None:
+        try:
+            attrs["parity"] = (parity if isinstance(parity, Parity)
+                               else Parity[str(parity).strip().lower()])
+        except KeyError:
+            raise ValueError(
+                f"parity must be one of {', '.join(p.name for p in Parity)}, "
+                f"got {parity!r}"
+            ) from None
+    if stop_bits is not None:
+        if isinstance(stop_bits, StopBits):
+            attrs["stop_bits"] = stop_bits
+        elif stop_bits in _STOP_BITS:
+            attrs["stop_bits"] = _STOP_BITS[stop_bits]
+        else:
+            raise ValueError(f"stop_bits must be 1, 1.5 or 2, got {stop_bits!r}")
+    if termination is not None:
+        if not isinstance(termination, str) or not termination:
+            raise ValueError(
+                f"termination must be a non-empty string, got {termination!r}"
+            )
+        attrs["read_termination"] = termination
+    return attrs
+
+
 class SerialLineSensor(VisaInstrument):
     """Reusable base for sensors that *stream* delimited ASCII lines over a
     serial (ASRL) link — the most common lab-bench shape.
@@ -140,13 +192,27 @@ class SerialLineSensor(VisaInstrument):
     * resync — partial / non-conforming lines are skipped by the reader.
 
     The device only streams; nothing here writes to it.
+
+    A native-USB board ignores the line settings. A device behind a real
+    UART does not: pass ``baud_rate`` / ``data_bits`` / ``parity`` /
+    ``stop_bits`` / ``termination`` (see :func:`serial_session_attributes`)
+    and :meth:`open` sets them on the session before the reader starts. Any
+    left out stay at the VISA backend's default.
     """
 
     CHANNELS: list[SensorChannel] = []
 
     def __init__(self, resource: str, timeout_ms: int = 3000,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time, *,
+                 baud_rate: Optional[int] = None,
+                 data_bits: Optional[int] = None,
+                 parity: Optional[str] = None,
+                 stop_bits: Optional[float] = None,
+                 termination: Optional[str] = None):
         super().__init__(resource, timeout_ms)
+        # Validated here so a bad setting fails before any port is opened.
+        self._serial_attrs = serial_session_attributes(
+            baud_rate, data_bits, parity, stop_bits, termination)
         self._clock = clock
         # Injectable for deterministic staleness tests.
         self._monotonic: Callable[[], float] = time.monotonic
@@ -160,6 +226,12 @@ class SerialLineSensor(VisaInstrument):
 
     def open(self) -> "SerialLineSensor":
         self.connect()  # VisaInstrument.connect(): opens dev, sets '\n' terminations
+        try:
+            for name, value in self._serial_attrs.items():
+                setattr(self.dev, name, value)
+        except Exception:
+            self.close()  # do not leave the port held by a half-set session
+            raise
         self._start_reader()
         return self
 
@@ -462,8 +534,8 @@ class StreamSensor(SerialLineSensor):
     """
 
     def __init__(self, resource: str, timeout_ms: int = 3000,
-                 clock: Callable[[], float] = time.time):
-        super().__init__(resource, timeout_ms, clock)
+                 clock: Callable[[], float] = time.time, **serial):
+        super().__init__(resource, timeout_ms, clock, **serial)
         self._channels: list[SensorChannel] = []
 
     def channels(self) -> list[SensorChannel]:
@@ -512,7 +584,13 @@ def available_sensors() -> tuple[str, ...]:
 
 
 def make_sensor(driver: str, address: str, **opts) -> AuxiliarySensor:
-    """Construct (but do not open) a registered sensor driver."""
+    """Construct (but do not open) a registered sensor driver.
+
+    ``opts`` go to the driver's constructor unchanged. The serial drivers
+    here take ``timeout_ms`` and the line settings of
+    :class:`SerialLineSensor`; a driver that is not serial need not accept
+    them, so pass only what was actually configured.
+    """
     try:
         cls = _SENSORS[driver]
     except KeyError:
