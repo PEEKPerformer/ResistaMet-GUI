@@ -287,8 +287,15 @@ class Controller:
 
     def write(self, pad: int, data: bytes, *, sad: Optional[int] = None,
               send_eoi: bool = True, timeout_s: Optional[float],
-              readdress: bool = True) -> int:
-        """Address ``pad`` to listen, then 0x0d in chunks of at most 0xffff (§5.1)."""
+              eos_char: Optional[int] = None, readdress: bool = True) -> int:
+        """Address ``pad`` to listen, then write ``data`` (§5.1, §10.5).
+
+        Writes longer than ``RAW_WRITE_MIN_BYTES`` go as 0x0e instructions
+        with the bytes on the alternate bulk OUT; shorter ones as framed
+        0x0d. ``eos_char`` fills the 0x0e header's ``e`` byte, which NI sets
+        to the session's termination character (§10.5.2); the framed 0x0d
+        keeps its bench-proven 0x00 there.
+        """
         with self._guard():
             self._ensure_attached()
             if not data:
@@ -296,11 +303,11 @@ class Controller:
             code, limit = p.effective_timeout(timeout_s)
             wait = p.host_wait_s(limit, self._infinite_wait_s)
             self._address(_LISTEN, pad, sad, code, wait, readdress)
-            return self._write_instruction(data, code, wait, send_eoi)
+            return self._write_bytes(data, code, limit, send_eoi, eos_char)
 
     def write_raw(self, data: bytes, *, send_eoi: bool = True,
-                  timeout_s: Optional[float]) -> int:
-        """0x0d with the bus as it stands: no addressing (§5.1).
+                  timeout_s: Optional[float], eos_char: Optional[int] = None) -> int:
+        """Write with the bus as it stands: no addressing.
 
         For callers that addressed the bus themselves with command bytes. The
         adapter reports error 3 or 8 when nothing is addressed to listen.
@@ -310,18 +317,55 @@ class Controller:
             if not data:
                 return 0
             code, limit = p.effective_timeout(timeout_s)
-            wait = p.host_wait_s(limit, self._infinite_wait_s)
-            return self._write_instruction(data, code, wait, send_eoi)
+            return self._write_bytes(data, code, limit, send_eoi, eos_char)
 
-    def _write_instruction(self, data: bytes, code: int, wait_s: float, send_eoi: bool) -> int:
+    def _write_bytes(self, data: bytes, code: int, limit: Optional[float], send_eoi: bool,
+                     eos_char: Optional[int]) -> int:
+        """Write instructions of at most 0xffff bytes each, EOI only with the last (§5.1)."""
+        raw = self._model.raw_endpoints and len(data) > RAW_WRITE_MIN_BYTES
+        step = p.MAX_RAW_TRANSFER_BYTES if raw else p.MAX_TRANSFER_BYTES
         written = 0
-        for start in range(0, len(data), p.MAX_TRANSFER_BYTES):
-            chunk = data[start:start + p.MAX_TRANSFER_BYTES]
-            last = start + len(chunk) == len(data)
-            status, _ = self._exchange(p.write_message(chunk, code, send_eoi and last),
-                                       p.STATUS_REPLY_LENGTH, wait_s, 'write')
-            written += status.transferred(len(chunk))
+        for start in range(0, len(data), step):
+            chunk = data[start:start + step]
+            eoi = send_eoi and start + len(chunk) == len(data)
+            if raw:
+                written += self._raw_write_instruction(chunk, code, limit, eoi, eos_char)
+            else:
+                wait = p.host_wait_s(limit, self._infinite_wait_s)
+                status, _ = self._exchange(p.write_message(chunk, code, eoi), p.STATUS_REPLY_LENGTH,
+                                           wait, 'write')
+                written += status.transferred(len(chunk))
         return written
+
+    def _raw_write_instruction(self, chunk: bytes, code: int, limit: Optional[float], send_eoi: bool,
+                               eos_char: Optional[int]) -> int:
+        """One 0x0e (§10.5.2): the header on the primary OUT, the bytes raw on the alternate OUT.
+
+        The device consumes the raw transfer as it writes to the bus (NI's
+        2050 bytes took 0.1 s to be accepted), so that transfer, not only the
+        reply, gets the host wait. What remains buffered when the transfer
+        completes still has to reach the instrument, so the reply gets the
+        same wait.
+        """
+        message = p.write_raw_message(len(chunk), code, send_eoi, eos_char)
+        wait_s = p.host_wait_s(limit, self._infinite_wait_s) + len(chunk) / RAW_TRANSFER_MIN_RATE_BPS
+        self._host_stopped = False
+        self._transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
+        try:
+            self._transport.bulk_out_raw(chunk, int(wait_s * 1000))
+            reply_wait = wait_s
+        except TransportTimeout:
+            # The instrument stopped accepting (or nothing listens and the
+            # device did not take the bytes); §5.11 makes the device finish.
+            self._host_stopped = True
+            self._control(t.STOP_REQUEST)
+            reply_wait = RECOVERY_WAIT_S
+        reply = self._reply_or_stop(p.RAW_REPLY_BUFFER, reply_wait)
+        parsed = p.parse_raw_write_reply(reply)
+        if parsed.status.id != p.OP_WRITE_RAW:
+            raise ProtocolError('write: reply id 0x%02x, expected 0x0e: %s' % (parsed.status.id, reply.hex()))
+        self._raise_for_error(parsed.status, 'write')
+        return parsed.transferred(len(chunk))
 
     def read(self, pad: int, *, sad: Optional[int] = None, max_bytes: int,
              timeout_s: Optional[float], eos: Optional[int] = None,
@@ -441,18 +485,7 @@ class Controller:
                 # established (a timed-out one does, with zero bytes). The
                 # reply's count decides whether anything was lost.
                 data = b''
-        try:
-            reply = self._transport.bulk_in(p.RAW_REPLY_BUFFER, int(reply_wait * 1000))
-        except TransportTimeout:
-            if self._host_stopped:
-                raise NoReply('adapter did not answer after a stop request')
-            self._host_stopped = True
-            self._control(t.STOP_REQUEST)
-            try:
-                reply = self._transport.bulk_in(p.RAW_REPLY_BUFFER, int(RECOVERY_WAIT_S * 1000))
-            except TransportTimeout as exc:
-                raise NoReply('adapter did not answer after a stop request') from exc
-        return data, reply
+        return data, self._reply_or_stop(p.RAW_REPLY_BUFFER, reply_wait)
 
     def command(self, command_bytes: bytes,
                 timeout_s: Optional[float] = DEFAULT_TIMEOUT_S) -> int:
@@ -571,16 +604,25 @@ class Controller:
         """One message out, its one reply in (§3.1); stop and collect on a host timeout."""
         self._host_stopped = False
         self._transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
+        return self._reply_or_stop(reply_length, wait_s)
+
+    def _reply_or_stop(self, reply_length: int, wait_s: float) -> bytes:
+        """The reply on the primary IN; on a host timeout, §5.11: stop the device and collect.
+
+        After a stop request already sent for this exchange the wait is the
+        recovery wait, and a second miss is ``NoReply``.
+        """
         try:
             return self._transport.bulk_in(reply_length, int(wait_s * 1000))
-        except TransportTimeout:
-            # §5.11: the device still owes the reply; make it finish now.
+        except TransportTimeout as exc:
+            if self._host_stopped:
+                raise NoReply('adapter did not answer after a stop request') from exc
             self._host_stopped = True
             self._control(t.STOP_REQUEST)
             try:
                 return self._transport.bulk_in(reply_length, int(RECOVERY_WAIT_S * 1000))
-            except TransportTimeout as exc:
-                raise NoReply('adapter did not answer after a stop request') from exc
+            except TransportTimeout as exc2:
+                raise NoReply('adapter did not answer after a stop request') from exc2
 
     def _exchange(self, message: bytes, reply_length: int, wait_s: float, operation: str,
                   tolerate: Sequence[int] = ()) -> Tuple[StatusBlock, bytes]:

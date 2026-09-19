@@ -77,6 +77,9 @@ class SimulatedAdapter:
         self.reply = b''
         #: What the next bulk_in_raw returns (the data of a 0x0b), None when none is owed.
         self.raw_reply: Optional[bytes] = None
+        #: (length, EOI) of the 0x0e whose bytes the next bulk_out_raw must bring.
+        self.pending_raw_write: Optional[Tuple[int, bool]] = None
+        self.raw_writes: List[bytes] = []
         self.messages: List[bytes] = []
         self.control_requests: List[int] = []
         self.bulk_in_timeouts: List[int] = []
@@ -144,6 +147,9 @@ class SimulatedAdapter:
             self.reply = self._read(data)
         elif opcode == p.OP_READ_RAW:
             self.reply = self._read_raw(data)
+        elif opcode == p.OP_WRITE_RAW:
+            # §10.5.2: the header now, the bytes on the alternate OUT next; the reply after those.
+            self.pending_raw_write = (-int.from_bytes(data[8:12], 'little', signed=True), bool(data[6] & 0x08))
         else:
             raise AssertionError('unexpected opcode 0x%02x' % opcode)
 
@@ -185,6 +191,15 @@ class SimulatedAdapter:
         for pad in self.listening:
             self.instruments[pad].accept(payload, bool(data[6] & 0x08))
         return self._status(p.OP_WRITE) + h('04 00 00 00')
+
+    def _write_raw(self, payload: bytes, eoi: bool) -> bytes:
+        """The 0x0e reply once the bytes have arrived: an 8-byte status with a 32-bit count."""
+        if not self.listening:
+            count = (-len(payload)).to_bytes(4, 'little', signed=True)
+            return bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x08)) + count + h('04 00 00 00')
+        for pad in self.listening:
+            self.instruments[pad].accept(payload, eoi)
+        return bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x00)) + h('00 00 00 00') + h('04 00 00 00')
 
     def _talker_output(self, requested: int, eos_mode: int, eos_char: int) -> Optional[Tuple[bytes, bool]]:
         """What the addressed talker gives up for one read: (bytes, END), or None when nothing is pending."""
@@ -246,7 +261,12 @@ class SimulatedAdapter:
     # The alternate pair and the interrupt endpoint; behaviour is added with the
     # instructions that use them.
     def bulk_out_raw(self, data: bytes, timeout_ms: int) -> None:
-        raise AssertionError('unexpected raw bulk OUT of %d bytes' % len(data))
+        assert self.pending_raw_write is not None, 'raw bulk OUT with no 0x0e outstanding'
+        length, eoi = self.pending_raw_write
+        assert len(data) == length, 'the 0x0e announced %d bytes, %d arrived' % (length, len(data))
+        self.pending_raw_write = None
+        self.raw_writes.append(data)
+        self.reply = self._write_raw(data, eoi)
 
     def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
         self.raw_in_timeouts.append(timeout_ms)
@@ -432,6 +452,24 @@ class TestInstrumentSession:
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30'
         read = adapter.instructions(p.OP_READ_RAW)[-1]
         assert read[1:3] == h('14 0a')
+        inst.close()
+
+    def test_a_long_write_goes_raw_with_the_termination_character_in_the_header(self, rm, adapter):
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 20000
+        inst.write('*CLS;' * 409 + '*CL')  # 2048 + '\r\n' = 2050 bytes, as longwrite.pcap
+        assert adapter.instructions(p.OP_WRITE) == []
+        header = adapter.instructions(p.OP_WRITE_RAW)[-1]
+        assert header == h('0e 00 00 fe 00 0a 08 00 fe f7 ff ff 04 00 00 00')
+        assert adapter.raw_writes[-1] == b'*CLS;' * 409 + b'*CL\r\n'
+        assert adapter.instruments[24].received[-1] == adapter.raw_writes[-1]
+        inst.close()
+
+    def test_a_long_write_to_an_empty_address_reports_no_listeners(self, rm, adapter):
+        inst = rm.open_resource('GPIB0::5::INSTR')
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            inst.write('x' * 3000)
+        assert info.value.error_code == StatusCode.error_no_listeners
         inst.close()
 
     def test_a_small_chunk_size_reads_through_the_framed_instruction(self, rm, adapter):

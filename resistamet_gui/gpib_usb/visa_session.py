@@ -184,6 +184,11 @@ class NiUsbGpibSession(Session):
         """The addressed device, for the REN modes that need one. None for an interface."""
         return None
 
+    def _termchar_byte(self) -> Optional[int]:
+        """VI_ATTR_TERMCHAR as a byte, for the instructions NI fills it into (§10.1.6, §10.5.2)."""
+        termchar, _ = self.get_attribute(ResourceAttribute.termchar)
+        return termchar if isinstance(termchar, int) and 0 <= termchar <= 0xFF else None
+
     def _label(self) -> str:
         return 'GPIB%s' % self.parsed.board
 
@@ -312,7 +317,7 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
         send_end, _ = self.get_attribute(ResourceAttribute.send_end_enabled)
         try:
             written = controller.write(self._pad, data, sad=self._sad, send_eoi=bool(send_end),
-                                       timeout_s=self._device_timeout(),
+                                       timeout_s=self._device_timeout(), eos_char=self._termchar_byte(),
                                        readdress=self._readdress())
         except (GpibError, TransportError) as exc:
             logger.debug('%s write: %s', self._label(), exc)
