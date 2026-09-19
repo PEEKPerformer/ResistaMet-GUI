@@ -136,9 +136,9 @@ export interface FigureLayout {
   placed: { spot: MapSpot; at: Point }[];
 }
 
-export const FIGURE_WIDTH = 720;
-export const FIGURE_HEIGHT = 500;
-const MAP_BOX: Box = { x: 16, y: 56, width: 584, height: 400 };
+export const FIGURE_WIDTH = 640;
+export const FIGURE_HEIGHT = 460;
+const MAP_BOX: Box = { x: 16, y: 56, width: 504, height: 360 };
 const MARKER_RADIUS = 7;
 const BAR = { x: MAP_BOX.x + MAP_BOX.width + 24, y: MAP_BOX.y + 28, width: 14, height: MAP_BOX.height - 56 };
 const BAR_STRIPS = 64;
@@ -197,10 +197,10 @@ export function layoutFigure(model: FigureModel): FigureLayout {
   const placed = drawn.map((spot) => ({ spot, at: toFigure(view, { x: spot.x_mm!, y: spot.y_mm! }) }));
 
   if (model.cells && placed.length > 1) {
-    if (outline.shape === "circle") clips.push({ id: "sample", kind: "circle", cx: origin.x, cy: origin.y, r: half!.x * view.pxPerMm });
+    if (outline.shape === "circle") clips.push({ id: "map-sample", kind: "circle", cx: origin.x, cy: origin.y, r: half!.x * view.pxPerMm });
     else if (outline.shape === "rectangle") {
       clips.push({
-        id: "sample",
+        id: "map-sample",
         kind: "rect",
         x: origin.x - half!.x * view.pxPerMm,
         y: origin.y - half!.y * view.pxPerMm,
@@ -222,7 +222,7 @@ export function layoutFigure(model: FigureModel): FigureLayout {
         points: cell.map((p) => [p.x, p.y]),
         fill: scale.color(spotValue(placed[i]!.spot, model.quantity)),
         opacity: overPhoto ? 0.5 : 0.85,
-        clip: half ? "sample" : "map-box",
+        clip: half ? "map-sample" : "map-box",
       });
     });
   }
