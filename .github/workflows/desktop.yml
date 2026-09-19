@@ -101,35 +101,95 @@ jobs:
         # bundle.resources picks it up.
         run: pyinstaller resistamet-api.spec --noconfirm --clean --distpath desktop/sidecar
 
-      - name: Smoke-test the frozen backend (handshake, /health, WebSocket upgrade)
+      - name: Smoke-test the frozen backend (handshake, /health, WebSocket upgrade, a CSV and an HDF5 run)
         shell: python
         run: |
-          import http.client, json, subprocess, sys, time, urllib.request, os
+          import http.client, json, os, subprocess, sys, tempfile, time, urllib.request
           from urllib.parse import urlsplit
-          exe = os.path.join("desktop", "sidecar", "resistamet-api",
-                             "resistamet-api.exe" if os.name == "nt" else "resistamet-api")
-          proc = subprocess.Popen([exe, "--port", "0", "--simulate", "--config", "ci-config.json"],
-                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-          line = proc.stdout.readline()
-          print("handshake:", line.strip())
-          info = json.loads(line)
-          with urllib.request.urlopen(info["url"] + "/health", timeout=10) as r:
-              assert r.status == 200, r.status
-          # The desktop UI lives on this socket. uvicorn answers 404 here when
-          # its WebSocket implementation did not make it into the bundle.
-          parts = urlsplit(info["url"])
-          conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
-          conn.request("GET", "/session/events/ws?token=" + info["token"], headers={
-              "Connection": "Upgrade", "Upgrade": "websocket",
-              "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
-          })
-          status = conn.getresponse().status
-          conn.close()
-          print("websocket upgrade:", status)
-          assert status == 101, f"WebSocket upgrade answered {status}, not 101"
-          proc.stdin.close()
-          proc.wait(timeout=60)
-          print("backend exited", proc.returncode)
+          exe = os.path.abspath(os.path.join(
+              "desktop", "sidecar", "resistamet-api",
+              "resistamet-api.exe" if os.name == "nt" else "resistamet-api"))
+          # A directory of its own: the runs below write their data files under
+          # the backend's working directory.
+          work = tempfile.mkdtemp(prefix="resistamet-smoke-")
+          proc = subprocess.Popen([exe, "--port", "0", "--simulate",
+                                   "--config", os.path.join(work, "ci-config.json")],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, cwd=work)
+
+          def call(method, path, body=None):
+              request = urllib.request.Request(
+                  info["url"] + path, method=method,
+                  data=None if body is None else json.dumps(body).encode(),
+                  headers={"Authorization": "Bearer " + info["token"],
+                           "Content-Type": "application/json"})
+              with urllib.request.urlopen(request, timeout=15) as reply:
+                  return json.loads(reply.read() or b"null")
+
+          def run_once(label):
+              """A short simulated resistance run: start, a few samples, stop.
+
+              PyInstaller only warns about a hidden import it cannot find, so
+              what a run imports late (the simulator, the exporters, h5py) is
+              proven by running one. Returns the finalized file's path.
+              """
+              run_id = call("POST", "/session/start", {
+                  "mode": "resistance", "sample_name": "smoke-" + label, "username": "ci",
+                  "overrides": {"res_test_current": 1e-3, "res_voltage_compliance": 5.0},
+              })["run_id"]
+              stopped, deadline = False, time.time() + 60
+              while time.time() < deadline:
+                  events = call("GET", f"/session/events?run_id={run_id}&limit=500")["events"]
+                  kinds = [event["type"] for event in events]
+                  if not stopped and kinds.count("sample") >= 3:
+                      call("POST", "/session/stop")
+                      stopped = True
+                  if "run_ended" in kinds:
+                      break
+                  time.sleep(0.2)
+              errors = [event for event in events if event["type"] == "error"]
+              assert not errors, f"{label}: the run reported {errors}"
+              finalized = [event for event in events if event["type"] == "file_finalized"]
+              assert finalized, f"{label}: no file_finalized among {sorted(set(kinds))}"
+              path = os.path.join(work, finalized[-1]["payload"]["path"])
+              print(f"{label}: {kinds.count('sample')} samples, finalized {path}")
+              return path
+
+          try:
+              line = proc.stdout.readline()
+              print("handshake:", line.strip())
+              info = json.loads(line)
+              with urllib.request.urlopen(info["url"] + "/health", timeout=10) as r:
+                  assert r.status == 200, r.status
+              # The desktop UI lives on this socket. uvicorn answers 404 here when
+              # its WebSocket implementation did not make it into the bundle.
+              parts = urlsplit(info["url"])
+              conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
+              conn.request("GET", "/session/events/ws?token=" + info["token"], headers={
+                  "Connection": "Upgrade", "Upgrade": "websocket",
+                  "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+              })
+              status = conn.getresponse().status
+              conn.close()
+              print("websocket upgrade:", status)
+              assert status == 101, f"WebSocket upgrade answered {status}, not 101"
+
+              call("POST", "/users", {"username": "ci"})
+              marker = "# --- run completed ---"
+              with open(run_once("csv"), encoding="utf-8", errors="replace") as handle:
+                  text = handle.read()
+              assert marker in text, "the CSV has no footer:\n" + text[-400:]
+              assert "ended_at" in text.split(marker)[-1], text[-400:]
+
+              # h5py is in requirements.txt and named in the spec; this is the
+              # only place a bundle built without it is found out.
+              call("PATCH", "/profiles/ci", {"output": {"format": "hdf5"}})
+              path = run_once("hdf5")
+              with open(path, "rb") as handle:
+                  assert handle.read(8) == b"\x89HDF\r\n\x1a\n", f"{path} is not an HDF5 file"
+          finally:
+              proc.stdin.close()
+              proc.wait(timeout=60)
+              print("backend exited", proc.returncode)
 
       - name: The frozen backend can load its VISA stack
         # A frozen app has no Homebrew or apt path to find libusb on, so the
