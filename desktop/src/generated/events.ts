@@ -251,6 +251,51 @@ export interface DerivedPayload {
 }
 
 /**
+ * A four-point run's file is closed; these are the numbers in its footer.
+ *
+ * Emitted for every four-point run whose file was finalized, so a client
+ * shows the backend's statistics instead of computing its own. ``spot`` is
+ * null for a run that was not given one. How the run ended is in the
+ * ``run_ended`` event that follows.
+ */
+export interface SpotCompletePayload {
+  path?: string | null;
+  spot?: SpotRequest | null;
+  stats: SpotStats;
+}
+/**
+ * One placement of the probe, as the client describes it.
+ *
+ * The position is optional -- a spot can be a label and nothing more -- but
+ * ``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the
+ * direction of the probe array, anticlockwise from +x; absent, the run uses
+ * the ``fpp_array_angle_deg`` setting.
+ */
+export interface SpotStats {
+  n: number;
+  n_excluded?: number;
+  rho: QuantityStats;
+  rs: QuantityStats;
+  sigma: QuantityStats;
+}
+/**
+ * One derived quantity over a spot's samples (``session.spot_stats``).
+ *
+ * ``n`` counts the finite values. Every other field is null on the wire when
+ * it does not exist: all of them with no finite value, ``sd`` and
+ * ``rsd_pct`` with fewer than two.
+ */
+export interface QuantityStats {
+  mean?: number | null;
+  n: number;
+  rsd_pct?: number | null;
+  sd?: number | null;
+  u_inst?: number | null;
+  u_stat?: number | null;
+  u_total?: number | null;
+}
+
+/**
  * Paused, resumed or stopping, as observed by the acquisition thread.
  */
 export interface SweepSegmentPayload {
@@ -323,6 +368,7 @@ export interface EventPayloadMap {
   run_ended: RunEndedPayload;
   run_started: RunStartedPayload;
   sample: SamplePayload;
+  spot_complete: SpotCompletePayload;
   stopping: RunStatePayload;
   sweep_segment: SweepSegmentPayload;
   vdp_geometry_complete: VdpGeometryCompletePayload;

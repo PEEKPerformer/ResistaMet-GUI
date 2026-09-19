@@ -96,7 +96,7 @@ def spot_statistics(samples: SpotSamples, model: str = "2400",
 
     ``n`` is the number of samples that entered the statistics and
     ``n_excluded`` the number left out for being in compliance; each
-    quantity's own ``n`` can be smaller still, because a resistivity is NaN
+    quantity's own ``n`` can be smaller still, because a conductivity is NaN
     when no thickness was entered.
     """
     stats: Dict[str, Any] = {'n': len(samples), 'n_excluded': samples.excluded}
