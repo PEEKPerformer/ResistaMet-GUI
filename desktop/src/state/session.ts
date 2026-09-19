@@ -82,7 +82,14 @@ export function useSession(): SessionSnapshot {
 }
 
 export function setStatus(status: SessionStatus): void {
-  publish({ ...snapshot, status, backendReachable: true });
+  // After a reload the events that named the instrument are gone; the backend
+  // remembers the last one it saw. Only fills a gap: a live event or an
+  // Identify is newer than any status that was in flight.
+  const instrument =
+    snapshot.instrument === null && status.instrument !== null
+      ? instrumentState(status.instrument)
+      : snapshot.instrument;
+  publish({ ...snapshot, status, instrument, backendReachable: true });
 }
 
 export function setBackendReachable(reachable: boolean): void {
@@ -100,17 +107,18 @@ export function setGap(gap: boolean): void {
 /** An Identify from the settings dialog is as good a sighting of the
  *  instrument as a run connecting to it, and the header badge shows either. */
 export function setIdentifiedInstrument(info: InstrumentInfo): void {
-  publish({
-    ...snapshot,
-    instrument: {
-      address: info.address,
-      idn: info.idn,
-      model: info.model ?? "?",
-      maxSourceV: info.max_source_v,
-      maxSourceI: info.max_source_i,
-      maxPowerW: info.max_power_w,
-    },
-  });
+  publish({ ...snapshot, instrument: instrumentState(info) });
+}
+
+function instrumentState(info: InstrumentInfo): InstrumentState {
+  return {
+    address: info.address,
+    idn: info.idn,
+    model: info.model ?? "?",
+    maxSourceV: info.max_source_v,
+    maxSourceI: info.max_source_i,
+    maxPowerW: info.max_power_w,
+  };
 }
 
 function appendLog(line: LogLine): LogLine[] {
