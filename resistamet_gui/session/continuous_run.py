@@ -393,6 +393,23 @@ class ContinuousRun:
     def _spot_refused(self) -> bool:
         """Resolve this run's spot against the sample. True = do not start.
 
+        This runs after run_started and outside execute()'s main try, with the
+        instrument lock held. Whatever goes wrong in it -- a settings value of
+        the wrong type, arithmetic that overflows, a payload the event model
+        rejects -- must come out as a refusal, because the caller's refusal
+        path is what releases the lock and emits the run_ended every run is
+        promised. A spot that cannot be checked is a spot that cannot be
+        recorded.
+        """
+        try:
+            return self._check_spot()
+        except Exception as exc:
+            self._events.error('spot_invalid', 'run', f"The spot cannot be recorded: {exc}")
+            return True
+
+    def _check_spot(self) -> bool:
+        """The spot check itself. True = refused; may raise.
+
         Pure arithmetic on the settings, done before the instrument is opened,
         so a probe that is not on the sample never gets an output turned on
         under it. A spot near an edge is a warning, not a refusal: the
@@ -401,11 +418,7 @@ class ContinuousRun:
         """
         if self.mode != 'four_point':
             return False
-        try:
-            self._spot_record = spot_record_from_settings(self.settings)
-        except ValueError as exc:
-            self._events.error('spot_invalid', 'run', f"The spot cannot be recorded: {exc}")
-            return True
+        self._spot_record = spot_record_from_settings(self.settings)
         record = self._spot_record
         if record is None or record.position is None:
             return False
