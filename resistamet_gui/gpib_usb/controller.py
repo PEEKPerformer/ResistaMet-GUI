@@ -35,8 +35,10 @@ without the alternate pair. The raw paths were written from the captures
 alone and have not run against an adapter of ours yet.
 
 Bench notes (GPIB-USB-HS 01CEE482, Keithley 2400 at PAD 3, 2026-09-18): the
-attach sequence, addressing, write, read, serial poll and the presence probe
-all work as written. Instruments need a moment after IFC and REN before the
+attach sequence, addressing, the framed write and read and the presence
+probe all work as written. The serial poll that ran that day was the
+IEEE-488.1 command sequence of §5.9; the 0x10 instruction has since replaced
+it and has not run on hardware. Instruments need a moment after IFC and REN before the
 first addressed command (``IFC_SETTLE_S``); without it the 2400 silently
 dropped the first query after a close-then-attach, and the adapter hung once
 under the backend at exactly that point. The read reply's trailer is 16 bytes, not the 28 the
