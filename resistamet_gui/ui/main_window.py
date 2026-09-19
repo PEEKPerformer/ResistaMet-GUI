@@ -32,7 +32,7 @@ from ..workers import MeasurementWorker, VdpMeasurementWorker
 from .canvas import HistogramCanvas, IVCanvas, PgLiveCanvas
 from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, VdpSampleDiagram, VdpProtocolFilmstrip, VdpPerGeometryBarChart, format_engineering, format_readout_html, format_with_uncertainty, precision_for_nplc
 from .dialogs import SettingsDialog, UserSelectionDialog
-from .visa_helpers import configured_resource_manager
+from .visa_helpers import configured_resource_manager, query_idn
 
 
 class ResistanceMeterApp(QMainWindow):
@@ -3493,12 +3493,8 @@ class ResistanceMeterApp(QMainWindow):
         addr = self.user_settings['measurement']['gpib_address']
         self.statusBar().showMessage(f"Testing connection to {addr}...")
         try:
-            rm = configured_resource_manager(self.config_manager)
-            resources = rm.list_resources()
-            if addr not in resources:
-                # Do not rm.close(): the ResourceManager is a process-wide
-                # cached singleton; closing it would sever every live VISA
-                # session (e.g. the aux-sensor preview).
+            idn, resources = query_idn(self.config_manager, addr)
+            if idn is None:
                 available = ', '.join(resources) if resources else 'none'
                 QMessageBox.warning(
                     self, "Connection Failed",
@@ -3509,16 +3505,6 @@ class ResistanceMeterApp(QMainWindow):
                 )
                 self.statusBar().showMessage("Connection failed", 5000)
                 return
-            dev = rm.open_resource(addr)
-            dev.timeout = 5000
-            try:
-                dev.read_termination = '\n'
-                dev.write_termination = '\n'
-            except Exception:
-                pass
-            idn = dev.query("*IDN?").strip()
-            dev.close()
-            # No rm.close() — see membership-check comment above.
             QMessageBox.information(self, "Connection OK", f"Connected to:\n{idn}")
             self.log_status(f"Connection test OK: {idn}", color="darkGreen")
             self.statusBar().showMessage(f"Connected: {idn}", 5000)
