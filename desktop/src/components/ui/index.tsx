@@ -48,19 +48,22 @@ interface FieldProps {
   label: ReactNode;
   hint?: ReactNode | undefined;
   error?: ReactNode | undefined;
+  /** Something the backend wants said that does not stop the run. */
+  warning?: ReactNode | undefined;
   stacked?: boolean | undefined;
   children: ReactNode;
 }
 
 /** Label on the left, control on the right — the dense form layout an
  *  instrument panel wants. `stacked` puts the label above for wide controls. */
-export function Field({ label, hint, error, stacked = false, children }: FieldProps) {
+export function Field({ label, hint, error, warning, stacked = false, children }: FieldProps) {
   return (
     <label className={styles.field} data-stacked={stacked}>
       <span className={styles.fieldLabel}>{label}</span>
       {children}
       {hint ? <span className={styles.fieldHint}>{hint}</span> : null}
       {error ? <span className={styles.fieldError}>{error}</span> : null}
+      {warning ? <span className={styles.fieldWarning}>{warning}</span> : null}
     </label>
   );
 }
@@ -157,14 +160,23 @@ export function Dialog({ title, onClose, footer, size = "md", dismissable = true
   const titleId = useId();
   const ref = useRef<HTMLDivElement>(null);
 
+  // A parent hands over a new onClose on every render, and the workspace
+  // renders on every status poll. The latest one is kept here so that taking
+  // focus happens once, when the dialog opens, and never again under the
+  // operator's cursor.
+  const latest = useRef({ dismissable, onClose });
+  useEffect(() => {
+    latest.current = { dismissable, onClose };
+  });
+
   useEffect(() => {
     ref.current?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && dismissable) onClose?.();
+      if (e.key === "Escape" && latest.current.dismissable) latest.current.onClose?.();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dismissable, onClose]);
+  }, []);
 
   return (
     <div

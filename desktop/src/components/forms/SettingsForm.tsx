@@ -31,6 +31,7 @@ export function SettingsForm({ mode, groups, values, onChange, issues = [], disa
         <div key={group.title}>
           <SectionTitle>{group.title}</SectionTitle>
           {group.fields.map((spec) => {
+            if (spec.showWhen && !spec.showWhen.in.includes(values[spec.showWhen.key] ?? meta[spec.showWhen.key]?.default)) return null;
             const overridden = spec.overriddenBy !== undefined && values[spec.overriddenBy.key] === spec.overriddenBy.when;
             return (
               <FieldRow
@@ -59,12 +60,16 @@ interface RowProps {
   disabled: boolean;
 }
 
-export function FieldRow({ spec, meta, value, onChange, issue, disabled }: RowProps) {
+export function FieldRow({ spec, meta, value, onChange, issue: reported, disabled }: RowProps) {
+  // An error marks the field invalid; a warning is said under it and the
+  // field stays as it is, because the run is allowed.
+  const issue = reported?.severity === "warning" ? undefined : reported;
   const error = issue ? issue.message : undefined;
+  const warning = reported?.severity === "warning" ? reported.message : undefined;
 
   if (meta.enum) {
     return (
-      <Field label={spec.label} hint={spec.hint} error={error}>
+      <Field label={spec.label} hint={spec.hint} error={error} warning={warning}>
         <Select value={String(value ?? meta.default ?? "")} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
           {meta.enum.map((option) => (
             <option key={String(option)} value={String(option)}>
@@ -78,7 +83,7 @@ export function FieldRow({ spec, meta, value, onChange, issue, disabled }: RowPr
 
   if (meta.type === "boolean") {
     return (
-      <Field label={spec.label} hint={spec.hint} error={error}>
+      <Field label={spec.label} hint={spec.hint} error={error} warning={warning}>
         <Toggle checked={Boolean(value ?? meta.default)} disabled={disabled} onChange={onChange} label={spec.label} />
       </Field>
     );
@@ -88,7 +93,7 @@ export function FieldRow({ spec, meta, value, onChange, issue, disabled }: RowPr
     // Free text: an address, a driver name, a directory. Never the numeric
     // input, whose formatter would throw on a string mid-render.
     return (
-      <Field label={spec.label} hint={spec.hint} error={error} stacked>
+      <Field label={spec.label} hint={spec.hint} error={error} warning={warning} stacked>
         <Input
           className="mono"
           value={typeof value === "string" ? value : String(meta.default ?? "")}
@@ -104,7 +109,7 @@ export function FieldRow({ spec, meta, value, onChange, issue, disabled }: RowPr
     // Counts are counts: no prefixes, no decimals.
     const current = typeof value === "number" ? value : ((meta.default as number | undefined) ?? 0);
     return (
-      <Field label={spec.label} hint={spec.hint} error={error}>
+      <Field label={spec.label} hint={spec.hint} error={error} warning={warning}>
         <Input
           type="number"
           inputMode="numeric"
@@ -128,7 +133,7 @@ export function FieldRow({ spec, meta, value, onChange, issue, disabled }: RowPr
   const numeric = typeof value === "number" && Number.isFinite(value) ? value : null;
   const lower = meta.exclusiveMin !== undefined ? meta.exclusiveMin + Number.EPSILON : meta.min;
   return (
-    <Field label={spec.label} hint={spec.hint} error={error}>
+    <Field label={spec.label} hint={spec.hint} error={error} warning={warning}>
       <EngineeringInput
         value={numeric ?? (meta.nullable ? null : ((meta.default as number | undefined) ?? 0))}
         min={lower}
