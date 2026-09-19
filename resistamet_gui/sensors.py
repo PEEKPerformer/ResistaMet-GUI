@@ -94,6 +94,19 @@ class SensorReading:
     def ok(self) -> bool:
         return all(v == 0 for v in self.flags.values())
 
+    def age_s(self, now: float) -> float:
+        """Seconds between this reading and ``now``.
+
+        ``read_latest`` hands back the newest cached reading for as long as
+        it is younger than ``AUX_STALE_AFTER_S``, so a row can carry a value
+        several seconds older than the measurement beside it. This is how a
+        caller finds out how old. ``now`` must come from the clock that
+        stamped the reading: the driver's ``clock`` argument, ``time.time``
+        unless one was injected. Never negative: a clock stepped backwards
+        reads as zero.
+        """
+        return max(0.0, now - self.timestamp)
+
 
 @runtime_checkable
 class AuxiliarySensor(Protocol):
