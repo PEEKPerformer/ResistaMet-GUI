@@ -7,6 +7,7 @@ during enumeration is disposed, that the interface is claimed and released,
 and that USB errors become the transport's own exceptions.
 """
 import array
+import errno
 import sys
 import types
 from typing import Any, Dict, List, Optional
@@ -16,7 +17,8 @@ import pytest
 import resistamet_gui.gpib_usb as gpib_usb
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb import transport
-from resistamet_gui.gpib_usb.transport import AdapterInfo, PyUsbTransport, TransportError, TransportTimeout
+from resistamet_gui.gpib_usb.transport import (AdapterInfo, PyUsbTransport, TransportError, TransportStall,
+                                                TransportTimeout)
 
 
 class FakeEndpoint:
@@ -60,6 +62,9 @@ class FakeDevice:
         self.next_read: Any = b''
         self.ctrl_reply: bytes = b'\x40' + bytes(15)
         self.write_returns: Optional[int] = None
+        self.write_error: Optional[Exception] = None
+        self.halts_cleared: List[int] = []
+        self.clear_halt_error: Optional[Exception] = None
         self.raw_packet = 512
 
     @property
@@ -91,7 +96,14 @@ class FakeDevice:
 
     def write(self, endpoint, data, timeout):
         self.writes.append((endpoint, bytes(data), timeout))
+        if self.write_error is not None:
+            raise self.write_error
         return len(data) if self.write_returns is None else self.write_returns
+
+    def clear_halt(self, endpoint):
+        self.halts_cleared.append(endpoint)
+        if self.clear_halt_error is not None:
+            raise self.clear_halt_error
 
     def read(self, endpoint, length, timeout):
         self.reads.append((endpoint, length, timeout))
@@ -112,7 +124,11 @@ def install_fake_usb(monkeypatch, devices: List[FakeDevice], backend: Any = 'bac
     libusb1 = types.ModuleType('usb.backend.libusb1')
 
     class USBError(IOError):
-        pass
+        """pyusb's signature: the backend's code in ``backend_error_code``, ``errno`` from IOError."""
+
+        def __init__(self, strerror, error_code=None, errno=None):
+            IOError.__init__(self, errno, strerror)
+            self.backend_error_code = error_code
 
     class USBTimeoutError(USBError):
         pass
@@ -395,6 +411,39 @@ class TestPyUsbTransport:
         with pytest.raises(TransportError) as info:
             usb_transport.bulk_in(12, 100)
         assert not isinstance(info.value, TransportTimeout)
+
+    def test_a_stall_is_its_own_error_whichever_way_pyusb_marks_it(self, monkeypatch):
+        # pyusb's libusb1 backend: USBError('Pipe error', -9, EPIPE) for LIBUSB_ERROR_PIPE.
+        device = HS()
+        fake = install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
+        for error in (fake['core'].USBError('Pipe error', -9, errno.EPIPE),
+                      fake['core'].USBError('Pipe error', -9, None),
+                      fake['core'].USBError('Broken pipe', None, errno.EPIPE)):
+            device.write_error = error
+            with pytest.raises(TransportStall):
+                usb_transport.bulk_out_raw(bytes(2502), 5000)
+        assert issubclass(TransportStall, TransportError) and not issubclass(TransportStall, TransportTimeout)
+
+    def test_other_usb_errors_are_not_stalls(self, monkeypatch):
+        device = HS()
+        fake = install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
+        device.write_error = fake['core'].USBError('No such device', -4, errno.ENODEV)
+        with pytest.raises(TransportError) as info:
+            usb_transport.bulk_out_raw(bytes(2502), 5000)
+        assert not isinstance(info.value, TransportStall)
+
+    def test_clear_halt_names_the_endpoint_and_wraps_a_failure(self, monkeypatch):
+        device = HS()
+        fake = install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
+        usb_transport.clear_halt(0x06)
+        usb_transport.clear_halt(0x02)
+        assert device.halts_cleared == [0x06, 0x02]
+        device.clear_halt_error = fake['core'].USBError('No such device', -4, errno.ENODEV)
+        with pytest.raises(TransportError):
+            usb_transport.clear_halt(0x06)
 
     def test_close_releases_and_disposes(self, monkeypatch):
         device = HS()
