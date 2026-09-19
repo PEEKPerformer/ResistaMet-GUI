@@ -111,7 +111,7 @@ export function FourPointPanel({ running }: { running: boolean }) {
         bodyClassName={styles.spotsBody}
       >
         {spots.length === 0 ? (
-          <div className={styles.empty}>Measure a spot, stop, then Save spot. Repeat across the sample.</div>
+          <div className={styles.empty}>None yet.</div>
         ) : (
           <table className={styles.table}>
             <thead>
