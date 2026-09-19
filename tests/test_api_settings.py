@@ -188,6 +188,43 @@ class TestUsersAndProfiles:
         client.post('/session/stop')
 
 
+class TestTouchSafetyKeysNeedTheUiRole:
+    """Only a person at the bench may move or silence the voltage warning."""
+
+    @pytest.fixture
+    def agent(self, session, config):
+        app = create_app(session, token=TOKEN, role='mcp', config=config)
+        with TestClient(app) as test_client:
+            test_client.headers.update({'Authorization': f'Bearer {TOKEN}'})
+            yield test_client
+
+    @pytest.mark.parametrize('patch', [{'safety_voltage_warn_silenced': True},
+                                        {'safety_voltage_warn_v': 150.0}])
+    def test_another_role_is_refused(self, agent, config, patch):
+        before = copy.deepcopy(config.config['user_settings']['alice'])
+
+        response = agent.patch('/profiles/alice', json={'measurement': patch})
+
+        assert response.status_code == 403
+        assert config.config['user_settings']['alice'] == before
+
+    def test_another_role_may_resend_them_unchanged(self, agent):
+        section = agent.get('/profiles/alice').json()['measurement']
+        section['nplc'] = 2.0
+        section.pop('gpib_address')
+
+        response = agent.patch('/profiles/alice', json={'measurement': section})
+
+        assert response.status_code == 200
+        assert response.json()['measurement']['nplc'] == 2.0
+
+    def test_the_ui_role_may_change_them(self, client):
+        response = client.patch('/profiles/alice',
+                                 json={'measurement': {'safety_voltage_warn_silenced': True}})
+        assert response.status_code == 200
+        assert response.json()['measurement']['safety_voltage_warn_silenced'] is True
+
+
 class TestSchema:
     def test_every_mode_is_described(self, client):
         modes = client.get('/schema/settings').json()['modes']
