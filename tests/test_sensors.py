@@ -664,6 +664,56 @@ def test_stream_sensor_no_header_raises(_closer):
         s.wait_ready(0.3)
 
 
+def test_wait_ready_timeout_says_which_port_and_what_is_missing(_closer):
+    """No header at all: the message names the port, the budget, and the
+    likely cause."""
+    s = StreamSensor("ASRL7::INSTR")
+    _start(s, ["DATA,1,2", "garbage"])
+    _closer(s)
+    with pytest.raises(SensorError) as exc:
+        s.wait_ready(0.3)
+    msg = str(exc.value)
+    assert "ASRL7::INSTR" in msg
+    assert "no channel description within 0.3s" in msg
+    assert "wrong device or driver" in msg
+
+
+def test_wait_ready_timeout_when_header_came_but_no_data(_closer):
+    """Channels are known but nothing was ever read: a different message,
+    and a SensorReadError so callers can tell the two apart."""
+    s = StreamSensor("ASRL7::INSTR")
+    _start(s, ["HDR,p:psi"])
+    _closer(s)
+    with pytest.raises(SensorReadError, match="No valid reading from ASRL7::INSTR"):
+        s.wait_ready(0.3)
+    assert [c.key for c in s.channels()] == ["p"]
+
+
+def test_stream_sensor_header_arriving_late(_closer):
+    """The port opens mid-stream: rows arrive before the header. They cannot
+    be parsed without channels and are skipped; the sensor becomes ready once
+    the header shows up, and only rows after it are cached."""
+    s = StreamSensor("ASRL7::INSTR")
+    _start(s, ["1,0.5", "DATA,30.1,0.5", "DATA,30.2,0.5",
+               "HDR,p:psi,f:N", "DATA,32.5,0.98"])
+    _closer(s)
+    s.wait_ready(2.0)
+    assert [c.key for c in s.channels()] == ["p", "f"]
+    assert s.read_latest().values == {"p": 32.5, "f": 0.98}
+
+
+def test_stream_sensor_keeps_its_first_header(_closer):
+    """A header repeated mid-run (a device that resends it periodically) is
+    not a data row and does not change the declared channels."""
+    s = StreamSensor("ASRL7::INSTR")
+    _start(s, ["HDR,p:psi", "DATA,1.0", "HDR,q:bar", "DATA,2.0"])
+    _closer(s)
+    s.wait_ready(2.0)
+    assert _wait(lambda: s.dev.exhausted)
+    assert _wait(lambda: s.read_latest().values == {"p": 2.0})
+    assert [c.key for c in s.channels()] == ["p"]
+
+
 def test_stream_sensor_duplicate_header_never_ready(_closer):
     """A dup-key header is rejected by the parser, so the sensor never
     reports channels and wait_ready fails with a clear error."""
@@ -750,6 +800,19 @@ def test_serial_settings_reach_the_visa_session(_sim_visa, driver, address):
         s.wait_ready(2.0)                # and the stream still reads
     finally:
         s.close()
+
+
+def test_open_failure_names_the_address_and_what_is_there(_sim_visa):
+    """A wrong address fails in open() with the address and the resources
+    that do exist, and leaves no reader thread behind."""
+    s = make_sensor("stream_sensor", "ASRL99::INSTR")
+    with pytest.raises(RuntimeError) as exc:
+        s.open()
+    msg = str(exc.value)
+    assert "ASRL99::INSTR" in msg and "not found" in msg
+    assert "ASRL7::INSTR" in msg         # what the bus does have
+    assert s._reader is None and s.dev is None
+    s.close()                            # closing a never-opened sensor is fine
 
 
 def test_serial_settings_left_out_are_not_touched(_sim_visa):
