@@ -50,6 +50,8 @@ class FakeInstrument:
         self.received: List[bytes] = []
         self.pending = b''
         self.cleared = 0
+        #: What a serial poll returns.
+        self.status_byte = 0
 
     def accept(self, data: bytes, eoi: bool) -> None:
         self.received.append(data)
@@ -150,6 +152,8 @@ class SimulatedAdapter:
         elif opcode == p.OP_WRITE_RAW:
             # §10.5.2: the header now, the bytes on the alternate OUT next; the reply after those.
             self.pending_raw_write = (-int.from_bytes(data[8:12], 'little', signed=True), bool(data[6] & 0x08))
+        elif opcode == p.OP_SERIAL_POLL:
+            self.reply = self._serial_poll(data)
         else:
             raise AssertionError('unexpected opcode 0x%02x' % opcode)
 
@@ -191,6 +195,15 @@ class SimulatedAdapter:
         for pad in self.listening:
             self.instruments[pad].accept(payload, bool(data[6] & 0x08))
         return self._status(p.OP_WRITE) + h('04 00 00 00')
+
+    def _serial_poll(self, data: bytes) -> bytes:
+        """0x10 (§10.5.4): ``3a P S sb`` then a 0x39 status block; error 0x0a for an absent device."""
+        pad, sad_byte = data[4], data[5]
+        instrument = self.instruments.get(pad)
+        self.atn = True  # the adapter addresses the bus itself
+        if instrument is None:
+            return bytes((0x3A, pad, sad_byte, 0x00)) + self._status(0x39, error=0x0A, count=-1) + h('04 00 00 00')
+        return bytes((0x3A, pad, sad_byte, instrument.status_byte)) + self._status(0x39, ibsta=0x0074) + h('04 00 00 00')
 
     def _write_raw(self, payload: bytes, eoi: bool) -> bytes:
         """The 0x0e reply once the bytes have arrived: an 8-byte status with a 32-bit count."""
@@ -520,6 +533,13 @@ class TestInstrumentSession:
         assert info.value.error_code == StatusCode.error_timeout
         inst.close()
 
+    def test_read_stb_of_an_absent_device_is_a_timeout(self, rm, adapter):
+        inst = rm.open_resource('GPIB0::5::INSTR')
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            inst.read_stb()
+        assert info.value.error_code == StatusCode.error_timeout
+        inst.close()
+
     def test_write_to_an_empty_address_reports_no_listeners(self, rm, adapter):
         inst = rm.open_resource('GPIB0::5::INSTR')
         with pytest.raises(pyvisa.errors.VisaIOError) as info:
@@ -610,11 +630,13 @@ class TestInstrumentSession:
     def test_read_stb_and_trigger_carry_the_session_timeout(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 1000
-        adapter.instruments[24].pending = b'\x40'
+        adapter.instruments[24].status_byte = 0x40
+        commands_before = len(adapter.instructions(p.OP_COMMAND))
         assert inst.read_stb() == 0x40
-        commands = adapter.instructions(p.OP_COMMAND)
-        assert commands[-1][4:6] == bytes((0x19, 0x5F)) and commands[-1][3] == 0xFB
-        assert adapter.instructions(p.OP_READ)[-1][3] == 0xFB
+        # One 0x10 instruction (§10.5.4), no SPE / SPD command bytes and no read.
+        assert adapter.instructions(p.OP_SERIAL_POLL)[-1] == h('10 01 00 00 18 00 fb 00 04 00 00 00')
+        assert len(adapter.instructions(p.OP_COMMAND)) == commands_before
+        assert adapter.instructions(p.OP_READ) == [] and adapter.instructions(p.OP_READ_RAW) == []
         inst.assert_trigger()
         assert adapter.instructions(p.OP_COMMAND)[-1][4:7] == bytes((0x3F, 0x38, 0x08))
         assert adapter.instructions(p.OP_COMMAND)[-1][3] == 0xFB

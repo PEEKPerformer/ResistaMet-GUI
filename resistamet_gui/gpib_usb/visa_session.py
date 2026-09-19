@@ -335,8 +335,7 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
     def read_stb(self) -> Tuple[int, StatusCode]:
         controller = self._controller()
         try:
-            return ops.serial_poll(controller, self._pad, self._sad,
-                                   self._device_timeout()), StatusCode.success
+            return controller.serial_poll(self._pad, self._sad, self._device_timeout()), StatusCode.success
         except (GpibError, TransportError) as exc:
             logger.debug('%s serial poll: %s', self._label(), exc)
             return 0, status_for(exc)

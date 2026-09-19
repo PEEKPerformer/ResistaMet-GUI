@@ -69,9 +69,10 @@ REPLY_BLOCK_LENGTHS = {
     BLOCK_PAD: 4, BLOCK_REGISTER_VALUES: 4, BLOCK_REGISTER_END: 4, BLOCK_SERIAL_POLL_RESULT: 4,
     BLOCK_DATA_15: 16, BLOCK_DATA_30: 32,
 }
-#: The 0x84 reply to a 0x0b or 0x0e message from this driver is a few blocks;
-#: one max-size packet holds it with room for anything the device adds.
-RAW_REPLY_BUFFER = 512
+#: The 0x84 reply to a 0x0b, 0x0e or 0x10 message from this driver is a few
+#: blocks, parsed by id; one max-size packet holds it with room for anything
+#: the device adds.
+SMALL_REPLY_BUFFER = 512
 #: The 8-byte interrupt push of §10.4.2: ``30 18 00 sb 31 a1 01 00``.
 SRQ_PUSH_LENGTH = 8
 SRQ_PUSH_ID = 0x30
