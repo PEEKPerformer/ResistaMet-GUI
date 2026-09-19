@@ -179,6 +179,11 @@ export interface SpotRequest {
  *
  * ``safety_voltage_warn_silenced`` is the sticky per-profile flag behind the
  * warning dialog's "don't show again" checkbox.
+ *
+ * The threshold runs to 1100 V, the 2410's range and the Settings dialog's
+ * maximum: a threshold the dialog can save must not make the profile
+ * unrunnable here. 0 disables the warning. Both keys belong to the profile;
+ * a strict run request may not send either (``resolve.SAFETY_KEYS``).
  */
 export interface SafetySettings {
   safety_voltage_warn_silenced?: boolean;
@@ -691,7 +696,7 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
     "safety_voltage_warn_v": {
       "type": "number",
       "min": 0,
-      "max": 200,
+      "max": 1100,
       "default": 30
     }
   },
