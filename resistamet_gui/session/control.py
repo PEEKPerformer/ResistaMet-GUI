@@ -147,7 +147,13 @@ class RunControl:
             )
             self._prompt = prompt
             self._answer = None
-        self.proceed_event.clear()
+            # Under the lock, and never once the run is finishing: finish()
+            # records its reason under this lock before it sets the gate, so
+            # a stop that beat this prompt is seen here and its wake-up is
+            # left alone. Clearing unconditionally erased it, and the run
+            # then waited out the whole prompt timeout -- for ever with None.
+            if self._finish_reason is None:
+                self.proceed_event.clear()
         return prompt
 
     def answer_prompt(self, prompt_id: str, choice: str,
@@ -182,7 +188,8 @@ class RunControl:
         timeout woke the wait instead — the caller decides what abandoning the
         run means for it, and can tell the two apart with ``stopped()``.
         """
-        self.proceed_event.wait(timeout)
+        if not self.stop_event.is_set():
+            self.proceed_event.wait(timeout)
         with self._lock:
             answer = self._answer
             fields = self._answer_fields
