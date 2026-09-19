@@ -265,8 +265,10 @@ class TestCheckVisa:
     def test_the_machines_gpib_interface_is_the_default(self, tmp_path):
         from resistamet_gui.config import ConfigManager
         name = 'PRLGX-TCPIP::192.0.2.1::1234::INTFC'
-        ConfigManager(config_file=str(tmp_path / 'config.json')).set_machine_local(
-            'gpib_interface', name)
+        # The machine file the child will look in: under the home it is given.
+        machine_file = tmp_path / 'home' / '.resistamet' / 'machine.json'
+        ConfigManager(config_file=str(tmp_path / 'config.json'),
+                      machine_file=str(machine_file)).set_machine_local('gpib_interface', name)
         _, report = self._check(tmp_path, '--visa-library', '@py')
         assert report['gpib_interface'] == {'configured': name}
 

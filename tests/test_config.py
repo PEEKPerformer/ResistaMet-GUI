@@ -24,6 +24,17 @@ def temp_config_file(tmp_path):
 
 
 @pytest.fixture
+def machine_file(tmp_path):
+    """This machine's settings file; ``other_machine_file`` is another PC's."""
+    return str(tmp_path / "machine.json")
+
+
+@pytest.fixture
+def other_machine_file(tmp_path):
+    return str(tmp_path / "other-pc" / "machine.json")
+
+
+@pytest.fixture
 def config_manager(temp_config_file):
     """Create a ConfigManager with a temporary config file."""
     return ConfigManager(config_file=temp_config_file)
@@ -329,42 +340,55 @@ class TestMachineLocalGpib:
         manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
         assert manager.get_gpib_address() == DEFAULT_SETTINGS['measurement']['gpib_address']
 
-    def test_set_writes_to_machine_slot(self, temp_config_file):
-        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+    def test_set_writes_to_the_machine_file_not_the_config(self, temp_config_file, machine_file):
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
         manager.set_gpib_address('GPIB0::25::INSTR')
 
+        with open(machine_file) as f:
+            assert json.load(f) == {'gpib_address': 'GPIB0::25::INSTR'}
         with open(temp_config_file) as f:
-            saved = json.load(f)
-        assert saved['machines']['HOST-A']['gpib_address'] == 'GPIB0::25::INSTR'
+            assert 'machines' not in json.load(f)
 
-    def test_different_hosts_resolve_independently(self, temp_config_file):
-        host_a = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
-        host_a.set_gpib_address('GPIB0::25::INSTR')
+    def test_different_machines_resolve_independently(self, temp_config_file, machine_file,
+                                                      other_machine_file):
+        """One shared config.json, two PCs."""
+        pc_a = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
+        pc_a.set_gpib_address('GPIB0::25::INSTR')
 
-        host_b = ConfigManager(config_file=temp_config_file, hostname='HOST-B')
-        host_b.set_gpib_address('TCPIP0::192.168.1.10::inst0::INSTR')
+        pc_b = ConfigManager(config_file=temp_config_file, machine_file=other_machine_file)
+        pc_b.set_gpib_address('TCPIP0::192.168.1.10::inst0::INSTR')
 
-        # Each host sees only its own address
-        host_a_reload = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
-        host_b_reload = ConfigManager(config_file=temp_config_file, hostname='HOST-B')
-        assert host_a_reload.get_gpib_address() == 'GPIB0::25::INSTR'
-        assert host_b_reload.get_gpib_address() == 'TCPIP0::192.168.1.10::inst0::INSTR'
+        pc_a_reload = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
+        pc_b_reload = ConfigManager(config_file=temp_config_file, machine_file=other_machine_file)
+        assert pc_a_reload.get_gpib_address() == 'GPIB0::25::INSTR'
+        assert pc_b_reload.get_gpib_address() == 'TCPIP0::192.168.1.10::inst0::INSTR'
 
-    def test_legacy_address_migrates_on_first_open(self, temp_config_file):
+    def test_a_hostname_change_does_not_lose_the_settings(self, temp_config_file, machine_file):
+        """macOS derives the hostname from the network; it changes by itself."""
+        before = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                               hostname='Brendens-Laptop.local')
+        before.set_gpib_address('GPIB0::5::INSTR')
+        before.set_machine_local('visa_library', '@py')
+
+        after = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                              hostname='Mac')
+
+        assert after.get_gpib_address() == 'GPIB0::5::INSTR'
+        assert after.get_visa_library() == '@py'
+
+    def test_legacy_shared_address_still_resolves(self, temp_config_file, machine_file):
         legacy_config = {
-            'measurement': {'gpib_address': 'GPIB0::24::INSTR'},
+            'measurement': {'gpib_address': 'GPIB0::7::INSTR'},
             'users': [],
         }
         with open(temp_config_file, 'w') as f:
             json.dump(legacy_config, f)
 
-        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
 
-        # Resolves and persists into the machine slot
-        assert manager.get_gpib_address() == 'GPIB0::24::INSTR'
-        with open(temp_config_file) as f:
-            saved = json.load(f)
-        assert saved['machines']['HOST-A']['gpib_address'] == 'GPIB0::24::INSTR'
+        assert manager.get_gpib_address() == 'GPIB0::7::INSTR'
+        with open(machine_file) as f:
+            assert json.load(f) == {'gpib_address': 'GPIB0::7::INSTR'}
 
     def test_set_clears_legacy_and_user_copies(self, temp_config_file):
         polluted = {
@@ -420,6 +444,69 @@ class TestMachineLocalGpib:
         # Address didn't leak back into the shared measurement block
         assert 'gpib_address' not in manager.config['measurement']
         assert manager.config['measurement']['sampling_rate'] == 42.0
+
+
+class TestMachineFileMigration:
+    """The first open after the move takes this host's old slot along, once."""
+
+    def _config_with_slots(self, path, slots, measurement=None):
+        with open(path, 'w') as f:
+            json.dump({'users': ['alice'], 'machines': slots,
+                       'measurement': measurement or {}}, f)
+
+    def test_this_hosts_slot_is_copied_and_left_in_place(self, temp_config_file, machine_file):
+        slots = {'HOST-A': {'gpib_address': 'GPIB0::5::INSTR', 'visa_library': '@py'},
+                 'HOST-B': {'gpib_address': 'GPIB0::9::INSTR'}}
+        self._config_with_slots(temp_config_file, slots)
+
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A',
+                                machine_file=machine_file)
+
+        assert manager.get_gpib_address() == 'GPIB0::5::INSTR'
+        with open(machine_file) as f:
+            assert json.load(f) == {'gpib_address': 'GPIB0::5::INSTR', 'visa_library': '@py'}
+        with open(temp_config_file) as f:
+            assert json.load(f)['machines'] == slots
+
+    def test_a_default_value_is_not_worth_a_file(self, temp_config_file, machine_file):
+        """Older versions wrote the default address into every host's slot."""
+        default = DEFAULT_SETTINGS['measurement']['gpib_address']
+        self._config_with_slots(temp_config_file, {'HOST-A': {'gpib_address': default}})
+
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A',
+                                machine_file=machine_file)
+
+        assert manager.get_gpib_address() == default
+        assert not os.path.exists(machine_file)
+
+    def test_opening_a_config_writes_no_slot_for_this_host(self, temp_config_file, machine_file):
+        ConfigManager(config_file=temp_config_file, hostname='HOST-A', machine_file=machine_file)
+        ConfigManager(config_file=temp_config_file, hostname='HOST-B', machine_file=machine_file)
+
+        with open(temp_config_file) as f:
+            assert 'machines' not in json.load(f)
+
+    def test_an_existing_machine_file_is_not_migrated_over(self, temp_config_file, machine_file):
+        with open(machine_file, 'w') as f:
+            json.dump({'gpib_address': 'GPIB0::3::INSTR'}, f)
+        self._config_with_slots(temp_config_file, {'HOST-A': {'gpib_address': 'GPIB0::5::INSTR',
+                                                              'visa_library': '@py'}})
+
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A',
+                                machine_file=machine_file)
+
+        assert manager.get_gpib_address() == 'GPIB0::3::INSTR'
+        # A key the machine file does not have still resolves from the old slot.
+        assert manager.get_visa_library() == '@py'
+        with open(machine_file) as f:
+            assert json.load(f) == {'gpib_address': 'GPIB0::3::INSTR'}
+
+    def test_the_default_location_is_under_the_home_directory(self, monkeypatch, tmp_path):
+        from resistamet_gui import config as config_module
+        monkeypatch.undo()  # the suite's redirection of the default
+        monkeypatch.setattr(config_module.Path, 'home', lambda: tmp_path)
+        assert config_module.default_machine_file() == str(
+            tmp_path / '.resistamet' / 'machine.json')
 
 
 class TestOutputResetMigration:
@@ -524,14 +611,14 @@ class TestMachineLocalVisaLibrary:
         manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
         assert manager.get_visa_library() == ''
 
-    def test_set_writes_to_machine_slot(self, temp_config_file):
-        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+    def test_set_writes_to_the_machine_file(self, temp_config_file, machine_file):
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
         manager.set_machine_local('visa_library', '@py')
 
-        with open(temp_config_file) as f:
-            saved = json.load(f)
-        assert saved['machines']['HOST-A']['visa_library'] == '@py'
-        assert ConfigManager(config_file=temp_config_file, hostname='HOST-A').get_visa_library() == '@py'
+        with open(machine_file) as f:
+            assert json.load(f)['visa_library'] == '@py'
+        reopened = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
+        assert reopened.get_visa_library() == '@py'
 
     def test_empty_means_back_to_automatic(self, temp_config_file):
         """Unlike an address, an empty backend is a real value: pyvisa decides."""
@@ -546,19 +633,21 @@ class TestMachineLocalVisaLibrary:
         manager.set_gpib_address('')
         assert manager.get_gpib_address() == 'GPIB0::25::INSTR'
 
-    def test_profile_carries_the_machine_backend_not_the_users(self, temp_config_file):
-        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+    def test_profile_carries_the_machine_backend_not_the_users(self, temp_config_file,
+                                                               machine_file, other_machine_file):
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
         manager.update_user_settings('alice', {'measurement': {'visa_library': '@py',
                                                                 'sampling_rate': 50.0}})
 
         with open(temp_config_file) as f:
             saved = json.load(f)
         assert 'visa_library' not in saved['user_settings']['alice']['measurement']
-        assert saved['machines']['HOST-A']['visa_library'] == '@py'
+        with open(machine_file) as f:
+            assert json.load(f)['visa_library'] == '@py'
         assert manager.get_user_settings('alice')['measurement']['visa_library'] == '@py'
 
-        other_host = ConfigManager(config_file=temp_config_file, hostname='HOST-B')
-        assert other_host.get_user_settings('alice')['measurement']['visa_library'] == ''
+        other_pc = ConfigManager(config_file=temp_config_file, machine_file=other_machine_file)
+        assert other_pc.get_user_settings('alice')['measurement']['visa_library'] == ''
 
 
 class TestMachineLocalGpibInterface:
@@ -570,14 +659,13 @@ class TestMachineLocalGpibInterface:
         manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
         assert manager.get_gpib_interface() == ''
 
-    def test_set_writes_to_machine_slot(self, temp_config_file):
-        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+    def test_set_writes_to_the_machine_file(self, temp_config_file, machine_file):
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
         manager.set_machine_local('gpib_interface', self.NAME)
 
-        with open(temp_config_file) as f:
-            saved = json.load(f)
-        assert saved['machines']['HOST-A']['gpib_interface'] == self.NAME
-        reopened = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        with open(machine_file) as f:
+            assert json.load(f)['gpib_interface'] == self.NAME
+        reopened = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
         assert reopened.get_gpib_interface() == self.NAME
 
     def test_empty_means_no_adapter_again(self, temp_config_file):
@@ -586,16 +674,18 @@ class TestMachineLocalGpibInterface:
         manager.set_machine_local('gpib_interface', '')
         assert manager.get_gpib_interface() == ''
 
-    def test_profile_carries_the_machine_interface_not_the_users(self, temp_config_file):
-        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+    def test_profile_carries_the_machine_interface_not_the_users(self, temp_config_file,
+                                                                 machine_file, other_machine_file):
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
         manager.update_user_settings('alice', {'measurement': {'gpib_interface': self.NAME,
                                                                 'sampling_rate': 50.0}})
 
         with open(temp_config_file) as f:
             saved = json.load(f)
         assert 'gpib_interface' not in saved['user_settings']['alice']['measurement']
-        assert saved['machines']['HOST-A']['gpib_interface'] == self.NAME
+        with open(machine_file) as f:
+            assert json.load(f)['gpib_interface'] == self.NAME
         assert manager.get_user_settings('alice')['measurement']['gpib_interface'] == self.NAME
 
-        other_host = ConfigManager(config_file=temp_config_file, hostname='HOST-B')
-        assert other_host.get_user_settings('alice')['measurement']['gpib_interface'] == ''
+        other_pc = ConfigManager(config_file=temp_config_file, machine_file=other_machine_file)
+        assert other_pc.get_user_settings('alice')['measurement']['gpib_interface'] == ''

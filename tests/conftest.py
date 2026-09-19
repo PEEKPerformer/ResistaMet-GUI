@@ -50,6 +50,21 @@ def _private_instrument_locks(request, tmp_path_factory, monkeypatch) -> None:
     monkeypatch.setattr(instrument_lock, 'default_lock_dir', lambda: locks)
 
 
+@pytest.fixture(autouse=True)
+def _private_machine_settings(tmp_path_factory, monkeypatch) -> None:
+    """No test reads or writes the developer's own machine settings.
+
+    The instrument address, VISA library and GPIB interface live in one file
+    per machine, under the home directory. A ``ConfigManager`` built by a
+    test must neither pick up the bench this computer is wired to nor leave
+    a test's address behind for the real application.
+    """
+    from resistamet_gui import config
+
+    path = tmp_path_factory.mktemp('machine') / 'machine.json'
+    monkeypatch.setattr(config, 'default_machine_file', lambda: str(path))
+
+
 @pytest.fixture
 def fake_rm(monkeypatch) -> FakeResourceManager:
     """Replace ``pyvisa.ResourceManager`` with a FakeResourceManager.

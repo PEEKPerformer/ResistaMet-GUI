@@ -7,6 +7,7 @@ import socket
 import tempfile
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from .constants import CONFIG_FILE, DEFAULT_SETTINGS, OUTPUT_RESET_MIGRATION
@@ -15,14 +16,20 @@ from .constants import CONFIG_FILE, DEFAULT_SETTINGS, OUTPUT_RESET_MIGRATION
 logger = logging.getLogger(__name__)
 
 
-# Settings keys that are inherently machine-local. They are never stored in
-# the shared `measurement` block or in per-user overrides; they live under
-# config['machines'][hostname] so a NAS-shared config.json works across lab
-# PCs with different instrument wiring.
+# Settings keys that are inherently machine-local: which instrument address,
+# VISA library and GPIB adapter this PC has. They are never stored in the
+# shared `measurement` block or in per-user overrides, because the same
+# config.json may be opened from another lab PC with different wiring. They
+# live in a file of this machine's own (``default_machine_file``).
 _MACHINE_LOCAL_MEASUREMENT_KEYS = ('gpib_address', 'visa_library', 'gpib_interface')
 
 # The sections a user profile can override.
 _USER_SECTIONS = ('measurement', 'display', 'file', 'output')
+
+
+def default_machine_file() -> str:
+    """This machine's own settings file, beside its logs and instrument locks."""
+    return str(Path.home() / '.resistamet' / 'machine.json')
 
 
 def _current_hostname() -> str:
@@ -33,8 +40,15 @@ def _current_hostname() -> str:
 
 
 class ConfigManager:
-    def __init__(self, config_file: str = CONFIG_FILE, hostname: Optional[str] = None):
+    def __init__(self, config_file: str = CONFIG_FILE, hostname: Optional[str] = None,
+                 machine_file: Optional[str] = None):
         self.config_file = config_file
+        #: Where this machine's instrument address, VISA library and GPIB
+        #: interface are kept. Not in config.json: that file may be shared
+        #: between PCs, and a key derived from the hostname there stops
+        #: matching when the hostname changes -- which macOS does by itself,
+        #: from the network.
+        self.machine_file = machine_file or default_machine_file()
         # Guards mutate-and-save. Reentrant because the mutators call
         # save_config while holding it. Never held across anything else —
         # certainly not across instrument I/O.
@@ -47,62 +61,121 @@ class ConfigManager:
         # Set with load_failed; cleared once the unreadable file has been
         # copied aside, which save_config does before it writes over it.
         self._unreadable_on_disk = False
+        self._machine = self._load_machine_file()
         self.config = self.load_config()
         if self.load_failed:
             # A migration would "fix" the defaults and save them over the
             # file, which may only be half-synced and whole again in a moment.
             return
-        # One-shot: lift any legacy global gpib_address into this host's slot
-        # the first time the host opens a NAS-shared config.
-        dirty = self._migrate_machine_local()
-        dirty = self._migrate_output_reset() or dirty
-        if dirty:
+        self._migrate_machine_file()
+        if self._migrate_output_reset():
             self.save_config()
 
     # --- machine-local layer ---------------------------------------------
 
-    def _machine_entry(self, create: bool = False) -> Dict:
-        if create:
-            machines = self.config.setdefault('machines', {})
-            return machines.setdefault(self._hostname, {})
-        return self.config.get('machines', {}).get(self._hostname, {})
+    def _load_machine_file(self) -> Dict:
+        if not os.path.exists(self.machine_file):
+            return {}
+        try:
+            with open(self.machine_file, 'r') as f:
+                loaded = json.load(f)
+            if not isinstance(loaded, dict):
+                raise ValueError("not a JSON object")
+            return loaded
+        except Exception as e:
+            logger.error(f"Machine settings file '{self.machine_file}' could not be read: "
+                         f"{str(e)}. Using the instrument address and VISA defaults.")
+            return {}
+
+    def _save_machine_file(self) -> None:
+        directory = os.path.dirname(os.path.abspath(self.machine_file)) or '.'
+        handle = None
+        try:
+            os.makedirs(directory, exist_ok=True)
+            handle = tempfile.NamedTemporaryFile(
+                'w', dir=directory, prefix='.machine-', suffix='.tmp', delete=False)
+            with handle:
+                json.dump(self._machine, handle, indent=4, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(handle.name, self.machine_file)
+        except Exception as e:
+            logger.error(f"Error saving machine settings '{self.machine_file}': {str(e)}")
+            if handle is not None:
+                try:
+                    os.unlink(handle.name)
+                except OSError:
+                    pass
+
+    def _legacy_machine_slot(self) -> Dict:
+        """What config.json holds for this hostname, from before the machine file."""
+        slot = self.config.get('machines', {}).get(self._hostname, {})
+        return slot if isinstance(slot, dict) else {}
+
+    def _migrate_machine_file(self) -> None:
+        """Start the machine file from this host's old slot in config.json, once.
+
+        Only while the machine file does not exist, and only values that say
+        something: the old code wrote the default address into the slot of
+        every host that opened the config, and copying that would pin a
+        default. The old slot is left where it is, for a rollback and for an
+        older version opening the same config.
+        """
+        if os.path.exists(self.machine_file):
+            return
+        found = {}
+        for key in _MACHINE_LOCAL_MEASUREMENT_KEYS:
+            value = self._legacy_machine_slot().get(key)
+            if not value:
+                value = self.config.get('measurement', {}).get(key)
+            if value and value != DEFAULT_SETTINGS['measurement'].get(key, ''):
+                found[key] = value
+        if found:
+            self._machine = found
+            self._save_machine_file()
+            logger.info(f"Machine settings moved to '{self.machine_file}': {sorted(found)}")
 
     def get_machine_local(self, key: str) -> str:
-        """Resolve a machine-local measurement key for this host.
+        """Resolve a machine-local measurement key for this machine.
 
-        Lookup order: machines[hostname] → legacy measurement.<key> →
-        default. The legacy fallback lets a freshly-copied config still work
-        until the first save migrates it into the machine slot.
+        Lookup order: the machine file, then what an older version left in
+        config.json (this hostname's ``machines`` slot, then the shared
+        ``measurement`` block), then the default.
         """
-        entry = self._machine_entry()
-        if key in entry:
-            return entry[key]
-        legacy = self.config.get('measurement', {}).get(key)
+        if key in self._machine:
+            return self._machine[key]
+        legacy = self._legacy_machine_slot().get(key) or \
+            self.config.get('measurement', {}).get(key)
         if legacy:
             return legacy
         return DEFAULT_SETTINGS['measurement'].get(key, '')
 
     def set_machine_local(self, key: str, value: str) -> None:
-        """Persist a machine-local key to the per-machine slot.
+        """Persist a machine-local key to the machine file.
 
         Also strips any stale copies from the shared measurement block and
-        per-user overrides so they cannot shadow the machine entry on
-        reload. An empty value is ignored for keys whose default is
-        non-empty: there is no such thing as an empty instrument address.
-        Keys whose default is empty (a "use the default" sentinel) accept it.
+        per-user overrides, so a profile never carries one to another PC. An
+        empty value is ignored for keys whose default is non-empty: there is
+        no such thing as an empty instrument address. Keys whose default is
+        empty (a "use the default" sentinel) accept it.
         """
         with self._lock:
             if not self._machine_local_is_settable(key, value):
                 return
-            entry = self._machine_entry(create=True)
-            entry[key] = value
-            if isinstance(self.config.get('measurement'), dict):
-                self.config['measurement'].pop(key, None)
+            self._machine[key] = value
+            self._save_machine_file()
+            stale = False
+            shared = self.config.get('measurement')
+            if isinstance(shared, dict) and key in shared:
+                shared.pop(key)
+                stale = True
             for user_overrides in self.config.get('user_settings', {}).values():
                 measurement = user_overrides.get('measurement') if isinstance(user_overrides, dict) else None
-                if isinstance(measurement, dict):
-                    measurement.pop(key, None)
-            self.save_config()
+                if isinstance(measurement, dict) and key in measurement:
+                    measurement.pop(key)
+                    stale = True
+            if stale:
+                self.save_config()
 
     @staticmethod
     def _machine_local_is_settable(key: str, value) -> bool:
@@ -131,19 +204,6 @@ class ConfigManager:
         for key in _MACHINE_LOCAL_MEASUREMENT_KEYS:
             if key in measurement_in:
                 self.set_machine_local(key, measurement_in[key])
-
-    def _migrate_machine_local(self) -> bool:
-        entry = self._machine_entry()
-        dirty = False
-        for key in _MACHINE_LOCAL_MEASUREMENT_KEYS:
-            if key in entry:
-                continue
-            legacy = self.config.get('measurement', {}).get(key)
-            if not legacy:
-                continue
-            self._machine_entry(create=True)[key] = legacy
-            dirty = True
-        return dirty
 
     # --- migrations -------------------------------------------------------
 
