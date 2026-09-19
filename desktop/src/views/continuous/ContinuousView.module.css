@@ -8,12 +8,16 @@
   padding: var(--sp-4);
 }
 
+/* The column scrolls when the window is too short for what it holds (the
+   four-point panels under a minimum-height plot, above an open log), rather
+   than letting the last panel be cut off. */
 .workspace {
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
+  overflow-y: auto;
 }
 
 .controls {
