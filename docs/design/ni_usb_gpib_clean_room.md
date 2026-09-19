@@ -110,13 +110,16 @@ codec.
 
 ## The second round: NI's driver as the oracle (2026-09-19)
 
-The first bench day (`ni_usb_gpib_oracle.md`, `tauri_ui_status.md`) found
+The first bench day (`tauri_ui_status.md`) found
 two specification errors on the wire. To find the rest without touching
 GPL text again, the lab desktop — NI-488.2 driving the same adapter model —
 was captured with USBPcap, one VISA operation per scenario, 22 scenarios,
-stored with checksums in `captures/ni_usb_gpib_2026-09-19/`. Observing the
-bytes between one's own PC and one's own adapter is the classic
-interoperability path; the captures are facts, not anyone's expression.
+stored with checksums in `captures/ni_usb_gpib_2026-09-19/`. Before the
+capture filter could be attached, Windows USB ETW gave URB headers without
+payloads; that method (`trace.bat`, `etw_urbs.py`) is kept beside the
+captures. Observing the bytes between one's own PC and one's own adapter is
+the classic interoperability path; the captures are facts, not anyone's
+expression.
 
 Roles, same wall:
 
