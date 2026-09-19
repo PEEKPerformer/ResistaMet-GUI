@@ -473,7 +473,7 @@ class TestInstrumentSession:
         # Compare off: m 00 and e 00 (the bench-proven form under our AUXRA 0x81 init; NI
         # sends e 0a under its 0x99 init, §10.1.6), 10 s code, -20480.
         assert read[:8] == h('0b 00 00 fd 00 b0 ff ff')
-        assert adapter.raw_in_timeouts[-1] == 15000 + 20480  # host wait + 20480 B at 1000 B/s
+        assert adapter.raw_in_timeouts[-1] == 18778 + 20480  # 0xfd expiry + 2 s, + 20480 B at 1000 B/s
         # Addressing: controller talks / instrument listens, then instrument talks.
         commands = adapter.instructions(p.OP_COMMAND)[-2:]
         assert commands[0][4:7] == bytes((0x3F, 0x40, 0x38))
@@ -596,15 +596,16 @@ class TestInstrumentSession:
         assert inst.timeout == 1_000_000
         inst.write('*IDN?')
         assert adapter.instructions(p.OP_WRITE)[-1][3] == 0x02
-        # The host waited for the 1000 s row plus 50 %.
-        assert adapter.bulk_in_timeouts[-1] == 1_500_000
+        # The host waited the expiry inferred for the 1000 s code, 2^30 us, plus 2 s (§7.3).
+        assert adapter.bulk_in_timeouts[-1] == 1_075_741
         inst.close()
 
-    def test_host_wait_follows_the_effective_device_timeout(self, rm, adapter):
+    def test_host_wait_outlasts_the_expiry_of_the_code_sent(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 5000
         inst.write('*IDN?')
-        assert adapter.bulk_in_timeouts[-1] == 15000  # 10 s row + max(2, 5)
+        assert adapter.instructions(p.OP_WRITE)[-1][3] == 0xFD
+        assert adapter.bulk_in_timeouts[-1] == 18778  # 16.778 s measured for 0xfd (§7.3) + 2 s
         inst.close()
 
     def test_no_response_is_a_visa_timeout(self, rm, adapter):

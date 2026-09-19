@@ -773,11 +773,13 @@ def readiness_reported(reply: bytes) -> bool:
 
 
 def effective_timeout(seconds: Optional[float]) -> Tuple[int, Optional[float]]:
-    """The device timeout code for ``seconds`` and the limit that code enforces (§7.1).
+    """The device timeout code for ``seconds`` and the nominal limit of that code (§7.1).
 
-    The code is the smallest table row with ``seconds`` <= limit; the limit is
-    what the device will wait, which is what the host wait must be derived
-    from. None or 0 disables the timeout; so does anything past 1000 s.
+    The code is the smallest table row with ``seconds`` <= limit. The limit
+    is the row's nominal value, not what the adapter waits: that is the
+    expiry of §7.3 (``tables.timeout_expiry_s``), which is what a host wait
+    is derived from. None or 0 disables the timeout; so does anything past
+    1000 s.
     """
     if seconds is None or seconds <= 0:
         return t.TIMEOUT_DISABLED_CODE, None
@@ -792,16 +794,30 @@ def timeout_code(seconds: Optional[float]) -> int:
     return effective_timeout(seconds)[0]
 
 
-def host_wait_s(device_limit_s: Optional[float], infinite_wait_s: float) -> float:
-    """How long the host waits for the bulk reply to a 0x0a/0x0c/0x0d (§7.2).
+#: §7.2: what the host waits beyond the adapter's own expiry. Nothing observed
+#: scales with the timeout -- the reply trailed the expiry by at most 1.9 ms
+#: at 0.13 s and at 33.6 s alike -- so the margin is fixed.
+HOST_WAIT_MARGIN_S = 2.0
 
-    ``device_limit_s`` is the effective device timeout from ``effective_timeout``,
-    not the requested one: the device waits the full table row, and longer.
-    Measured on the GPIB-USB-HS, the 3 s code expired after 4.20 s and the
-    30 s code after 33.55 s, 12-40 % past nominal (§7.1, §10.1.8). The
-    margin here is never under 50 %, so the device's own timeout, reported
-    in its reply, always comes before the host gives up.
+
+def host_wait_s(code: int, infinite_wait_s: float) -> float:
+    """How long the host waits for the reply to an instruction sent with ``code`` (§7.2).
+
+    The expiry of §7.3 plus ``HOST_WAIT_MARGIN_S``, so the adapter always
+    ends the instruction first and says so in its reply. The code on the
+    wire decides, not the timeout asked for, and not the code's nominal
+    limit: a wait of nominal + max(2 s, 50 %) is 15 s for 0xfd, which the
+    adapter runs for 16.78 s. For a code nobody timed the expiry is the
+    larger inferred candidate. ``infinite_wait_s`` is returned for the
+    disabled code 0xf0, where only the host can end the wait.
+
+    This is the wait for one timed instruction. A message with two would
+    need the sum of their expiries (§7.2: NI's read messages carry a 0x0c
+    and a 0x0a / 0x0b); every message this driver builds carries one, the
+    addressing 0x0c being a message of its own and the register write that
+    rides with a read having no timeout code.
     """
-    if device_limit_s is None:
+    expiry = t.timeout_expiry_s(code)
+    if expiry is None:
         return infinite_wait_s
-    return device_limit_s + max(2.0, 0.5 * device_limit_s)
+    return expiry + HOST_WAIT_MARGIN_S
