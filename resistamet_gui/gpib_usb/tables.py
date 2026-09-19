@@ -56,6 +56,7 @@ MODELS: Dict[int, Model] = {
 
 REQUEST_TYPE_VENDOR_DEVICE = 0xC0     # IN | Vendor | Device
 REQUEST_TYPE_VENDOR_INTERFACE = 0xC1  # IN | Vendor | Interface (0xf8 only)
+REQUEST_TYPE_VENDOR_DEVICE_OUT = 0x40  # OUT | Vendor | Device (0x3b only, §10.4.2)
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,11 @@ SERIAL_NUMBER_QUERY = ControlRequest(0x41, 0x0000, 0x0000, 16)
 READINESS_QUERY = ControlRequest(0x40, 0x0000, 0x0000, 16)
 STOP_REQUEST = ControlRequest(0x20, 0x0000, 0x0000, 8)
 STATUS_QUERY = ControlRequest(0x21, 0x0200, 0x0000, 8)
+#: Host-to-device, no data: sent after every interrupt push and before the
+#: interrupt read is re-armed (§2.2, §10.4.2). Its function is not established.
+SRQ_ACKNOWLEDGE = ControlRequest(0x3B, 0x0000, 0x0000, 0, REQUEST_TYPE_VENDOR_DEVICE_OUT)
+#: NI keeps one interrupt read of this size outstanding (§2.5, §10.4.2).
+INTERRUPT_READ_LENGTH = 64
 
 #: HS+ only, issued in this order after the readiness poll (§2.4), with the
 #: reply each is expected to produce.
@@ -123,6 +129,7 @@ ERR_ATN_ASSERTED = 0x02
 ERR_NOT_ADDRESSED = 0x03
 ERR_EOS_REJECTED = 0x04
 ERR_NO_ACCEPTOR = 0x05
+ERR_NOT_CIC = 0x07
 ERR_NO_LISTENER = 0x08
 ERR_TIMEOUT = 0x0A
 
@@ -133,6 +140,7 @@ ERROR_LABELS: Dict[int, str] = {
     ERR_NOT_ADDRESSED: 'not addressed',
     ERR_EOS_REJECTED: 'EOS configuration rejected / command chunk too long',
     ERR_NO_ACCEPTOR: 'no acceptor on the bus',
+    ERR_NOT_CIC: 'not controller in charge',
     ERR_NO_LISTENER: 'no listener addressed',
     ERR_TIMEOUT: 'device-side timeout',
 }
