@@ -1,8 +1,9 @@
+/* Keeps its height: the workspace column scrolls instead of squeezing it. */
 .row {
   display: grid;
   grid-template-columns: minmax(280px, 1fr) minmax(0, 1.4fr);
   gap: var(--sp-3);
-  min-height: 0;
+  flex: none;
 }
 
 .stats,
