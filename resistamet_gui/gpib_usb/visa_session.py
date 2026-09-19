@@ -185,7 +185,18 @@ class NiUsbGpibSession(Session):
         return None
 
     def _termchar_byte(self) -> Optional[int]:
-        """VI_ATTR_TERMCHAR as a byte, for the instructions NI fills it into (§10.1.6, §10.5.2)."""
+        """VI_ATTR_TERMCHAR as a byte when VI_ATTR_TERMCHAR_EN is on, else None.
+
+        NI fills the ``e`` byte of every read and write with the character
+        even with the compare off (§10.1.6, §10.5.1), but that was seen only
+        under NI's AUXRA 0x99 initialisation; ours is 0x81 (§2.6 row 3), under
+        which §5.2 still says error 4. With the compare off the byte does
+        nothing useful, so the bench-proven 0x00 is sent until hardware says
+        otherwise; the codec can send either.
+        """
+        enabled, _ = self.get_attribute(ResourceAttribute.termchar_enabled)
+        if not enabled:
+            return None
         termchar, _ = self.get_attribute(ResourceAttribute.termchar)
         return termchar if isinstance(termchar, int) and 0 <= termchar <= 0xFF else None
 
@@ -294,9 +305,8 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
         termchar, _ = self.get_attribute(ResourceAttribute.termchar)
         if termchar_enabled and not 0 <= termchar <= 0xFF:
             return b'', StatusCode.error_nonsupported_attribute_state
-        # §10.1.6: with the character enabled the instruction compares on it
-        # (m = 0x14); disabled, the character still rides in e with m = 0x00,
-        # as NI sends it on every read.
+        # With the character enabled the instruction compares on it (m = 0x14,
+        # §10.1.6); disabled, the proven ``00 00`` goes (see _termchar_byte).
         eos = termchar if termchar_enabled else None
         try:
             data, ended = controller.read(self._pad, sad=self._sad, max_bytes=count,
