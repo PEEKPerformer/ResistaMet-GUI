@@ -21,6 +21,7 @@ import { useLatestSample } from "../../state/samples";
 import { useUi } from "../../state/ui";
 import { seedOverrides, setOverride, useOverrides } from "../../state/overrides";
 import { Badge, Button, Notice, Panel } from "../../components/ui";
+import { BackendNotice } from "../../components/BackendNotice";
 import { Icons } from "../../components/icons";
 import { LivePlot, type TraceSpec } from "../../components/plot/LivePlot";
 import { FieldRow, SettingsForm } from "../../components/forms/SettingsForm";
@@ -149,7 +150,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
   }, [api, thisModeRunning]);
 
   const canStart =
-    !locked && ui.username !== null && ui.sampleName.trim() !== "" && resolved !== null && resolved.ok && !busy;
+    session.backendReachable === true && !locked && ui.username !== null && ui.sampleName.trim() !== "" && resolved !== null && resolved.ok && !busy;
 
   const start = async () => {
     if (!ui.username) return;
@@ -219,6 +220,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
           </div>
         </header>
 
+        <BackendNotice />
         {startError ? <Notice tone="danger">{startError}</Notice> : null}
         {otherModeRunning ? (
           <Notice tone="info">A {MODE_LABEL[status!.mode!]} run is in progress. Stop it before starting another.</Notice>

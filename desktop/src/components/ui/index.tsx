@@ -215,11 +215,19 @@ export function Badge({
   );
 }
 
-export function Notice({ tone, children }: { tone: "warn" | "danger" | "info"; children: ReactNode }) {
+interface NoticeProps {
+  tone: "warn" | "danger" | "info";
+  /** A control that resolves what the notice reports, shown at its right. */
+  action?: ReactNode;
+  children: ReactNode;
+}
+
+export function Notice({ tone, action, children }: NoticeProps) {
   return (
     <div className={styles.notice} data-tone={tone} role={tone === "danger" ? "alert" : undefined}>
       {tone === "info" ? null : <Icons.warning size={14} style={{ flex: "none", marginTop: 2 }} />}
       <span>{children}</span>
+      {action ? <span className={styles.noticeAction}>{action}</span> : null}
     </div>
   );
 }
