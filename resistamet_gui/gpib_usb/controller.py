@@ -439,7 +439,8 @@ class Controller:
             accepted = 0
         except TransportError as refusal:
             self._refused_raw_write(refusal)
-        if accepted < len(chunk):
+        stranded = accepted < len(chunk)
+        if stranded:
             # The host wait ran out with the instrument not accepting: the
             # transport reports bytes moved as a short count, none as a
             # timeout. The device is still mid-instruction, and §5.11 makes it
@@ -451,9 +452,30 @@ class Controller:
             reply_wait = RECOVERY_WAIT_S
         else:
             reply_wait = wait_s
-        parsed = p.parse_raw_write_reply(self._reply_or_stop(p.SMALL_REPLY_BUFFER, reply_wait))
+        try:
+            reply = self._reply_or_stop(p.SMALL_REPLY_BUFFER, reply_wait)
+        finally:
+            if stranded:
+                self._abandon_raw_out()
+        parsed = p.parse_raw_write_reply(reply)
         self._raise_for_error(parsed.status, 'write')
         return parsed.transferred(len(chunk))
+
+    def _abandon_raw_out(self) -> None:
+        """After a 0x0e the host wait ended: reset the OUT pipes and have the next operation re-attach.
+
+        The adapter took the bytes the transport counted as accepted, and
+        the stop request ended the instruction before all of them reached
+        the bus. Whatever is left in the alternate OUT FIFO would come out
+        in front of the data of the next 0x0e. No capture shows this case
+        -- NI's host wait never ran out (§10.6.7, §10.8) -- so whether the
+        stop request empties the FIFO, and whether a pipe reset does, is
+        not established. The OUT pipes are reset as after a refusal, which
+        is the one recovery NI was seen to use on them, and the state is
+        treated as unknown: the next operation re-attaches first.
+        """
+        self._reset_out_pipes()
+        self._resync_pending = True
 
     def _refused_raw_write(self, refusal: TransportError) -> NoReturn:
         """The raw OUT of a 0x0e failed: read the reply, reset the OUT pipes, raise (§10.6.5).
