@@ -231,7 +231,8 @@ class NiUsbGpibSession(Session):
         """One bus line from the BSR (§5.13); unknown when the adapter cannot be asked."""
         try:
             lines = self._controller().bus_lines()
-        except (GpibError, TransportError):
+        except (GpibError, TransportError) as exc:
+            logger.debug('%s line state: %s', self._label(), exc)
             return constants.LineState.unknown
         return constants.LineState.asserted if lines & bit else constants.LineState.unasserted
 
@@ -416,7 +417,7 @@ class NiUsbGpibDispatch(Session):
 def install() -> None:
     """Put our dispatchers in front of pyvisa-py's ``(gpib, INSTR)`` and ``(gpib, INTFC)``. Idempotent."""
     import pyvisa_py  # noqa: F401 - registers pyvisa-py's own session classes first
-    from . import visa_intfc
+    from . import visa_intfc  # here, not at the top: visa_intfc subclasses this module's session
     current = Session._session_classes.get(GPIB_INSTR)
     if current is not NiUsbGpibDispatch:
         NiUsbGpibDispatch.previous = current
