@@ -28,6 +28,7 @@ from .configure import (
     configure_source_v, configure_sweep,
 )
 from .run_files import create_base_path, open_exporter
+from .spot_map import write_map_summary
 from .spot_record import spot_record_from_settings
 from .spot_stats import SpotSamples, spot_statistics
 from .samples import (
@@ -951,6 +952,8 @@ class ContinuousRun:
                             'path': self.filename,
                             'stats': spot_stats,
                         })
+                        if record is not None:
+                            self._write_map_summary(record.spot.map_id)
                 except Exception as e:
                     self._events.warn('finalize_failed', f"Warning: Error finalizing export - {str(e)}")
                 final_message = f"Measurement ({self.mode}) completed! Data saved to: {self.filename}"
@@ -992,6 +995,19 @@ class ContinuousRun:
         except Exception as e:
             self._events.warn('spot_stats_failed', f"Warning: Could not compute spot statistics - {str(e)}")
             return None
+
+    def _write_map_summary(self, map_id):
+        """Refresh ``<map_id>_map.json`` beside this run's file.
+
+        After the file is finalized, so this run is part of what is read. The
+        summary is derived from the run files and can be rebuilt at any time,
+        so failing to write it is a warning and never the run's failure.
+        """
+        try:
+            path = write_map_summary(Path(self.filename).parent, map_id)
+            self._events.log('map_summary', f"Map summary: {path.name}")
+        except Exception as e:
+            self._events.warn('map_summary_failed', f"Warning: Could not write the map summary - {str(e)}")
 
     def _emit_compress_status(self, orig_path: Path, gz_path: Path,
                               orig_mb: float, gz_mb: float) -> None:
