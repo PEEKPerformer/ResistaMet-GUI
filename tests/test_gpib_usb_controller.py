@@ -7,7 +7,7 @@ reads as "expected 3f 40 36, got 3f 40 38 at offset 6", not as a hang. The
 fake also records the timeout every bulk call was given, so the host-wait
 rule of §7.2 is checked, not assumed.
 """
-from typing import Any, List, Tuple
+from typing import Any, List, Optional, Tuple
 
 import pytest
 
@@ -16,7 +16,7 @@ from resistamet_gui.gpib_usb import protocol as p
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb.controller import (DRAIN_WAIT_S, IFC_SETTLE_S, RAW_READ_MIN_BYTES,
                                                  RAW_TRANSFER_MIN_RATE_BPS, RAW_WRITE_MIN_BYTES, RECOVERY_WAIT_S,
-                                                 SHORT_WAIT_S, Controller)
+                                                 SHORT_WAIT_S, SRQ_WAIT_SLICE_S, Controller)
 from resistamet_gui.gpib_usb.protocol import AdapterNotReady, GpibError, GpibTimeout, NoListener, ProtocolError
 from resistamet_gui.gpib_usb.transport import TransportError, TransportTimeout
 
@@ -1132,10 +1132,92 @@ class TestWaitSrq:
         transport.assert_done()
         assert transport.timeouts[-1] == ('intr', 64, 250)
 
-    def test_infinite_wait_uses_the_controller_wait(self):
-        controller, transport = attached([('intr', SRQ_PUSH, 64), ACK_3B], infinite_wait_s=42.0)
+    def test_the_wait_is_sliced_so_a_close_can_be_noticed(self):
+        assert SRQ_WAIT_SLICE_S == 1.0
+        nothing = ('intr', TransportTimeout('nothing'), 64)
+        controller, transport = attached([nothing, nothing, ('intr', SRQ_PUSH, 64), ACK_3B])
+        assert controller.wait_srq(2.5) == 0x60
+        assert [tm for kind, _, tm in transport.timeouts if kind == 'intr'] == [1000, 1000, 500]
+        controller, transport = attached([nothing, nothing, nothing])
+        with pytest.raises(GpibTimeout):
+            controller.wait_srq(2.5)
+        transport.assert_done()
+
+    def test_infinite_wait_uses_the_controller_wait_in_slices(self):
+        controller, transport = attached([('intr', TransportTimeout('nothing'), 64), ('intr', SRQ_PUSH, 64), ACK_3B],
+                                         infinite_wait_s=1.5)
         controller.wait_srq(None)
-        assert transport.timeouts[-1] == ('intr', 64, 42000)
+        assert [tm for kind, _, tm in transport.timeouts if kind == 'intr'] == [1000, 500]
+
+    def test_close_during_a_wait_ends_the_wait_first_and_then_releases_the_transport(self):
+        import threading
+
+        class Closing(ScriptedTransport):
+            controller: Controller
+            closer: threading.Thread
+
+            def interrupt_in(self, length, timeout_ms):
+                # The first slice: another thread closes the controller while we block; it must
+                # not get past close() until this wait has left.
+                self.closer = threading.Thread(target=self.controller.close)
+                self.closer.start()
+                self.closer.join(0.2)
+                assert self.closer.is_alive(), 'close() returned while the interrupt read was pending'
+                assert not self.closed
+                return super().interrupt_in(length, timeout_ms)
+
+        transport = Closing(attach_script() + [
+            ('intr', TransportTimeout('slice over'), 64),
+            # Only after the wait has left does close() reach the bus and the transport.
+            ('out', p.register_write_message(t.SHUTDOWN_WRITES)), ('in', regwrite_reply(2), 16),
+        ])
+        controller = Controller(transport, t.PID_HS, sleep=lambda s: None)
+        transport.controller = controller
+        controller.attach()
+        with pytest.raises(AdapterNotReady):
+            controller.wait_srq(10.0)
+        transport.closer.join(2.0)
+        assert not transport.closer.is_alive() and transport.closed
+        transport.assert_done()
+
+    def test_push_arriving_as_the_controller_closes_is_not_acknowledged(self):
+        class Closing(ScriptedTransport):
+            controller: Controller
+
+            def interrupt_in(self, length, timeout_ms):
+                push = super().interrupt_in(length, timeout_ms)
+                self.controller._closed = True  # closed between the push and the acknowledge
+                return push
+
+        transport = Closing(attach_script() + [('intr', SRQ_PUSH, 64)])
+        controller = Controller(transport, t.PID_HS, sleep=lambda s: None)
+        transport.controller = controller
+        controller.attach()
+        with pytest.raises(AdapterNotReady):
+            controller.wait_srq(1.0)
+        transport.assert_done()
+
+    def test_only_one_wait_at_a_time(self):
+        import threading
+
+        class Nested(ScriptedTransport):
+            controller: Controller
+            second: Optional[Exception] = None
+
+            def interrupt_in(self, length, timeout_ms):
+                try:
+                    self.controller.wait_srq(1.0)
+                except Exception as exc:  # noqa: BLE001 - recorded for the assertion below
+                    self.second = exc
+                return super().interrupt_in(length, timeout_ms)
+
+        transport = Nested(attach_script() + [('intr', SRQ_PUSH, 64), ACK_3B])
+        controller = Controller(transport, t.PID_HS, sleep=lambda s: None)
+        transport.controller = controller
+        controller.attach()
+        assert controller.wait_srq(1.0) == 0x60
+        assert isinstance(transport.second, GpibError) and 'in progress' in str(transport.second)
+        transport.assert_done()
 
     def test_the_lock_is_free_while_the_wait_blocks(self):
         import threading
