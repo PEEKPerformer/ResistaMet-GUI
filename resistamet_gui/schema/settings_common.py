@@ -115,9 +115,14 @@ class SafetySettings(SettingsModel):
 
     ``safety_voltage_warn_silenced`` is the sticky per-profile flag behind the
     warning dialog's "don't show again" checkbox.
+
+    The threshold runs to 1100 V, the 2410's range and the Settings dialog's
+    maximum: a threshold the dialog can save must not make the profile
+    unrunnable here. 0 disables the warning. Both keys belong to the profile;
+    a strict run request may not send either (``resolve.SAFETY_KEYS``).
     """
 
-    safety_voltage_warn_v: float = Field(default=_M['safety_voltage_warn_v'], ge=0.0, le=200.0)
+    safety_voltage_warn_v: float = Field(default=_M['safety_voltage_warn_v'], ge=0.0, le=1100.0)
     safety_voltage_warn_silenced: bool = _M['safety_voltage_warn_silenced']
 
 

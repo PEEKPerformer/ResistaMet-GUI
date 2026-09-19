@@ -121,6 +121,12 @@ class TestSafetyGroupIsProfileOwned:
         assert resolved.ok
         assert resolved.settings['measurement']['safety_voltage_warn_silenced'] is True
 
+    def test_a_threshold_the_settings_dialog_can_save_still_runs(self, profile):
+        """The dialog goes to 1100 V; at le=200 a 250 V profile failed every
+        API run with an issue the client could do nothing about."""
+        profile['measurement']['safety_voltage_warn_v'] = 250.0
+        assert resolve_run_settings(profile, 'resistance', {}, strict=True).issues == []
+
     def test_the_lenient_path_is_as_it_was(self, profile):
         """The PySide6 gather never sends these; nothing about it changes."""
         resolved = resolve_run_settings(profile, 'source_v', {'safety_voltage_warn_v': 50.0})
