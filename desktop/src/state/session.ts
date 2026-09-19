@@ -31,7 +31,8 @@ export interface InstrumentState {
 export interface SessionSnapshot {
   status: SessionStatus | null;
   connected: boolean;
-  backendReachable: boolean;
+  /** Whether the last status request was answered; null before the first. */
+  backendReachable: boolean | null;
   instrument: InstrumentState | null;
   /** How the last run ended, kept until the next one starts. Duration and
    *  sample count are null when the backend did not report them. */
@@ -51,7 +52,7 @@ const MAX_LOG_LINES = 500;
 let snapshot: SessionSnapshot = {
   status: null,
   connected: false,
-  backendReachable: false,
+  backendReachable: null,
   instrument: null,
   lastRunEnded: null,
   log: [],

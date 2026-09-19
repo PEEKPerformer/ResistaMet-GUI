@@ -56,6 +56,14 @@ export class EventStream {
     this.socket = null;
   }
 
+  /** Try now instead of waiting out the backoff. No-op while connected. */
+  retry(): void {
+    if (this.closed || this.socket) return;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.attempt = 0;
+    void this.connect();
+  }
+
   subscribe(listener: StreamListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

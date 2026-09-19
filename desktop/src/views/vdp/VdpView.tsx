@@ -18,6 +18,7 @@ import { useVdp } from "../../state/vdp";
 import { useUi } from "../../state/ui";
 import { seedOverrides, setOverride, useOverrides } from "../../state/overrides";
 import { Badge, Button, Notice, Panel } from "../../components/ui";
+import { BackendNotice } from "../../components/BackendNotice";
 import { Icons } from "../../components/icons";
 import { FieldRow, SettingsForm } from "../../components/forms/SettingsForm";
 import { STATE_LABEL } from "../continuous/ContinuousView";
@@ -93,7 +94,7 @@ export function VdpView() {
     }
   };
 
-  const canStart = !running && ui.username !== null && ui.sampleName.trim() !== "" && resolved?.ok === true && !busy;
+  const canStart = session.backendReachable === true && !running && ui.username !== null && ui.sampleName.trim() !== "" && resolved?.ok === true && !busy;
   const start = () =>
     run(() => api.start({ mode: MODE, sample_name: ui.sampleName.trim(), username: ui.username!, overrides }));
   const measure = (p: PendingPrompt) => run(() => api.answerPrompt(p.prompt_id, "proceed"));
@@ -133,6 +134,7 @@ export function VdpView() {
           </div>
         </header>
 
+        <BackendNotice />
         {error ? <Notice tone="danger">{error}</Notice> : null}
         {running && !thisRunning ? <Notice tone="info">Another run is in progress.</Notice> : null}
         {ui.sampleName.trim() === "" && !running ? <Notice tone="info">{NAME_THE_SAMPLE}</Notice> : null}

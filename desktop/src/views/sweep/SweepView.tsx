@@ -17,6 +17,7 @@ import { fitResistance, useSweep } from "../../state/sweep";
 import { useUi } from "../../state/ui";
 import { seedOverrides, setOverride, useOverrides } from "../../state/overrides";
 import { Badge, Button, Notice, Panel } from "../../components/ui";
+import { BackendNotice } from "../../components/BackendNotice";
 import { Icons } from "../../components/icons";
 import { XYPlot, type XYSeries } from "../../components/plot/XYPlot";
 import { FieldRow, SettingsForm } from "../../components/forms/SettingsForm";
@@ -95,7 +96,7 @@ export function SweepView() {
   const complianceUnit = sourceIsVoltage ? "A" : "V";
   const points = typeof resolved?.derived.sweep_points === "number" ? resolved.derived.sweep_points : null;
 
-  const canStart = !running && ui.username !== null && ui.sampleName.trim() !== "" && resolved?.ok === true && !busy;
+  const canStart = session.backendReachable === true && !running && ui.username !== null && ui.sampleName.trim() !== "" && resolved?.ok === true && !busy;
 
   const start = async () => {
     if (!ui.username) return;
@@ -146,6 +147,7 @@ export function SweepView() {
           </div>
         </header>
 
+        <BackendNotice />
         {error ? <Notice tone="danger">{error}</Notice> : null}
         {reset ? <Notice tone="info">{reset}</Notice> : null}
         {running && !thisRunning ? <Notice tone="info">Another run is in progress.</Notice> : null}
