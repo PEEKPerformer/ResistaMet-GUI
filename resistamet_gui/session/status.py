@@ -28,6 +28,19 @@ class PendingPrompt(EventModel):
     detail: Dict[str, Any]
 
 
+class InstrumentInfo(EventModel):
+    """The SourceMeter as last seen: what ``identify`` returns, and the data
+    of a run's ``instrument_connected`` event. ``model`` is None when the
+    *IDN? reply names a model the limits table does not know."""
+
+    address: str
+    idn: str
+    model: Optional[str]
+    max_source_v: Optional[float]
+    max_source_i: Optional[float]
+    max_power_w: Optional[float]
+
+
 class SessionStatus(EventModel):
     """One session: its state and the run it is on, or was last on."""
 
@@ -41,3 +54,7 @@ class SessionStatus(EventModel):
     #: ``seq`` of the newest event, for a client resuming the stream.
     last_seq: int
     pending_prompt: Optional[PendingPrompt]
+    #: The instrument the last run connected to or the last ``identify``
+    #: found, whichever is newer; None until one has happened. A client that
+    #: reloads has lost the event that said so, and reads it back here.
+    instrument: Optional[InstrumentInfo]
