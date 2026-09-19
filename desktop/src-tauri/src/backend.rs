@@ -17,7 +17,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,9 @@ pub struct BackendInfo {
 
 /// The running backend. Held in Tauri state for the life of the app.
 pub struct Backend {
-    child: Mutex<Option<Child>>,
+    /// Shared with the watcher thread. Whoever takes the child out owns its
+    /// end: `shutdown` for an exit the shell asked for, the watcher otherwise.
+    child: Arc<Mutex<Option<Child>>>,
     stdin: Mutex<Option<ChildStdin>>,
     pub info: BackendInfo,
 }
@@ -100,7 +102,14 @@ pub struct SpawnOptions {
     /// Where the backend's stderr goes. `None` inherits the shell's, which is
     /// the terminal in development; a packaged app has none and passes a file.
     pub stderr_log: Option<std::fs::File>,
+    /// Called once, with the exit code, when a backend that completed its
+    /// handshake ends without the shell having asked it to. Not called for a
+    /// failed start (`spawn` returns that) or after `Backend::shutdown`.
+    pub on_exit: Box<dyn FnOnce(Option<i32>) + Send>,
 }
+
+/// How often the watcher looks at a backend whose stdout has closed.
+const EXIT_POLL: Duration = Duration::from_millis(100);
 
 /// Windows `CREATE_NO_WINDOW`: start a console program without a console.
 #[cfg(windows)]
@@ -152,6 +161,8 @@ pub fn spawn(mut options: SpawnOptions) -> Result<Backend, String> {
     // Read the handshake on a helper thread so a backend that never prints
     // one cannot hang the app forever.
     let (tx, rx) = mpsc::channel();
+    let (watch_tx, watch_rx) = mpsc::channel::<Arc<Mutex<Option<Child>>>>();
+    let on_exit = options.on_exit;
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         let mut line = String::new();
@@ -165,6 +176,29 @@ pub fn spawn(mut options: SpawnOptions) -> Result<Backend, String> {
         while let Ok(n) = reader.read_line(&mut sink) {
             if n == 0 { break; }
             sink.clear();
+        }
+        // stdout closed: the backend is going or gone. Nothing else in the
+        // shell would notice, and the UI would show a dead backend as an
+        // outage with a run still "running". A failed start never sends the
+        // child here, so only a backend that was handed to the app is watched.
+        let Ok(child) = watch_rx.recv() else { return };
+        loop {
+            {
+                let mut guard = child.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                // Taken by `shutdown`: an exit the shell asked for.
+                let Some(running) = guard.as_mut() else { return };
+                match running.try_wait() {
+                    Ok(Some(status)) => {
+                        guard.take();
+                        drop(guard);
+                        on_exit(status.code());
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(_) => return,
+                }
+            }
+            std::thread::sleep(EXIT_POLL);
         }
     });
 
@@ -186,8 +220,10 @@ pub fn spawn(mut options: SpawnOptions) -> Result<Backend, String> {
         Err(e) => return Err(abandon(format!("backend handshake was not JSON ({e}): {line}"))),
     };
 
+    let child = Arc::new(Mutex::new(Some(child)));
+    let _ = watch_tx.send(Arc::clone(&child));
     Ok(Backend {
-        child: Mutex::new(Some(child)),
+        child,
         stdin: Mutex::new(stdin),
         info,
     })
@@ -196,6 +232,9 @@ pub fn spawn(mut options: SpawnOptions) -> Result<Backend, String> {
 impl Backend {
     /// Ask the backend to shut down and wait for it. Kills only as a last resort.
     pub fn shutdown(&self) {
+        // Take the child before anything makes it exit, so the watcher knows
+        // this exit was asked for and stays quiet.
+        let taken = self.child.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
         // Closing stdin is the watchdog signal the backend listens for.
         if let Ok(mut guard) = self.stdin.lock() {
             if let Some(mut stdin) = guard.take() {
@@ -203,11 +242,7 @@ impl Backend {
                 drop(stdin);
             }
         }
-        let mut guard = match self.child.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        let Some(mut child) = guard.take() else { return };
+        let Some(mut child) = taken else { return };
         let deadline = std::time::Instant::now() + SHUTDOWN_GRACE;
         loop {
             match child.try_wait() {
@@ -228,12 +263,12 @@ impl Backend {
 }
 
 #[cfg(all(test, unix))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
     /// A stand-in backend: a shell script run the way the sidecar is.
-    fn fake_backend(name: &str, body: &str) -> PathBuf {
+    pub(crate) fn fake_backend(name: &str, body: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("resistamet-shell-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -243,7 +278,7 @@ mod tests {
         path
     }
 
-    fn options(script: &Path) -> SpawnOptions {
+    pub(crate) fn options(script: &Path) -> SpawnOptions {
         let dir = script.parent().unwrap().to_path_buf();
         SpawnOptions {
             launch: Launch::Executable(script.to_path_buf()),
@@ -251,10 +286,50 @@ mod tests {
             cwd: dir,
             simulate: false,
             stderr_log: None,
+            on_exit: Box::new(|_| {}),
         }
     }
 
-    const HANDSHAKE: &str = r#"echo '{"url":"http://127.0.0.1:1","token":"t","pid":1}'"#;
+    /// Options whose `on_exit` reports into the returned channel.
+    fn watched(script: &Path) -> (SpawnOptions, mpsc::Receiver<Option<i32>>) {
+        let (tx, rx) = mpsc::channel();
+        let mut opts = options(script);
+        opts.on_exit = Box::new(move |code| {
+            let _ = tx.send(code);
+        });
+        (opts, rx)
+    }
+
+    #[test]
+    fn a_backend_that_dies_on_its_own_is_reported_with_its_status() {
+        let script = fake_backend("dies", &format!("{HANDSHAKE}\nexit 3"));
+        let (opts, exited) = watched(&script);
+        let _backend = spawn(opts).unwrap();
+        assert_eq!(exited.recv_timeout(Duration::from_secs(5)), Ok(Some(3)));
+        let _ = std::fs::remove_dir_all(script.parent().unwrap());
+    }
+
+    #[test]
+    fn a_shutdown_the_shell_asked_for_is_not_reported() {
+        let script = fake_backend("asked", &format!("{HANDSHAKE}\ncat >/dev/null"));
+        let (opts, exited) = watched(&script);
+        let backend = spawn(opts).unwrap();
+        backend.shutdown();
+        // The watcher ends without calling back, which drops the sender.
+        assert_eq!(exited.recv_timeout(Duration::from_secs(5)), Err(mpsc::RecvTimeoutError::Disconnected));
+        let _ = std::fs::remove_dir_all(script.parent().unwrap());
+    }
+
+    #[test]
+    fn a_failed_start_is_not_reported_as_an_exit() {
+        let script = fake_backend("nostart", "exit 1");
+        let (opts, exited) = watched(&script);
+        assert!(spawn(opts).is_err());
+        assert_eq!(exited.recv_timeout(Duration::from_secs(5)), Err(mpsc::RecvTimeoutError::Disconnected));
+        let _ = std::fs::remove_dir_all(script.parent().unwrap());
+    }
+
+    pub(crate) const HANDSHAKE: &str = r#"echo '{"url":"http://127.0.0.1:1","token":"t","pid":1}'"#;
 
     #[test]
     fn stderr_lands_in_the_log_file() {
