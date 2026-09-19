@@ -51,7 +51,7 @@ BLOCK_DATA_15 = 0x36           # id + 15 data bytes
 BLOCK_DATA_30 = 0x37           # id + 00 + 30 data bytes
 BLOCK_READ_STATUS = 0x38
 BLOCK_SERIAL_POLL_STATUS = 0x39  # follows the 0x3a block (§10.5.4)
-BLOCK_SERIAL_POLL_RESULT = 0x3A  # ``3a P S sb``
+BLOCK_SERIAL_POLL_RESULT = 0x3A  # ``3a P S sb``; absent when the poll failed (§10.6.6)
 
 TERMINATION_BLOCK = b'\x04\x00\x00\x00'
 STATUS_BLOCK_LENGTH = 8
@@ -330,8 +330,9 @@ def serial_poll_block(pad: int, timeout_code: int, sad: Optional[int] = None, fl
 
     ``x`` was 0x00 in a fresh session and 0x01 after an SRQ had been serviced;
     its meaning is not established, so 0x00 unless a caller knows better.
-    ``S`` is 0x60 | secondary as for the presence probe (§10.6.1); the
-    secondary form of 0x10 itself was not captured.
+    ``S`` is 0x60 | secondary, 0x00 without one: ``10 01 00 00 18 61 fc 00``
+    polled address 24 through secondary address 1, and the reply's 0x3a
+    block echoed both bytes (§10.5.4, sad_poll.pcap).
     """
     if not 0 <= pad <= 30:
         raise ValueError('primary address %d outside 0..30' % pad)
@@ -687,18 +688,36 @@ def parse_raw_write_reply(reply: bytes) -> RawWriteReply:
 
 @dataclass(frozen=True)
 class SerialPollReply:
-    """A parsed 0x10 reply (§10.5.4): ``3a P S sb`` then a status block with id 0x39."""
+    """A parsed 0x10 reply: ``3a P S sb`` then a status block with id 0x39 (§10.5.4).
 
-    status_byte: int
-    pad: int
-    sad_byte: int
+    A poll that failed is answered with the status block alone (§10.6.6);
+    ``status_byte``, ``pad`` and ``sad_byte`` are then None and
+    ``status.error`` says why.
+    """
+
+    status_byte: Optional[int]
+    pad: Optional[int]
+    sad_byte: Optional[int]
     status: StatusBlock
 
 
 def parse_serial_poll_reply(reply: bytes) -> SerialPollReply:
+    """The 0x3a block is there exactly when the poll produced a status byte (§10.6.6).
+
+    Its absence next to error 0 would be a success without a result, which
+    is a ``ProtocolError``. Its presence next to an error is accepted: the
+    error decides, and the caller raises for it.
+    """
     blocks = split_reply_blocks(reply)
-    result = _single_block(blocks, BLOCK_SERIAL_POLL_RESULT, reply)
     status = parse_status_block(_single_block(blocks, BLOCK_SERIAL_POLL_STATUS, reply))
+    results = [block for block_id, block in blocks if block_id == BLOCK_SERIAL_POLL_RESULT]
+    if len(results) > 1:
+        raise ProtocolError('expected at most one 0x3a block, found %d: %s' % (len(results), reply.hex()))
+    if not results:
+        if status.error == t.ERR_SUCCESS:
+            raise ProtocolError('serial poll succeeded without a 0x3a block: %s' % reply.hex())
+        return SerialPollReply(status_byte=None, pad=None, sad_byte=None, status=status)
+    result = results[0]
     return SerialPollReply(status_byte=result[3], pad=result[1], sad_byte=result[2], status=status)
 
 
