@@ -615,3 +615,104 @@ def test_stream_sensor_through_fake_under_sim():
             s.close()
     finally:
         pyvisa.ResourceManager = orig
+
+
+# --- Serial line settings ---------------------------------------------------
+
+@pytest.fixture
+def _sim_visa():
+    """The package's fake VISA, with both simulated serial sensors on it."""
+    import pyvisa
+    from resistamet_gui.simulator import enable_simulation
+    orig = pyvisa.ResourceManager
+    enable_simulation(aux_address="ASRL6::INSTR", stream_address="ASRL7::INSTR")
+    try:
+        yield
+    finally:
+        pyvisa.ResourceManager = orig
+
+
+@pytest.mark.parametrize("driver, address", [
+    ("arduino_thermocouple", "ASRL6::INSTR"),
+    ("stream_sensor", "ASRL7::INSTR"),
+])
+def test_serial_settings_reach_the_visa_session(_sim_visa, driver, address):
+    from pyvisa.constants import Parity, StopBits
+
+    s = make_sensor(driver, address, baud_rate=9600, data_bits=7,
+                    parity="even", stop_bits=2, termination="\r").open()
+    try:
+        assert s.dev.baud_rate == 9600
+        assert s.dev.data_bits == 7
+        assert s.dev.parity is Parity.even
+        assert s.dev.stop_bits is StopBits.two
+        assert s.dev.read_termination == "\r"
+        s.wait_ready(2.0)                # and the stream still reads
+    finally:
+        s.close()
+
+
+def test_serial_settings_left_out_are_not_touched(_sim_visa):
+    """Defaults unchanged: with no settings given, open() sets nothing beyond
+    what VisaInstrument.connect() already does."""
+    s = make_sensor("stream_sensor", "ASRL7::INSTR").open()
+    try:
+        for name in ("baud_rate", "data_bits", "parity", "stop_bits"):
+            assert not hasattr(s.dev, name), name
+        assert s.dev.read_termination == "\n"
+    finally:
+        s.close()
+
+    s = make_sensor("stream_sensor", "ASRL7::INSTR", baud_rate=115200).open()
+    try:
+        assert s.dev.baud_rate == 115200
+        assert not hasattr(s.dev, "parity")
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("opts, named", [
+    ({"baud_rate": 0}, "baud_rate"),
+    ({"baud_rate": "fast"}, "baud_rate"),
+    ({"data_bits": 9}, "data_bits"),
+    ({"parity": "sometimes"}, "parity"),
+    ({"stop_bits": 3}, "stop_bits"),
+    ({"termination": ""}, "termination"),
+])
+def test_bad_serial_setting_fails_before_any_port_is_opened(opts, named):
+    with pytest.raises(ValueError, match=named):
+        make_sensor("stream_sensor", "ASRL7::INSTR", **opts)
+
+
+def test_stop_bits_and_parity_spellings():
+    from pyvisa.constants import Parity, StopBits
+    from resistamet_gui.sensors import serial_session_attributes
+
+    assert serial_session_attributes() == {}
+    assert serial_session_attributes(stop_bits=1)["stop_bits"] is StopBits.one
+    assert (serial_session_attributes(stop_bits=1.5)["stop_bits"]
+            is StopBits.one_and_a_half)
+    assert serial_session_attributes(parity="None")["parity"] is Parity.none
+    assert serial_session_attributes(parity=Parity.odd)["parity"] is Parity.odd
+
+
+def test_port_is_released_when_a_setting_is_refused():
+    """A backend that refuses a setting must not leave the port open."""
+    from resistamet_gui._simulator import FakeSerialSensor
+
+    class _Refuses(FakeSerialSensor):
+        @property
+        def baud_rate(self):
+            return 9600
+
+        @baud_rate.setter
+        def baud_rate(self, _v):
+            raise OSError("unsupported baud rate")
+
+    dev = _Refuses()
+    s = ArduinoThermocouple("ASRL6::INSTR", baud_rate=12345)
+    s.connect = lambda: setattr(s, "dev", dev)
+    with pytest.raises(OSError, match="unsupported baud rate"):
+        s.open()
+    assert dev._closed and s.dev is None
+    assert s._reader is None, "no reader thread for a port that never opened"
