@@ -5,6 +5,7 @@ No Qt anywhere — this is the path the API sidecar and the MCP layer will use.
 import copy
 import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -128,6 +129,37 @@ class TestCommands:
     def test_stop_without_a_run_is_harmless(self, session):
         session.stop()
         assert session.state == 'idle'
+
+
+class TestFileNames:
+    """Two runs of one sample inside the same second ask for the same path."""
+
+    @pytest.fixture
+    def same_second(self, monkeypatch):
+        from resistamet_gui.session import continuous_run
+        real = continuous_run.create_base_path
+
+        def frozen(*args, **kwargs):
+            return real(*args, timestamp=1789000000, **kwargs)
+        monkeypatch.setattr(continuous_run, 'create_base_path', frozen)
+
+    def _run(self, session, sink, profile, run_number):
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: len(sink.of_type('file_finalized')) == run_number
+                         and session.state == 'idle')
+        return Path(sink.of_type('file_finalized')[-1].payload['path'])
+
+    def test_the_second_run_does_not_overwrite_the_first(self, session, sink, fake_rm,
+                                                          profile, same_second):
+        first = self._run(session, sink, profile, 1)
+        before = first.read_bytes()
+        second = self._run(session, sink, profile, 2)
+
+        # 0.10mA: the decimal point survives into the name.
+        assert first.name == '1789000000_wafer1_4PP_0.10mA.csv'
+        assert second.name == '1789000000_wafer1_4PP_0.10mA-2.csv'
+        assert first.read_bytes() == before
+        assert sink.of_type('file_opened')[-1].payload['path'] == str(second)
 
 
 class TestValidation:
