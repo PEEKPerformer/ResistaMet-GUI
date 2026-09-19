@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt
 
 from .. import visa_backend
 from ..config import ConfigManager
-from .visa_helpers import configured_resource_manager, gpib_interface_problem
+from .visa_helpers import gpib_interface_problem
 from .widgets import EngineeringSpinBox, NoScrollSpinBox
 
 
@@ -510,7 +510,10 @@ class SettingsDialog(QDialog):
     def detect_gpib_devices(self):
         try:
             self.setEnabled(False)
-            rm = configured_resource_manager(self.config_manager)
+            # What the dialog shows, not what was last saved: the operator
+            # picks a backend and scans before deciding to keep it.
+            rm = visa_backend.resource_manager(
+                self._selected_visa_library(), self.gpib_interface.text().strip())
             resources = rm.list_resources()
         except Exception as e:
             QMessageBox.information(self, "GPIB Detection", f"Failed to list VISA resources: {e}")

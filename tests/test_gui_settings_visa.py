@@ -98,3 +98,23 @@ def test_a_name_that_cannot_be_an_interface_is_refused(config, shown):
     assert config.get_gpib_interface() == ''
     assert config.get_user_settings('ada')['measurement']['nplc'] != 5.0
 
+
+def test_detect_devices_scans_what_the_dialog_shows(config, shown, fake_rm, monkeypatch):
+    """Not what was last saved: the operator picks a backend, then scans."""
+    calls = []
+
+    def _resource_manager(visa_library='', gpib_interface=''):
+        calls.append((visa_library, gpib_interface))
+        return fake_rm
+
+    monkeypatch.setattr(visa_backend, 'resource_manager', _resource_manager)
+    monkeypatch.setattr(SettingsDialog, 'exec', lambda self: 0)
+    from PySide6.QtWidgets import QDialog
+    monkeypatch.setattr(QDialog, 'exec', lambda self: 0)
+
+    dialog = SettingsDialog(config, 'ada')
+    _choose(dialog, '@py')
+    dialog.gpib_interface.setText(INTERFACE)
+    dialog.detect_gpib_devices()
+    assert calls == [('@py', INTERFACE)]
+    assert config.get_visa_library() == ''
