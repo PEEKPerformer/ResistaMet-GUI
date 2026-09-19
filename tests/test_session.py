@@ -698,3 +698,34 @@ class TestSpotStatisticsAtTheEndOfARun:
         stats = sink.of_type('spot_complete')[0].payload['stats']
         assert (stats['n'], stats['n_excluded']) == (0, 2)
         assert stats['rs']['n'] == 0
+
+
+class TestSpotRoundTripsThroughHdf5:
+    def test_header_footer_and_map(self, session, sink, fake_rm, profile):
+        h5py = pytest.importorskip("h5py")
+        from pathlib import Path
+        from resistamet_gui.session.spot_map import assemble_map
+
+        profile['output']['format'] = 'hdf5'
+        # The F84 path reports Rs through the thickness; without one it is NaN.
+        profile['measurement']['fpp_thickness_um'] = 100.0
+        spot = {'map_id': 'wafer7', 'index': 1, 'label': 'rim', 'x_mm': 20.0, 'y_mm': 0.0,
+                'angle_deg': 90.0}
+        session.start(_on_a_wafer(profile, samples=3), 'four_point', 'wafer1', 'alice', spot=spot)
+        assert _wait_for(lambda: session.state == 'idle')
+
+        path = sink.of_type('run_ended')[0].payload['path']
+        complete = sink.of_type('spot_complete')[0].payload
+        with h5py.File(path, 'r') as handle:
+            attrs = dict(handle.attrs)
+        assert attrs['spot.map_id'] == 'wafer7'
+        assert attrs['spot.label'] == 'rim'
+        assert attrs['spot.sample.shape'] == 'circle'
+        assert attrs['spot.edge_clearance_s'] > 0
+        assert attrs['spot_stats.n'] == 3
+        assert attrs['spot_stats.rs.mean'] == complete['stats']['rs']['mean']
+
+        found = assemble_map(Path(path).parent, 'wafer7')
+        assert [s.label for s in found.spots] == ['rim']
+        assert found.spots[0].stats.rs.mean == complete['stats']['rs']['mean']
+        assert (Path(path).parent / 'wafer7_map.json').exists()
