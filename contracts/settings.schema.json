@@ -805,7 +805,7 @@
     },
     "SweepSettings": {
       "additionalProperties": true,
-      "description": "Bulk linear sweep, run by the instrument's own sweep engine.\n\nStart/stop keep the +/-200 V bounds for both source types, as the widgets\ndo today; source-aware bounds for them are a follow-up.",
+      "description": "Bulk linear sweep, run by the instrument's own sweep engine.\n\nStart, stop, step and compliance change unit with ``sweep_source``. Their\n``ge``/``le`` are the wider of the two units' limits -- the PySide6 spin\nboxes', which do not follow the source -- and the validators below apply\nthe limit of the unit the value is actually in. For a headless client\nthe model is the only gate: without them a current-sourced sweep \"to\n200\" validated, and 200 there is amperes.",
       "properties": {
         "sweep_compliance": {
           "default": 0.1,
