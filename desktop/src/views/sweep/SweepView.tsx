@@ -10,6 +10,7 @@ import { useApi } from "../../app/AppContext";
 import { FIELD_META, type Mode } from "../../generated/settings";
 import { MODE_FIELDS, MODE_LABEL, MODE_TIMING, TIMING_FIELDS } from "../../lib/fields";
 import { ApiError, type Resolved } from "../../lib/api";
+import { NAME_THE_SAMPLE } from "../../lib/copy";
 import { formatEngineering } from "../../lib/format";
 import { useSession } from "../../state/session";
 import { fitResistance, useSweep } from "../../state/sweep";
@@ -148,7 +149,7 @@ export function SweepView() {
         {error ? <Notice tone="danger">{error}</Notice> : null}
         {reset ? <Notice tone="info">{reset}</Notice> : null}
         {running && !thisRunning ? <Notice tone="info">Another run is in progress.</Notice> : null}
-        {ui.sampleName.trim() === "" && !running ? <Notice tone="info">Name the sample in the top bar to enable the sweep.</Notice> : null}
+        {ui.sampleName.trim() === "" && !running ? <Notice tone="info">{NAME_THE_SAMPLE}</Notice> : null}
         {resolved?.hazard?.hazardous && !running ? (
           <Notice tone="warn">
             {resolved.hazard.reason} = {resolved.hazard.voltage_v} V is at or above the {resolved.hazard.threshold_v} V touch-safety
