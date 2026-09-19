@@ -105,6 +105,16 @@
   white-space: nowrap;
 }
 
+/* After the run: the closing reading, visibly not live. */
+.readout[data-final="true"] .readoutValue {
+  color: var(--fg-muted);
+}
+
+.readoutFinal {
+  margin-left: auto;
+  align-self: flex-start;
+}
+
 .readoutCell[data-primary="true"] .readoutValue {
   font-size: var(--text-readout);
   font-weight: 500;
