@@ -1032,3 +1032,70 @@ class TestSpotRoundTripsThroughHdf5:
         assert [s.label for s in found.spots] == ['rim']
         assert found.spots[0].stats.rs.mean == complete['stats']['rs']['mean']
         assert (Path(path).parent / 'wafer7_map.json').exists()
+
+
+class TestASpotCheckThatRaises:
+    """run_ended is the last event of every run, and the lock comes back."""
+
+    SPOT = {'map_id': 'wafer7', 'index': 0, 'label': 'centre', 'x_mm': 0.0, 'y_mm': 0.0}
+
+    def _assert_refused_and_free(self, session, sink, fake_rm, profile):
+        assert _wait_for(lambda: session.state == 'idle')
+        assert sink.types()[0] == 'run_started'
+        assert sink.types()[-1] == 'run_ended'
+        ended = sink.events[-1].payload
+        assert (ended['reason'], ended['ok'], ended['path']) == ('spot_refused', False, None)
+        assert fake_rm.opened == []
+        # Another process would be refused while the lock is held; taking it
+        # here proves the refused run let go.
+        from resistamet_gui.session.instrument_lock import HeldInstrument
+        HeldInstrument(profile['measurement']['gpib_address']).release()
+
+    @pytest.mark.parametrize("failure", [OverflowError("math range error"),
+                                         TypeError("not a number"), RuntimeError("anything")])
+    def test_any_exception_is_a_refusal(self, session, sink, fake_rm, profile, monkeypatch,
+                                         failure):
+        from resistamet_gui.session import continuous_run
+
+        def explode(settings):
+            raise failure
+        monkeypatch.setattr(continuous_run, 'spot_record_from_settings', explode)
+        session.start(_on_a_wafer(profile), 'four_point', 'wafer1', 'alice', spot=self.SPOT)
+        self._assert_refused_and_free(session, sink, fake_rm, profile)
+        error = sink.of_type('error')[0].payload
+        assert error['code'] == 'spot_invalid'
+        assert str(failure) in error['message']
+
+    def test_a_null_threshold_in_hand_built_settings(self, sink, fake_rm, profile):
+        """float(None): a TypeError, not the ValueError the check used to expect."""
+        from resistamet_gui.session.continuous_run import ContinuousRun
+        from resistamet_gui.session.control import RunControl
+        from resistamet_gui.session.emitter import EventEmitter
+
+        settings = _on_a_wafer(profile)
+        settings['measurement']['fpp_edge_warn_pct'] = None
+        settings['spot'] = dict(self.SPOT)
+        ContinuousRun('four_point', 'wafer1', 'alice', settings, RunControl(),
+                      EventEmitter(sink)).execute()
+
+        assert sink.types()[-1] == 'run_ended'
+        assert sink.events[-1].payload['reason'] == 'spot_refused'
+        assert [e.payload['code'] for e in sink.of_type('error')] == ['spot_invalid']
+        assert fake_rm.opened == []
+        from resistamet_gui.session.instrument_lock import HeldInstrument
+        HeldInstrument(settings['measurement']['gpib_address']).release()
+
+    def test_a_payload_the_event_model_rejects(self, session, sink, fake_rm, profile, monkeypatch):
+        """The check's own emit is inside the guard too."""
+        from resistamet_gui.session import continuous_run, spot_record
+
+        def off_sample_with_a_bad_number(settings):
+            record = spot_record.spot_record_from_settings(settings)
+            position = spot_record.SpotPosition(edge_clearance_s='not a number')
+            return spot_record.SpotRecord(
+                spot=record.spot, geometry=record.geometry, angle_deg=0.0,
+                position_correction='warn', edge_warn_pct=1.0, position=position)
+        monkeypatch.setattr(continuous_run, 'spot_record_from_settings',
+                            off_sample_with_a_bad_number)
+        session.start(_on_a_wafer(profile), 'four_point', 'wafer1', 'alice', spot=self.SPOT)
+        self._assert_refused_and_free(session, sink, fake_rm, profile)
