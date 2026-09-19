@@ -64,7 +64,7 @@ function SafetyPrompt({ prompt }: Props) {
             disabled={busy}
             onClick={() => void answer("acknowledge", silence ? { silence_for_profile: true } : {})}
           >
-            Acknowledge and energise
+            Acknowledge and energize
           </Button>
         </>
       }
@@ -73,7 +73,7 @@ function SafetyPrompt({ prompt }: Props) {
         <div className={`${styles.safetyVoltage} num`}>{detail.voltage_v ?? "—"} V</div>
         <p>
           {detail.reason ?? "The configured voltage"} is at or above the {detail.threshold_v ?? 30} V touch-safety threshold
-          (IEC 61010-1 SELV). Nothing is energised yet.
+          (IEC 61010-1 SELV). Output is off.
         </p>
         <label className={styles.checkbox}>
           <input type="checkbox" checked={silence} onChange={(e) => setSilence(e.target.checked)} />

@@ -14,6 +14,7 @@ import { FIELD_META, MODE_MODEL, type Mode } from "../../generated/settings";
 import { MODE_FIELDS, MODE_LABEL, MODE_TIMING, TIMING_FIELDS } from "../../lib/fields";
 import type { Resolved } from "../../lib/api";
 import { ApiError } from "../../lib/api";
+import { NAME_THE_SAMPLE } from "../../lib/copy";
 import { formatElapsed, formatEngineering } from "../../lib/format";
 import { useSession } from "../../state/session";
 import { useLatestSample } from "../../state/samples";
@@ -219,7 +220,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
         {otherModeRunning ? (
           <Notice tone="info">A {MODE_LABEL[status!.mode!]} run is in progress. Stop it before starting another.</Notice>
         ) : null}
-        {ui.sampleName.trim() === "" && !locked ? <Notice tone="info">Name the sample in the top bar to enable Start.</Notice> : null}
+        {ui.sampleName.trim() === "" && !locked ? <Notice tone="info">{NAME_THE_SAMPLE}</Notice> : null}
         {hazard && !locked ? (
           <Notice tone="warn">
             {hazard.reason} = {hazard.voltage_v} V is at or above the {hazard.threshold_v} V touch-safety threshold. You will be asked to
