@@ -63,8 +63,10 @@ class MapSpot(EventModel):
     x_mm: Optional[float] = None
     y_mm: Optional[float] = None
     angle_deg: Optional[float] = None
-    #: Present when the run knew the spot's position on a bounded sample.
+    #: Present when the run knew the spot's position on a bounded sample:
+    #: against the outline's centre, and against the factor the rows applied.
     relative_error: Optional[float] = None
+    relative_error_rows: Optional[float] = None
     edge_clearance_s: Optional[float] = None
     sample: Optional[str] = None
     started_at: Optional[str] = None
@@ -260,6 +262,7 @@ def _map_spot(path: Path, meta: Dict[str, Any], stats: SpotStats) -> MapSpot:
         y_mm=meta.get('spot.y_mm'),
         angle_deg=meta.get('spot.angle_deg'),
         relative_error=meta.get('spot.relative_error'),
+        relative_error_rows=meta.get('spot.relative_error_rows'),
         edge_clearance_s=meta.get('spot.edge_clearance_s'),
         sample=None if meta.get('sample') is None else str(meta.get('sample')),
         started_at=None if meta.get('started_at') is None else str(meta.get('started_at')),
