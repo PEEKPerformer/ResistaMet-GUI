@@ -482,18 +482,21 @@ class Controller:
         try:
             data = self._transport.bulk_in_raw(data_buffer, int(wait_s * 1000))
             reply_wait = SHORT_WAIT_S  # the reply follows the data within a millisecond
-        except TransportTimeout:
+        except TransportTimeout as expired:
             # §5.11: the device still owes both transfers; make it finish now.
+            # What the transport had received before its wait ran out (the
+            # transport reports a partial transfer this way) stays.
             self._host_stopped = True
             self._control(t.STOP_REQUEST)
             reply_wait = RECOVERY_WAIT_S
             try:
-                data = self._transport.bulk_in_raw(data_buffer, int(RECOVERY_WAIT_S * 1000))
-            except TransportTimeout:
+                data = expired.partial + self._transport.bulk_in_raw(data_buffer - len(expired.partial),
+                                                                     int(RECOVERY_WAIT_S * 1000))
+            except TransportTimeout as still:
                 # Whether a stopped 0x0b completes its data transfer is not
                 # established (a timed-out one does, with zero bytes). The
                 # reply's count decides whether anything was lost.
-                data = b''
+                data = expired.partial + still.partial
         return data, self._reply_or_stop(p.SMALL_REPLY_BUFFER, reply_wait)
 
     def command(self, command_bytes: bytes,

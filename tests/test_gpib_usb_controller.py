@@ -907,6 +907,34 @@ class TestRawRead:
         assert waits == [int((0.01 + 4096 / RAW_TRANSFER_MIN_RATE_BPS) * 1000), int(RECOVERY_WAIT_S * 1000)]
         assert transport.timeouts[-1] == ('in', 512, int(RECOVERY_WAIT_S * 1000))
 
+    def test_partial_data_at_the_host_wait_is_kept_and_completed_after_the_stop(self):
+        # The transport received 4 bytes when its wait expired (pyusb's partial count); after the
+        # stop the device completes the transfer with 2 more and the reply counts 6.
+        controller, transport = attached([
+            ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
+            ('raw_in', TransportTimeout('host wait', partial=b'PART'), 4608),
+            STOP,
+            ('raw_in', b'IA', 4604),
+            ('in', raw_read_reply(4096, 6, end=False, error=1), 512),
+        ], infinite_wait_s=0.01)
+        with pytest.raises(GpibTimeout) as info:
+            controller.read_raw(4096, timeout_s=None)
+        assert info.value.partial == b'PARTIA' and info.value.code == 1
+        transport.assert_done()
+
+    def test_partial_data_with_nothing_more_after_the_stop(self):
+        controller, transport = attached([
+            ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
+            ('raw_in', TransportTimeout('host wait', partial=b'PART'), 4608),
+            STOP,
+            ('raw_in', TransportTimeout('nothing more'), 4604),
+            ('in', raw_read_reply(4096, 4, end=False, error=1), 512),
+        ], infinite_wait_s=0.01)
+        with pytest.raises(GpibTimeout) as info:
+            controller.read_raw(4096, timeout_s=None)
+        assert info.value.partial == b'PART'
+        transport.assert_done()
+
     def test_stopped_read_whose_data_never_completes_is_fine_when_nothing_was_read(self):
         controller, transport = attached([
             ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
