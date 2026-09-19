@@ -87,21 +87,23 @@ On Windows the route is NI-VISA with NI-488.2, not this driver. The frozen Windo
 
 | | Status |
 |---|---|
-| Attach sequence, identify, resistance runs, stop during settling, immediate restart, shutdown mid-run with the output confirmed off, compliance detection | Run on a GPIB-USB-HS with a Keithley 2400 on macOS, 2026-09-18. These use the *framed* transfer instructions. |
-| Read requests of more than 1024 bytes and writes of more than 2048 bytes, which go through the adapter's *raw* transfer instructions; serial poll as its own instruction, service-request wait, the `GPIB0::INTFC` board resource | Written on 2026-09-19 from USB captures of NI's own driver. **Not yet run on an adapter.** |
+| Attach sequence, identify, resistance runs, stop during settling, immediate restart, shutdown mid-run with the output confirmed off, compliance detection | Run on a GPIB-USB-HS with a Keithley 2400 on macOS, 2026-09-18, with every transfer on the adapter's *framed* read and write instructions. **This is what the driver does by default.** |
+| The instructions NI's own driver uses: *raw* reads and writes on the adapter's second endpoint pair, and serial poll as a single instruction | Written on 2026-09-19 from USB captures of NI's driver. **Not yet run on an adapter.** Off by default. |
+| Service-request wait, the `GPIB0::INTFC` board resource | Written on 2026-09-19. **Not yet run on an adapter.** ResistaMet's own measurements use neither. |
 | GPIB-USB-HS+, GPIB-USB-B, KUSB-488A, Measurement Computing USB-488 | In the device table; never connected. A GPIB-USB-B that has not had its firmware loaded is listed with `needs_firmware: true` and cannot be driven. |
 | Linux | The same code; never run on hardware. The driver detaches a kernel driver that has claimed the adapter, and your user needs permission to open the USB device. |
 
-!!! warning "With default settings every read takes the path that has not met hardware"
-    Which read instruction the driver sends depends on how many bytes the caller *asks* for, not on how many arrive: a request of 1025 bytes or more goes out as a raw read. PyVISA asks for 20 480 bytes on every read, so with raw transfers enabled, which is the default, every reply, including a single `:READ?`, comes in through the raw path. The runs of 2026-09-18 were made before that path existed. Until it has been checked on an adapter, the configuration that matches what ran on the bench is the one with raw transfers switched off.
+The default matters because of how reads are sized. Which read instruction goes out depends on how many bytes the caller *asks* for, not on how many arrive, and PyVISA asks for 20 480 bytes on every read. With NI's instructions switched on, every reply, a single `:READ?` included, would come in through the raw path that has not met hardware. So they stay off until they have been checked on an adapter, and every transfer uses the framed instructions that ran on the bench, in chunks where needed.
 
-To switch them off, set
+To try NI's instructions, set
 
 ```bash
-export RESISTAMET_GPIB_RAW_TRANSFERS=0
+export RESISTAMET_GPIB_NI_INSTRUCTIONS=1
 ```
 
-before starting ResistaMet (`0`, `false`, `no` or `off`). Every transfer then uses the framed instructions, in chunks. The variable is read each time a board is opened. Writes are not affected in practice: only a write of 2049 bytes or more uses the raw path, and ResistaMet's SCPI commands are far shorter.
+before starting ResistaMet (`1`, `true`, `yes` or `on`; unset or anything else keeps the framed paths). The variable is read each time a board is opened, and the driver's attach log line names the mode in force. The switch was first called `RESISTAMET_GPIB_RAW_TRANSFERS`; that name is still read, with the same meaning, when the new one is not set. While the raw paths were the default, `RESISTAMET_GPIB_RAW_TRANSFERS=0` was the way back to the framed ones; it still selects them, and is no longer needed.
+
+`RESISTAMET_DISABLE_NI_USB=1` keeps the driver from registering at all, so pyvisa-py behaves as shipped. It exists for tests and for bug reports.
 
 ### Behavior to know about
 
@@ -132,7 +134,7 @@ Resource-name grammar (`INTFC` in capitals; `[board]` defaults to 0 and is the `
 | Serial (USB) | Windows | `PRLGX-ASRL[board]::5::INTFC` for COM5: the port number alone, not `COM5` |
 | Ethernet | any | `PRLGX-TCPIP[board]::<host>[::port]::INTFC`, port 1234 by default |
 
-For example `PRLGX-ASRL::/dev/cu.usbserial-PX12345::INTFC` with the instrument at `GPIB0::24::INSTR`. A value that does not match `PRLGX-ASRL…::INTFC` or `PRLGX-TCPIP…::INTFC` is rejected when the setting is saved through the API.
+For example `PRLGX-ASRL::/dev/cu.usbserial-PX12345::INTFC` with the instrument at `GPIB0::24::INSTR`. A value that does not match `PRLGX-ASRL…::INTFC` or `PRLGX-TCPIP…::INTFC` is rejected when the setting is saved, and nothing else is ever opened as an interface: a scan or identify that names, say, `ASRL3::INSTR` as the interface is refused without touching that port.
 
 - It needs the **pyvisa-py** backend. Under a vendor library the setting is ignored and a warning is logged, because NI-VISA has no such resource class.
 - If the interface cannot be opened, the error names it (`Could not open GPIB interface PRLGX-ASRL…`) instead of a later "instrument not found". A scan or identify through the API answers 503 with that text.
