@@ -401,12 +401,11 @@ class ContinuousRun:
     def _spot_refused(self) -> bool:
         """Resolve this run's spot against the sample. True = do not start.
 
-        This runs after run_started and outside execute()'s main try, with the
-        instrument lock held. Whatever goes wrong in it -- a settings value of
-        the wrong type, arithmetic that overflows, a payload the event model
-        rejects -- must come out as a refusal, because the caller's refusal
-        path is what releases the lock and emits the run_ended every run is
-        promised. A spot that cannot be checked is a spot that cannot be
+        This runs after run_started with the instrument lock held. Whatever
+        goes wrong in it -- a settings value of the wrong type, arithmetic
+        that overflows, a payload the event model rejects -- comes out as a
+        refusal with the spot's own error code rather than as an unexpected
+        worker error. A spot that cannot be checked is a spot that cannot be
         recorded.
         """
         try:
@@ -471,47 +470,44 @@ class ContinuousRun:
     def execute(self):
         self.running = True
         self.paused = False
-        self._events.emit('run_started', {
-            'mode': self.mode,
-            'sample_name': self.sample_name,
-            'username': self.username,
-            'settings': self.settings,
-            'started_at': time.time(),
-        })
-        address = self.settings.get('measurement', {}).get('gpib_address', '')
-        try:
-            self._instrument_lock = self._enter_instrument_lock(address)
-        except InstrumentBusy as exc:
-            self._control.finish('instrument_busy')
-            self._events.error('instrument_busy', 'smu', str(exc))
-            self._events.emit('run_ended', {
-                'reason': 'instrument_busy', 'ok': False, 'samples': 0,
-                'duration_s': 0.0, 'path': None,
-            })
-            return
-
-        if self._spot_refused():
-            self._control.finish('spot_refused')
-            self._release_instrument_lock()
-            self._events.emit('run_ended', {
-                'reason': 'spot_refused', 'ok': False, 'samples': 0,
-                'duration_s': 0.0, 'path': None,
-            })
-            return
-
-        if self._safety_prompt_declined():
-            self._control.finish('cancelled')
-            self._release_instrument_lock()
-            self._events.emit('run_ended', {
-                # finish() keeps the first reason, so a timeout reports as one.
-                'reason': self._control.finish_reason, 'ok': False, 'samples': 0,
-                'duration_s': 0.0, 'path': None,
-            })
-            return
         instrument_ready = False
         file_ready = False
+        # True when the run is turned away before it reaches the instrument:
+        # reported as not ok whatever the reason, a stop included.
+        refused = False
 
+        # Everything from run_started on is inside this try. The steps before
+        # the connect used to sit above it, and a fault in one of them left
+        # the run without a run_ended and the instrument lock held for the
+        # life of the process.
         try:
+            self._events.emit('run_started', {
+                'mode': self.mode,
+                'sample_name': self.sample_name,
+                'username': self.username,
+                'settings': self.settings,
+                'started_at': time.time(),
+            })
+            address = self.settings.get('measurement', {}).get('gpib_address', '')
+            try:
+                self._instrument_lock = self._enter_instrument_lock(address)
+            except InstrumentBusy as exc:
+                refused = True
+                self._control.finish('instrument_busy')
+                self._events.error('instrument_busy', 'smu', str(exc))
+                return
+
+            if self._spot_refused():
+                refused = True
+                self._control.finish('spot_refused')
+                return
+
+            if self._safety_prompt_declined():
+                refused = True
+                # finish() keeps the first reason, so a timeout reports as one.
+                self._control.finish('cancelled')
+                return
+
             measurement_settings = self.settings['measurement']
             file_settings = self.settings['file']
 
@@ -1022,7 +1018,8 @@ class ContinuousRun:
             reason = self._control.finish_reason or 'completed'
             self._events.emit('run_ended', {
                 'reason': reason,
-                'ok': reason in ('completed', 'target_samples', 'duration', 'user_stop'),
+                'ok': (not refused and
+                       reason in ('completed', 'target_samples', 'duration', 'user_stop')),
                 'samples': samples,
                 'duration_s': time.time() - self.start_time if self.start_time else 0.0,
                 'path': self.filename or None,

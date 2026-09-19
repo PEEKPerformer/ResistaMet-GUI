@@ -157,39 +157,40 @@ class VdpRun:
 
     def execute(self) -> None:
         self.running = True
-        # First event of the run, before the lock and the safety prompt, as
-        # in ContinuousRun: a client learns the mode and the settings from
-        # it, and a run refused at either step is still a run that began.
-        self._events.emit('run_started', {
-            'mode': self.MODE,
-            'sample_name': self.sample_name,
-            'username': self.username,
-            'settings': self.settings,
-            'started_at': time.time(),
-        })
-        address = self.settings.get('measurement', {}).get('gpib_address', '')
+        # True when the run is turned away before it reaches the instrument:
+        # reported as not ok whatever the reason, a stop included.
+        refused = False
+        # Everything from run_started on is inside this try, so a fault in
+        # any step still ends in the finally below: the lock released and a
+        # run_ended sent.
         try:
-            if self._instrument_lock is None:
-                self._instrument_lock = HeldInstrument(address)
-        except InstrumentBusy as exc:
-            self._control.finish('instrument_busy')
-            self._events.error('instrument_busy', 'smu', str(exc))
-            self._events.emit('run_ended', {
-                'reason': 'instrument_busy', 'ok': False, 'samples': 0,
-                'duration_s': 0.0, 'path': None,
+            # First event of the run, before the lock and the safety prompt,
+            # as in ContinuousRun: a client learns the mode and the settings
+            # from it, and a run refused at either step is still a run that
+            # began.
+            self._events.emit('run_started', {
+                'mode': self.MODE,
+                'sample_name': self.sample_name,
+                'username': self.username,
+                'settings': self.settings,
+                'started_at': time.time(),
             })
-            return
+            address = self.settings.get('measurement', {}).get('gpib_address', '')
+            try:
+                if self._instrument_lock is None:
+                    self._instrument_lock = HeldInstrument(address)
+            except InstrumentBusy as exc:
+                refused = True
+                self._control.finish('instrument_busy')
+                self._events.error('instrument_busy', 'smu', str(exc))
+                return
 
-        if self._safety_prompt_declined():
-            self._control.finish('cancelled')
-            self._release_instrument_lock()
-            self._events.emit('run_ended', {
+            if self._safety_prompt_declined():
+                refused = True
                 # finish() keeps the first reason, so a timeout reports as one.
-                'reason': self._control.finish_reason, 'ok': False, 'samples': 0,
-                'duration_s': 0.0, 'path': None,
-            })
-            return
-        try:
+                self._control.finish('cancelled')
+                return
+
             self._connect_and_configure()
             self._run_geometries()
             self._compute_and_emit_result()
@@ -210,7 +211,7 @@ class VdpRun:
             reason = self._control.finish_reason or 'completed'
             self._events.emit('run_ended', {
                 'reason': reason,
-                'ok': reason in ('completed', 'user_stop'),
+                'ok': not refused and reason in ('completed', 'user_stop'),
                 'samples': samples,
                 'duration_s': time.time() - self._start_time if self._start_time else 0.0,
                 'path': self.filename or None,
