@@ -458,8 +458,10 @@ class TestSafetyWarningSilence:
 
     @staticmethod
     def _hazardous(main_window, username):
-        # A profile of its own per test: the module's ConfigManager binds one
-        # config path for the whole module, so profiles leak between tests.
+        # A freshly added profile, so the reload below proves the save reached
+        # this user's entry and not only the fixture's "test_user". Nothing
+        # carries over between tests either way: main_window builds its
+        # config under the test's own tmp_path.
         main_window.config_manager.add_user(username)
         main_window.current_user = username
         main_window.user_settings = main_window.config_manager.get_user_settings(username)
