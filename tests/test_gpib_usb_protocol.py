@@ -585,6 +585,20 @@ class TestAttachData:
         assert last.request_type == 0xC1 and last.index == 1 and last.length == 9
         assert expected == h('f8 01 00 00 00 01 00 00 00')
 
+    def test_raw_endpoint_pairs(self):
+        # §1.2: the alternate pair on the HS family and the HS+; the USB-B has only an alternate IN.
+        for pid in (t.PID_HS, t.PID_KUSB_488A, t.PID_MC_USB_488):
+            assert (t.MODELS[pid].endpoint_out_raw, t.MODELS[pid].endpoint_in_raw) == (0x06, 0x88)
+            assert t.MODELS[pid].raw_endpoints
+        assert (t.MODELS[t.PID_HS_PLUS].endpoint_out_raw, t.MODELS[t.PID_HS_PLUS].endpoint_in_raw) == (0x04, 0x85)
+        assert not t.MODELS[t.PID_USB_B].raw_endpoints and t.MODELS[t.PID_USB_B].endpoint_in_raw is None
+
+    def test_srq_acknowledge_request(self):
+        # §10.4.2: bmRequestType 0x40, bRequest 0x3b, wValue 0, wIndex 0, wLength 0.
+        assert (t.SRQ_ACKNOWLEDGE.request_type, t.SRQ_ACKNOWLEDGE.request, t.SRQ_ACKNOWLEDGE.value,
+                t.SRQ_ACKNOWLEDGE.index, t.SRQ_ACKNOWLEDGE.length) == (0x40, 0x3B, 0, 0, 0)
+        assert t.INTERRUPT_READ_LENGTH == 64
+
     def test_models_and_endpoints(self):
         assert t.MODELS[t.PID_HS].endpoint_out == 0x02 and t.MODELS[t.PID_HS].endpoint_in == 0x84
         assert t.MODELS[t.PID_HS_PLUS].endpoint_out == 0x01 and t.MODELS[t.PID_HS_PLUS].endpoint_in == 0x82

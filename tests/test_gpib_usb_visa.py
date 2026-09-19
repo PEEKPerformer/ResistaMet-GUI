@@ -215,6 +215,20 @@ class SimulatedAdapter:
         reply, self.reply = self.reply, b''
         return reply
 
+    # The alternate pair and the interrupt endpoint; behaviour is added with the
+    # instructions that use them.
+    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> None:
+        raise AssertionError('unexpected raw bulk OUT of %d bytes' % len(data))
+
+    def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
+        raise AssertionError('unexpected raw bulk IN of %d bytes' % length)
+
+    def interrupt_in(self, length: int, timeout_ms: int) -> bytes:
+        raise AssertionError('unexpected interrupt read')
+
+    def control_out(self, request, value, index, data, timeout_ms, request_type=0x40) -> None:
+        raise AssertionError('unexpected control OUT 0x%02x' % request)
+
     def close(self) -> None:
         self.closed = True
 
