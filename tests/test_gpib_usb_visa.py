@@ -30,6 +30,7 @@ from resistamet_gui.gpib_usb import protocol as p  # noqa: E402
 from resistamet_gui.gpib_usb import tables as t  # noqa: E402
 from resistamet_gui.gpib_usb import controller as controller_module  # noqa: E402
 from resistamet_gui.gpib_usb import transport, visa_session  # noqa: E402
+from resistamet_gui.gpib_usb import boards  # noqa: E402
 from resistamet_gui.gpib_usb.boards import BoardRegistry  # noqa: E402
 from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportError  # noqa: E402
 from resistamet_gui.gpib_usb.visa_intfc import NiUsbGpibIntfcDispatch  # noqa: E402
@@ -521,6 +522,26 @@ class TestInstrumentSession:
         assert inst.read() == 'KEITHLEY INSTRUMENTS INC.,'
         assert adapter.instructions(p.OP_READ_RAW)[-1][1:3] == h('14 2c')
         inst.close()
+
+    def test_the_environment_switch_keeps_every_transfer_framed(self, rm, adapter, monkeypatch):
+        monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '0')
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
+        inst.write('*CLS;' * 500)
+        assert adapter.instructions(p.OP_READ_RAW) == [] and adapter.instructions(p.OP_WRITE_RAW) == []
+        assert adapter.instructions(p.OP_READ)[-1][4:6] == h('00 b0')     # the 20480-byte chunk, framed
+        assert len(adapter.instructions(p.OP_WRITE)[-1]) == 8 + 2502 + 2 + 4
+        inst.close()
+
+    def test_the_environment_switch_spellings(self, monkeypatch):
+        for value in ('0', 'false', 'No', ' off '):
+            monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, value)
+            assert boards.raw_transfers_enabled() is False, value
+        for value in ('1', 'true', 'yes', ''):
+            monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, value)
+            assert boards.raw_transfers_enabled() is True, value
+        monkeypatch.delenv(boards.RAW_TRANSFERS_ENV)
+        assert boards.raw_transfers_enabled() is True
 
     def test_a_small_chunk_size_reads_through_the_framed_instruction(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')

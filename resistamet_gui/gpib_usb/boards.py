@@ -13,6 +13,7 @@ closed on the ``release`` that brings its session count to zero. Nothing
 here knows about pyvisa; ``visa_session`` sits on top.
 """
 import logging
+import os
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -26,6 +27,15 @@ logger = logging.getLogger(__name__)
 
 #: Every primary address; the controller skips its own.
 PROBE_ADDRESSES = tuple(range(31))
+#: Set to 0 / false / no / off to keep every transfer on the framed 0x0a / 0x0d
+#: instructions (the paths proven on the bench first) instead of the 0x0b /
+#: 0x0e raw paths NI's driver uses for large transfers. Read once per board
+#: open, here and nowhere else.
+RAW_TRANSFERS_ENV = 'RESISTAMET_GPIB_RAW_TRANSFERS'
+
+
+def raw_transfers_enabled() -> bool:
+    return os.environ.get(RAW_TRANSFERS_ENV, '1').strip().lower() not in ('0', 'false', 'no', 'off')
 
 
 def _linux_gpib_board_count() -> int:
@@ -137,7 +147,8 @@ class BoardRegistry:
             entry = self._boards[board]
             if entry.controller is None:
                 entry.controller = self._open(entry.info)
-                logger.info('GPIB%s: %s attached', board, entry.info.label)
+                logger.info('GPIB%s: %s attached (%s transfers)', board, entry.info.label,
+                            'raw' if entry.controller.raw_transfers else 'framed')
             entry.sessions += 1
             return entry.controller
 
@@ -146,7 +157,7 @@ class BoardRegistry:
         controller: Optional[Controller] = None
         try:
             usb_transport = self._open_transport(info)
-            controller = Controller(usb_transport, info.product_id)
+            controller = Controller(usb_transport, info.product_id, raw_transfers=raw_transfers_enabled())
             controller.attach()
         except Exception:  # noqa: BLE001 - whatever failed, the claimed interface must not leak
             if controller is not None:

@@ -113,7 +113,11 @@ class Controller:
     def __init__(self, transport: Transport, product_id: int, *,
                  own_address: int = 0, t1_ns: int = 2000,
                  infinite_wait_s: float = DEFAULT_INFINITE_WAIT_S,
+                 raw_transfers: bool = True,
                  sleep: Callable[[float], None] = time.sleep) -> None:
+        """``raw_transfers`` False keeps every transfer on the framed 0x0a / 0x0d
+        paths even on a model with the alternate pair, for a like-for-like
+        comparison on the bench; the serial poll and the SRQ wait are unaffected."""
         model = t.MODELS.get(product_id)
         if model is None:
             raise ValueError('unsupported product id 0x%04x' % product_id)
@@ -124,6 +128,9 @@ class Controller:
             raise ValueError('own address %d outside 0..30' % own_address)
         self._transport = transport
         self._model = model
+        #: Whether 0x0b / 0x0e are used: the model must have the alternate pair and
+        #: the caller must not have switched them off.
+        self._raw = bool(raw_transfers) and model.raw_endpoints
         self._own_address = own_address
         self._t1_ns = t1_ns
         self._infinite_wait_s = infinite_wait_s
@@ -157,6 +164,11 @@ class Controller:
     @property
     def own_address(self) -> int:
         return self._own_address
+
+    @property
+    def raw_transfers(self) -> bool:
+        """Whether large transfers take the 0x0b / 0x0e instructions (§10)."""
+        return self._raw
 
     @property
     def system_controller(self) -> bool:
@@ -344,7 +356,7 @@ class Controller:
     def _write_bytes(self, data: bytes, code: int, limit: Optional[float], send_eoi: bool,
                      eos_char: Optional[int]) -> int:
         """Write instructions of at most 0xffff bytes each, EOI only with the last (§5.1)."""
-        raw = self._model.raw_endpoints and len(data) > RAW_WRITE_MIN_BYTES
+        raw = self._raw and len(data) > RAW_WRITE_MIN_BYTES
         step = p.MAX_RAW_TRANSFER_BYTES if raw else p.MAX_TRANSFER_BYTES
         written = 0
         for start in range(0, len(data), step):
@@ -445,7 +457,7 @@ class Controller:
         while remaining > 0:
             count = min(remaining, p.MAX_TRANSFER_BYTES)
             try:
-                if self._model.raw_endpoints and count >= RAW_READ_MIN_BYTES:
+                if self._raw and count >= RAW_READ_MIN_BYTES:
                     data, end = self._raw_read_instruction(count, code, limit, eos, eos_8bit, termchar,
                                                            operation)
                 else:
@@ -685,7 +697,7 @@ class Controller:
             logger.debug('nothing to drain')
         except TransportError as exc:
             logger.debug('drain after a malformed reply failed: %s', exc)
-        if self._model.raw_endpoints:
+        if self._raw:
             # Data of an interrupted 0x0b, or the zero-length packet that ends
             # a full-length one, may still sit on the alternate IN (§10.1.4).
             try:
