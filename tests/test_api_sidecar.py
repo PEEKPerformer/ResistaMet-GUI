@@ -28,7 +28,11 @@ def _sidecar_env(tmp_path):
     checkout. PYTHONPATH keeps it importing this checkout from there."""
     home = tmp_path / 'home'
     home.mkdir(exist_ok=True)
-    env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
+    # RESISTAMET_DISABLE_NI_USB: `--check-visa bus` under pyvisa-py enumerates
+    # for real, and through the NI GPIB-USB driver that is an IFC pulse and a
+    # walk over every address of whatever bench the adapter is plugged into.
+    env = dict(os.environ, HOME=str(home), USERPROFILE=str(home),
+               RESISTAMET_DISABLE_NI_USB='1')
     env['PYTHONPATH'] = os.pathsep.join(filter(None, [str(_REPO), env.get('PYTHONPATH')]))
     return env
 
@@ -292,3 +296,5 @@ class TestCheckVisa:
         report = json.loads(result.stdout)
         assert result.returncode == 0
         assert isinstance(report.get('resources', report.get('resources_error')), (list, str))
+        # Enumerated by pyvisa-py alone: an attached NI adapter was not asked.
+        assert 'RESISTAMET_DISABLE_NI_USB=1' in result.stderr
