@@ -78,3 +78,43 @@ function splitRow(line: string): string[] {
   out.push(current);
   return out.map((s) => s.trim());
 }
+
+/** How a sweep file is drawn: current against voltage, one trace per leg. */
+export interface SweepPreview {
+  x: string;
+  y: string;
+  /** Row ranges, `to` exclusive: one for a one-way sweep, two for up-down. */
+  legs: { from: number; to: number }[];
+}
+
+/** The I-V axes of a sweep file, or null for any other file. A sweep file
+ *  has no elapsed time; its rows are the sweep's points in order. */
+export function sweepPreview(parsed: ParsedCsv): SweepPreview | null {
+  const voltage = parsed.data["V_source"];
+  const current = parsed.data["I_meas"];
+  if (!voltage || !current) return null;
+  const sourced = parsed.metadata["params.source_function"] === "current" ? current : voltage;
+  return { x: "V_source", y: "I_meas", legs: sweepLegs(sourced) };
+}
+
+/** Split a swept quantity where it turns round. The leg that comes back
+ *  starts at the first point after the last step forward, so a turning value
+ *  that is measured twice gives one point to each leg. */
+export function sweepLegs(sourced: number[]): { from: number; to: number }[] {
+  const legs: { from: number; to: number }[] = [];
+  let from = 0;
+  let heading = 0;
+  let lastStep = 0; // index reached by the last step in the leg's direction
+  for (let i = 1; i < sourced.length; i++) {
+    const step = Math.sign(sourced[i]! - sourced[i - 1]!);
+    if (step === 0 || Number.isNaN(step)) continue;
+    if (heading !== 0 && step !== heading) {
+      legs.push({ from, to: lastStep + 1 });
+      from = lastStep + 1;
+    }
+    heading = step;
+    lastStep = i;
+  }
+  if (sourced.length > 0) legs.push({ from, to: sourced.length });
+  return legs;
+}
