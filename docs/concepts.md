@@ -10,7 +10,7 @@ A **source measure unit (SMU)** can both source and measure on the same pair of 
 
 The maximum the *measured* quantity is allowed to reach before the instrument clamps. When you source 1 V into a short circuit, current would in principle be infinite; the **current compliance** prevents that by capping output current. Compliance protects both your DUT and the instrument.
 
-ResistaMet flags a row in the file's `compliance` column on either of two signs: bit 3 of the status word the instrument returns with each reading, or the limited quantity sitting at 99 % or more of its limit. The second test is what works in Resistance mode, where the 2400 and 2420 were found on the bench (2026-09-18) not to set the status bit; there the comparison is against the voltage limit the instrument reports after configuration, which with Auto range on is not the one you asked for. See [Data outputs → Resistance](outputs.md#resistance).
+ResistaMet flags a row in the file's `compliance` column on either of two signs: bit 3 of the status word the instrument returns with each reading, or the limited quantity sitting at 99 % or more of its limit. Resistance mode is the special case: the 2400 and 2420 were found on the bench (2026-09-18) not to set the status bit in the ohms function. In manual range the 99 % test, against the voltage limit the instrument reports after configuration, is therefore what flags a row. In Auto range the instrument moves its own limit with the ohms range, so there is nothing fixed to compare with, and a row is flagged only on the status bit or on the overflow value described [below](#compliance-magic-number-991-1037). See [Data outputs → Resistance](outputs.md#resistance).
 
 ## 2-wire vs 4-wire
 
@@ -104,7 +104,7 @@ The per-geometry bar chart on the vdP result panel color-codes the four R values
 
 ## Compliance "magic number" (9.91 × 10³⁷)
 
-When a reading exceeds range or hits compliance, the Keithley 2400 family returns `+9.91E+37` for that channel as a sentinel — IEEE 754 "not-a-number"-ish. ResistaMet does not rely on the sentinel: it flags compliance from the status word's bit 3 and from the 99 %-of-limit test described under [Compliance](#compliance), and writes the flag into the row's `compliance` column.
+When a reading exceeds range or hits compliance, the Keithley 2400 family returns `+9.91E+37` for that channel as a sentinel — IEEE 754 "not-a-number"-ish. ResistaMet flags compliance from the status word's bit 3 and from the 99 %-of-limit test described under [Compliance](#compliance); the sentinel itself is what flags a Resistance-mode row in Auto range, where neither of the other two signs is available.
 
 ## Touch-safety warning
 
