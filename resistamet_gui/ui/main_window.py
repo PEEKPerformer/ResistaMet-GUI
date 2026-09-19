@@ -20,6 +20,7 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as Navigation
 
 from ..buffers import EnhancedDataBuffer
 from ..config import ConfigManager
+from ..schema.map_session import MapSession
 from ..schema.resolve import resolve_run_settings
 from ..constants import (
     __version__,
@@ -867,6 +868,8 @@ class ResistanceMeterApp(QMainWindow):
         main_container._fpp_rows = []  # list of tuples (time, v, i, ratio, rs, rho, sigma, comp, event)
         main_container._fpp_spots = []  # list of dicts: {name, n, rows, rs_mean, rs_std, rho_mean, rho_std, sigma_mean, sigma_std}
         main_container._fpp_spot_counter = 1
+        # Which map the tab's runs belong to; the rule is in schema.map_session.
+        self._fpp_map = MapSession()
 
         # Stretch factor [0, 1] + setChildrenCollapsible(False) is enough now:
         # params holds its sizeHint width, right_panel claims the remainder.
@@ -2188,6 +2191,8 @@ class ResistanceMeterApp(QMainWindow):
             self.log_status(f"Error: Could not find UI for mode {mode}"); return
         try:
             current_settings = self.gather_settings_for_mode(mode)
+            if mode == 'four_point':
+                current_settings['spot'] = self._fpp_spot_for_run(sample_name)
         except ValueError as e:
             QMessageBox.critical(self, "Settings Error", f"Failed to gather settings: {e}")
             return
@@ -3325,6 +3330,16 @@ class ResistanceMeterApp(QMainWindow):
             if hasattr(widget, 'fpp_histogram'):
                 widget.fpp_histogram.clear_histogram()
 
+    def _fpp_spot_for_run(self, sample_name: str) -> Dict:
+        """The spot a four-point run started now is: the current name and counter.
+
+        Save Spot archives that spot afterwards and moves the counter on, so
+        the next run carries the next index.
+        """
+        w = self.tab_four_point
+        return self._fpp_map.spot_for_run(
+            self.current_user, sample_name, w._fpp_spot_counter, w.fpp_spot_name.text())
+
     def _save_fpp_spot(self):
         """Archive current readings as a named spot, reset for next position."""
         w = self.tab_four_point
@@ -3389,6 +3404,7 @@ class ResistanceMeterApp(QMainWindow):
             w.fpp_spot_name.setText("Spot 1")
         if hasattr(w, 'fpp_spots_table'):
             w.fpp_spots_table.setRowCount(0)
+        self._fpp_map.reset()
         self._clear_four_point_data()
         self.log_status("All spots and readings cleared.")
 
