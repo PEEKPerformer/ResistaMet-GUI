@@ -17,6 +17,7 @@ import export_contracts  # noqa: E402
 CONTRACTS = [
     ('settings', export_contracts.settings_schema),
     ('events', export_contracts.events_schema),
+    ('maps', export_contracts.maps_schema),
 ]
 
 
