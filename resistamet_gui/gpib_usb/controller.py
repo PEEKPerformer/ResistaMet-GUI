@@ -11,8 +11,9 @@ there are no background threads. Sequences built from these primitives
 
 Faults: a malformed reply or a USB error means the bulk pipes may be out of
 step (§8.2). The offending operation raises, the adapter is sent a stop
-request and its pipe drained, and the next operation re-runs the attach
-sequence before doing anything else. The adapter's own ways of ending an
+request and its pipe drained, and the next operation resets the bulk pipes
+and re-runs the attach sequence before doing anything else (the first
+attach resets nothing). The adapter's own ways of ending an
 instruction are not faults (§10.6.5-10.6.7): a STALL on the alternate OUT
 for a 0x0e that cannot start, a zero-length transfer on the alternate IN
 for a 0x0b that got nothing, a 0x10 reply without its result block. Each
@@ -794,9 +795,44 @@ class Controller:
         if self._resync_pending:
             logger.warning('%s: re-running the attach sequence after a fault', self._model.name)
             self._attached = False
+            self._clear_halts_after_fault()
             self.attach(self._system_controller)
         if not self._attached:
             raise AdapterNotReady('adapter is not attached')
+
+    def _clear_halts_after_fault(self) -> None:
+        """Reset the bulk pipes before a re-attach, so a halt does not outlive the fault.
+
+        A halted alternate OUT fails every later 0x0e until it is cleared,
+        and the attach sequence does not touch it. The OUT pair goes first
+        in NI's order (§10.6.5), then the IN pair; no capture shows a reset
+        of an IN pipe, or any reset outside the refused write. Only here:
+        the first attach of a healthy adapter is bench-proven as it is and
+        stays without. A reset that cannot be done is logged and the attach
+        goes ahead; if the pipe is still halted the attach fails and is
+        retried by the next operation.
+        """
+        model = self._model
+        alternate = model.raw_endpoints
+        for endpoint in (model.endpoint_out_raw if alternate else None, model.endpoint_out,
+                         model.endpoint_in, model.endpoint_in_raw if alternate else None):
+            if endpoint is not None:
+                self._clear_halt(endpoint)
+
+    def _clear_halt(self, endpoint: int) -> bool:
+        """Reset one pipe; False, with a log line, when that could not be done.
+
+        Never raises: every caller is already reporting or recovering from
+        another failure, which a transport without ``clear_halt``, or one
+        whose reset fails, must not replace.
+        """
+        try:
+            self._transport.clear_halt(endpoint)
+        except Exception as exc:  # noqa: BLE001 -- see the docstring
+            logger.warning('%s: clearing the halt on endpoint 0x%02x failed: %s: %s',
+                           self._model.name, endpoint, type(exc).__name__, exc)
+            return False
+        return True
 
     def _control(self, request: t.ControlRequest,
                  timeout_ms: int = t.CONTROL_TIMEOUT_MS) -> bytes:

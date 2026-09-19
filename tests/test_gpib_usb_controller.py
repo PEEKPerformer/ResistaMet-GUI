@@ -52,16 +52,21 @@ class ScriptedTransport:
         self.pos = 0
         self.closed = False
         self.sent: List[bytes] = []
+        #: Calls the script did not expect. Kept as well as raised: the controller's pipe
+        #: reset swallows whatever it is given, and ``assert_done`` must still fail.
+        self.off_script: List[str] = []
         #: ('out', opcode, timeout_ms) and ('in', length, timeout_ms) in call order.
         self.timeouts: List[Tuple[str, int, int]] = []
 
     def _next(self, kind: str, what: str) -> Tuple[Any, ...]:
         if self.pos >= len(self.script):
-            raise AssertionError('unexpected %s after the script ended: %s' % (kind, what))
+            self.off_script.append('unexpected %s after the script ended: %s' % (kind, what))
+            raise AssertionError(self.off_script[-1])
         step = self.script[self.pos]
-        self.pos += 1
         if step[0] != kind:
-            raise AssertionError('step %d: expected %r, got %s %s' % (self.pos, step[0], kind, what))
+            self.off_script.append('step %d: expected %r, got %s %s' % (self.pos + 1, step[0], kind, what))
+            raise AssertionError(self.off_script[-1])
+        self.pos += 1
         return step
 
     def control_in(self, request, value, index, length, timeout_ms,
@@ -135,6 +140,7 @@ class ScriptedTransport:
         self.closed = True
 
     def assert_done(self) -> None:
+        assert not self.off_script, self.off_script
         remaining = self.script[self.pos:]
         assert not remaining, 'script steps not consumed: %r' % (remaining,)
 
@@ -213,6 +219,15 @@ def attach_script(take_control_error: int = 5) -> List[Tuple[Any, ...]]:
         ('out', p.register_write_message([t.REN_ON_WRITE])), ('in', regwrite_reply(1), 16),
         ('out', p.take_control_message(True)), ('in', status_reply(0x01, error=take_control_error), 12),
     ]
+
+
+#: Before a re-attach the bulk pipes are reset: the OUT pair in NI's order (§10.6.5), then the IN pair.
+CLEAR_HALTS = [('clear_halt', 0x06), ('clear_halt', 0x02), ('clear_halt', 0x84), ('clear_halt', 0x88)]
+
+
+def reattach_script(take_control_error: int = 5) -> List[Tuple[Any, ...]]:
+    """What the operation after a fault does first on an HS: the pipe resets, then §2.8 again."""
+    return CLEAR_HALTS + attach_script(take_control_error)
 
 
 def address_listener(pad: int = 22, code: int = T3S) -> List[Tuple[Any, ...]]:
@@ -662,7 +677,7 @@ class TestRawWrite:
     def test_a_pipe_reset_that_fails_still_reports_no_listener_and_reattaches_next(self):
         controller, transport = attached(self.refused_write([
             ('clear_halt', 0x06, TransportError('device gone')), ('clear_halt', 0x02),
-        ]) + attach_script() + address_listener(pad=24) + [
+        ]) + reattach_script() + address_listener(pad=24) + [
             ('out', p.write_message(b'A', T3S, True)), ('in', status_reply(0x0D)),
         ])
         with pytest.raises(NoListener):
@@ -1521,7 +1536,7 @@ class TestWaitSrq:
     def test_usb_error_on_the_interrupt_endpoint_marks_a_reattach(self):
         controller, transport = attached([
             ('intr', TransportError('device gone'), 64),
-        ] + attach_script() + [
+        ] + reattach_script() + [
             ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
         ])
         with pytest.raises(TransportError):
@@ -1558,7 +1573,7 @@ class TestFaults:
             ('out', p.command_message(t.address_listener_command(0, 22), T3S)),
             ('in', status_reply(0x0D)),                       # wrong id echoed
             STOP, ('in', b'\x00' * 12, DRAIN_LENGTH), RAW_DRAIN,   # a stale reply drained
-        ] + attach_script() + address_listener() + [
+        ] + reattach_script() + address_listener() + [
             ('out', p.write_message(b'A', T3S, True)), ('in', status_reply(0x0D)),
         ])
         with pytest.raises(ProtocolError):
@@ -1583,9 +1598,66 @@ class TestFaults:
     def test_usb_error_marks_the_adapter_for_reattach(self):
         controller, transport = attached([
             ('out', p.command_message(b'\x14', T3S)), ('in', TransportError('pipe stalled')),
+        ] + reattach_script() + [
+            ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
+        ])
+        with pytest.raises(TransportError):
+            controller.command(b'\x14', timeout_s=3.0)
+        assert controller.command(b'\x14', timeout_s=3.0) == 1
+        transport.assert_done()
+
+    def test_the_first_attach_resets_no_pipe(self):
+        # The attach of a healthy adapter is bench-proven as it is; the resets belong to the
+        # re-attach after a fault alone. An unscripted clear_halt would fail assert_done.
+        _, transport = attached([])
+        transport.assert_done()
+        assert not [step for step in transport.script if step[0] == 'clear_halt']
+
+    def test_a_pipe_reset_that_fails_before_the_reattach_is_logged_and_the_attach_goes_ahead(self, caplog):
+        resets = [('clear_halt', 0x06, TransportError('clear halt failed')), ('clear_halt', 0x02),
+                  ('clear_halt', 0x84, TransportError('clear halt failed')), ('clear_halt', 0x88)]
+        controller, transport = attached([
+            ('out', p.command_message(b'\x14', T3S)), ('in', TransportError('pipe stalled')),
+        ] + resets + attach_script() + [
+            ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
+        ])
+        with pytest.raises(TransportError):
+            controller.command(b'\x14', timeout_s=3.0)
+        with caplog.at_level('WARNING', logger='resistamet_gui.gpib_usb.controller'):
+            assert controller.command(b'\x14', timeout_s=3.0) == 1
+        transport.assert_done()
+        failed = [r.getMessage() for r in caplog.records if 'clearing the halt' in r.getMessage()]
+        assert len(failed) == 2 and '0x06' in failed[0] and '0x84' in failed[1]
+
+    def test_a_transport_without_clear_halt_still_reattaches(self):
+        class NoClearHalt(ScriptedTransport):
+            clear_halt = None  # type: ignore[assignment]
+
+        transport = NoClearHalt(attach_script() + [
+            ('out', p.command_message(b'\x14', T3S)), ('in', TransportError('pipe stalled')),
         ] + attach_script() + [
             ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
         ])
+        controller = Controller(transport, t.PID_HS, sleep=lambda s: None)
+        controller.attach()
+        with pytest.raises(TransportError):
+            controller.command(b'\x14', timeout_s=3.0)
+        assert controller.command(b'\x14', timeout_s=3.0) == 1
+        transport.assert_done()
+
+    def test_a_model_without_the_alternate_pair_resets_its_primary_pipes_only(self):
+        usb_b_attach = [
+            ('out', p.register_read_message(t.USB_B_SERIAL_REGISTERS)),
+            ('in', regread_reply([0x78, 0x56, 0x34, 0x12]), 32),
+        ] + attach_script()[2:]
+        transport = ScriptedTransport(usb_b_attach + [
+            ('out', p.command_message(b'\x14', T3S)), ('in', TransportError('pipe stalled')),
+            ('clear_halt', 0x02), ('clear_halt', 0x82),
+        ] + usb_b_attach + [
+            ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
+        ])
+        controller = Controller(transport, t.PID_USB_B, sleep=lambda s: None)
+        controller.attach()
         with pytest.raises(TransportError):
             controller.command(b'\x14', timeout_s=3.0)
         assert controller.command(b'\x14', timeout_s=3.0) == 1
@@ -1606,8 +1678,9 @@ class TestFaults:
         controller, transport = attached([
             ('out', p.command_message(b'\x14', T3S)), ('in', h('0c 00'), 12),
             STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,
+        ] + CLEAR_HALTS + [
             ('ctrl', (0x41, 0, 0, 16), h('00 00 00 00 00')),       # re-attach 1 fails
-        ] + attach_script() + [                                    # re-attach 2 succeeds
+        ] + reattach_script() + [                                  # re-attach 2 succeeds
             ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
         ])
         with pytest.raises(ProtocolError):
@@ -1620,7 +1693,7 @@ class TestFaults:
     def test_reattach_failing_with_a_bus_error_is_retried_too(self):
         controller, transport = attached([
             ('out', p.command_message(b'\x14', T3S)), ('in', TransportError('pipe stalled')),
-        ] + attach_script(take_control_error=3) + attach_script() + [
+        ] + reattach_script(take_control_error=3) + reattach_script() + [
             ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
         ])
         with pytest.raises(TransportError):
@@ -1637,9 +1710,9 @@ class TestFaults:
         controller, transport = attached([
             ('out', p.command_message(b'\x14', T3S)), ('in', h('0c 00'), 12),
             STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,
-        ] + bad_init + [
+        ] + CLEAR_HALTS + bad_init + [
             STOP, ('in', TransportTimeout('drained again'), DRAIN_LENGTH), RAW_DRAIN,
-        ] + attach_script() + [
+        ] + reattach_script() + [
             ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
         ])
         with pytest.raises(ProtocolError):
