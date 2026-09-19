@@ -23,6 +23,12 @@ from .. import calculations_geometry as geo
 from ..schema.spots import SampleGeometry, SpotRequest, sample_geometry_from_settings
 
 
+#: What ``build_row`` takes the probe spacing to be when the settings hold
+#: none (``samples.py``). The same value here, so a run whose rows would be
+#: computed is not refused over a spacing the rows never needed.
+_DEFAULT_SPACING_CM = 0.1016
+
+
 @dataclass(frozen=True)
 class SpotPosition:
     """The position effect at one spot. Factors are None off the sample."""
@@ -129,7 +135,7 @@ def spot_record_from_settings(settings: Dict[str, Any]) -> Optional[SpotRecord]:
         angle_deg = float(measurement.get('fpp_array_angle_deg') or 0.0)
     position = None
     if spot.has_position:
-        spacing_mm = float(measurement.get('fpp_spacing_cm') or 0.0) * 10.0
+        spacing_mm = float(measurement.get('fpp_spacing_cm') or _DEFAULT_SPACING_CM) * 10.0
         position = check_spot_position(geometry, spacing_mm, spot.x_mm, spot.y_mm, angle_deg)
     # The schema accepts only 'warn', but the PySide6 path hands over settings
     # no schema has seen. A hand-edited 'apply' must not be written into a
