@@ -123,7 +123,9 @@ def build(args):
     """Wire session, hub and app together. Returns (app, session)."""
     hub = EventHub()
     session = MeasurementSession(hub.publish)
-    config = ConfigManager(config_file=args.config) if args.config else ConfigManager()
+    # The API can tell its client that a save failed, so it asks to be told.
+    config = (ConfigManager(config_file=args.config, raise_on_save_error=True)
+              if args.config else ConfigManager(raise_on_save_error=True))
     token = args.token or secrets.token_urlsafe(32)
     app = create_app(session, token=token, config=config, hub=hub)
     return app, session, token

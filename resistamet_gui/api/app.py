@@ -27,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from ..config import ConfigSaveError
 from ..session.manager import MeasurementSession, SessionBusy
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,7 @@ def _default_config():
     """The config file the sidecar was pointed at."""
     from ..config import ConfigManager
 
-    return ConfigManager()
+    return ConfigManager(raise_on_save_error=True)
 
 
 #: Origins the desktop shell and the UI dev server load the page from.
@@ -164,6 +165,13 @@ def create_app(session: MeasurementSession, token: Optional[str] = None,
     app.include_router(results_router)
     app.include_router(maps_router)
     app.include_router(events_router)
+
+    @app.exception_handler(ConfigSaveError)
+    async def _settings_not_saved(request: Request, exc: ConfigSaveError):
+        # The change is in memory and not on disk. Say so, rather than let a
+        # client believe a profile edit will still be there tomorrow.
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            content={"detail": f"settings were not saved: {exc}"})
 
     @app.on_event("startup")
     async def _bind_hub():  # noqa: D401 - FastAPI hook
