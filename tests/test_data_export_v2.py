@@ -345,3 +345,65 @@ class TestMakeExporter:
         exp.write_row([0.0, 1.05])
         exp.finalize()
         assert exp.output_paths[0].name.endswith('.csv.gz')
+
+
+# ------------------------------- Spot block ---------------------------------
+
+
+SPOT_BLOCK = {
+    'map_id': 'wafer7', 'index': 2, 'label': 'rim', 'x_mm': 20.0, 'y_mm': 0.0,
+    'angle_deg': 90.0,
+    'sample': {'shape': 'circle', 'diameter_mm': 50.8, 'width_mm': None, 'length_mm': None},
+    'position_correction': 'warn', 'edge_warn_pct': 1.0,
+    'factor_here': 4.41, 'factor_centre': 4.5171, 'relative_error': 0.0243,
+    'edge_clearance_s': 5.06,
+}
+
+
+def _four_point_meta(**kwargs):
+    from datetime import datetime
+    return build_metadata(user='alice', sample_name='wafer7', mode='four_point',
+                          settings={'measurement': {'fpp_current': 1e-3}},
+                          start_time=datetime(2026, 9, 19, 12, 0, 0), **kwargs)
+
+
+class TestSpotBlock:
+    def test_a_run_without_a_spot_has_no_spot_keys(self):
+        assert 'spot' not in _four_point_meta()
+        assert _four_point_meta(spot=None) == _four_point_meta()
+
+    def test_the_block_is_the_only_difference(self):
+        with_spot = _four_point_meta(spot=SPOT_BLOCK)
+        assert with_spot.pop('spot') == SPOT_BLOCK
+        assert with_spot == _four_point_meta()
+
+    def test_csv_header_round_trip(self, base_path):
+        exp = CsvExporter(base_path, _four_point_meta(spot=SPOT_BLOCK), ['elapsed_s'], ['s'])
+        exp.write_row([0.0])
+        exp.finalize({'total_samples': 1})
+        text = exp.output_paths[0].read_text()
+        assert '# spot.map_id: wafer7\n' in text
+        assert '# spot.sample.shape: circle\n' in text
+        assert '# spot.sample.width_mm: \n' in text
+
+        parsed = parse_metadata(exp.output_paths[0])
+        assert parsed['spot.map_id'] == 'wafer7'
+        assert parsed['spot.index'] == 2
+        assert parsed['spot.label'] == 'rim'
+        assert (parsed['spot.x_mm'], parsed['spot.y_mm']) == (20.0, 0.0)
+        assert parsed['spot.sample.diameter_mm'] == 50.8
+        assert parsed['spot.sample.width_mm'] is None
+        assert parsed['spot.relative_error'] == 0.0243
+        assert parsed['spot.position_correction'] == 'warn'
+
+    def test_hdf5_attributes(self, base_path):
+        h5py = pytest.importorskip("h5py")
+        exp = Hdf5Exporter(base_path, _four_point_meta(spot=SPOT_BLOCK), ['elapsed_s'], ['s'])
+        exp.write_row([0.0])
+        exp.finalize({'total_samples': 1})
+        with h5py.File(exp.output_paths[0], 'r') as f:
+            assert f.attrs['spot.map_id'] == 'wafer7'
+            assert f.attrs['spot.index'] == 2
+            assert f.attrs['spot.sample.diameter_mm'] == 50.8
+            assert f.attrs['spot.sample.width_mm'] == ""
+            assert f.attrs['spot.edge_clearance_s'] == 5.06
