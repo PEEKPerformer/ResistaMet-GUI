@@ -67,6 +67,8 @@ export interface VisaBackend {
 export interface ResourceList {
   resources: string[];
   backend: VisaBackend;
+  /** The Prologix interface resource that is open, or null. */
+  gpib_interface: string | null;
 }
 
 export interface EventPage {
@@ -215,15 +217,20 @@ export class ApiClient {
 
   // --- instruments -------------------------------------------------------
 
-  /** `visaLibrary` undefined = this machine's saved backend. */
-  resources(visaLibrary?: string): Promise<ResourceList> {
-    const query = visaLibrary === undefined ? "" : `?visa_library=${encodeURIComponent(visaLibrary)}`;
+  /** `visaLibrary` / `gpibInterface` undefined = this machine's saved value. */
+  resources(visaLibrary?: string, gpibInterface?: string): Promise<ResourceList> {
+    const params = new URLSearchParams();
+    if (visaLibrary !== undefined) params.set("visa_library", visaLibrary);
+    if (gpibInterface !== undefined) params.set("gpib_interface", gpibInterface);
+    const encoded = params.toString();
+    const query = encoded ? `?${encoded}` : "";
     return this.request("GET", `/instruments/resources${query}`);
   }
 
-  identify(address: string, visaLibrary?: string): Promise<InstrumentInfo> {
-    const body: { address: string; visa_library?: string } = { address };
+  identify(address: string, visaLibrary?: string, gpibInterface?: string): Promise<InstrumentInfo> {
+    const body: { address: string; visa_library?: string; gpib_interface?: string } = { address };
     if (visaLibrary !== undefined) body.visa_library = visaLibrary;
+    if (gpibInterface !== undefined) body.gpib_interface = gpibInterface;
     return this.request("POST", "/instruments/identify", body);
   }
 
