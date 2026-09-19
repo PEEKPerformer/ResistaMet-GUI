@@ -189,7 +189,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
       <div className={styles.workspace}>
         <header className={styles.controls}>
           <div className={styles.title}>
-            <h1>{MODE_LABEL[mode]}</h1>
+            <h1 title={MODE_LABEL[mode]}>{MODE_LABEL[mode]}</h1>
             <RunState mode={mode} />
           </div>
           <div className={styles.buttons}>

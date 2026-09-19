@@ -27,19 +27,30 @@
   gap: var(--sp-3) var(--sp-4);
 }
 
+/* Heading, state and run meta stay on one line. When the line is short the
+   heading gives way with an ellipsis; the state badge and the elapsed time
+   and sample count never do. */
 .title {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
   flex: 1 1 260px;
   min-width: 0;
+  white-space: nowrap;
 }
 
 .title h1 {
   margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: var(--text-xl);
   font-weight: 600;
   letter-spacing: -0.01em;
+}
+
+.title > :not(h1) {
+  flex: none;
 }
 
 .runState {
