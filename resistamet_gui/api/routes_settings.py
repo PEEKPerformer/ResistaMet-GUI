@@ -19,12 +19,15 @@ from ..schema.settings_common import (AuxSensorSettings, DisplaySettings, FileSe
                                        InstrumentSettings, OutputSettings, SafetySettings)
 from ..schema.settings_modes import MODE_MODELS
 from ..session.manager import MeasurementSession, SessionBusy
-from .app import busy_as_conflict, get_session, require_token
+from .app import UI_ROLE, busy_as_conflict, get_session, require_token
 
 router = APIRouter(tags=["settings"])
 
 #: Keys that describe this machine rather than this profile.
 MACHINE_LOCAL_KEYS = ('gpib_address', 'visa_library', 'gpib_interface')
+
+#: Keys that decide whether the hazardous-voltage prompt is asked.
+SAFETY_KEYS = tuple(SafetySettings.model_fields)
 
 #: The models that describe each section of a stored profile.
 SECTION_MODELS = {
@@ -113,8 +116,13 @@ def _section_issues(section: str, values: Dict[str, Any]) -> List[Dict[str, str]
     return issues
 
 
-def _refuse_a_worse_profile(sections: Dict[str, Any]):
+def _refuse_a_worse_profile(sections: Dict[str, Any], role: str):
     """The check a profile edit has to pass before it is stored.
+
+    The touch-safety keys decide whether the hazardous-voltage prompt is ever
+    asked, and only a person at the bench may answer that prompt (design
+    decision D4). A role that may not answer it may not raise its threshold
+    or silence it here either.
 
     An issue blocks the edit when it is on a key the edit changes, or when the
     profile did not have it before. One that was already there and is not
@@ -122,6 +130,12 @@ def _refuse_a_worse_profile(sections: Dict[str, Any]):
     still be editable, one key at a time.
     """
     def check(current: Dict[str, Any], merged: Dict[str, Any]) -> None:
+        if role != UI_ROLE and any(
+                current['measurement'].get(key) != merged['measurement'].get(key)
+                for key in SAFETY_KEYS):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                 detail="the touch-safety settings can only be changed "
+                                        "from the user interface")
         blocking = []
         for section, sent in sections.items():
             before = current.get(section, {})
@@ -158,7 +172,7 @@ def patch_profile(username: str, body: ProfilePatch, request: Request,
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                              detail="cannot change the instrument address during a run")
     return config.merge_user_settings(username, sections,
-                                       check=_refuse_a_worse_profile(sections))
+                                       check=_refuse_a_worse_profile(sections, role))
 
 
 @router.get("/schema/settings")
