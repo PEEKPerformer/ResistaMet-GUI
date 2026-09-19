@@ -15,8 +15,8 @@ from resistamet_gui.gpib_usb import device_ops as ops
 from resistamet_gui.gpib_usb import protocol as p
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb.controller import (DRAIN_WAIT_S, IFC_SETTLE_S, RAW_READ_MIN_BYTES,
-                                                 RAW_TRANSFER_MIN_RATE_BPS, RECOVERY_WAIT_S, SHORT_WAIT_S,
-                                                 Controller)
+                                                 RAW_TRANSFER_MIN_RATE_BPS, RAW_WRITE_MIN_BYTES, RECOVERY_WAIT_S,
+                                                 SHORT_WAIT_S, Controller)
 from resistamet_gui.gpib_usb.protocol import AdapterNotReady, GpibError, GpibTimeout, NoListener, ProtocolError
 from resistamet_gui.gpib_usb.transport import TransportError, TransportTimeout
 
@@ -489,12 +489,19 @@ class TestWrite:
         controller.write(22, b'B', timeout_s=3.0, readdress=False)
         transport.assert_done()
 
-    def test_large_writes_split_at_0xffff_with_eoi_on_the_last(self):
+    def test_framed_writes_split_at_0xffff_with_eoi_on_the_last(self):
+        # A model without the alternate pair frames everything (§5.1 chunking).
         data = bytes(0xFFFF) + b'Z'
-        controller, transport = attached(address_listener() + [
+        script = [
+            ('out', p.register_read_message(t.USB_B_SERIAL_REGISTERS)),
+            ('in', regread_reply([0x78, 0x56, 0x34, 0x12]), 32),
+        ] + attach_script()[2:] + address_listener() + [
             ('out', p.write_message(bytes(0xFFFF), T3S, send_eoi=False)), ('in', status_reply(0x0D)),
             ('out', p.write_message(b'Z', T3S, send_eoi=True)), ('in', status_reply(0x0D)),
-        ])
+        ]
+        transport = ScriptedTransport(script)
+        controller = Controller(transport, t.PID_USB_B, sleep=lambda s: None)
+        controller.attach()
         assert controller.write(22, data, timeout_s=3.0) == 0x10000
         transport.assert_done()
 
@@ -506,6 +513,135 @@ class TestWrite:
         with pytest.raises(GpibTimeout) as info:
             controller.write(22, b'A', timeout_s=3.0)
         assert info.value.code == 1
+        transport.assert_done()
+
+
+def raw_write_reply(requested: int, transferred: int, *, error: int = 0) -> bytes:
+    """Our bare 0x0e reply: the 8-byte status block with its 32-bit count, then termination."""
+    count = (transferred - requested).to_bytes(4, 'little', signed=True)
+    return bytes((0x0E, 0x00, 0x28, error)) + count + h('04 00 00 00')
+
+
+class TestRawWrite:
+    """Writes longer than RAW_WRITE_MIN_BYTES: 0x0e, data on the alternate bulk OUT (§10.5.2)."""
+
+    LONG = b'*CLS;' * 409 + b'*CL\r\n'  # 2050 bytes, as longwrite.pcap
+
+    def test_2050_bytes_with_ni_bytes(self):
+        # longwrite.pcap 1.8914 / 1.8916 / 2.0354: code 0xfe, termination character 0x0a, EOI.
+        assert len(self.LONG) == 2050
+        controller, transport = attached(address_listener(pad=24, code=0xFE) + [
+            ('out', h('0e 00 00 fe 00 0a 08 00 fe f7 ff ff 04 00 00 00')),
+            ('raw_out', self.LONG),
+            ('in', h('0e 00 28 00 00 00 00 00 04 00 00 00'), 512),
+        ])
+        assert controller.write(24, self.LONG, timeout_s=20.0, eos_char=0x0A) == 2050
+        transport.assert_done()
+
+    def test_the_threshold_is_the_named_constant(self):
+        assert RAW_WRITE_MIN_BYTES == 2048
+        at = bytes(RAW_WRITE_MIN_BYTES)
+        over = bytes(RAW_WRITE_MIN_BYTES + 1)
+        controller, transport = attached(address_listener() + [
+            ('out', p.write_message(at, T3S, True)), ('in', status_reply(0x0D)),
+        ] + address_listener() + [
+            ('out', p.write_raw_message(len(over), T3S, True)), ('raw_out', over),
+            ('in', raw_write_reply(len(over), len(over)), 512),
+        ])
+        assert controller.write(22, at, timeout_s=3.0) == RAW_WRITE_MIN_BYTES
+        assert controller.write(22, over, timeout_s=3.0) == RAW_WRITE_MIN_BYTES + 1
+        transport.assert_done()
+
+    def test_the_raw_transfer_and_the_reply_get_the_transfer_allowance(self):
+        controller, transport = attached([
+            ('out', p.write_raw_message(3000, T3S, True)), ('raw_out', bytes(3000)),
+            ('in', raw_write_reply(3000, 3000), 512),
+        ])
+        controller.write_raw(bytes(3000), timeout_s=3.0)
+        assert transport.timeouts[-2:] == [('raw_out', 3000, raw_wait_ms(3000)), ('in', 512, raw_wait_ms(3000))]
+
+    def test_the_framed_write_ignores_the_termination_character(self):
+        # 0x0d keeps byte 5 at 0x00, the form the bench proved; NI's 0x0a there is untested.
+        controller, transport = attached([
+            ('out', h('0d fa ff fc 00 00 08 00 2a 49 44 4e 3f 0a 00 00 04 00 00 00')), ('in', status_reply(0x0D)),
+        ])
+        controller.write_raw(b'*IDN?\n', timeout_s=3.0, eos_char=0x0A)
+        transport.assert_done()
+
+    def test_chunks_of_0xffff_with_eoi_on_the_last(self):
+        data = bytes(0xFFFF) + b'Z'
+        controller, transport = attached(address_listener() + [
+            ('out', p.write_raw_message(0xFFFF, T3S, False)), ('raw_out', bytes(0xFFFF)),
+            ('in', raw_write_reply(0xFFFF, 0xFFFF), 512),
+            ('out', p.write_raw_message(1, T3S, True)), ('raw_out', b'Z'),
+            ('in', raw_write_reply(1, 1), 512),
+        ])
+        assert controller.write(22, data, timeout_s=3.0) == 0x10000
+        transport.assert_done()
+
+    def test_no_listener_reported_in_the_reply(self):
+        controller, transport = attached([
+            ('out', p.write_raw_message(2100, T3S, True)), ('raw_out', bytes(2100)),
+            ('in', raw_write_reply(2100, 0, error=8), 512),
+        ])
+        with pytest.raises(NoListener) as info:
+            controller.write_raw(bytes(2100), timeout_s=3.0)
+        assert info.value.code == 8
+        transport.assert_done()
+
+    def test_partial_count_is_returned(self):
+        controller, _ = attached([
+            ('out', p.write_raw_message(2100, T3S, True)), ('raw_out', bytes(2100)),
+            ('in', raw_write_reply(2100, 1500), 512),
+        ])
+        assert controller.write_raw(bytes(2100), timeout_s=3.0) == 1500
+
+    def test_instrument_not_accepting_times_out_the_transfer_and_stops_the_device(self):
+        controller, transport = attached([
+            ('out', p.write_raw_message(2100, T3S, True)),
+            ('raw_out', bytes(2100), TransportTimeout('instrument holds NRFD')),
+            STOP,
+            ('in', raw_write_reply(2100, 512, error=1), 512),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.write_raw(bytes(2100), timeout_s=3.0)
+        assert info.value.code == 1
+        transport.assert_done()
+        assert transport.timeouts[-1] == ('in', 512, int(RECOVERY_WAIT_S * 1000))
+
+    def test_missing_reply_takes_the_stop_path(self):
+        controller, transport = attached([
+            ('out', p.write_raw_message(2100, T3S, True)), ('raw_out', bytes(2100)),
+            ('in', TransportTimeout('no reply'), 512),
+            STOP,
+            ('in', raw_write_reply(2100, 2100, error=1), 512),
+        ])
+        with pytest.raises(GpibTimeout):
+            controller.write_raw(bytes(2100), timeout_s=3.0)
+        transport.assert_done()
+
+    def test_wrong_reply_block_is_a_fault(self):
+        controller, transport = attached([
+            ('out', p.write_raw_message(2100, T3S, True)), ('raw_out', bytes(2100)),
+            ('in', status_reply(0x0D), 512),
+            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,
+        ])
+        with pytest.raises(ProtocolError):
+            controller.write_raw(bytes(2100), timeout_s=3.0)
+        transport.assert_done()
+
+    def test_a_model_without_the_alternate_pair_stays_framed(self):
+        data = bytes(5000)
+        script = [
+            ('out', p.register_read_message(t.USB_B_SERIAL_REGISTERS)),
+            ('in', regread_reply([0x78, 0x56, 0x34, 0x12]), 32),
+        ] + attach_script()[2:] + [
+            ('out', p.write_message(data, T3S, True)), ('in', status_reply(0x0D)),
+        ]
+        transport = ScriptedTransport(script)
+        controller = Controller(transport, t.PID_USB_B, sleep=lambda s: None)
+        controller.attach()
+        assert controller.write_raw(data, timeout_s=3.0) == 5000
         transport.assert_done()
 
 
