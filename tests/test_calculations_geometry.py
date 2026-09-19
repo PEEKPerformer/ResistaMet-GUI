@@ -11,11 +11,19 @@ from resistamet_gui import calculations_geometry as geo
 class TestCircleAgainstF84Table3:
     """At the centre the closed form is ASTM F84 Table 3."""
 
+    #: The one row that does not round to the printed value: the closed form
+    #: gives 4.26555, the table prints 4.265.
+    ODD_ROW = 0.085
+
     @pytest.mark.parametrize("s_over_d, table_f2",
                              [row for row in calc._F84_TABLE3_F2 if row[0] > 0])
-    def test_every_row_to_the_last_printed_digit(self, s_over_d, table_f2):
+    def test_every_row_rounds_to_the_printed_value(self, s_over_d, table_f2):
         factor = geo.circle_factor(diameter=1.0 / s_over_d, spacing=1.0)
-        assert factor == pytest.approx(table_f2, abs=6e-4)
+        if s_over_d == self.ODD_ROW:
+            assert factor == pytest.approx(4.26555, abs=1e-5)
+            assert abs(factor - table_f2) < 6e-4
+        else:
+            assert round(factor, 3) == pytest.approx(table_f2, abs=1e-9)
 
     def test_large_disc_tends_to_the_unbounded_sheet(self):
         assert geo.circle_factor(diameter=1e6, spacing=1.0) == pytest.approx(math.pi / math.log(2), rel=1e-9)
@@ -79,6 +87,34 @@ class TestRectangleAgainstSmits:
         between = geo.rectangle_factor(5.0, 7.5, 1.0)
         double = geo.rectangle_factor(5.0, 10.0, 1.0)
         assert square < between < double
+
+
+class TestAnyAspectRatio:
+    """The sum converges, and does not overflow, whatever the sample's shape."""
+
+    def test_turning_sample_and_probe_together_changes_nothing(self):
+        a = geo.rectangle_factor(20.0, 30.0, 1.0, centre=(3.0, 2.0), angle=0.3)
+        b = geo.rectangle_factor(30.0, 20.0, 1.0, centre=(2.0, 3.0), angle=math.pi / 2 - 0.3)
+        assert a == pytest.approx(b, rel=1e-12)
+
+    @pytest.mark.parametrize("width, length", [(60.0, 10.0), (1000.0, 4.5), (5.0, 1000.0), (4.0, 1000.0)])
+    def test_extreme_shapes_give_a_finite_factor(self, width, length):
+        angle = 0.0 if length > 3.0 else math.pi / 2
+        factor = geo.rectangle_factor(width, length, 1.0, angle=angle)
+        assert 0.0 < factor < geo.UNBOUNDED_FACTOR
+
+    def test_a_long_strip_no_longer_depends_on_its_length(self):
+        # Probe along a strip 5 s wide: once the ends are far away the factor
+        # is the strip's own, 3.5750 in the Smits table for L/W >= 3. The far
+        # rows are large numbers that cancel, which costs a few digits.
+        assert geo.rectangle_factor(5.0, 200.0, 1.0) == pytest.approx(geo.rectangle_factor(5.0, 1000.0, 1.0), rel=1e-9)
+        assert geo.rectangle_factor(5.0, 1000.0, 1.0) == pytest.approx(3.5750, abs=1e-4)
+
+    def test_log_sin_far_from_the_axis_matches_the_function_near_the_switch(self):
+        for im in (29.9, 30.1):
+            u = complex(0.7, im)
+            assert geo._log_abs_sin(u) == pytest.approx(im - math.log(2.0), rel=1e-12)
+        assert math.isfinite(geo._log_abs_sin(complex(0.3, 5000.0)))
 
 
 class TestPosition:

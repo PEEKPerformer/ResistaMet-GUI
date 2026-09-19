@@ -58,16 +58,18 @@ sheet, and the closed form works at *any* position and orientation:
   Rs = 2*pi * (V/I) / [ g(P2,B) - g(P2,A) - g(P3,B) + g(P3,A) ]
   ```
 
-  Evaluated at the centre this reproduces **all 21 rows of ASTM F84 Table 3**
-  (the `_F84_TABLE3_F2` tuple in `calculations.py`) to the table's last
-  printed digit.
+  Evaluated at the centre this agrees with **all 21 rows of ASTM F84
+  Table 3** (the `_F84_TABLE3_F2` tuple in `calculations.py`) to within
+  0.0006; twenty rows round to the printed value, and the row at
+  S/D = 0.085 gives 4.2656 against a printed 4.265.
 
 - **Rectangle.** Images across all four insulating edges form a doubly
   periodic lattice. Summed in closed form along one axis
-  (`ln|sin(pi (z - a) / 2W)|`) the other axis converges exponentially; forty
-  terms are far more than needed. Evaluated at the centre this reproduces the
-  Smits table in `calculations.py` to four digits — with three exceptions,
-  which look like transcription errors in the table rather than physics:
+  (`ln|sin(pi (z - a) / 2W)|`, taken along the shorter side) the other
+  axis converges exponentially for any aspect ratio. Evaluated at the centre
+  this agrees with the Smits table in `calculations.py` to within 0.05 % —
+  with three exceptions, which look like transcription errors in the table
+  rather than physics:
 
   | table entry | table | series | difference |
   |---|---|---|---|
