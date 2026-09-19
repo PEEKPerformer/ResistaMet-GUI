@@ -19,18 +19,18 @@ def _quantity(mean, n=5):
 
 def _write_run(directory, stamp, map_id, index, rs_mean, label=None, *, mode='four_point',
                footer=True, n=5, exporter=CsvExporter, tag='4PP', compression='never',
-               position=None):
+               position=None, started_at=None, base_name=None):
     """One finished run file, as ContinuousRun would have left it."""
     meta = {
         'user': 'alice', 'sample': 'wafer7', 'mode': mode,
-        'started_at': f'2026-09-19T12:{stamp:02d}:00',
+        'started_at': started_at or f'2026-09-19T12:{stamp:02d}:00',
     }
     if map_id is not None:
         meta['spot'] = {'map_id': map_id, 'index': index, 'label': label or f'spot {index}',
                         'x_mm': None, 'y_mm': None, 'angle_deg': 0.0}
         if position is not None:
             meta['spot'].update(position)
-    base = directory / f"{1000 + stamp}_wafer7_{tag}_1mA"
+    base = directory / (base_name or f"{1000 + stamp}_wafer7_{tag}_1mA")
     kwargs = {'compression': compression} if exporter is CsvExporter else {}
     exp = exporter(base, meta, ['elapsed_s', 'Rs_ohm_sq'], ['s', 'ohm/sq'], **kwargs)
     exp.write_row([0.0, rs_mean])
@@ -162,7 +162,8 @@ class TestAssembleMap:
         found = assemble_map(tmp_path / 'nowhere', 'wafer7')
         assert (found.map_id, found.spots, found.rs.n) == ('wafer7', [], 0)
 
-    @pytest.mark.parametrize("map_id", ['../wafer7', 'a/b', '..', '', 'a.b', 'x' * 65])
+    @pytest.mark.parametrize("map_id", ['../wafer7', 'a/b', '..', '', 'a.b', 'x' * 65,
+                                        'wafer7\n', '\nwafer7'])
     def test_an_id_that_could_build_a_path_is_refused(self, tmp_path, map_id):
         with pytest.raises(ValueError):
             assemble_map(tmp_path, map_id)
@@ -170,6 +171,109 @@ class TestAssembleMap:
             map_summary_path(tmp_path, map_id)
         with pytest.raises(ValueError):
             write_map_summary(tmp_path, map_id)
+
+
+class TestOneBadFileDoesNotBreakTheMap:
+    def _corrupt(self, path, old, new):
+        text = path.read_text()
+        assert old in text
+        path.write_text(text.replace(old, new))
+
+    def test_a_header_value_of_the_wrong_type(self, tmp_path):
+        _write_run(tmp_path, 1, 'wafer7', 0, 100.0)
+        bad = _write_run(tmp_path, 2, 'wafer7', 1, 120.0, position={'x_mm': 1.5, 'y_mm': 2.5})
+        self._corrupt(bad, '# spot.x_mm: 1.5', '# spot.x_mm: abc')
+
+        found = assemble_map(tmp_path, 'wafer7')
+        assert [spot.index for spot in found.spots] == [0]
+        assert [(run.file, run.reason.split(':')[0]) for run in found.skipped] == [
+            (bad.name, 'unreadable spot block')]
+        assert 'x_mm' in found.skipped[0].reason
+        assert write_map_summary(tmp_path, 'wafer7').exists()
+
+    def test_a_bad_newer_run_does_not_displace_a_good_older_one(self, tmp_path):
+        good = _write_run(tmp_path, 1, 'wafer7', 0, 100.0)
+        bad = _write_run(tmp_path, 2, 'wafer7', 0, 120.0)
+        self._corrupt(bad, '# spot_stats.rs.mean: 120.0', '# spot_stats.rs.mean: lots')
+        found = assemble_map(tmp_path, 'wafer7')
+        assert [spot.file for spot in found.spots] == [good.name]
+        assert [run.file for run in found.skipped] == [bad.name]
+
+    def test_an_index_that_is_not_a_number(self, tmp_path):
+        bad = _write_run(tmp_path, 1, 'wafer7', 0, 100.0)
+        self._corrupt(bad, '# spot.index: 0', '# spot.index: first')
+        found = assemble_map(tmp_path, 'wafer7')
+        assert found.spots == []
+        assert [run.file for run in found.skipped] == [bad.name]
+
+    def test_hdf5_without_h5py_is_said_not_dropped(self, tmp_path, monkeypatch):
+        from resistamet_gui.session import spot_map
+
+        def no_h5py(path):
+            raise ImportError("No module named 'h5py'")
+        monkeypatch.setattr(spot_map, '_read_hdf5_attributes', no_h5py)
+        _write_run(tmp_path, 1, 'wafer7', 0, 100.0)
+        (tmp_path / '1002_wafer7_4PP_1mA.h5').write_bytes(b'not opened')
+
+        found = assemble_map(tmp_path, 'wafer7')
+        assert [spot.index for spot in found.spots] == [0]
+        assert [(run.file, run.reason) for run in found.skipped] == [
+            ('1002_wafer7_4PP_1mA.h5', 'h5py not installed')]
+        assert list_map_ids(tmp_path) == ['wafer7']
+
+    def test_a_file_that_cannot_be_read_at_all(self, tmp_path):
+        _write_run(tmp_path, 1, 'wafer7', 0, 100.0)
+        (tmp_path / '1002_wafer7_4PP_1mA.csv.gz').write_bytes(b'this is not gzip')
+        found = assemble_map(tmp_path, 'wafer7')
+        assert [spot.index for spot in found.spots] == [0]
+        assert [run.reason.split(':')[0] for run in found.skipped] == ['unreadable']
+
+
+class TestWhichRunIsNewest:
+    def _files(self, found):
+        return found.spots[0].file, found.spots[0].superseded
+
+    def test_the_stamp_in_the_name_beats_the_local_start_time(self, tmp_path):
+        """Across the end of daylight saving the later run has the earlier
+        local time; the Unix stamp in the file name is not fooled."""
+        _write_run(tmp_path, 1, 'wafer7', 0, 100.0, started_at='2026-11-01T01:50:00')
+        _write_run(tmp_path, 2, 'wafer7', 0, 120.0, started_at='2026-11-01T01:10:00')
+        assert self._files(assemble_map(tmp_path, 'wafer7')) == (
+            '1002_wafer7_4PP_1mA.csv', ['1001_wafer7_4PP_1mA.csv'])
+
+    def test_aware_and_naive_start_times_can_be_compared(self, tmp_path):
+        _write_run(tmp_path, 1, 'wafer7', 0, 100.0, started_at='2026-09-19T12:00:00+02:00')
+        _write_run(tmp_path, 2, 'wafer7', 0, 120.0, started_at='2026-09-19T12:00:00')
+        _write_run(tmp_path, 3, 'wafer7', 0, 140.0, started_at='garbage')
+        assert self._files(assemble_map(tmp_path, 'wafer7'))[0] == '1003_wafer7_4PP_1mA.csv'
+
+    def test_within_one_second_the_start_time_decides(self, tmp_path):
+        _write_run(tmp_path, 1, 'wafer7', 0, 100.0, base_name='1001_wafer7_4PP_1mA-2',
+                   started_at='2026-09-19T12:00:00.100000')
+        _write_run(tmp_path, 1, 'wafer7', 0, 120.0, base_name='1001_wafer7_4PP_1mA',
+                   started_at='2026-09-19T12:00:00.900000')
+        assert self._files(assemble_map(tmp_path, 'wafer7'))[0] == '1001_wafer7_4PP_1mA.csv'
+
+    def test_then_the_repeat_number_the_exporter_added(self, tmp_path):
+        """'-10' is newer than '-9' and than the unnumbered first; by name it
+        would sort before '-2'."""
+        same = '2026-09-19T12:00:00'
+        for suffix, rs in (('', 100.0), ('-2', 110.0), ('-9', 120.0), ('-10', 130.0)):
+            _write_run(tmp_path, 1, 'wafer7', 0, rs, started_at=same,
+                       base_name=f'1001_wafer7_4PP_0.10mA{suffix}')
+        newest, superseded = self._files(assemble_map(tmp_path, 'wafer7'))
+        assert newest == '1001_wafer7_4PP_0.10mA-10.csv'
+        assert superseded == ['1001_wafer7_4PP_0.10mA-9.csv', '1001_wafer7_4PP_0.10mA-2.csv',
+                              '1001_wafer7_4PP_0.10mA.csv']
+
+    def test_a_renamed_file_is_placed_by_its_start_time(self, tmp_path):
+        from datetime import datetime
+        early = datetime.fromtimestamp(1001).isoformat()
+        late = datetime.fromtimestamp(1003).isoformat()
+        _write_run(tmp_path, 2, 'wafer7', 0, 100.0, started_at=early)
+        _write_run(tmp_path, 9, 'wafer7', 0, 120.0, started_at=late,
+                   base_name='redo_of_wafer7_4PP_1mA')
+        assert self._files(assemble_map(tmp_path, 'wafer7'))[0] == 'redo_of_wafer7_4PP_1mA.csv'
 
 
 class TestListMapIds:
