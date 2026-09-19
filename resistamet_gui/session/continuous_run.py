@@ -923,42 +923,7 @@ class ContinuousRun:
                     self._events.log('duration_reached', "Reached configured duration. Stopping.")
                     self._control.finish('duration')
 
-            if instrument_ready and self.keithley:
-                try:
-                    self.keithley.write(":OUTP OFF")
-                    self._events.log('output_off', "Output turned OFF.")
-                except Exception as e:
-                    self._events.warn('output_off_failed', f"Warning: Could not turn off output - {str(e)}")
-
-            final_message = f"Measurement ({self.mode}) stopped."
-            if file_ready and self.exporter:
-                try:
-                    end_time = datetime.now()
-                    end_metadata = {
-                        'ended_at': end_time.isoformat(),
-                        'total_samples': self.exporter.row_count,
-                        'duration_s': time.time() - self.start_time
-                    }
-                    spot_stats = self._spot_statistics(nplc)
-                    if spot_stats is not None:
-                        end_metadata['spot_stats'] = spot_stats
-                    self.exporter.finalize(end_metadata)
-                    self._events.emit('file_finalized', {
-                        'path': self.filename, 'end_metadata': end_metadata})
-                    if spot_stats is not None:
-                        record = self._spot_record
-                        self._events.emit('spot_complete', {
-                            'spot': record.spot.model_dump() if record else None,
-                            'path': self.filename,
-                            'stats': spot_stats,
-                        })
-                        if record is not None:
-                            self._write_map_summary(record.spot.map_id)
-                except Exception as e:
-                    self._events.warn('finalize_failed', f"Warning: Error finalizing export - {str(e)}")
-                final_message = f"Measurement ({self.mode}) completed! Data saved to: {self.filename}"
-            self._events.log('completed', final_message)
-            self._events.emit('acquisition_finished', {'mode': self.mode})
+            self._shut_down(instrument_ready, file_ready, nplc)
 
         except RunStopped:
             # A stop landed during a settle or a retry backoff; the normal
@@ -981,6 +946,51 @@ class ContinuousRun:
                 'path': self.filename or None,
             })
             self.running = False
+
+    def _shut_down(self, instrument_ready, file_ready, nplc):
+        """The end of a run that got as far as its instrument: output off,
+        the file's footer, the closing log line.
+
+        ``_cleanup`` runs after this on every exit and would also turn the
+        output off and close the file, but silently and with no footer; it
+        is the backstop, this is the record.
+        """
+        if instrument_ready and self.keithley:
+            try:
+                self.keithley.write(":OUTP OFF")
+                self._events.log('output_off', "Output turned OFF.")
+            except Exception as e:
+                self._events.warn('output_off_failed', f"Warning: Could not turn off output - {str(e)}")
+
+        final_message = f"Measurement ({self.mode}) stopped."
+        if file_ready and self.exporter:
+            try:
+                end_time = datetime.now()
+                end_metadata = {
+                    'ended_at': end_time.isoformat(),
+                    'total_samples': self.exporter.row_count,
+                    'duration_s': time.time() - self.start_time
+                }
+                spot_stats = self._spot_statistics(nplc)
+                if spot_stats is not None:
+                    end_metadata['spot_stats'] = spot_stats
+                self.exporter.finalize(end_metadata)
+                self._events.emit('file_finalized', {
+                    'path': self.filename, 'end_metadata': end_metadata})
+                if spot_stats is not None:
+                    record = self._spot_record
+                    self._events.emit('spot_complete', {
+                        'spot': record.spot.model_dump() if record else None,
+                        'path': self.filename,
+                        'stats': spot_stats,
+                    })
+                    if record is not None:
+                        self._write_map_summary(record.spot.map_id)
+            except Exception as e:
+                self._events.warn('finalize_failed', f"Warning: Error finalizing export - {str(e)}")
+            final_message = f"Measurement ({self.mode}) completed! Data saved to: {self.filename}"
+        self._events.log('completed', final_message)
+        self._events.emit('acquisition_finished', {'mode': self.mode})
 
     def _spot_statistics(self, nplc):
         """The four-point statistics for the file footer; None for other modes.
