@@ -16,15 +16,35 @@ whatever is addressed to talk; neither sends addressing command bytes
 rule at the top of §5: after command bytes ATN is true, a read with ATN
 true is error 2, and the 0x06 is harmless when ATN is already false.
 
+Interleaving: each call is atomic on the board (the controller's lock),
+but a sequence is not. An INSTR session on the same board re-addresses
+the bus for its own transfers, so between an interface ``send_command``
+and the ``write`` or ``read`` that relies on it another thread's INSTR
+call can change who is addressed. ``Session.lock`` is not implemented, so
+callers that mix the two on one board serialise them themselves.
+
 Not supported, each with the section that stops short: ``gpib_pass_control``
 (§5.17: command bytes known, the adapter's report of the hand-over not);
 ``ATNLineOperation.deassert_handshake`` (§5.4 has no shadow-handshake
 state); the REN operations that address a device (an interface has none);
 ``VI_ATTR_GPIB_HS488_CBL_LEN`` (nothing in the specification speaks of
-HS488). The adapter's own primary address and its system-controller role
-are fixed at attach (§2.6 rows 16 and 18) and read back as such; setting
-them answers read-only, which VISA allows for an interface configured
-outside the session.
+HS488).
+
+Scope decisions, not protocol limits: the adapter's own primary address
+and its system-controller role read back as attach configured them
+(§2.6 rows 16 and 18) and refuse to change. The protocol can change both
+(§5.14, §5.7), but the board is shared with INSTR sessions that assume
+the attach-time values, and neither write has been bench-tested, so
+setting them answers read-only, which VISA allows for an interface
+configured outside the session. ``clear`` is a universal device clear;
+neither the specification nor pyvisa-py (whose own interface class has
+no ``clear``) prescribes what an interface clear means, and DCL is the
+bus-wide form of the INSTR session's selected device clear.
+
+Once installed, ``pyvisa-info`` no longer lists the missing-linux-gpib
+issue for ``(gpib, INTFC)``: the dispatcher is a live class, as for INSTR.
+The message still reaches anyone who opens a board that is not ours,
+because the dispatcher hands such boards to the class it replaced.
 """
 import logging
 from typing import Any, ClassVar, List, Optional, Tuple, Type
@@ -103,8 +123,8 @@ class NiUsbGpibIntfcSession(NiUsbGpibSession):
     # ------------------------------------------------------------------
 
     def clear(self) -> StatusCode:
-        # The bus-wide form of the INSTR session's selected device clear:
-        # universal device clear, one command byte to every device (§5.8).
+        # This driver's choice (see the module docstring): the bus-wide form of
+        # the INSTR session's selected device clear, one DCL to every device (§5.8).
         return self._bus_operation(lambda c: c.command(bytes((t.CMD_DCL,)), self._device_timeout()))
 
     def gpib_pass_control(self, primary_address: int, secondary_address: int) -> StatusCode:
@@ -156,6 +176,7 @@ class NiUsbGpibIntfcSession(NiUsbGpibSession):
 
     def _set_attribute(self, attribute: ResourceAttribute, attribute_state: Any) -> StatusCode:
         if attribute in _FIXED_AT_ATTACH:
+            # §5.14 and §5.7 could change these; left to attach by choice (module docstring).
             return StatusCode.error_attribute_read_only
         if attribute == ResourceAttribute.gpib_hs488_cable_length:
             return StatusCode.error_nonsupported_attribute

@@ -169,7 +169,8 @@ class BoardRegistry:
                 logger.info('GPIB%s: closed', board)
 
     def list_interfaces(self) -> List[str]:
-        """``GPIB<n>::INTFC`` for every board. Enumerates USB; touches no adapter."""
+        """``GPIB<n>::INTFC`` for every board. Enumerates USB (which opens handles for
+        descriptors, see ``transport``); attaches no adapter."""
         self.refresh()
         return ['GPIB%s::INTFC' % board for board in self.board_names()]
 
