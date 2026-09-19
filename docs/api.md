@@ -41,7 +41,7 @@ Every HTTP route except `GET /health` needs `Authorization: Bearer <token>`. A w
 
 The token keeps other local processes from driving the instrument. It is not an authentication system.
 
-A token carries a role. At this commit there is one token and its role is `ui`. The role matters in one place: a prompt marked `requires_human` may only be answered by the `ui` role (403 otherwise). No other role can be minted yet.
+A token carries a role. At this commit there is one token and its role is `ui`. The role matters in two places: a prompt marked `requires_human` may only be answered by the `ui` role, and only the `ui` role may change the touch-safety settings of a profile (403 otherwise). No other role can be minted yet.
 
 Cross-origin requests are accepted only from the desktop shell's origins (`tauri://localhost`, `http(s)://tauri.localhost`) and the UI dev server (`http://localhost:1420`, `http://127.0.0.1:1420`). That restricts browsers, not scripts.
 
@@ -85,22 +85,22 @@ Non-finite floats (an unmeasured temperature, an uncertainty that could not be c
 |---|---|---|---|
 | `GET /health` | | `{"status": "ok"}`. No token. Liveness only. | |
 | `GET /session` | | `SessionStatus` | |
-| `POST /session/start` | `StartRequest` (below) | **202** `{"run_id": "run-3"}` | 409 session not idle; 409 [instrument held by another process](#the-instrument-lock); 422 settings or spot rejected (`detail` lists `key: message` pairs) |
+| `POST /session/start` | `RunRequest` (below) | **202** `{"run_id": "run-3"}` | 409 session not idle; 409 [instrument held by another process](#the-instrument-lock); 422 request malformed (FastAPI's error list: an unknown field, an unknown mode, a spot on a mode other than four-point) or settings rejected (`detail` is a string of `key: message` pairs) |
 | `POST /session/stop` | | `SessionStatus` | Never fails; a no-op when idle |
 | `POST /session/abort` | | `SessionStatus` | Never fails |
 | `POST /session/pause`, `POST /session/resume` | | `SessionStatus` | 409 no run in progress |
 | `POST /session/mark` | `{"label": "MARK"}` (label optional) | `SessionStatus` | 409 no run in progress |
-| `POST /session/prompt` | `{"prompt_id", "choice", "fields": {}}` | `SessionStatus` | 409 no prompt pending, or `prompt_id` stale / already answered; 403 prompt needs a human and the role is not `ui` |
+| `POST /session/prompt` | `{"prompt_id", "choice", "fields": {}}` | `SessionStatus` | 409 no prompt pending; 409 `prompt_id` stale, already answered, or `choice` not among the prompt's `options` (the prompt stays pending); 403 prompt needs a human and the role is not `ui` |
 | `GET /session/events` | query `since_seq` (0), `run_id` (all runs), `limit` (500) | `{"events": [Event…], "gap": bool, "last_seq": int}` | |
 | `POST /session/shutdown` | | `{"status": "stopping"}` | |
 
-`StartRequest`:
+`RunRequest` (the model exported as `contracts/settings.schema.json`; unknown fields are refused, so a misspelt one is a 422 that names it):
 
 | Field | Type | Notes |
 |---|---|---|
 | `mode` | string | `resistance`, `source_v`, `source_i`, `four_point`, `sweep`, `vdp` |
 | `sample_name`, `username` | string, not empty | The profile of `username` supplies every setting not overridden. |
-| `overrides` | object | Flat measurement keys, e.g. `{"res_test_current": 1e-3}`. Allowed keys per mode come from `GET /schema/settings`. Unknown keys and the profile-owned `settling_time` and `gpib_address` are refused (422). |
+| `overrides` | object | Flat measurement keys, e.g. `{"res_test_current": 1e-3}`. Allowed keys per mode come from `GET /schema/settings`. Refused with 422: unknown keys, the profile-owned `settling_time` and `gpib_address`, and the touch-safety keys `safety_voltage_warn_v` and `safety_voltage_warn_silenced` (a run request cannot arrange never to be asked). Values are type-checked strictly: `"1e-3"` is not a number and `"false"` is not a boolean. |
 | `prompt_timeout_s` | number > 0, default 900 | How long a prompt may wait before the run is abandoned. |
 | `spot` | object or null | Four-point only (422 for other modes): `{"map_id", "index", "label", "x_mm"?, "y_mm"?, "angle_deg"?}`. See [Concepts → Spots and maps](concepts.md#spots-and-maps). |
 | `client` | object or null | `{"name", "version"}`, each 1–64 characters from letters, digits, space and `. _ + -`. Written to the file header as `client.*`. |
@@ -116,7 +116,7 @@ Non-finite floats (an unmeasured temperature, an uncertainty that could not be c
 | `GET /users` | | `{"users": [...], "last_user": ...}` | |
 | `POST /users` | `{"username"}` (1–64 chars) | **201** same shape. Idempotent; selects the user. | 422 empty name |
 | `GET /profiles/{username}` | | `{"measurement": {...}, "display": {...}, "file": {...}, "output": {...}}` with this PC's [machine-local](settings.md#machine-local-settings) values filled in | |
-| `PATCH /profiles/{username}` | any of the four sections, partial | The updated profile | 422 no section given; 409 the patch has `gpib_address`, `visa_library` or `gpib_interface` and a run is active |
+| `PATCH /profiles/{username}` | any of the four sections, each with only the keys to change | The updated profile. Keys not sent keep their stored values. | 404 unknown user; 422 no section given, or the result would not be valid (`detail.issues` lists `section`, `key`, `message`; an old out-of-range value you are not touching does not block the edit); 409 the patch has `gpib_address`, `visa_library` or `gpib_interface` and a run is active; 403 a role other than `ui` changes a touch-safety key |
 | `GET /schema/settings` | | `{"modes": {mode: {"model", "fields": [...], "override_keys": [...]}}}` | |
 | `POST /settings/resolve` | `{"mode", "username", "overrides": {}, "strict": true}` | `{"settings", "derived", "ok", "issues": [{"key","message","severity"}], "hazard"}` | 422 unknown mode |
 
@@ -194,7 +194,7 @@ log:stopping, log:output_off, file_finalized, log:completed, acquisition_finishe
 log:cleanup, run_ended
 ```
 
-`run_ended` is always the last event of a run, whatever ended it, including runs refused before the instrument was opened.
+`run_ended` is always the last event of a run, whatever ended it, including runs refused before the instrument was opened. If a run's thread dies without sending one, the session sends an `error` and a `run_ended` with reason `worker_error` in its place and releases the instrument.
 
 ### Event types
 
@@ -226,7 +226,7 @@ log:cleanup, run_ended
 
 ## Prompts
 
-A prompt is a decision the run cannot make. The run emits `prompt`, the session state becomes `awaiting_prompt`, and `GET /session` shows it under `pending_prompt`, so a client that connects late still sees the question. Answer with `POST /session/prompt`; the first valid answer wins.
+A prompt is a decision the run cannot make. The run emits `prompt`, the session state becomes `awaiting_prompt`, and `GET /session` shows it under `pending_prompt`, so a client that connects late still sees the question. Answer with `POST /session/prompt`, quoting the prompt's `prompt_id` (for example `run-2:safety_voltage_ack-1`; the run id is part of it, so an answer left over from an earlier run cannot be taken by the next) and one of its `options`. The first valid answer wins. Anything else is a 409 and the prompt stays pending.
 
 | `kind` | Raised | `options` | `detail` |
 |---|---|---|---|
@@ -249,18 +249,15 @@ Two processes interleaving SCPI on one GPIB address produce readings that look p
 
 ## Shutdown and the watchdog
 
-Three things stop the sidecar in order:
+Three things stop the sidecar, all through the same ordered shutdown:
 
 1. `POST /session/shutdown`: asks the run to stop and the server to exit; replies `{"status": "stopping"}` immediately.
-2. **stdin closes.** Unless `--no-watchdog` was given, the sidecar reads its stdin and treats end-of-file as "the parent is gone". This is how a parent that crashes still gets the instrument released. It is also why a sidecar started with `&` or from a service manager exits at once without `--no-watchdog`.
-3. SIGINT (Ctrl-C in a terminal).
+2. **stdin closes.** Unless `--no-watchdog` was given, the sidecar reads its stdin and treats end-of-file as "the parent is gone". This is how a parent that crashes still gets the instrument released, and on Windows it is the route that covers a closed console window. It is also why a sidecar started with `&` or from a service manager exits at once without `--no-watchdog`.
+3. SIGTERM, SIGINT (Ctrl-C) or, on Windows, Ctrl-Break.
 
-In each case the run is asked to stop and the process waits up to 35 s for it: output off, file finalized with its footer, instrument closed, lock released. The run reports `user_stop`. Then the process exits. The desktop shell waits 40 s after closing stdin before it kills the process.
+In each case the run is asked to stop and the process waits up to 35 s for it: output off, file finalized with its footer, instrument closed, lock released. The run reports `user_stop`. Open connections get 3 s to close. Then the process exits with status 0. The desktop shell waits 40 s after closing stdin before it kills the process. For this page, SIGTERM in the middle of a simulated run left a file with its footer and all its rows.
 
-!!! warning "SIGTERM is not an ordered shutdown"
-    Tested for this page on macOS with uvicorn 0.53: a plain `kill <pid>` (SIGTERM) during a simulated run ended the process without stopping the run. The file had no footer and none of the rows since the last flush, and nothing sent `:OUTP OFF`. Use `POST /session/shutdown`, close stdin, or send SIGINT instead.
-
-The same holds for anything that kills the process outright (`kill -9`, power loss, or the 35 s running out during a VISA call that does not return): the instrument keeps its last state, which may be output on, and the file has no footer. Check the front panel.
+If the run has not ended when the 35 s are over (a VISA call that does not return), the sidecar logs an error saying that the output may still be on and exits anyway. The same holds, without the log line, for anything that kills the process outright (`kill -9`, power loss): the instrument keeps its last state, which may be output on, and the file has no footer and may lack the rows since the last flush. Check the front panel.
 
 ## Example: ten samples from the simulator
 
