@@ -659,7 +659,7 @@
     },
     "SafetySettings": {
       "additionalProperties": true,
-      "description": "Touch-safety warning threshold. Serialized inside ``measurement``.\n\n``safety_voltage_warn_silenced`` is the sticky per-profile flag behind the\nwarning dialog's \"don't show again\" checkbox.",
+      "description": "Touch-safety warning threshold. Serialized inside ``measurement``.\n\n``safety_voltage_warn_silenced`` is the sticky per-profile flag behind the\nwarning dialog's \"don't show again\" checkbox.\n\nThe threshold runs to 1100 V, the 2410's range and the Settings dialog's\nmaximum: a threshold the dialog can save must not make the profile\nunrunnable here. 0 disables the warning. Both keys belong to the profile;\na strict run request may not send either (``resolve.SAFETY_KEYS``).",
       "properties": {
         "safety_voltage_warn_silenced": {
           "default": false,
@@ -668,7 +668,7 @@
         },
         "safety_voltage_warn_v": {
           "default": 30.0,
-          "maximum": 200.0,
+          "maximum": 1100.0,
           "minimum": 0.0,
           "title": "Safety Voltage Warn V",
           "type": "number"
