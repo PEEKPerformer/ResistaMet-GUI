@@ -10,8 +10,8 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import { discoverBackend, type BackendInfo } from "../lib/backend";
 import { ApiClient } from "../lib/api";
 import { EventStream } from "../lib/events";
-import { applyEvent, setBackendReachable, setConnected, setGap, setStatus } from "../state/session";
-import { applySample, resetSamples } from "../state/samples";
+import { applyEvent, getSessionSnapshot, setBackendReachable, setConnected, setGap, setStatus } from "../state/session";
+import { applySample, getSeries, resetSamples } from "../state/samples";
 import { applySweepSegment, resetSweep } from "../state/sweep";
 import { applyVdpGeometry, applyVdpResult, resetVdp } from "../state/vdp";
 
@@ -83,7 +83,18 @@ export function AppProvider({ children, fallback }: ProviderProps) {
             resetSweep(message.event.run_id ?? null);
             resetVdp(message.event.run_id ?? null);
           }
-          if (message.event.type === "sample") applySample(message.event);
+          if (message.event.type === "sample") {
+            // Samples of a run whose run_started the history no longer holds
+            // (a reload late in a long run) must not join the previous run's
+            // series. They start their own, under the mode the backend
+            // reports if this is the run it is on, and under none otherwise.
+            const runId = message.event.run_id ?? null;
+            if (runId !== getSeries().runId) {
+              const status = getSessionSnapshot().status;
+              resetSamples(status !== null && status.run_id === runId ? status.mode : null, runId);
+            }
+            applySample(message.event);
+          }
           if (message.event.type === "sweep_segment") applySweepSegment(message.event);
           if (message.event.type === "vdp_geometry_complete") applyVdpGeometry(message.event);
           if (message.event.type === "vdp_result") applyVdpResult(message.event);
@@ -91,8 +102,6 @@ export function AppProvider({ children, fallback }: ProviderProps) {
           return;
       }
     });
-    stream.open();
-
     let alive = true;
     const poll = async () => {
       try {
@@ -102,7 +111,11 @@ export function AppProvider({ children, fallback }: ProviderProps) {
         if (alive) setBackendReachable(false);
       }
     };
-    void poll();
+    // Status first, then the stream: the history the stream opens with is
+    // folded against the run the backend says it is on.
+    void poll().then(() => {
+      if (alive) stream.open();
+    });
     const timer = setInterval(() => void poll(), STATUS_POLL_MS);
 
     return () => {
