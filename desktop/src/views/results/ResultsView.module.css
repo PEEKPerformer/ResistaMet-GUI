@@ -119,6 +119,13 @@
   text-overflow: ellipsis;
 }
 
+.axes {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
 .columnPicker {
   width: 200px;
 }
