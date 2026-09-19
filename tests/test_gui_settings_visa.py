@@ -118,3 +118,22 @@ def test_detect_devices_scans_what_the_dialog_shows(config, shown, fake_rm, monk
     dialog.detect_gpib_devices()
     assert calls == [('@py', INTERFACE)]
     assert config.get_visa_library() == ''
+
+
+class TestGlobalSettingsAddress:
+    """Global Settings edits this machine's address, not the shipped default."""
+
+    def test_it_opens_after_the_address_was_set(self, config):
+        config.set_gpib_address('GPIB0::5::INSTR')
+        assert SettingsDialog(config).gpib_address.text() == 'GPIB0::5::INSTR'
+
+    def test_it_shows_the_address_after_a_restart(self, config):
+        config.set_gpib_address('GPIB0::5::INSTR')
+        restarted = ConfigManager(config_file=config.config_file)
+        assert SettingsDialog(restarted).gpib_address.text() == 'GPIB0::5::INSTR'
+
+    def test_saving_it_untouched_keeps_the_address(self, config, shown):
+        config.set_gpib_address('GPIB0::5::INSTR')
+        restarted = ConfigManager(config_file=config.config_file)
+        SettingsDialog(restarted).save_settings()
+        assert ConfigManager(config_file=config.config_file).get_gpib_address() == 'GPIB0::5::INSTR'
