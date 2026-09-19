@@ -29,6 +29,7 @@ connection lifecycle and works under ``--simulate`` with no extra harness.
 """
 from __future__ import annotations
 
+import math
 import re
 import threading
 import time
@@ -42,6 +43,10 @@ from .instrument import VisaInstrument
 # block. See aux_column_names / reading_to_columns.
 AUX_COLUMN_PREFIX = "aux_"
 AUX_FAULT_COLUMN = AUX_COLUMN_PREFIX + "fault"
+
+# Flag a stream parser sets on a channel whose value arrived as nan or inf.
+# It reads as ``<key>=1`` in the aux_fault column.
+FLAG_NON_FINITE = 1
 
 
 class SensorError(Exception):
@@ -403,6 +408,14 @@ def parse_stream_data(line: str,
 
     Returns None for partial lines, wrong field count, or non-numeric values
     so the reader resyncs on the next valid row.
+
+    ``nan`` and ``inf`` are what firmware prints for an open or failed
+    transducer, so they are not clean data. Such a value is kept as received
+    and its channel is flagged :data:`FLAG_NON_FINITE`, which makes the
+    reading not-ok and puts ``<key>=1`` in ``aux_fault``. The flag is per
+    channel, like every other fault in that column: the other channels of the
+    same row are good data and stay usable, which marking the whole reading
+    (or dropping it, as ``read_error`` does) would throw away.
     """
     if not line.startswith("DATA,") or not channels:
         return None
@@ -413,7 +426,8 @@ def parse_stream_data(line: str,
         vals = {ch.key: float(f) for ch, f in zip(channels, fields)}
     except ValueError:
         return None
-    return SensorReading(timestamp=0.0, values=vals)
+    flags = {k: FLAG_NON_FINITE for k, v in vals.items() if not math.isfinite(v)}
+    return SensorReading(timestamp=0.0, values=vals, flags=flags)
 
 
 class StreamSensor(SerialLineSensor):
