@@ -1,0 +1,5 @@
+831416.623 RM open, scenario clear
+831417.201 viClear (device clear)
+831417.704 query *IDN? after clear
+'KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L\n'
+831418.219 done

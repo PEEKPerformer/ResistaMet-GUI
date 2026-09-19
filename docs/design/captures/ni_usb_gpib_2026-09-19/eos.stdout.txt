@@ -1,0 +1,9 @@
+831565.080 RM open, scenario eos
+831565.672 termchar enabled query
+'KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L'
+831566.187 termchar disabled query
+'KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L\n'
+831566.700 write then read_raw(10) x3
+b'KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L\n'
+read_raw -> VI_ERROR_TMO (-1073807339): Timeout expired before operation completed.
+831600.784 done

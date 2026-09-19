@@ -1,0 +1,18 @@
+831650.058 RM open, scenario srq
+831650.641 enable SRQ on OPC: *CLS; *ESE 1; *SRE 32
+831651.148 viEnableEvent(SRQ, QUEUE)
+831651.650 write *OPC (raises SRQ)
+831651.652 wait_on_event 5 s
+831651.660 event: 1073684491 timed_out=False
+831652.160 read_stb
+STB 96
+831652.663 *ESR? (clears)
+'1\n'
+831652.668 disable_event
+831652.668 *STB?
+'0\n'
+831653.174 wait_on_event with nothing pending, 1 s (expect timeout)
+timeout as expected: VisaIOError
+831654.168 restore *SRE 0; *ESE 0; *CLS
+SRE 0 ESE 0 STB 0
+831654.694 done

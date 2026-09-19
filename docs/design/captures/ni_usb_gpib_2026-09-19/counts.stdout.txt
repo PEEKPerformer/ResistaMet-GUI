@@ -1,0 +1,58 @@
+831517.599 RM open, scenario counts
+831518.101 viRead count 1
+python.exe : <python>\Lib\site-packages\pyvisa\ctwrapper\highlevel.py:227: 
+VisaIOWarning: VI_SUCCESS_MAX_CNT (1073676294): The number of bytes transferred is equal to the requested input count. 
+More data may be available.
+At <harness>\capture.ps1:7 char:1
++ & python "$D\scenario.py" $Scenario 2>&1 | Tee-Object -FilePath "$D\$ ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (<python>...y be available.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  return self.handle_return_value(session, ret_value)  # type: ignore
+1 -> 1 bytes, status 1073676294
+831518.814 viRead count 2
+2 -> 2 bytes, status 1073676294
+831519.425 viRead count 8
+8 -> 8 bytes, status 1073676294
+831520.035 viRead count 15
+15 -> 15 bytes, status 1073676294
+831520.645 viRead count 16
+16 -> 16 bytes, status 1073676294
+831521.256 viRead count 30
+30 -> 30 bytes, status 1073676294
+831521.867 viRead count 31
+31 -> 31 bytes, status 1073676294
+831522.480 viRead count 32
+32 -> 32 bytes, status 1073676294
+831523.092 viRead count 60
+60 -> 60 bytes, status 1073676294
+831523.707 viRead count 63
+63 -> 63 bytes, status 1073676294
+831524.321 viRead count 64
+64 -> 64 bytes, status 1073676294
+831524.935 viRead count 65
+65 -> 65 bytes, status 1073676294
+831525.551 viRead count 100
+100 -> 82 bytes, status 0
+831526.167 viRead count 127
+127 -> 82 bytes, status 0
+831526.783 viRead count 128
+128 -> 82 bytes, status 0
+831527.400 viRead count 255
+255 -> 82 bytes, status 0
+831528.017 viRead count 256
+256 -> 82 bytes, status 0
+831528.633 viRead count 511
+511 -> 82 bytes, status 0
+831529.250 viRead count 512
+512 -> 82 bytes, status 0
+831529.866 viRead count 1023
+1023 -> 82 bytes, status 0
+831530.491 viRead count 1024
+1024 -> 82 bytes, status 0
+831531.105 viRead count 4096
+4096 -> 82 bytes, status 0
+831531.721 viRead count 20480
+20480 -> 82 bytes, status 0
+831532.437 done
