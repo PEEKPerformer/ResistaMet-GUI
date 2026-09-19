@@ -283,8 +283,8 @@ identical numbers (a test pins this).
    the factor.
 7. Tauri: the map canvas, registration, figure export.
 
-Steps 1–5 change no measurement behaviour and can land before any of the
-questions below are answered. Steps 6–7 depend on them.
+Steps 1–5 change no measurement behaviour and have landed without waiting
+for the questions below. Steps 6–7 depend on them.
 
 ## 6. Verification
 
@@ -297,7 +297,7 @@ questions below are answered. Steps 6–7 depend on them.
 - Map: three simulated spots plus a repeat of spot 2 assemble into three
   spots with the newer spot 2; inter-spot RSD matches a hand calculation.
 
-## 7. Questions for Brenden
+## 7. Open questions
 
 1. **Position-aware correction:** is `warn` by default with `apply` as an
    explicit opt-in the right stance for the paper, or should `apply` not
@@ -314,4 +314,35 @@ questions below are answered. Steps 6–7 depend on them.
    numerical solution later?
 6. **The three Smits table entries** in §2: do you have the original table
    to check them against? If they are typos the look-up values shift by up
-   to 1.8 % for one narrow case and 0.26 % for D/s = 32.
+   to 1.8 % for one narrow case and 0.26 % for D/s = 32. The same goes for
+   the F84 Table 3 row at S/D = 0.085 (printed 4.265, closed form 4.2656).
+
+From building steps 2–5:
+
+7. **Outline and legacy keys disagree.** The rows still take their factor
+   from `fpp_geometry` / `fpp_diameter_cm`; the new outline feeds only the
+   position check. When the two describe different samples the resolver
+   warns and the file records the error against the factor the rows really
+   used (`spot.relative_error_rows`). Is a warning enough, or should a
+   spot with a position be refused until they agree — or should the outline
+   become the source for the rows too (which changes numbers for profiles
+   that set a legacy diameter)?
+8. **A run cut short.** Newest-wins lets a stopped or failed run with one
+   valid sample displace a complete earlier run of the same spot. The footer
+   now carries `end_reason`, so the map could prefer complete runs. Should
+   it?
+9. **Where maps are looked for.** `/maps` scans the operator's own data
+   directory (where that operator's runs are written); `/results` uses the
+   global one. Should they resolve the same way?
+10. **The PySide6 window.** (a) The spot counter does not reset when the
+    sample name changes, so a new sample's map can start at index 4;
+    (b) the label is frozen when Start is pressed, so renaming the spot
+    before Save Spot leaves the file with the old name, and Save Spot
+    pressed mid-run splits the table rows while the file stays one spot;
+    (c) the window still computes its own spot statistics instead of showing
+    the backend's `spot_complete`. Each is a small UI behaviour change.
+11. **Map file names.** A map id reads `20260919-153000_<sample>_<4 hex>`
+    and its summary does not sort beside the epoch-named run files. Keep the
+    readable form or lead with the epoch?
+12. **Rectangle proportions.** The math handles any side ratio; should the
+    schema bound it anyway as a typo guard?
