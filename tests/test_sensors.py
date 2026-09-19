@@ -21,6 +21,7 @@ from resistamet_gui.sensors import (
     AuxiliarySensor,
     SensorChannel,
     SensorError,
+    SensorHeaderError,
     SensorReading,
     SensorReadError,
     StreamSensor,
@@ -33,6 +34,7 @@ from resistamet_gui.sensors import (
     parse_thermocouple_line,
     reading_to_columns,
     register_sensor,
+    reserved_channel_keys,
 )
 
 
@@ -391,18 +393,83 @@ def test_parse_stream_header_valid():
     assert [c.unit for c in chans] == ["psi", "degC", "N"]
 
 
-@pytest.mark.parametrize("bad", ["", "DATA,1,2", "HDR,noun", "HDR,", "HDR,:psi"])
-def test_parse_stream_header_rejects(bad):
-    assert parse_stream_header(bad) is None
+@pytest.mark.parametrize("not_a_header", ["", "DATA,1,2", "READY", "hdr,a:x"])
+def test_parse_stream_header_skips_lines_that_are_not_headers(not_a_header):
+    assert parse_stream_header(not_a_header) is None
+
+
+@pytest.mark.parametrize("bad, named", [
+    ("HDR,noun", "noun"),          # no unit separator
+    ("HDR,", ""),                  # empty header
+    ("HDR,:psi", ""),              # empty key
+    ("HDR,a/b:x", "a/b"),          # HDF5 path separator
+    ("HDR,a#b:x", "a#b"),          # CSV comment marker
+    ("HDR,flow rate:x", "flow rate"),
+    ("HDR,1st:x", "1st"),          # leading digit
+    ("HDR,t-sample:degC", "t-sample"),
+    ("HDR,ok:x,tempé:degC", "tempé"),
+])
+def test_parse_stream_header_refuses_unusable_header_and_names_it(bad, named):
+    with pytest.raises(SensorHeaderError) as exc:
+        parse_stream_header(bad)
+    assert repr(named) in str(exc.value)
 
 
 def test_parse_stream_header_rejects_duplicate_keys():
     """Duplicate keys would produce duplicate CSV columns (silent data loss)
     and abort the HDF5 exporter's compound dtype — reject at the source."""
-    assert parse_stream_header("HDR,t:degC,t:degC") is None
-    assert parse_stream_header("HDR,a:x,b:y,a:z") is None
+    with pytest.raises(SensorHeaderError, match="'t' is declared twice"):
+        parse_stream_header("HDR,t:degC,t:degC")
+    with pytest.raises(SensorHeaderError, match="'a' is declared twice"):
+        parse_stream_header("HDR,a:x,b:y,a:z")
     # Distinct keys must not false-positive.
     assert parse_stream_header("HDR,t1:degC,t2:degC") is not None
+
+
+def test_parse_stream_header_rejects_the_fault_key():
+    """A device channel called ``fault`` would become a second ``aux_fault``
+    column: the CSV header repeats it and the row dict keeps only the
+    provenance value, so the channel's data is lost."""
+    with pytest.raises(SensorHeaderError, match="'fault' is reserved"):
+        parse_stream_header("HDR,fault:x,t:degC")
+    # Only the exact reserved name; a key that merely contains it is fine,
+    # and so is one whose unprefixed name matches a built-in column.
+    chans = parse_stream_header("HDR,fault_code:x,compliance:x")
+    assert [c.key for c in chans] == ["fault_code", "compliance"]
+
+
+def test_reserved_keys_cover_every_column_a_run_can_already_have():
+    """The reserved set is computed from the exporter's column tables. Pin
+    the consequence: whatever keys pass the parser, the spliced header of
+    every co-logging mode has no repeated column."""
+    from resistamet_gui.data_export import AUX_LOG_MODES, get_column_config
+
+    assert "fault" in reserved_channel_keys()
+    builtin = set()
+    for mode in AUX_LOG_MODES:
+        for settings in (None, {"fpp_delta_mode": True}):
+            builtin.update(get_column_config(mode, settings)[0])
+    # Try to collide with every built-in column, prefixed or not.
+    candidates = sorted(builtin | {c[len("aux_"):] for c in builtin
+                                   if c.startswith("aux_")} | {"fault"})
+    accepted = []
+    for key in candidates:
+        try:
+            accepted += parse_stream_header(f"HDR,{key}:x")
+        except SensorHeaderError:
+            pass
+    assert accepted, "every candidate was refused; the test proves nothing"
+
+    class _Declares:
+        def channels(self):
+            return accepted
+
+    aux = aux_column_names(_Declares())
+    for mode in AUX_LOG_MODES:
+        for settings in (None, {"fpp_delta_mode": True}):
+            cols, _ = get_column_config(mode, settings, aux_columns=aux,
+                                        aux_units=[""] * len(aux))
+            assert len(cols) == len(set(cols)), (mode, settings, cols)
 
 
 def test_parse_stream_data_positional():
@@ -443,8 +510,27 @@ def test_stream_sensor_duplicate_header_never_ready(_closer):
     s = StreamSensor("ASRL7::INSTR")
     _start(s, ["HDR,t:degC,t:degC", "DATA,1,2"])
     _closer(s)
-    with pytest.raises(SensorError):
+    with pytest.raises(SensorError, match="'t' is declared twice"):
         s.wait_ready(0.3)
+
+
+def test_stream_sensor_reports_the_refused_key(_closer):
+    """The operator sees which key the device got wrong, not a bare timeout."""
+    s = StreamSensor("ASRL7::INSTR")
+    _start(s, ["HDR,fault:x,t:degC", "DATA,7.5,21.0"])
+    _closer(s)
+    with pytest.raises(SensorError, match="ASRL7::INSTR.*'fault' is reserved"):
+        s.wait_ready(0.3)
+    assert s.channels() == []
+
+
+def test_stream_sensor_recovers_when_a_usable_header_follows(_closer):
+    s = StreamSensor("ASRL7::INSTR")
+    _start(s, ["HDR,fault:x", "HDR,t:degC", "DATA,21.0"])
+    _closer(s)
+    s.wait_ready(2.0)
+    assert [c.key for c in s.channels()] == ["t"]
+    assert s.read_latest().values == {"t": 21.0}
 
 
 def test_stream_sensor_satisfies_protocol_and_registered():
