@@ -76,6 +76,14 @@ things landed for that:
   drivers; see `ni_usb_gpib_clean_room.md`. The frozen macOS backend
   bundles libusb, and CI asserts that the bundled copy loads from inside
   the bundle.
+- **A per-machine GPIB interface** (`gpib_interface`, 2026-09-19) for
+  Prologix-style adapters, under the backend choice. pyvisa-py sends
+  `GPIB<n>::<addr>::INSTR` to such an adapter only while its
+  `PRLGX-ASRL<n>::<device>::INTFC` or `PRLGX-TCPIP<n>::<host>::INTFC`
+  resource is open, so `visa_backend.resource_manager` opens it on the
+  manager and keeps it there (pyvisa holds sessions weakly; an unreferenced
+  interface closes at once). Ignored with a warning under a vendor library.
+  Scan, Identify and `--check-visa bus` report whether it opened.
 - **`resistamet-api --check-visa`**, which prints the resolved VISA
   implementation, its version, and whether the NI USB driver found libusb,
   as one JSON line. This is the diagnostic for "the app sees no
@@ -185,8 +193,14 @@ the thickness is unknown, and the 45 s watchdog grace after the window dies.
 - **The map in the Tauri UI** (spots panel from `/maps`, the sample outline,
   the optional photo, the figure) — waits on the open questions in the spots
   design.
-- **Prologix / AR488 adapters** need their `PRLGX-ASRL::…::INTFC` resource
-  opened before the instrument address resolves; the app does not do that.
+- **Prologix / AR488 adapters.** The interface is wired (`gpib_interface`)
+  but has never met an adapter: the tests run pyvisa-py against a scripted
+  stand-in on a socket. And a Keithley does not connect through it yet —
+  `VisaInstrument.connect` refuses an address that `list_resources()` does
+  not return, and pyvisa-py lists nothing behind a Prologix adapter. A
+  strict xfail in `test_visa_backend.py` holds the place. Also unverified:
+  on these sessions pyvisa-py rejects `read_termination`, so `connect`
+  leaves pyvisa's default `\r\n` write termination in place.
 - **Cable null** is not in the new UI yet; **persisting the safety-silence
   flag** from a headless client is not done.
 - PySide6 remains the shipping UI until the above is closed and the bench
