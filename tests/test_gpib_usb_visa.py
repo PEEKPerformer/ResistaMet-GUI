@@ -32,7 +32,7 @@ from resistamet_gui.gpib_usb import controller as controller_module  # noqa: E40
 from resistamet_gui.gpib_usb import transport, visa_session  # noqa: E402
 from resistamet_gui.gpib_usb import boards  # noqa: E402
 from resistamet_gui.gpib_usb.boards import BoardRegistry  # noqa: E402
-from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportError  # noqa: E402
+from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportError, TransportStall  # noqa: E402
 from resistamet_gui.gpib_usb.visa_intfc import NiUsbGpibIntfcDispatch  # noqa: E402
 from resistamet_gui.gpib_usb.visa_session import GPIB_INSTR, NiUsbGpibDispatch  # noqa: E402
 
@@ -84,6 +84,9 @@ class SimulatedAdapter:
         #: (length, EOI) of the 0x0e whose bytes the next bulk_out_raw must bring.
         self.pending_raw_write: Optional[Tuple[int, bool]] = None
         self.raw_writes: List[bytes] = []
+        #: Endpoints left halted by a STALL, and every pipe reset asked for, in order.
+        self.halted: set = set()
+        self.halts_cleared: List[int] = []
         self.messages: List[bytes] = []
         self.control_requests: List[int] = []
         self.bulk_in_timeouts: List[int] = []
@@ -199,19 +202,18 @@ class SimulatedAdapter:
         return self._status(p.OP_WRITE) + h('04 00 00 00')
 
     def _serial_poll(self, data: bytes) -> bytes:
-        """0x10 (§10.5.4): ``3a P S sb`` then a 0x39 status block; error 0x0a for an absent device."""
+        """0x10 (§10.5.4): ``3a P S sb`` then a 0x39 status block; the latter alone, with error
+        0x0a, for an absent device."""
         pad, sad_byte = data[4], data[5]
         instrument = self.instruments.get(pad)
         self.atn = True  # the adapter addresses the bus itself
         if instrument is None:
-            return bytes((0x3A, pad, sad_byte, 0x00)) + self._status(0x39, error=0x0A, count=-1) + h('04 00 00 00')
+            # §10.6.6: a poll that times out is answered without the 0x3a block.
+            return self._status(0x39, error=0x0A, ibsta=0x0074) + h('04 00 00 00')
         return bytes((0x3A, pad, sad_byte, instrument.status_byte)) + self._status(0x39, ibsta=0x0074) + h('04 00 00 00')
 
     def _write_raw(self, payload: bytes, eoi: bool) -> bytes:
         """The 0x0e reply once the bytes have arrived: an 8-byte status with a 32-bit count."""
-        if not self.listening:
-            count = (-len(payload)).to_bytes(4, 'little', signed=True)
-            return bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x08)) + count + h('04 00 00 00')
         for pad in self.listening:
             self.instruments[pad].accept(payload, eoi)
         return bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x00)) + h('00 00 00 00') + h('04 00 00 00')
@@ -276,13 +278,26 @@ class SimulatedAdapter:
     # The alternate pair and the interrupt endpoint; behaviour is added with the
     # instructions that use them.
     def bulk_out_raw(self, data: bytes, timeout_ms: int) -> int:
+        if 0x06 in self.halted:
+            raise TransportStall('raw bulk write was refused with a STALL')
         assert self.pending_raw_write is not None, 'raw bulk OUT with no 0x0e outstanding'
         length, eoi = self.pending_raw_write
         assert len(data) == length, 'the 0x0e announced %d bytes, %d arrived' % (length, len(data))
         self.pending_raw_write = None
+        if not self.listening:
+            # §10.6.5: the data is refused with a STALL, the endpoint stays halted until it is
+            # reset, and the reply with error 8 and the whole count comes by itself.
+            self.halted.add(0x06)
+            count = (-length).to_bytes(4, 'little', signed=True)
+            self.reply = bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x08)) + count + h('04 00 00 00')
+            raise TransportStall('raw bulk write was refused with a STALL')
         self.raw_writes.append(data)
         self.reply = self._write_raw(data, eoi)
         return len(data)
+
+    def clear_halt(self, endpoint: int) -> None:
+        self.halted.discard(endpoint)
+        self.halts_cleared.append(endpoint)
 
     def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
         self.raw_in_timeouts.append(timeout_ms)
@@ -489,10 +504,18 @@ class TestInstrumentSession:
         inst.close()
 
     def test_a_long_write_to_an_empty_address_reports_no_listeners(self, rm, adapter):
+        # §10.6.5: the data is refused with a STALL; NI resets 0x06, then 0x02, and carries on.
         inst = rm.open_resource('GPIB0::5::INSTR')
         with pytest.raises(pyvisa.errors.VisaIOError) as info:
             inst.write('x' * 3000)
         assert info.value.error_code == StatusCode.error_no_listeners
+        assert adapter.halts_cleared == [0x06, 0x02] and not adapter.halted
+        assert 0x20 not in adapter.control_requests  # no stop request
+        other = rm.open_resource('GPIB0::24::INSTR')  # same board, still attached
+        other.write('y' * 3000)  # the alternate OUT works again, with no re-attach in between
+        assert adapter.raw_writes[-1] == b'y' * 3000 + b'\r\n'
+        assert len(adapter.instructions(p.OP_INTERFACE_CLEAR)) == 1
+        other.close()
         inst.close()
 
     def test_plain_reads_send_the_bench_proven_eos_bytes(self, rm, adapter):
