@@ -162,6 +162,19 @@ class TestUsersAndProfiles:
         section['vdp_current'] = 6.0
         assert client.patch('/profiles/alice', json={'measurement': section}).status_code == 422
 
+    def test_a_save_that_fails_is_reported(self, client, config, monkeypatch):
+        from resistamet_gui.config import ConfigSaveError
+
+        def fail():
+            raise ConfigSaveError("disk full")
+
+        monkeypatch.setattr(config, 'save_config', fail)
+
+        response = client.patch('/profiles/alice', json={'measurement': {'nplc': 2.0}})
+
+        assert response.status_code == 500
+        assert 'not saved' in response.json()['detail']
+
     def test_a_bad_interface_name_is_refused(self, client, config):
         response = client.patch('/profiles/alice',
                                  json={'measurement': {'gpib_interface': 'COM5'}})

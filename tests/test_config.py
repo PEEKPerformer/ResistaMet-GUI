@@ -291,6 +291,100 @@ class TestUnreadableConfig:
         assert ConfigManager(config_file=temp_config_file).load_failed is False
 
 
+class TestSaveRobustness:
+    """A save either lands whole, with the file's mode kept, or says it failed."""
+
+    @pytest.mark.skipif(os.name == 'nt', reason="POSIX permission bits")
+    def test_the_files_mode_survives_a_save(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file)
+        os.chmod(temp_config_file, 0o664)
+
+        manager.add_user("alice")
+
+        assert os.stat(temp_config_file).st_mode & 0o777 == 0o664
+
+    @pytest.mark.skipif(os.name == 'nt', reason="POSIX permission bits")
+    def test_a_new_file_is_not_private_to_its_creator(self, temp_config_file):
+        previous = os.umask(0o022)
+        try:
+            ConfigManager(config_file=temp_config_file)
+        finally:
+            os.umask(previous)
+        assert os.stat(temp_config_file).st_mode & 0o777 == 0o644
+
+    def test_a_briefly_held_file_is_retried(self, temp_config_file, monkeypatch):
+        """On Windows os.replace fails while a sync client has the file open."""
+        from resistamet_gui import config as config_module
+        manager = ConfigManager(config_file=temp_config_file)
+        real_replace, failures = os.replace, []
+
+        def held_twice(source, target):
+            if len(failures) < 2:
+                failures.append(target)
+                raise PermissionError(13, "sharing violation")
+            return real_replace(source, target)
+
+        monkeypatch.setattr(config_module.os, 'replace', held_twice)
+        monkeypatch.setattr(config_module, '_REPLACE_RETRY_S', 0.0)
+
+        manager.add_user("alice")
+
+        assert len(failures) == 2
+        assert "alice" in ConfigManager(config_file=temp_config_file).get_users()
+
+    def test_a_failed_save_is_raised_and_leaves_no_litter(self, temp_config_file,
+                                                          monkeypatch, caplog):
+        from resistamet_gui import config as config_module
+        from resistamet_gui.config import ConfigSaveError
+        manager = ConfigManager(config_file=temp_config_file, raise_on_save_error=True)
+        before = Path(temp_config_file).read_bytes()
+
+        def always_held(source, target):
+            raise PermissionError(13, "sharing violation")
+
+        monkeypatch.setattr(config_module.os, 'replace', always_held)
+        monkeypatch.setattr(config_module, '_REPLACE_RETRY_S', 0.0)
+
+        with caplog.at_level('ERROR', logger='resistamet_gui.config'):
+            with pytest.raises(ConfigSaveError):
+                manager.add_user("alice")
+
+        assert 'sharing violation' in caplog.text
+        assert Path(temp_config_file).read_bytes() == before
+        assert [p.name for p in Path(temp_config_file).parent.iterdir()
+                if p.name.endswith('.tmp')] == []
+
+    def test_a_failed_save_is_always_logged(self, temp_config_file, monkeypatch, caplog):
+        """The PySide6 dialogs do not ask for the exception; the log still says."""
+        from resistamet_gui import config as config_module
+        manager = ConfigManager(config_file=temp_config_file)
+
+        def always_held(source, target):
+            raise PermissionError(13, "sharing violation")
+
+        monkeypatch.setattr(config_module.os, 'replace', always_held)
+        monkeypatch.setattr(config_module, '_REPLACE_RETRY_S', 0.0)
+
+        with caplog.at_level('ERROR', logger='resistamet_gui.config'):
+            manager.add_user("alice")
+
+        assert 'sharing violation' in caplog.text
+        assert manager.get_users() == ["alice"]
+
+    def test_opening_does_not_fail_where_nothing_can_be_written(self, tmp_path, monkeypatch):
+        from resistamet_gui import config as config_module
+
+        def refuse(path, data):
+            raise config_module.ConfigSaveError("read-only")
+
+        monkeypatch.setattr(config_module, '_write_json_atomically', refuse)
+
+        manager = ConfigManager(config_file=str(tmp_path / 'config.json'),
+                                raise_on_save_error=True)
+
+        assert manager.get_users() == []
+
+
 class TestDefaultMerging:
     """Tests for merging defaults with loaded config."""
 
@@ -588,7 +682,7 @@ class TestConcurrentWrites:
         manager.add_user('alice')
 
         directory = Path(temp_config_file).parent
-        assert list(directory.glob('.config-*.tmp')) == []
+        assert list(directory.glob('.*.tmp')) == []
 
     def test_failed_write_keeps_the_old_file(self, temp_config_file, monkeypatch):
         manager = ConfigManager(config_file=temp_config_file)
