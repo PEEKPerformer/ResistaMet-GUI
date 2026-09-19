@@ -26,6 +26,9 @@ export interface FieldSpec<K extends string = string> {
    *  value; the row is shown disabled with `hint` so the number on screen is
    *  not mistaken for the number in use. */
   overriddenBy?: { key: string; when: unknown; hint: string };
+  /** Shown only while another field has one of these values: a circle has
+   *  no width to ask for. */
+  showWhen?: { key: string; in: unknown[] };
 }
 
 export interface FieldGroup<K extends string = string> {
@@ -140,6 +143,24 @@ export const FOUR_POINT_FIELDS: FieldGroup<Keys<FourPointSettings>>[] = [
       },
       { key: "fpp_alpha", label: "α" },
       { key: "fpp_k_factor", label: "K factor" },
+    ],
+  },
+  // The outline the map draws and a spot's position is checked against. The
+  // per-sample correction still reads Specimen diameter / shape above; when
+  // the two describe different samples the backend says so on the Outline row.
+  {
+    title: "Sample",
+    fields: [
+      {
+        key: "fpp_sample_shape",
+        label: "Outline",
+        options: { unbounded: "None", circle: "Circle", rectangle: "Rectangle" },
+      },
+      { key: "fpp_sample_diameter_mm", label: "Diameter", unit: "mm", showWhen: { key: "fpp_sample_shape", in: ["circle"] } },
+      { key: "fpp_sample_length_mm", label: "Length (x)", unit: "mm", showWhen: { key: "fpp_sample_shape", in: ["rectangle"] } },
+      { key: "fpp_sample_width_mm", label: "Width (y)", unit: "mm", showWhen: { key: "fpp_sample_shape", in: ["rectangle"] } },
+      { key: "fpp_edge_warn_pct", label: "Edge warning above", unit: "%", hint: "Error in Rs from assuming a centered probe." },
+      { key: "fpp_array_angle_deg", label: "Array angle", unit: "°", hint: "Counterclockwise from +x." },
     ],
   },
   {
