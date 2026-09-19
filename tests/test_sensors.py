@@ -17,6 +17,7 @@ import pytest
 
 from resistamet_gui.constants import AUX_STALE_AFTER_S
 from resistamet_gui.sensors import (
+    FLAG_NON_FINITE,
     ArduinoThermocouple,
     AuxiliarySensor,
     SensorChannel,
@@ -476,6 +477,43 @@ def test_parse_stream_data_positional():
     chans = [SensorChannel("a", "A", "x"), SensorChannel("b", "B", "y")]
     r = parse_stream_data("DATA,1.5,2.5", chans)
     assert r.values == {"a": 1.5, "b": 2.5}
+
+
+def test_parse_stream_data_clean_row_carries_no_flags():
+    chans = [SensorChannel("a", "A", "x"), SensorChannel("b", "B", "y")]
+    r = parse_stream_data("DATA,1.5,2.5", chans)
+    assert r.flags == {} and r.ok
+    assert reading_to_columns(r)["aux_fault"] == "0"
+
+
+@pytest.mark.parametrize("token", ["nan", "NaN", "-nan", "inf", "-inf",
+                                   "Infinity", "1e999"])
+def test_parse_stream_data_flags_non_finite_channel(token):
+    """An open transducer prints nan/inf. The value is kept, its channel is
+    flagged, and the good channel beside it is untouched."""
+    import math
+
+    chans = [SensorChannel("a", "A", "x"), SensorChannel("b", "B", "y")]
+    r = parse_stream_data(f"DATA,{token},2.5", chans)
+    assert r is not None, "the row must be recorded, not dropped"
+    assert not math.isfinite(r.values["a"])
+    assert r.values["b"] == 2.5
+    assert r.flags == {"a": FLAG_NON_FINITE}
+    assert r.ok is False
+    cols = reading_to_columns(r)
+    assert cols["aux_fault"] == "a=1"
+    assert cols["aux_b"] == 2.5
+
+
+def test_stream_sensor_delivers_flagged_non_finite_reading(_closer):
+    s = StreamSensor("ASRL7::INSTR")
+    _start(s, ["HDR,p:psi,t:degC", "DATA,nan,21.0"])
+    _closer(s)
+    s.wait_ready(2.0)
+    r = s.read_latest()
+    assert r.ok is False
+    assert format_fault(r.flags) == "p=1"
+    assert r.values["t"] == 21.0
 
 
 @pytest.mark.parametrize("bad", ["DATA,1", "DATA,1,2,3", "HDR,a:b", "DATA,x,y"])
