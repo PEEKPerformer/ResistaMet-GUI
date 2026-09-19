@@ -27,15 +27,17 @@ logger = logging.getLogger(__name__)
 
 #: Every primary address; the controller skips its own.
 PROBE_ADDRESSES = tuple(range(31))
-#: Set to 0 / false / no / off to keep every transfer on the framed 0x0a / 0x0d
-#: instructions (the paths proven on the bench first) instead of the 0x0b /
-#: 0x0e raw paths NI's driver uses for large transfers. Read once per board
-#: open, here and nowhere else.
+#: Set to 1 / true / yes / on to send large transfers as the 0x0b / 0x0e raw
+#: instructions NI's driver uses. Unset, 0 or anything else keeps every
+#: transfer on the framed 0x0a / 0x0d instructions, the paths proven on the
+#: bench: the raw ones have not run on an adapter of ours, and every read the
+#: application makes is large enough to take them. Read once per board open,
+#: here and nowhere else.
 RAW_TRANSFERS_ENV = 'RESISTAMET_GPIB_RAW_TRANSFERS'
 
 
 def raw_transfers_enabled() -> bool:
-    return os.environ.get(RAW_TRANSFERS_ENV, '1').strip().lower() not in ('0', 'false', 'no', 'off')
+    return os.environ.get(RAW_TRANSFERS_ENV, '0').strip().lower() in ('1', 'true', 'yes', 'on')
 
 
 def _linux_gpib_board_count() -> int:

@@ -26,13 +26,20 @@ steps 4 and 6 of §2.8 and ``status()`` polls the control endpoint instead.
 ``wait_srq`` reads it on demand: the adapter pushes one 8-byte packet there
 when an instrument asserts SRQ, having serial-polled it itself (§10.4.2).
 
-Large transfers take the instructions NI's own driver uses (§10): a read of
+Transfers of every size take the framed 0x0a / 0x0d instructions unless the
+controller is built with ``raw_transfers=True``: those are the paths that
+have run on our bench, and the application's every read is a large one
+(pyvisa asks for 20480 bytes at a time). Switched on, large transfers take
+the instructions NI's own driver uses (§10): a read of
 ``RAW_READ_MIN_BYTES`` or more is a 0x0b whose bytes arrive unframed on the
 alternate bulk IN endpoint, and a write of ``RAW_WRITE_MIN_BYTES`` or more
-is a 0x0e whose bytes go out unframed on the alternate bulk OUT. Smaller
-transfers keep the bench-proven framed 0x0a / 0x0d paths, as do models
-without the alternate pair. The raw paths were written from the captures
-alone and have not run against an adapter of ours yet.
+is a 0x0e whose bytes go out unframed on the alternate bulk OUT; smaller
+transfers stay framed, as does everything on a model without the alternate
+pair. The raw paths were written from the captures alone, and what this
+driver sends around them (a 0x0c, a 0x06 and the 0x0b as three messages,
+under AUXRA 0x81, without NI's bank-2 session configuration) is a
+composition no capture shows. They stay off until they have run against
+an adapter of ours.
 
 Bench notes (GPIB-USB-HS 01CEE482, Keithley 2400 at PAD 3, 2026-09-18): the
 attach sequence, addressing, the framed write and read and the presence
@@ -124,11 +131,12 @@ class Controller:
     def __init__(self, transport: Transport, product_id: int, *,
                  own_address: int = 0, t1_ns: int = 2000,
                  infinite_wait_s: float = DEFAULT_INFINITE_WAIT_S,
-                 raw_transfers: bool = True,
+                 raw_transfers: bool = False,
                  sleep: Callable[[float], None] = time.sleep) -> None:
-        """``raw_transfers`` False keeps every transfer on the framed 0x0a / 0x0d
-        paths even on a model with the alternate pair, for a like-for-like
-        comparison on the bench; the serial poll and the SRQ wait are unaffected."""
+        """``raw_transfers`` True sends large transfers as 0x0b / 0x0e on a model with
+        the alternate pair (see the module docstring); the default keeps every
+        transfer on the framed 0x0a / 0x0d paths, the ones proven on the bench.
+        The serial poll and the SRQ wait are unaffected."""
         model = t.MODELS.get(product_id)
         if model is None:
             raise ValueError('unsupported product id 0x%04x' % product_id)
@@ -139,8 +147,8 @@ class Controller:
             raise ValueError('own address %d outside 0..30' % own_address)
         self._transport = transport
         self._model = model
-        #: Whether 0x0b / 0x0e are used: the model must have the alternate pair and
-        #: the caller must not have switched them off.
+        #: Whether 0x0b / 0x0e are used: the caller must have switched them on and
+        #: the model must have the alternate pair.
         self._raw = bool(raw_transfers) and model.raw_endpoints
         self._own_address = own_address
         self._t1_ns = t1_ns
