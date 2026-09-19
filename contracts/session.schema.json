@@ -2,6 +2,74 @@
   "definitions": {
     "SessionStatus": {
       "$defs": {
+        "InstrumentInfo": {
+          "additionalProperties": false,
+          "description": "The SourceMeter as last seen: what ``identify`` returns, and the data\nof a run's ``instrument_connected`` event. ``model`` is None when the\n*IDN? reply names a model the limits table does not know.",
+          "properties": {
+            "address": {
+              "title": "Address",
+              "type": "string"
+            },
+            "idn": {
+              "title": "Idn",
+              "type": "string"
+            },
+            "max_power_w": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Power W"
+            },
+            "max_source_i": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Source I"
+            },
+            "max_source_v": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Source V"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            }
+          },
+          "required": [
+            "address",
+            "idn",
+            "model",
+            "max_source_v",
+            "max_source_i",
+            "max_power_w"
+          ],
+          "title": "InstrumentInfo",
+          "type": "object"
+        },
         "PendingPrompt": {
           "additionalProperties": false,
           "description": "The question a run is parked on. Same fields as the ``prompt`` event.",
@@ -50,6 +118,16 @@
       "additionalProperties": false,
       "description": "One session: its state and the run it is on, or was last on.",
       "properties": {
+        "instrument": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstrumentInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "last_seq": {
           "title": "Last Seq",
           "type": "integer"
@@ -124,7 +202,8 @@
         "mode",
         "path",
         "last_seq",
-        "pending_prompt"
+        "pending_prompt",
+        "instrument"
       ],
       "title": "SessionStatus",
       "type": "object"

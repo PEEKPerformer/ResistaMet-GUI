@@ -306,7 +306,7 @@ class TestStatus:
         """The reply's shape is a contract (session/status.py); pin it."""
         assert session.status() == {
             'state': 'idle', 'run_id': None, 'mode': None, 'path': None,
-            'last_seq': 0, 'pending_prompt': None,
+            'last_seq': 0, 'pending_prompt': None, 'instrument': None,
         }
 
     def test_a_pending_prompt_is_reported_in_full(self, session, sink, fake_rm, profile):
@@ -330,6 +330,33 @@ class TestStatus:
         assert sorted(SessionStatus.model_fields) == sorted(session.status())
         assert all(field.is_required() for field in SessionStatus.model_fields.values())
         assert all(field.is_required() for field in PendingPrompt.model_fields.values())
+
+    def test_the_instrument_a_run_connected_to_stays_in_the_status(self, session, sink,
+                                                                     fake_rm, profile):
+        """A client that reloads has lost the instrument_connected event."""
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle' and sink.of_type('run_ended'))
+
+        connected = sink.of_type('instrument_connected')[0].payload
+        assert session.status()['instrument'] == connected
+        assert connected['address'] == 'GPIB0::24::INSTR'
+
+    def test_identify_also_sets_the_status_instrument(self, session, fake_rm):
+        found = session.identify('GPIB0::24::INSTR')
+        assert session.status()['instrument'] == found
+        assert sorted(found) == ['address', 'idn', 'max_power_w', 'max_source_i',
+                                 'max_source_v', 'model']
+
+    def test_a_failed_identify_leaves_the_last_instrument(self, session, fake_rm, monkeypatch):
+        found = session.identify('GPIB0::24::INSTR')
+        from resistamet_gui import instrument
+
+        def refuse(self):
+            raise OSError("nothing there")
+        monkeypatch.setattr(instrument.Keithley2400, 'connect', refuse)
+        with pytest.raises(OSError):
+            session.identify('GPIB0::7::INSTR')
+        assert session.status()['instrument'] == found
 
     def test_close_joins_the_thread(self, sink, fake_rm, profile):
         session = MeasurementSession(sink)
