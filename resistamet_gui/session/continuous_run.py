@@ -421,6 +421,10 @@ class ContinuousRun:
             return False
         self._spot_record = spot_record_from_settings(self.settings)
         record = self._spot_record
+        if record is not None and record.ignored_position_correction is not None:
+            self._events.warn('position_correction_ignored',
+                f"Warning: fpp_position_correction is '{record.ignored_position_correction}', "
+                f"which is not implemented. No position correction is applied; the file records 'warn'.")
         if record is None or record.position is None:
             return False
         position = record.position

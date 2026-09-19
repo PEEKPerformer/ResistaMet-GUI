@@ -73,6 +73,10 @@ class SpotRecord:
     edge_warn_pct: float
     #: None when the spot has no position or the sample no edges.
     position: Optional[SpotPosition] = None
+    #: What ``fpp_position_correction`` held when it was not 'warn'. Nothing
+    #: but 'warn' is implemented, so nothing else is ever recorded as in
+    #: force; the run says so in its log.
+    ignored_position_correction: Optional[str] = None
 
     @property
     def off_sample(self) -> bool:
@@ -127,11 +131,16 @@ def spot_record_from_settings(settings: Dict[str, Any]) -> Optional[SpotRecord]:
     if spot.has_position:
         spacing_mm = float(measurement.get('fpp_spacing_cm') or 0.0) * 10.0
         position = check_spot_position(geometry, spacing_mm, spot.x_mm, spot.y_mm, angle_deg)
+    # The schema accepts only 'warn', but the PySide6 path hands over settings
+    # no schema has seen. A hand-edited 'apply' must not be written into a
+    # file whose numbers had no correction applied.
+    requested = str(measurement.get('fpp_position_correction') or 'warn')
     return SpotRecord(
         spot=spot,
         geometry=geometry,
         angle_deg=angle_deg,
-        position_correction=str(measurement.get('fpp_position_correction') or 'warn'),
+        position_correction='warn',
+        ignored_position_correction=None if requested == 'warn' else requested,
         edge_warn_pct=float(measurement.get('fpp_edge_warn_pct', 1.0)),
         position=position,
     )
