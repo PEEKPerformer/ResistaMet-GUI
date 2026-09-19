@@ -78,8 +78,10 @@ class Transport(Protocol):
     carries fixed-shape messages, where short means a fault.
     """
 
-    #: wMaxPacketSize of the bulk IN endpoint, for sizing read buffers (§8.6).
+    #: wMaxPacketSize of the primary bulk IN endpoint, for sizing read buffers (§8.6).
     max_packet_size: int
+    #: wMaxPacketSize of the alternate bulk IN endpoint, for the 0x0b data buffer.
+    max_packet_size_raw: int
 
     def control_in(self, request: int, value: int, index: int, length: int,
                    timeout_ms: int,
@@ -280,6 +282,7 @@ class PyUsbTransport:
         self._interrupt = endpoint_interrupt
         self._interface = interface
         self.max_packet_size = DEFAULT_MAX_PACKET_SIZE
+        self.max_packet_size_raw = DEFAULT_MAX_PACKET_SIZE
         try:
             self._configure()
             self._detach_kernel_driver()
@@ -287,7 +290,9 @@ class PyUsbTransport:
         except usb.core.USBError as exc:
             _dispose(usb, device)
             raise TransportError('cannot claim interface %d: %s' % (interface, exc)) from exc
-        self.max_packet_size = self._in_packet_size()
+        self.max_packet_size = self._in_packet_size(self._in)
+        if self._in_raw is not None:
+            self.max_packet_size_raw = self._in_packet_size(self._in_raw)
 
     def _configure(self) -> None:
         # §2.1 step 2: normally already configured; a failure here is harmless.
@@ -308,10 +313,10 @@ class PyUsbTransport:
         except (NotImplementedError, self._usb.core.USBError) as exc:
             logger.debug('kernel driver detach skipped: %s', exc)
 
-    def _in_packet_size(self) -> int:
+    def _in_packet_size(self, address: int) -> int:
         try:
             interface = self._device.get_active_configuration()[(self._interface, 0)]
-            endpoint = self._usb.util.find_descriptor(interface, bEndpointAddress=self._in)
+            endpoint = self._usb.util.find_descriptor(interface, bEndpointAddress=address)
         except (self._usb.core.USBError, KeyError, IndexError):
             return DEFAULT_MAX_PACKET_SIZE
         if endpoint is None:

@@ -60,6 +60,7 @@ class FakeDevice:
         self.next_read: Any = b''
         self.ctrl_reply: bytes = b'\x40' + bytes(15)
         self.write_returns: Optional[int] = None
+        self.raw_packet = 512
 
     @property
     def serial_number(self):
@@ -72,7 +73,7 @@ class FakeDevice:
         if not self.configured:
             raise FAKE['core'].USBError('Configuration not set')
         return FakeConfiguration(FakeInterface([FakeEndpoint(0x02, 512), FakeEndpoint(0x84, 512),
-                                                FakeEndpoint(0x06, 512), FakeEndpoint(0x88, 512),
+                                                FakeEndpoint(0x06, 512), FakeEndpoint(0x88, self.raw_packet),
                                                 FakeEndpoint(0x81, 64)]))
 
     def set_configuration(self):
@@ -300,11 +301,21 @@ class TestPyUsbTransport:
         assert usb_transport.bulk_in(12, 5000) == device.next_read
         assert device.reads == [(0x84, 12, 5000)]
 
+    def test_raw_in_packet_size_is_read_from_its_own_descriptor(self, monkeypatch):
+        device = HS()
+        device.raw_packet = 64
+        install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
+        assert usb_transport.max_packet_size == 512 and usb_transport.max_packet_size_raw == 64
+        without = PyUsbTransport(device, 0x02, 0x84)
+        assert without.max_packet_size_raw == transport.DEFAULT_MAX_PACKET_SIZE
+
     def test_raw_endpoints_and_interrupt(self, monkeypatch):
         device = HS()
         install_fake_usb(monkeypatch, [device])
         usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88,
                                        endpoint_interrupt=0x81)
+        assert usb_transport.max_packet_size_raw == 512
         usb_transport.bulk_out_raw(b'*CLS;' * 410, 5000)
         assert device.writes == [(0x06, b'*CLS;' * 410, 5000)]
         device.next_read = b'KEITHLEY'
