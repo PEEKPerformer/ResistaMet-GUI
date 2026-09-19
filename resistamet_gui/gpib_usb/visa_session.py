@@ -17,6 +17,10 @@ with ATN toggling to look for a listener, and shuts the adapter down again
 unless a session holds it. That is what a GPIB bus scan is; linux-gpib's
 listing does the same.
 
+``NiUsbGpibSession`` holds what every session on one of our boards shares
+(the board handle, timeouts, IFC, raw command bytes, the REN and ATN line
+operations); ``NiUsbGpibInstrSession`` adds the addressed device on top.
+
 Not registered: ``(gpib, "INTFC")``. Everything an INSTR session needs
 (IFC, REN, raw command bytes, trigger, serial poll) is reachable on the
 INSTR session itself. Not supported: ``gpib_pass_control`` (§5.17 leaves
@@ -46,8 +50,16 @@ logger = logging.getLogger(__name__)
 GPIB_INSTR = (constants.InterfaceType.gpib, 'INSTR')
 _REGISTRY = BoardRegistry()
 
+#: A device address as the REN operations need it: (primary, secondary or None).
+DeviceAddress = Tuple[int, Optional[int]]
 
-def _status_for(exc: Exception) -> StatusCode:
+
+def registry() -> BoardRegistry:
+    """The one board registry every session class and dispatcher shares."""
+    return _REGISTRY
+
+
+def status_for(exc: Exception) -> StatusCode:
     if isinstance(exc, GpibTimeout):
         return StatusCode.error_timeout
     if isinstance(exc, NoListener):
@@ -55,18 +67,74 @@ def _status_for(exc: Exception) -> StatusCode:
     return StatusCode.error_io
 
 
-class NiUsbGpibInstrSession(Session):
-    """A GPIB INSTR session whose bus is an NI USB adapter."""
+# ----------------------------------------------------------------------
+# the VISA line operations in protocol terms (§5.4, §5.6, §5.18)
+# ----------------------------------------------------------------------
 
-    # Registered through the dispatcher, not Session.register(), so the
-    # session type the attribute machinery checks is set by hand.
-    session_type = GPIB_INSTR
-    parsed: rname.GPIBInstr
+def ren_operation(controller: Controller, mode: constants.RENLineOperation,
+                  timeout_s: Optional[float], device: Optional[DeviceAddress]) -> None:
+    """One ``RENLineOperation`` on the bus; ``ValueError`` when it needs a device and has none.
+
+    REN itself is a register write (§5.6). The modes that address a device
+    or send it GTL/LLO are command bytes (§6) and need ``device``; an
+    interface session has no device to give.
+    """
+    if mode == constants.RENLineOperation.asrt:
+        controller.remote_enable(True)
+    elif mode == constants.RENLineOperation.deassert:
+        controller.remote_enable(False)
+    elif mode == constants.RENLineOperation.asrt_llo:
+        controller.remote_enable(True)
+        ops.local_lockout(controller, timeout_s=timeout_s)
+    elif device is None:
+        raise ValueError(mode)
+    elif mode == constants.RENLineOperation.asrt_address:
+        pad, sad = device
+        controller.remote_enable(True)
+        controller.command(t.address_listener_command(controller.own_address, pad, sad),
+                           timeout_s)
+    elif mode == constants.RENLineOperation.asrt_address_llo:
+        pad, sad = device
+        controller.remote_enable(True)
+        ops.local_lockout(controller, pad, sad, timeout_s)
+    elif mode == constants.RENLineOperation.deassert_gtl:
+        pad, sad = device
+        ops.go_to_local(controller, pad, sad, timeout_s)
+        controller.remote_enable(False)
+    elif mode == constants.RENLineOperation.address_gtl:
+        pad, sad = device
+        ops.go_to_local(controller, pad, sad, timeout_s)
+    else:
+        raise ValueError(mode)
+
+
+def atn_operation(controller: Controller, mode: constants.ATNLineOperation) -> None:
+    """One ``ATNLineOperation`` (§5.4); ``ValueError`` for the mode the protocol lacks."""
+    if mode == constants.ATNLineOperation.asrt:
+        controller.take_control(synchronous=True)
+    elif mode == constants.ATNLineOperation.asrt_immediate:
+        controller.take_control(synchronous=False)
+    elif mode == constants.ATNLineOperation.deassert:
+        controller.go_to_standby()
+    else:
+        # deassert_handshake (shadow handshake): §5.4 offers only take control
+        # and go to standby, nothing that keeps the adapter in the handshake.
+        raise ValueError(mode)
+
+
+# ----------------------------------------------------------------------
+# sessions
+# ----------------------------------------------------------------------
+
+class NiUsbGpibSession(Session):
+    """What every session on one of our boards shares. Not registered itself.
+
+    Subclasses set ``session_type`` by hand (they are reached through a
+    dispatcher, not ``Session.register()``), so the attribute machinery
+    checks the right resource class.
+    """
+
     interface: Optional[Controller]
-
-    @staticmethod
-    def list_resources() -> List[str]:
-        return _REGISTRY.list_instruments()
 
     @classmethod
     def get_low_level_info(cls) -> str:
@@ -74,25 +142,21 @@ class NiUsbGpibInstrSession(Session):
 
     def after_parsing(self) -> None:
         try:
-            self.interface = _REGISTRY.acquire(self.parsed.board)
+            self.interface = registry().acquire(self.parsed.board)
         except KeyError:
             raise OpenError(StatusCode.error_resource_not_found)
         except Exception as exc:  # noqa: BLE001 - pyvisa expects an OpenError, whatever the USB stack threw
             logger.warning('GPIB%s: cannot open adapter: %s', self.parsed.board, exc)
             raise OpenError(StatusCode.error_system_error)
-        self._pad = int(self.parsed.primary_address)
-        sad = self.parsed.secondary_address
-        self._sad: Optional[int] = None if sad is None else int(sad)
         for attribute in (ResourceAttribute.send_end_enabled,
                           ResourceAttribute.termchar,
-                          ResourceAttribute.termchar_enabled,
-                          ResourceAttribute.gpib_readdress_enabled):
+                          ResourceAttribute.termchar_enabled):
             self.attrs[attribute] = attributes.AttributesByID[attribute].default
         self.attrs[ResourceAttribute.interface_number] = int(self.parsed.board)
 
     def close(self) -> StatusCode:
         if self.interface is not None:
-            _REGISTRY.release(self.parsed.board)
+            registry().release(self.parsed.board)
             self.interface = None
         return StatusCode.success
 
@@ -117,6 +181,100 @@ class NiUsbGpibInstrSession(Session):
             return 10e-6
         return self.timeout
 
+    def _device(self) -> Optional[DeviceAddress]:
+        """The addressed device, for the REN modes that need one. None for an interface."""
+        return None
+
+    def _label(self) -> str:
+        return 'GPIB%s' % self.parsed.board
+
+    def flush(self, mask: constants.BufferOperation) -> StatusCode:
+        # Nothing is buffered on the host side; every write goes to the bus.
+        return StatusCode.success
+
+    # ------------------------------------------------------------------
+    # bus operations; the session timeout goes into each (§5.18)
+    # ------------------------------------------------------------------
+
+    def gpib_command(self, command_byte: bytes) -> Tuple[int, StatusCode]:
+        controller = self._controller()
+        try:
+            return controller.command(command_byte, self._device_timeout()), StatusCode.success
+        except (GpibError, TransportError) as exc:
+            return 0, status_for(exc)
+
+    def gpib_send_ifc(self) -> StatusCode:
+        return self._bus_operation(lambda c: c.interface_clear())
+
+    def gpib_control_ren(self, mode: constants.RENLineOperation) -> StatusCode:
+        timeout, device = self._device_timeout(), self._device()
+        try:
+            return self._bus_operation(lambda c: ren_operation(c, mode, timeout, device))
+        except ValueError:
+            return StatusCode.error_nonsupported_operation
+
+    def gpib_control_atn(self, mode: constants.ATNLineOperation) -> StatusCode:
+        try:
+            return self._bus_operation(lambda c: atn_operation(c, mode))
+        except ValueError:
+            return StatusCode.error_nonsupported_operation
+
+    def _bus_operation(self, operation: Callable[[Controller], Any]) -> StatusCode:
+        controller = self._controller()
+        try:
+            operation(controller)
+        except (GpibError, TransportError) as exc:
+            logger.debug('%s: %s', self._label(), exc)
+            return status_for(exc)
+        return StatusCode.success
+
+    def _line_state(self, bit: int) -> constants.LineState:
+        """One bus line from the BSR (§5.13); unknown when the adapter cannot be asked."""
+        try:
+            lines = self._controller().bus_lines()
+        except (GpibError, TransportError):
+            return constants.LineState.unknown
+        return constants.LineState.asserted if lines & bit else constants.LineState.unasserted
+
+    # ------------------------------------------------------------------
+    # attributes not held in self.attrs
+    # ------------------------------------------------------------------
+
+    def _get_attribute(self, attribute: ResourceAttribute) -> Tuple[Any, StatusCode]:
+        if attribute == ResourceAttribute.gpib_ren_state:
+            return self._line_state(t.BSR_REN), StatusCode.success
+        if attribute == ResourceAttribute.interface_type:
+            return constants.InterfaceType.gpib, StatusCode.success
+        raise UnknownAttribute(attribute)
+
+    def _set_attribute(self, attribute: ResourceAttribute, attribute_state: Any) -> StatusCode:
+        raise UnknownAttribute(attribute)
+
+
+class NiUsbGpibInstrSession(NiUsbGpibSession):
+    """A GPIB INSTR session whose bus is an NI USB adapter."""
+
+    session_type = GPIB_INSTR
+    parsed: rname.GPIBInstr
+
+    @staticmethod
+    def list_resources() -> List[str]:
+        return registry().list_instruments()
+
+    def after_parsing(self) -> None:
+        super().after_parsing()
+        self._pad = int(self.parsed.primary_address)
+        sad = self.parsed.secondary_address
+        self._sad: Optional[int] = None if sad is None else int(sad)
+        readdress = ResourceAttribute.gpib_readdress_enabled
+        self.attrs[readdress] = attributes.AttributesByID[readdress].default
+
+    def _device(self) -> Optional[DeviceAddress]:
+        return self._pad, self._sad
+
+    def _label(self) -> str:
+        return 'GPIB%s::%d' % (self.parsed.board, self._pad)
+
     def _readdress(self) -> bool:
         value, _ = self.get_attribute(ResourceAttribute.gpib_readdress_enabled)
         return bool(value)
@@ -139,8 +297,8 @@ class NiUsbGpibInstrSession(Session):
         except GpibTimeout as exc:
             return exc.partial, StatusCode.error_timeout
         except (GpibError, TransportError) as exc:
-            logger.debug('GPIB%s::%d read: %s', self.parsed.board, self._pad, exc)
-            return b'', _status_for(exc)
+            logger.debug('%s read: %s', self._label(), exc)
+            return b'', status_for(exc)
         if ended:
             # The adapter's END covers both EOI and the EOS match (§5.2); a
             # last byte equal to the enabled termchar is reported as the latter.
@@ -157,16 +315,12 @@ class NiUsbGpibInstrSession(Session):
                                        timeout_s=self._device_timeout(),
                                        readdress=self._readdress())
         except (GpibError, TransportError) as exc:
-            logger.debug('GPIB%s::%d write: %s', self.parsed.board, self._pad, exc)
-            return 0, _status_for(exc)
+            logger.debug('%s write: %s', self._label(), exc)
+            return 0, status_for(exc)
         return written, StatusCode.success
 
-    def flush(self, mask: constants.BufferOperation) -> StatusCode:
-        # Nothing is buffered on the host side; every write goes to the bus.
-        return StatusCode.success
-
     # ------------------------------------------------------------------
-    # device and bus operations; the session timeout goes into each (§5.18)
+    # device operations; the session timeout goes into each (§5.18)
     # ------------------------------------------------------------------
 
     def clear(self) -> StatusCode:
@@ -179,79 +333,14 @@ class NiUsbGpibInstrSession(Session):
             return ops.serial_poll(controller, self._pad, self._sad,
                                    self._device_timeout()), StatusCode.success
         except (GpibError, TransportError) as exc:
-            logger.debug('GPIB%s::%d serial poll: %s', self.parsed.board, self._pad, exc)
-            return 0, _status_for(exc)
+            logger.debug('%s serial poll: %s', self._label(), exc)
+            return 0, status_for(exc)
 
     def assert_trigger(self, protocol: constants.TriggerProtocol) -> StatusCode:
         if protocol != constants.TriggerProtocol.default:
             return StatusCode.error_nonsupported_operation
         return self._bus_operation(
             lambda c: ops.trigger(c, self._pad, self._sad, self._device_timeout()))
-
-    def gpib_command(self, command_byte: bytes) -> Tuple[int, StatusCode]:
-        controller = self._controller()
-        try:
-            return controller.command(command_byte, self._device_timeout()), StatusCode.success
-        except (GpibError, TransportError) as exc:
-            return 0, _status_for(exc)
-
-    def gpib_send_ifc(self) -> StatusCode:
-        return self._bus_operation(lambda c: c.interface_clear())
-
-    def gpib_control_ren(self, mode: constants.RENLineOperation) -> StatusCode:
-        pad, sad, timeout = self._pad, self._sad, self._device_timeout()
-
-        def run(c: Controller) -> None:
-            if mode == constants.RENLineOperation.asrt:
-                c.remote_enable(True)
-            elif mode == constants.RENLineOperation.asrt_address:
-                c.remote_enable(True)
-                c.command(t.address_listener_command(c.own_address, pad, sad), timeout)
-            elif mode == constants.RENLineOperation.asrt_llo:
-                c.remote_enable(True)
-                ops.local_lockout(c, timeout_s=timeout)
-            elif mode == constants.RENLineOperation.asrt_address_llo:
-                c.remote_enable(True)
-                ops.local_lockout(c, pad, sad, timeout)
-            elif mode == constants.RENLineOperation.deassert:
-                c.remote_enable(False)
-            elif mode == constants.RENLineOperation.deassert_gtl:
-                ops.go_to_local(c, pad, sad, timeout)
-                c.remote_enable(False)
-            elif mode == constants.RENLineOperation.address_gtl:
-                ops.go_to_local(c, pad, sad, timeout)
-            else:
-                raise ValueError(mode)
-
-        try:
-            return self._bus_operation(run)
-        except ValueError:
-            return StatusCode.error_nonsupported_operation
-
-    def gpib_control_atn(self, mode: constants.ATNLineOperation) -> StatusCode:
-        def run(c: Controller) -> None:
-            if mode == constants.ATNLineOperation.asrt:
-                c.take_control(synchronous=True)
-            elif mode == constants.ATNLineOperation.asrt_immediate:
-                c.take_control(synchronous=False)
-            elif mode == constants.ATNLineOperation.deassert:
-                c.go_to_standby()
-            else:
-                raise ValueError(mode)  # deassert_handshake: no protocol equivalent
-
-        try:
-            return self._bus_operation(run)
-        except ValueError:
-            return StatusCode.error_nonsupported_operation
-
-    def _bus_operation(self, operation: Callable[[Controller], Any]) -> StatusCode:
-        controller = self._controller()
-        try:
-            operation(controller)
-        except (GpibError, TransportError) as exc:
-            logger.debug('GPIB%s::%d: %s', self.parsed.board, self._pad, exc)
-            return _status_for(exc)
-        return StatusCode.success
 
     # ------------------------------------------------------------------
     # attributes not held in self.attrs
@@ -265,16 +354,7 @@ class NiUsbGpibInstrSession(Session):
             return value, StatusCode.success
         if attribute == ResourceAttribute.suppress_end_enabled:
             return False, StatusCode.success
-        if attribute == ResourceAttribute.gpib_ren_state:
-            try:
-                lines = self._controller().bus_lines()
-            except (GpibError, TransportError):
-                return constants.LineState.unknown, StatusCode.success
-            state = constants.LineState.asserted if lines & t.BSR_REN else constants.LineState.unasserted
-            return state, StatusCode.success
-        if attribute == ResourceAttribute.interface_type:
-            return constants.InterfaceType.gpib, StatusCode.success
-        raise UnknownAttribute(attribute)
+        return super()._get_attribute(attribute)
 
     def _set_attribute(self, attribute: ResourceAttribute, attribute_state: Any) -> StatusCode:
         if attribute == ResourceAttribute.gpib_primary_address:
@@ -296,7 +376,7 @@ class NiUsbGpibInstrSession(Session):
             if attribute_state:
                 return StatusCode.error_nonsupported_attribute_state
             return StatusCode.success
-        raise UnknownAttribute(attribute)
+        return super()._set_attribute(attribute, attribute_state)
 
 
 class NiUsbGpibDispatch(Session):
@@ -315,7 +395,7 @@ class NiUsbGpibDispatch(Session):
                 open_timeout: Optional[int] = None) -> Session:  # type: ignore[misc]
         if parsed is None:
             parsed = rname.parse_resource_name(resource_name)
-        if isinstance(parsed, rname.GPIBInstr) and _REGISTRY.owns(parsed.board):
+        if isinstance(parsed, rname.GPIBInstr) and registry().owns(parsed.board):
             return NiUsbGpibInstrSession(resource_manager_session, resource_name, parsed,
                                          open_timeout)
         if cls.previous is None:
