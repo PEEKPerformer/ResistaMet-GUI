@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..schema.spots import SpotRequest
+
 #: Bumped when the envelope or an existing payload changes shape.
 EVENT_SCHEMA_VERSION = 1
 
@@ -141,6 +143,29 @@ class SweepSegmentPayload(EventModel):
     voltages: List[float] = Field(default_factory=list)
     currents: List[float] = Field(default_factory=list)
     compliance: List[str] = Field(default_factory=list)
+
+
+class GeometryWarningPayload(EventModel):
+    """A four-point spot's position is a problem, said before the first sample.
+
+    ``refused`` with ``off_sample``: a probe tip is on or beyond the edge and
+    the run ends without touching the instrument. ``near_edge``: assuming a
+    centred probe costs more than ``edge_warn_pct`` here; the run goes on and
+    the values are recorded as measured, without a position correction.
+
+    ``relative_error`` is ``factor_centre / factor_here - 1``, a fraction, not
+    a percentage. The factors are absent off the sample, where they diverge.
+    """
+
+    refused: bool
+    reason: Literal['off_sample', 'near_edge']
+    message: str
+    spot: SpotRequest
+    edge_clearance_s: float
+    edge_warn_pct: float
+    factor_here: Optional[float] = None
+    factor_centre: Optional[float] = None
+    relative_error: Optional[float] = None
 
 
 class AcquisitionFinishedPayload(EventModel):
@@ -275,6 +300,7 @@ PAYLOAD_MODELS = {
     'compliance': CompliancePayload,
     'overpower_trip': OverpowerPayload,
     'sweep_segment': SweepSegmentPayload,
+    'geometry_warning': GeometryWarningPayload,
     'acquisition_finished': AcquisitionFinishedPayload,
     'vdp_geometry_complete': VdpGeometryCompletePayload,
     'vdp_result': VdpResultPayload,

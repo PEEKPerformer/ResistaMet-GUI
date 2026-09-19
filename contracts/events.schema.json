@@ -200,6 +200,156 @@
       "title": "FileOpenedPayload",
       "type": "object"
     },
+    "geometry_warning": {
+      "$defs": {
+        "SpotRequest": {
+          "additionalProperties": false,
+          "description": "One placement of the probe, as the client describes it.\n\nThe position is optional -- a spot can be a label and nothing more -- but\n``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the\ndirection of the probe array, anticlockwise from +x; absent, the run uses\nthe ``fpp_array_angle_deg`` setting.",
+          "properties": {
+            "angle_deg": {
+              "anyOf": [
+                {
+                  "maximum": 360.0,
+                  "minimum": -360.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Angle Deg"
+            },
+            "index": {
+              "maximum": 9999,
+              "minimum": 0,
+              "title": "Index",
+              "type": "integer"
+            },
+            "label": {
+              "maxLength": 80,
+              "minLength": 1,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+              "title": "Label",
+              "type": "string"
+            },
+            "map_id": {
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "title": "Map Id",
+              "type": "string"
+            },
+            "x_mm": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "X Mm"
+            },
+            "y_mm": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Y Mm"
+            }
+          },
+          "required": [
+            "map_id",
+            "index",
+            "label"
+          ],
+          "title": "SpotRequest",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "A four-point spot's position is a problem, said before the first sample.\n\n``refused`` with ``off_sample``: a probe tip is on or beyond the edge and\nthe run ends without touching the instrument. ``near_edge``: assuming a\ncentred probe costs more than ``edge_warn_pct`` here; the run goes on and\nthe values are recorded as measured, without a position correction.\n\n``relative_error`` is ``factor_centre / factor_here - 1``, a fraction, not\na percentage. The factors are absent off the sample, where they diverge.",
+      "properties": {
+        "edge_clearance_s": {
+          "title": "Edge Clearance S",
+          "type": "number"
+        },
+        "edge_warn_pct": {
+          "title": "Edge Warn Pct",
+          "type": "number"
+        },
+        "factor_centre": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Factor Centre"
+        },
+        "factor_here": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Factor Here"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "off_sample",
+            "near_edge"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "refused": {
+          "title": "Refused",
+          "type": "boolean"
+        },
+        "relative_error": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relative Error"
+        },
+        "spot": {
+          "$ref": "#/$defs/SpotRequest"
+        }
+      },
+      "required": [
+        "refused",
+        "reason",
+        "message",
+        "spot",
+        "edge_clearance_s",
+        "edge_warn_pct"
+      ],
+      "title": "GeometryWarningPayload",
+      "type": "object"
+    },
     "instrument_connected": {
       "additionalProperties": false,
       "description": "The SMU answered *IDN? and its limits are known.",

@@ -28,6 +28,7 @@ from .configure import (
     configure_source_v, configure_sweep,
 )
 from .run_files import create_base_path, open_exporter
+from .spot_record import spot_record_from_settings
 from .samples import (
     build_row, parse_four_point, parse_resistance, parse_source_i, parse_source_v,
 )
@@ -67,6 +68,9 @@ class ContinuousRun:
         self._mode_state = None
         # Set by each delta read: the per-polarity values the row builder logs.
         self._last_delta = None
+        # Set before anything is opened: this run's spot resolved against the
+        # sample outline, or None for a run that carries no spot.
+        self._spot_record = None
 
         # Start/stop/pause state and the marker queue, shared with whoever is
         # driving the run.
@@ -355,6 +359,51 @@ class ContinuousRun:
                               "Touch-safety warning silenced for this profile.")
         return choice != 'acknowledge'
 
+    def _spot_refused(self) -> bool:
+        """Resolve this run's spot against the sample. True = do not start.
+
+        Pure arithmetic on the settings, done before the instrument is opened,
+        so a probe that is not on the sample never gets an output turned on
+        under it. A spot near an edge is a warning, not a refusal: the
+        measurement is valid, the centred correction is what is off, and the
+        file records by how much.
+        """
+        if self.mode != 'four_point':
+            return False
+        try:
+            self._spot_record = spot_record_from_settings(self.settings)
+        except ValueError as exc:
+            self._events.error('spot_invalid', 'run', f"The spot cannot be recorded: {exc}")
+            return True
+        record = self._spot_record
+        if record is None or record.position is None:
+            return False
+        position = record.position
+        payload = {
+            'spot': record.spot.model_dump(),
+            'edge_clearance_s': position.edge_clearance_s,
+            'edge_warn_pct': record.edge_warn_pct,
+            'factor_here': position.factor_here,
+            'factor_centre': position.factor_centre,
+            'relative_error': position.relative_error,
+        }
+        if record.off_sample:
+            message = (f"Spot '{record.spot.label}' is off the sample: a probe tip is "
+                       f"{abs(position.edge_clearance_s):.2f} s beyond the edge.")
+            self._events.emit('geometry_warning', {
+                **payload, 'refused': True, 'reason': 'off_sample', 'message': message})
+            self._events.error('spot_off_sample', 'run', message)
+            return True
+        if record.near_edge:
+            message = (f"Spot '{record.spot.label}' is {position.edge_clearance_s:.1f} s from "
+                       f"the edge: the centred geometry factor is off by "
+                       f"{abs(position.relative_error) * 100.0:.1f} % there "
+                       f"(threshold {record.edge_warn_pct:g} %). No position correction is applied.")
+            self._events.emit('geometry_warning', {
+                **payload, 'refused': False, 'reason': 'near_edge', 'message': message})
+            self._events.warn('spot_near_edge', message)
+        return False
+
     def execute(self):
         self.running = True
         self.paused = False
@@ -373,6 +422,15 @@ class ContinuousRun:
             self._events.error('instrument_busy', 'smu', str(exc))
             self._events.emit('run_ended', {
                 'reason': 'instrument_busy', 'ok': False, 'samples': 0,
+                'duration_s': 0.0, 'path': None,
+            })
+            return
+
+        if self._spot_refused():
+            self._control.finish('spot_refused')
+            self._release_instrument_lock()
+            self._events.emit('run_ended', {
+                'reason': 'spot_refused', 'ok': False, 'samples': 0,
                 'duration_s': 0.0, 'path': None,
             })
             return

@@ -76,6 +76,45 @@ export interface FileOpenedPayload {
 }
 
 /**
+ * A four-point spot's position is a problem, said before the first sample.
+ *
+ * ``refused`` with ``off_sample``: a probe tip is on or beyond the edge and
+ * the run ends without touching the instrument. ``near_edge``: assuming a
+ * centred probe costs more than ``edge_warn_pct`` here; the run goes on and
+ * the values are recorded as measured, without a position correction.
+ *
+ * ``relative_error`` is ``factor_centre / factor_here - 1``, a fraction, not
+ * a percentage. The factors are absent off the sample, where they diverge.
+ */
+export interface GeometryWarningPayload {
+  edge_clearance_s: number;
+  edge_warn_pct: number;
+  factor_centre?: number | null;
+  factor_here?: number | null;
+  message: string;
+  reason: "off_sample" | "near_edge";
+  refused: boolean;
+  relative_error?: number | null;
+  spot: SpotRequest;
+}
+/**
+ * One placement of the probe, as the client describes it.
+ *
+ * The position is optional -- a spot can be a label and nothing more -- but
+ * ``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the
+ * direction of the probe array, anticlockwise from +x; absent, the run uses
+ * the ``fpp_array_angle_deg`` setting.
+ */
+export interface SpotRequest {
+  angle_deg?: number | null;
+  index: number;
+  label: string;
+  map_id: string;
+  x_mm?: number | null;
+  y_mm?: number | null;
+}
+
+/**
  * The SMU answered *IDN? and its limits are known.
  */
 export interface InstrumentConnectedPayload {
@@ -272,6 +311,7 @@ export interface EventPayloadMap {
   error: ErrorPayload;
   file_finalized: FileFinalizedPayload;
   file_opened: FileOpenedPayload;
+  geometry_warning: GeometryWarningPayload;
   instrument_connected: InstrumentConnectedPayload;
   line_frequency: LineFrequencyPayload;
   log: LogPayload;
