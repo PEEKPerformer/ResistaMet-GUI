@@ -926,10 +926,20 @@ class ContinuousRun:
             self._shut_down(instrument_ready, file_ready, nplc)
 
         except RunStopped:
-            # A stop landed during a settle or a retry backoff; the normal
-            # shutdown path follows. Listed first: RunStopped is an Exception,
-            # and the handler below would otherwise report a stop as a fault.
-            pass
+            # A stop landed during a settle or a retry backoff. Listed first:
+            # RunStopped is an Exception, and the handler below would
+            # otherwise report a stop as a fault.
+            #
+            # The exception carried control past the shutdown at the end of
+            # the try block, so it is run here. Without it _cleanup still
+            # turned the output off and closed the file, but the file had no
+            # footer and the log never said the output was off or where the
+            # data went: a stop in the settle looked like a crash.
+            try:
+                self._shut_down(instrument_ready, file_ready, nplc)
+            except Exception as e:
+                self._control.finish('worker_error')
+                self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self.mode}): {str(e)}")
         except Exception as e:
             self._control.finish('worker_error')
             self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self.mode}): {str(e)}")
