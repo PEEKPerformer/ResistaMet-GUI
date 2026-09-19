@@ -343,8 +343,8 @@ class TestData:
         assert intf.read() == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         assert len(board.instructions(p.OP_COMMAND)) == commands
         opcodes = [m[0] for m in board.messages[-2:]]
-        assert opcodes == [p.OP_GO_TO_STANDBY, p.OP_READ]
-        read = board.instructions(p.OP_READ)[-1]
+        assert opcodes == [p.OP_GO_TO_STANDBY, p.OP_READ_RAW]  # pyvisa's 20480-byte chunk: 0x0b
+        read = board.instructions(p.OP_READ_RAW)[-1]
         assert read[1:4] == h('00 00 fb')
 
     def test_read_termination_selects_eos(self, rm, board):
@@ -353,7 +353,7 @@ class TestData:
         intf.write('*IDN?')
         intf.send_command(bytes((UNL, MLA0, TAD24)))
         assert intf.read() == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30'
-        assert board.instructions(p.OP_READ)[-1][1:3] == h('14 0a')
+        assert board.instructions(p.OP_READ_RAW)[-1][1:3] == h('14 0a')
         intf.close()
 
     def test_read_with_nothing_to_say_is_a_timeout(self, intf, board):

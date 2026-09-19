@@ -7,7 +7,7 @@ presence probe), holding one fake instrument at address 24 that answers
 ``list_resources``, ``open_resource``, ``query``.
 """
 import sys
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pytest
 
@@ -75,9 +75,12 @@ class SimulatedAdapter:
         #: Set by a test to hold the SRQ line asserted.
         self.srq = False
         self.reply = b''
+        #: What the next bulk_in_raw returns (the data of a 0x0b), None when none is owed.
+        self.raw_reply: Optional[bytes] = None
         self.messages: List[bytes] = []
         self.control_requests: List[int] = []
         self.bulk_in_timeouts: List[int] = []
+        self.raw_in_timeouts: List[int] = []
         self.closed = False
         #: Raised by the next bulk_out, once.
         self.fail_next: Optional[Exception] = None
@@ -139,6 +142,8 @@ class SimulatedAdapter:
             self.reply = self._write(data)
         elif opcode == p.OP_READ:
             self.reply = self._read(data)
+        elif opcode == p.OP_READ_RAW:
+            self.reply = self._read_raw(data)
         else:
             raise AssertionError('unexpected opcode 0x%02x' % opcode)
 
@@ -181,17 +186,11 @@ class SimulatedAdapter:
             self.instruments[pad].accept(payload, bool(data[6] & 0x08))
         return self._status(p.OP_WRITE) + h('04 00 00 00')
 
-    def _read(self, data: bytes) -> bytes:
-        requested = 0x10000 - int.from_bytes(data[4:6], 'little')
-        eos_mode, eos_char = data[1], data[2]
-        # The 16-byte trailer as the real adapter sends it.
-        trailer_tail = h('04 00 00 00')
-        if self.atn:
-            return self._status(0x38, error=2, count=-requested) + h('60 00 00 00') + trailer_tail
+    def _talker_output(self, requested: int, eos_mode: int, eos_char: int) -> Optional[Tuple[bytes, bool]]:
+        """What the addressed talker gives up for one read: (bytes, END), or None when nothing is pending."""
         instrument = self.instruments.get(self.talker) if self.talker is not None else None
         if instrument is None or not instrument.pending:
-            return (self._status(0x38, error=0x0A, count=-requested, ibsta=0x0020)
-                    + h('e0 5e 00 00') + trailer_tail)
+            return None
         source = instrument.pending
         if eos_mode & 0x04 and bytes((eos_char,)) in source:
             cut = source.index(bytes((eos_char,))) + 1
@@ -199,7 +198,36 @@ class SimulatedAdapter:
             cut = len(source)
         cut = min(cut, requested)
         out, instrument.pending = source[:cut], source[cut:]
-        end = not instrument.pending or (eos_mode & 0x04 and out.endswith(bytes((eos_char,))))
+        end = not instrument.pending or bool(eos_mode & 0x04 and out.endswith(bytes((eos_char,))))
+        return out, end
+
+    def _read_raw(self, data: bytes) -> bytes:
+        """0x0b (§10.1.3): the bytes go to the alternate IN, a 12-byte 0x0b block and the
+        clear-END write's status come back on the primary."""
+        requested = -int.from_bytes(data[4:8], 'little', signed=True)
+        result = None if self.atn else self._talker_output(requested, data[1], data[2])
+        if result is None:
+            out, end, error = b'', False, (2 if self.atn else 0x0A)
+        else:
+            (out, end), error = result, 0
+        self.raw_reply = out
+        count = (len(out) - requested).to_bytes(4, 'little', signed=True)
+        status = bytes((p.OP_READ_RAW,)) + (0x2064 if end else 0x0064).to_bytes(2, 'big') + bytes((error,))
+        return (status + count + bytes((0xE0 if end else 0x60, 0, 0, 0))
+                + h('09 00 64 00') + count + h('01 00 00 00') + h('04 00 00 00'))
+
+    def _read(self, data: bytes) -> bytes:
+        requested = 0x10000 - int.from_bytes(data[4:6], 'little')
+        eos_mode, eos_char = data[1], data[2]
+        # The 16-byte trailer as the real adapter sends it.
+        trailer_tail = h('04 00 00 00')
+        if self.atn:
+            return self._status(0x38, error=2, count=-requested) + h('60 00 00 00') + trailer_tail
+        result = self._talker_output(requested, eos_mode, eos_char)
+        if result is None:
+            return (self._status(0x38, error=0x0A, count=-requested, ibsta=0x0020)
+                    + h('e0 5e 00 00') + trailer_tail)
+        out, end = result
         blocks = b''
         for start in range(0, len(out), 15):
             chunk = out[start:start + 15]
@@ -221,7 +249,11 @@ class SimulatedAdapter:
         raise AssertionError('unexpected raw bulk OUT of %d bytes' % len(data))
 
     def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
-        raise AssertionError('unexpected raw bulk IN of %d bytes' % length)
+        self.raw_in_timeouts.append(timeout_ms)
+        assert self.raw_reply is not None, 'raw bulk IN with no 0x0b outstanding'
+        assert len(self.raw_reply) < length, 'raw data of %d bytes needs a buffer larger than %d' % (len(self.raw_reply), length)
+        reply, self.raw_reply = self.raw_reply, None
+        return reply
 
     def interrupt_in(self, length: int, timeout_ms: int) -> bytes:
         raise AssertionError('unexpected interrupt read')
@@ -383,8 +415,12 @@ class TestInstrumentSession:
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         write = adapter.instructions(p.OP_WRITE)[-1]
         assert write == p.write_message(b'*IDN?\r\n', 0xFD, send_eoi=True)
-        read = adapter.instructions(p.OP_READ)[-1]
-        assert read[1:4] == h('00 00 fd')  # EOS disabled, 10 s device timeout
+        # pyvisa reads in 20480-byte chunks, so the read is a 0x0b with the data on the
+        # alternate endpoint, as it is under NI's driver (§10.1.1).
+        assert adapter.instructions(p.OP_READ) == []
+        read = adapter.instructions(p.OP_READ_RAW)[-1]
+        assert read[:8] == h('0b 00 00 fd 00 b0 ff ff')  # EOS disabled, 10 s device timeout, -20480
+        assert adapter.raw_in_timeouts[-1] == 15000 + 20480  # host wait + 20480 B at 1000 B/s
         # Addressing: controller talks / instrument listens, then instrument talks.
         commands = adapter.instructions(p.OP_COMMAND)[-2:]
         assert commands[0][4:7] == bytes((0x3F, 0x40, 0x38))
@@ -394,8 +430,17 @@ class TestInstrumentSession:
     def test_read_termination_selects_eos_and_is_stripped(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR', read_termination='\n')
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30'
-        read = adapter.instructions(p.OP_READ)[-1]
+        read = adapter.instructions(p.OP_READ_RAW)[-1]
         assert read[1:3] == h('14 0a')
+        inst.close()
+
+    def test_a_small_chunk_size_reads_through_the_framed_instruction(self, rm, adapter):
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.chunk_size = 256
+        assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
+        assert adapter.instructions(p.OP_READ_RAW) == []
+        read = adapter.instructions(p.OP_READ)[-1]
+        assert read[1:6] == h('00 00 fc 00 ff')  # 3 s default timeout, -256
         inst.close()
 
     def test_timeout_attribute_reaches_the_instruction(self, rm, adapter):
