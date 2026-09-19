@@ -185,3 +185,75 @@ class TestTheSessionIsTheLastResort:
         assert session.state == 'idle'
         assert session.status()['run_id'] is None
         assert _lock_is_free()
+
+
+class TestTheLockIsReleasedLast:
+    """While this run is still writing to the bus, nobody else may have it.
+
+    On a failure exit the :OUTP OFF in cleanup is the only one. With the lock
+    given up first, a second process waiting out its grace period could open
+    the address and turn its output on before that write landed.
+    """
+
+    @pytest.fixture
+    def probes(self, monkeypatch):
+        """(what happened, was the lock free at that moment), in order."""
+        from resistamet_gui._simulator import FakeKeithley, FakeSerialSensor
+        seen = []
+
+        def probing(cls, name, label):
+            original = getattr(cls, name)
+
+            def wrapper(self, *args, **kwargs):
+                seen.append((label(args), _lock_is_free()))
+                return original(self, *args, **kwargs)
+            monkeypatch.setattr(cls, name, wrapper)
+
+        probing(FakeKeithley, 'write', lambda args: args[0])
+        probing(FakeKeithley, 'close', lambda args: 'smu close')
+        probing(FakeSerialSensor, 'close', lambda args: 'aux close')
+        return seen
+
+    def test_a_continuous_run_with_an_aux_sensor(self, fake_rm, profile, probes):
+        profile['measurement'].update({
+            'aux_log_enabled': True, 'aux_driver': 'arduino_thermocouple',
+            'aux_address': 'ASRL6::INSTR'})
+        sink = ListSink()
+        run = ContinuousRun('four_point', 'wafer1', 'alice', profile, RunControl(),
+                             EventEmitter(sink))
+        run.execute()
+
+        assert _ended(sink) == [('target_samples', True)]
+        happened = [what for what, _ in probes]
+        assert happened[-3:] == [':OUTP OFF', 'smu close', 'aux close']
+        assert [what for what, free in probes if free] == []
+        assert _lock_is_free()
+
+    def test_a_van_der_pauw_run(self, fake_rm, profile, probes):
+        sink = ListSink()
+        control = RunControl()
+        run = VdpRun('wafer1', 'alice', profile, control, EventEmitter(sink))
+        thread = threading.Thread(target=run.execute, daemon=True)
+        thread.start()
+        assert _wait_for(lambda: control.pending_prompt is not None)
+        run.stop_measurement()
+        thread.join(5.0)
+
+        happened = [what for what, _ in probes]
+        assert happened[-2:] == [':OUTP OFF', 'smu close']
+        assert [what for what, free in probes if free] == []
+        assert _lock_is_free()
+
+    @pytest.mark.parametrize('failing', ['smu close', 'aux close'])
+    def test_a_close_that_raises_still_gives_the_lock_back(self, fake_rm, profile,
+                                                           monkeypatch, failing):
+        from resistamet_gui._simulator import FakeKeithley, FakeSerialSensor
+        cls = FakeKeithley if failing == 'smu close' else FakeSerialSensor
+        monkeypatch.setattr(cls, 'close', _boom)
+        profile['measurement'].update({
+            'aux_log_enabled': True, 'aux_driver': 'arduino_thermocouple',
+            'aux_address': 'ASRL6::INSTR'})
+        run = ContinuousRun('four_point', 'wafer1', 'alice', profile, RunControl(),
+                             EventEmitter(ListSink()))
+        run.execute()
+        assert _lock_is_free()

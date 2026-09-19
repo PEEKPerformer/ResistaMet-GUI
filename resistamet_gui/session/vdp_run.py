@@ -502,22 +502,24 @@ class VdpRun:
                 logger.warning("failed to release the instrument lock", exc_info=True)
 
     def _cleanup(self) -> None:
-        self._sleep_inhibitor.uninhibit()
-        # Released last, after the instrument is closed.
-        self._release_instrument_lock()
-        if self.keithley:
-            try:
-                self.keithley.write(":OUTP OFF")
-                self.keithley.close()
-                self._events.log('cleanup', "Instrument disconnected.")
-            except Exception as e:
-                self._events.warn('cleanup', f"Warning: cleanup error: {e}")
-            finally:
-                self.keithley = None
-        if self.exporter:
-            try:
-                # finalize() is idempotent on already-finalized exporters.
-                self.exporter.finalize()
-            except Exception:
-                pass
-            self.exporter = None
+        try:
+            self._sleep_inhibitor.uninhibit()
+            if self.keithley:
+                try:
+                    self.keithley.write(":OUTP OFF")
+                    self.keithley.close()
+                    self._events.log('cleanup', "Instrument disconnected.")
+                except Exception as e:
+                    self._events.warn('cleanup', f"Warning: cleanup error: {e}")
+                finally:
+                    self.keithley = None
+            if self.exporter:
+                try:
+                    # finalize() is idempotent on already-finalized exporters.
+                    self.exporter.finalize()
+                except Exception:
+                    pass
+                self.exporter = None
+        finally:
+            # Released last, after the instrument is closed; see ContinuousRun.
+            self._release_instrument_lock()
