@@ -177,6 +177,38 @@ class TestGpibInterface:
         visa_backend.resource_manager('@py')
         assert rm.sessions[0].closed is False
 
+    @pytest.mark.parametrize('cleared', ['', '   '])
+    def test_a_configured_name_that_became_empty_closes_it(self, one_rm, cleared):
+        rm = one_rm(_InterfaceRM())
+        visa_backend.resource_manager('@py', PRLGX)
+        visa_backend.resource_manager('@py', cleared)
+        assert rm.sessions[0].closed is True
+        assert visa_backend.held_gpib_interface(rm) is None
+        assert getattr(rm, visa_backend._INTERFACE_ATTR) is None
+
+    def test_release_closes_it_and_says_what_it_closed(self, one_rm):
+        rm = one_rm(_InterfaceRM())
+        visa_backend.resource_manager('@py', PRLGX)
+        assert visa_backend.release_gpib_interface(rm) == PRLGX
+        assert rm.sessions[0].closed is True
+        assert visa_backend.held_gpib_interface(rm) is None
+
+    def test_release_with_nothing_held_is_harmless(self, one_rm):
+        rm = one_rm(_InterfaceRM())
+        assert visa_backend.release_gpib_interface(rm) is None
+        assert visa_backend.release_gpib_interface(object()) is None
+        visa_backend.resource_manager('@py', PRLGX)
+        visa_backend.release_gpib_interface(rm)
+        assert visa_backend.release_gpib_interface(rm) is None
+
+    def test_a_released_interface_is_opened_again_by_the_next_caller(self, one_rm):
+        rm = one_rm(_InterfaceRM())
+        visa_backend.resource_manager('@py', PRLGX)
+        visa_backend.release_gpib_interface(rm)
+        visa_backend.resource_manager('@py', PRLGX)
+        assert rm.opened == [PRLGX, PRLGX]
+        assert rm.sessions[1].closed is False
+
     def test_another_name_replaces_it_closing_the_old_one_first(self, one_rm):
         rm = one_rm(_InterfaceRM())
         other = 'PRLGX-TCPIP::192.168.1.50::1234::INTFC'
@@ -402,6 +434,30 @@ class TestGpibInterfaceOnPyvisaPy:
         rm = visa_backend.resource_manager(visa_backend.PY, prologix.resource(BOARD))
         try:
             assert _connections(prologix, 2) == 2
+        finally:
+            rm.close()
+
+    @pytest.mark.parametrize('let_go', [
+        lambda rm: visa_backend.release_gpib_interface(rm),
+        lambda rm: visa_backend.resource_manager(visa_backend.PY, ''),
+    ], ids=['released', 'configured-name-cleared'])
+    def test_letting_go_frees_the_adapter_while_the_manager_lives(self, prologix, let_go):
+        from pyvisa_py.prologix import _PrologixIntfcSession
+
+        rm = visa_backend.resource_manager(visa_backend.PY, prologix.resource(BOARD))
+        try:
+            _, session = getattr(rm, visa_backend._INTERFACE_ATTR)
+            let_go(rm)
+            assert visa_backend._is_open(session) is False
+            assert BOARD not in _PrologixIntfcSession.boards
+            assert visa_backend.held_gpib_interface(rm) is None
+
+            # the same manager, still open, takes the adapter again
+            assert visa_backend.resource_manager(visa_backend.PY, prologix.resource(BOARD)) is rm
+            assert _connections(prologix, 2) == 2
+            instrument = rm.open_resource(INSTRUMENT)
+            instrument.timeout = 2000
+            assert instrument.query('*IDN?').strip() == IDN
         finally:
             rm.close()
 
