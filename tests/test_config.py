@@ -221,6 +221,65 @@ class TestConfigPersistence:
         assert "auto_save_user" in manager2.get_users()
 
 
+class TestUnreadableConfig:
+    """A half-synced config.json must not be replaced by the defaults."""
+
+    @pytest.fixture
+    def truncated(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file)
+        manager.add_user("alice")
+        manager.update_user_settings("alice", {'measurement': {'fpp_current': 5e-5}})
+        whole = Path(temp_config_file).read_bytes()
+        Path(temp_config_file).write_bytes(whole[:len(whole) // 2])
+        return whole[:len(whole) // 2]
+
+    def _copies(self, temp_config_file):
+        return sorted(Path(temp_config_file).parent.glob('test_config.json.corrupt-*'))
+
+    def test_opening_it_writes_nothing(self, temp_config_file, truncated, caplog):
+        with caplog.at_level('ERROR', logger='resistamet_gui.config'):
+            manager = ConfigManager(config_file=temp_config_file)
+
+        assert manager.load_failed is True
+        assert Path(temp_config_file).read_bytes() == truncated
+        assert self._copies(temp_config_file) == []
+        assert manager.get_users() == []
+        assert manager.config['measurement'] == DEFAULT_SETTINGS['measurement']
+        assert 'defaults' in caplog.text
+
+    def test_the_first_save_keeps_a_copy_of_what_was_there(self, temp_config_file, truncated):
+        manager = ConfigManager(config_file=temp_config_file)
+
+        manager.add_user("bob")
+
+        copies = self._copies(temp_config_file)
+        assert len(copies) == 1
+        assert copies[0].read_bytes() == truncated
+        assert "bob" in ConfigManager(config_file=temp_config_file).get_users()
+
+    def test_later_saves_make_no_more_copies(self, temp_config_file, truncated):
+        manager = ConfigManager(config_file=temp_config_file)
+        manager.add_user("bob")
+        manager.add_user("carol")
+
+        assert len(self._copies(temp_config_file)) == 1
+        reloaded = ConfigManager(config_file=temp_config_file)
+        assert reloaded.load_failed is False
+        assert reloaded.get_users() == ["bob", "carol"]
+
+    def test_json_that_is_not_a_config_counts_as_unreadable(self, temp_config_file):
+        Path(temp_config_file).write_text('[1, 2, 3]')
+
+        manager = ConfigManager(config_file=temp_config_file)
+
+        assert manager.load_failed is True
+        assert Path(temp_config_file).read_text() == '[1, 2, 3]'
+
+    def test_a_good_file_is_not_flagged(self, temp_config_file):
+        ConfigManager(config_file=temp_config_file).add_user("alice")
+        assert ConfigManager(config_file=temp_config_file).load_failed is False
+
+
 class TestDefaultMerging:
     """Tests for merging defaults with loaded config."""
 

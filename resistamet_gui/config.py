@@ -2,9 +2,11 @@ import copy
 import json
 import logging
 import os
+import shutil
 import socket
 import tempfile
 import threading
+from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional
 
 from .constants import CONFIG_FILE, DEFAULT_SETTINGS, OUTPUT_RESET_MIGRATION
@@ -38,7 +40,18 @@ class ConfigManager:
         # certainly not across instrument I/O.
         self._lock = threading.RLock()
         self._hostname = hostname or _current_hostname()
+        #: True when the file exists but could not be read as a config. The
+        #: app then runs on the defaults, in memory, and the file is left
+        #: exactly as found until something is deliberately saved.
+        self.load_failed = False
+        # Set with load_failed; cleared once the unreadable file has been
+        # copied aside, which save_config does before it writes over it.
+        self._unreadable_on_disk = False
         self.config = self.load_config()
+        if self.load_failed:
+            # A migration would "fix" the defaults and save them over the
+            # file, which may only be half-synced and whole again in a moment.
+            return
         # One-shot: lift any legacy global gpib_address into this host's slot
         # the first time the host opens a NAS-shared config.
         dirty = self._migrate_machine_local()
@@ -187,7 +200,13 @@ class ConfigManager:
 
                 return config
             except Exception as e:
-                logger.warning(f"Error loading configuration file '{self.config_file}': {str(e)}. Using defaults.")
+                self.load_failed = True
+                self._unreadable_on_disk = True
+                logger.error(
+                    f"Configuration file '{self.config_file}' could not be read: {str(e)}. "
+                    "Running on the defaults, in memory; no user or profile is loaded. "
+                    "The file is left as it is, and is copied aside before anything "
+                    "is saved over it.")
                 return copy.deepcopy(DEFAULT_SETTINGS)
         else:
             logger.info(f"Configuration file '{self.config_file}' not found. Creating with defaults.")
@@ -195,6 +214,38 @@ class ConfigManager:
             self.config = new_config
             self.save_config()
             return new_config
+
+    def _set_unreadable_file_aside(self) -> bool:
+        """Copy a config that could not be read to ``<name>.corrupt-<UTC time>``.
+
+        Whatever is in it -- a half-synced file, a hand edit gone wrong -- is
+        the only record of the lab's profiles, so it is kept byte for byte
+        before the defaults are written in its place. False means the copy
+        could not be made, and the caller must not write.
+        """
+        if not os.path.exists(self.config_file):
+            self._unreadable_on_disk = False
+            return True
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+        try:
+            for attempt in range(1, 100):
+                suffix = '' if attempt == 1 else f'-{attempt}'
+                copy_path = f"{self.config_file}.corrupt-{stamp}{suffix}"
+                try:
+                    with open(self.config_file, 'rb') as source, open(copy_path, 'xb') as target:
+                        shutil.copyfileobj(source, target)
+                        target.flush()
+                        os.fsync(target.fileno())
+                except FileExistsError:
+                    continue
+                logger.error(f"The unreadable configuration was kept as '{copy_path}'.")
+                self._unreadable_on_disk = False
+                return True
+            raise OSError("no free name for the copy")
+        except OSError as e:
+            logger.error(f"Could not copy the unreadable configuration aside ({e}); "
+                         f"'{self.config_file}' is not being overwritten.")
+            return False
 
     def save_config(self) -> None:
         """Write the config, atomically.
@@ -206,6 +257,8 @@ class ConfigManager:
         a reader sees either the old file or the new one.
         """
         with self._lock:
+            if self._unreadable_on_disk and not self._set_unreadable_file_aside():
+                return
             directory = os.path.dirname(os.path.abspath(self.config_file)) or '.'
             handle = None
             try:
