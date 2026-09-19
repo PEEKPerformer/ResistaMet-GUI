@@ -454,7 +454,7 @@ def captured_sizes(opcodes: Tuple[int, int]) -> List[Tuple[int, int]]:
 
 def chosen_opcode(operation) -> int:
     adapter = AnsweringAdapter()
-    controller = Controller(adapter, t.PID_HS, raw_transfers=True, sleep=lambda s: None)  # NI's instructions
+    controller = Controller(adapter, t.PID_HS, ni_instructions=True, sleep=lambda s: None)
     controller.attach()
     try:
         operation(controller)

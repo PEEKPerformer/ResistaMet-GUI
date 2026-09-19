@@ -71,6 +71,8 @@ class SimulatedAdapter:
         self.serial_reply = serial_reply
         self.listening: List[int] = []
         self.talker: Optional[int] = None
+        #: Between SPE and SPD the addressed talker answers with its status byte (§5.9).
+        self.serial_poll_mode = False
         self.atn = True
         self.ren = False
         #: The adapter's own addressed state (its address is 0).
@@ -182,6 +184,10 @@ class SimulatedAdapter:
             elif byte == t.CMD_UNT:
                 self.talker = None
                 self.own_talker = False
+            elif byte == t.CMD_SPE:
+                self.serial_poll_mode = True
+            elif byte == t.CMD_SPD:
+                self.serial_poll_mode = False
             elif byte == t.CMD_SDC:
                 for pad in self.listening:
                     self.instruments[pad].cleared += 1
@@ -221,6 +227,8 @@ class SimulatedAdapter:
     def _talker_output(self, requested: int, eos_mode: int, eos_char: int) -> Optional[Tuple[bytes, bool]]:
         """What the addressed talker gives up for one read: (bytes, END), or None when nothing is pending."""
         instrument = self.instruments.get(self.talker) if self.talker is not None else None
+        if instrument is not None and self.serial_poll_mode:
+            return bytes((instrument.status_byte,)), False
         if instrument is None or not instrument.pending:
             return None
         source = instrument.pending
@@ -396,10 +404,17 @@ def adapter(monkeypatch, session_registry, enumeration):
     return sim
 
 
+@pytest.fixture(autouse=True)
+def switch_unset(monkeypatch):
+    """The developer's shell must not decide which instructions these tests see."""
+    monkeypatch.delenv(boards.NI_INSTRUCTIONS_ENV, raising=False)
+    monkeypatch.delenv(boards.RAW_TRANSFERS_ENV, raising=False)
+
+
 @pytest.fixture
-def raw_transfers(monkeypatch):
-    """Switch the 0x0b / 0x0e paths on for boards opened in this test; they are off by default."""
-    monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '1')
+def ni_instructions(monkeypatch, switch_unset):
+    """Switch NI's instructions (0x0b, 0x0e, 0x10) on for boards opened in this test; they are off by default."""
+    monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, '1')
 
 
 @pytest.fixture
@@ -484,7 +499,7 @@ class TestInstrumentSession:
         assert commands[1][4:7] == bytes((0x3F, 0x20, 0x58))
         inst.close()
 
-    def test_query_with_raw_transfers_on_reads_through_0x0b(self, rm, adapter, raw_transfers):
+    def test_query_with_ni_instructions_on_reads_through_0x0b(self, rm, adapter, ni_instructions):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 5000
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
@@ -498,14 +513,14 @@ class TestInstrumentSession:
         assert adapter.raw_in_timeouts[-1] == 18778 + 20480  # 0xfd expiry + 2 s, + 20480 B at 1000 B/s
         inst.close()
 
-    def test_read_termination_selects_eos_and_is_stripped(self, rm, adapter, raw_transfers):
+    def test_read_termination_selects_eos_and_is_stripped(self, rm, adapter, ni_instructions):
         inst = rm.open_resource('GPIB0::24::INSTR', read_termination='\n')
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30'
         read = adapter.instructions(p.OP_READ_RAW)[-1]
         assert read[1:3] == h('14 0a')
         inst.close()
 
-    def test_a_long_write_goes_raw(self, rm, adapter, raw_transfers):
+    def test_a_long_write_goes_raw(self, rm, adapter, ni_instructions):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 20000
         inst.write('*CLS;' * 409 + '*CL')  # 2048 + '\r\n' = 2050 bytes, as longwrite.pcap
@@ -521,7 +536,7 @@ class TestInstrumentSession:
         assert adapter.instruments[24].received[-1] == adapter.raw_writes[-1]
         inst.close()
 
-    def test_a_long_write_to_an_empty_address_reports_no_listeners(self, rm, adapter, raw_transfers):
+    def test_a_long_write_to_an_empty_address_reports_no_listeners(self, rm, adapter, ni_instructions):
         # §10.6.5: the data is refused with a STALL; NI resets 0x06, then 0x02, and carries on.
         inst = rm.open_resource('GPIB0::5::INSTR')
         with pytest.raises(pyvisa.errors.VisaIOError) as info:
@@ -539,7 +554,7 @@ class TestInstrumentSession:
         other.close()
         inst.close()
 
-    def test_plain_reads_send_the_bench_proven_eos_bytes(self, rm, adapter, raw_transfers):
+    def test_plain_reads_send_the_bench_proven_eos_bytes(self, rm, adapter, ni_instructions):
         # The first *IDN? of a bench day, on both read forms: m 00 e 00 with the compare off,
         # whatever VI_ATTR_TERMCHAR holds (pyvisa's default is 0x0a).
         inst = rm.open_resource('GPIB0::24::INSTR')
@@ -555,7 +570,7 @@ class TestInstrumentSession:
             '0a 00 00 fc 00 ff 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')  # §3.6 worked example
         inst.close()
 
-    def test_changing_the_termination_character_changes_e_only_when_enabled(self, rm, adapter, raw_transfers):
+    def test_changing_the_termination_character_changes_e_only_when_enabled(self, rm, adapter, ni_instructions):
         # eosmodes.pcap: TERMCHAR 0x2c enabled -> 14 2c. Disabled, we keep 00 00 (see _termchar_byte).
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR, 0x2C)
@@ -570,10 +585,8 @@ class TestInstrumentSession:
 
     @pytest.mark.parametrize('value', [None, '0'])
     def test_without_the_environment_switch_every_transfer_is_framed(self, rm, adapter, monkeypatch, value):
-        if value is None:
-            monkeypatch.delenv(boards.RAW_TRANSFERS_ENV, raising=False)
-        else:
-            monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, value)
+        if value is not None:
+            monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, value)
         inst = rm.open_resource('GPIB0::24::INSTR')
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         inst.write('*CLS;' * 500)
@@ -584,22 +597,34 @@ class TestInstrumentSession:
 
     def test_the_environment_switch_spellings(self, monkeypatch):
         for value in ('1', 'true', 'Yes', ' on '):
-            monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, value)
-            assert boards.raw_transfers_enabled() is True, value
+            monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, value)
+            assert boards.ni_instructions_enabled() is True, value
         for value in ('0', 'false', 'no', 'off', '', 'raw'):
-            monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, value)
-            assert boards.raw_transfers_enabled() is False, value
-        monkeypatch.delenv(boards.RAW_TRANSFERS_ENV)
-        assert boards.raw_transfers_enabled() is False
+            monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, value)
+            assert boards.ni_instructions_enabled() is False, value
+        monkeypatch.delenv(boards.NI_INSTRUCTIONS_ENV)
+        assert boards.ni_instructions_enabled() is False
 
-    def test_the_attach_log_line_says_which_transfers(self, rm, adapter, monkeypatch, caplog):
+    def test_the_switch_s_first_name_still_works_and_the_new_name_wins(self, monkeypatch):
+        assert boards.RAW_TRANSFERS_ENV == 'RESISTAMET_GPIB_RAW_TRANSFERS'
+        assert boards.NI_INSTRUCTIONS_ENV == 'RESISTAMET_GPIB_NI_INSTRUCTIONS'
+        monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '1')
+        assert boards.ni_instructions_enabled() is True
+        monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, '0')
+        assert boards.ni_instructions_enabled() is False
+        monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '0')
+        monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, '1')
+        assert boards.ni_instructions_enabled() is True
+
+    def test_the_attach_log_line_says_which_instructions(self, rm, adapter, monkeypatch, caplog):
         with caplog.at_level('INFO', logger='resistamet_gui.gpib_usb.boards'):
             rm.open_resource('GPIB0::24::INSTR').close()
-            monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '1')
+            monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, '1')
             rm.open_resource('GPIB0::24::INSTR').close()
         attached = [record.getMessage() for record in caplog.records if 'attached' in record.getMessage()]
         assert len(attached) == 2
-        assert attached[0].endswith('(framed transfers)') and attached[1].endswith('(raw transfers)')
+        assert 'framed transfers' in attached[0] and '0x10' not in attached[0]
+        assert 'raw transfers' in attached[1] and '0x10' in attached[1]
 
     def test_a_small_chunk_size_reads_through_the_framed_instruction(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
@@ -655,6 +680,24 @@ class TestInstrumentSession:
         with pytest.raises(pyvisa.errors.VisaIOError) as info:
             inst.read_stb()
         assert info.value.error_code == StatusCode.error_timeout
+        assert not adapter.serial_poll_mode  # SPD went out although the read failed
+        inst.close()
+
+    def test_read_stb_with_ni_instructions_on_is_one_0x10(self, rm, adapter, ni_instructions):
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 1000
+        adapter.instruments[24].status_byte = 0x40
+        commands_before = len(adapter.instructions(p.OP_COMMAND))
+        assert inst.read_stb() == 0x40
+        # One 0x10 instruction (§10.5.4), no SPE / SPD command bytes and no read.
+        assert adapter.instructions(p.OP_SERIAL_POLL)[-1] == h('10 01 00 00 18 00 fb 00 04 00 00 00')
+        assert len(adapter.instructions(p.OP_COMMAND)) == commands_before
+        assert adapter.instructions(p.OP_READ) == [] and adapter.instructions(p.OP_READ_RAW) == []
+        absent = rm.open_resource('GPIB0::5::INSTR')
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            absent.read_stb()
+        assert info.value.error_code == StatusCode.error_timeout
+        absent.close()
         inst.close()
 
     def test_write_to_an_empty_address_reports_no_listeners(self, rm, adapter):
@@ -748,12 +791,15 @@ class TestInstrumentSession:
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 1000
         adapter.instruments[24].status_byte = 0x40
-        commands_before = len(adapter.instructions(p.OP_COMMAND))
         assert inst.read_stb() == 0x40
-        # One 0x10 instruction (§10.5.4), no SPE / SPD command bytes and no read.
-        assert adapter.instructions(p.OP_SERIAL_POLL)[-1] == h('10 01 00 00 18 00 fb 00 04 00 00 00')
-        assert len(adapter.instructions(p.OP_COMMAND)) == commands_before
-        assert adapter.instructions(p.OP_READ) == [] and adapter.instructions(p.OP_READ_RAW) == []
+        # The IEEE-488.1 sequence of §5.9, the poll that ran on the bench: SPE with the
+        # addressing, a one-byte framed read, SPD UNT; the session's code in each.
+        commands = adapter.instructions(p.OP_COMMAND)
+        assert commands[-2][3:8] == bytes((0xFB, 0x3F, 0x20, 0x18, 0x58))
+        assert commands[-1][4:6] == bytes((0x19, 0x5F)) and commands[-1][3] == 0xFB
+        assert adapter.instructions(p.OP_READ)[-1][1:6] == h('00 00 fb ff ff')
+        assert adapter.instructions(p.OP_SERIAL_POLL) == []
+        assert not adapter.serial_poll_mode
         inst.assert_trigger()
         assert adapter.instructions(p.OP_COMMAND)[-1][4:7] == bytes((0x3F, 0x38, 0x08))
         assert adapter.instructions(p.OP_COMMAND)[-1][3] == 0xFB
