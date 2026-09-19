@@ -9,7 +9,7 @@
 
 import { useSyncExternalStore } from "react";
 import type { AnyEvent, LogPayload } from "../generated/events";
-import type { SessionStatus } from "../lib/api";
+import type { InstrumentInfo, SessionStatus } from "../lib/api";
 
 export interface LogLine {
   seq: number;
@@ -94,6 +94,22 @@ export function setConnected(connected: boolean): void {
 
 export function setGap(gap: boolean): void {
   if (snapshot.gap !== gap) publish({ ...snapshot, gap });
+}
+
+/** An Identify from the settings dialog is as good a sighting of the
+ *  instrument as a run connecting to it, and the header badge shows either. */
+export function setIdentifiedInstrument(info: InstrumentInfo): void {
+  publish({
+    ...snapshot,
+    instrument: {
+      address: info.address,
+      idn: info.idn,
+      model: info.model ?? "?",
+      maxSourceV: info.max_source_v,
+      maxSourceI: info.max_source_i,
+      maxPowerW: info.max_power_w,
+    },
+  });
 }
 
 function appendLog(line: LogLine): LogLine[] {
