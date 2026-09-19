@@ -81,6 +81,7 @@ class ContinuousRun:
         # The values behind the end-of-run statistics. Four-point only: no
         # other mode has a per-spot result.
         self._spot_samples = SpotSamples() if mode == 'four_point' else None
+        self._spot_sample_warned = False  # debounce: say it once per run
 
         # Start/stop/pause state and the marker queue, shared with whoever is
         # driving the run.
@@ -888,12 +889,6 @@ class ContinuousRun:
                     try:
                         self.exporter.write_row(row_data)
                         self._csv_error_count = 0  # Reset error count on success
-                        # After the write, so the statistics cover exactly the
-                        # rows the file holds. add() cannot raise.
-                        if self._spot_samples is not None:
-                            self._spot_samples.add(
-                                data_dict.get('voltage'), data_dict.get('current'),
-                                derived, compliance_status)
                     except Exception as e:
                         self._csv_error_count += 1
                         error_msg = f"Error writing data ({self._csv_error_count}/{self._max_csv_errors}): {str(e)}"
@@ -907,6 +902,8 @@ class ContinuousRun:
                             )
                             self._control.finish('write_error')
                             break
+
+                    self._keep_for_statistics(data_dict, derived, compliance_status)
 
                     sample_payload = {
                         't_unix': now,
@@ -1070,6 +1067,25 @@ class ContinuousRun:
                 f"Warning: four-point V/I is negative (V = {voltage:.4g} V at "
                 f"I = {current:.4g} A). The sense leads are probably open or swapped."
             )
+
+    def _keep_for_statistics(self, data_dict, derived, compliance_status):
+        """Keep a written four-point row's values for the end-of-run statistics.
+
+        Its own guard, outside the one around the file write: a failure here
+        is not a write failure and must not count towards the three that stop
+        a run. The write's error count is zero exactly when this sample's row
+        reached the file, so the statistics cover the rows the file holds.
+        """
+        if self._spot_samples is None or self._csv_error_count != 0:
+            return
+        try:
+            self._spot_samples.add(data_dict.get('voltage'), data_dict.get('current'),
+                                   derived, compliance_status)
+        except Exception as e:
+            if not self._spot_sample_warned:
+                self._spot_sample_warned = True
+                self._events.warn('spot_sample_failed',
+                    f"Warning: A sample could not be kept for the spot statistics - {str(e)}")
 
     def _spot_statistics(self, nplc):
         """The four-point statistics for the file footer; None for other modes.
