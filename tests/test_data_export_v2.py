@@ -221,6 +221,30 @@ class TestParseMetadata:
         assert math.isnan(meta['params.temperature_c'])
 
 
+class TestParseMetadataTextKeys:
+    """Identifiers must come back as written, not as the literal they resemble."""
+
+    def _file(self, base_path):
+        meta = {'spot': {'map_id': '12_3', 'label': 'true', 'index': 4}}
+        exp = CsvExporter(base_path, meta, ['elapsed_s'], ['s'])
+        exp.write_row([0.0])
+        exp.finalize({'total_samples': 1})
+        return exp.output_paths[0]
+
+    def test_coercion_mangles_an_id_that_looks_like_a_number(self, base_path):
+        parsed = parse_metadata(self._file(base_path))
+        assert parsed['spot.map_id'] == 123
+        assert parsed['spot.label'] is True
+
+    def test_text_keys_come_back_as_written(self, base_path):
+        parsed = parse_metadata(self._file(base_path),
+                                text_keys=('spot.map_id', 'spot.label'))
+        assert parsed['spot.map_id'] == '12_3'
+        assert parsed['spot.label'] == 'true'
+        assert parsed['spot.index'] == 4
+        assert parsed['total_samples'] == 1
+
+
 # --------------------------------- All six modes ----------------------------
 
 
