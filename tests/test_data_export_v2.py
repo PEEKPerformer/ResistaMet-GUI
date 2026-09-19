@@ -472,3 +472,111 @@ class TestDottedBaseName:
         exp.finalize()
         assert sorted(p.name for p in tmp_path.iterdir()) == [
             self.DOTTED + '.csv', self.DOTTED + '.json']
+
+
+class TestExistingFilesAreNeverOpenedForWriting:
+    """The stamp in a base name has one-second resolution, so a second run of
+    the same sample in the same second asks for the same base path. It gets
+    ``name-2`` and the first run's file is left exactly as it was."""
+
+    COLUMNS = ['elapsed_s', 'R_ohm']
+
+    def test_second_csv_run_gets_a_new_name(self, base_path, basic_meta):
+        first = CsvExporter(base_path, basic_meta, self.COLUMNS)
+        first.write_row([0.0, 1.05])
+        first.finalize({'total_samples': 1})
+        before = first.output_paths[0].read_bytes()
+
+        second = CsvExporter(base_path, basic_meta, self.COLUMNS)
+        second.write_row([0.0, 2.10])
+        second.finalize({'total_samples': 1})
+
+        assert first.output_paths[0].name == 'run_001.csv'
+        assert second.output_paths[0].name == 'run_001-2.csv'
+        assert first.output_paths[0].read_bytes() == before
+
+    def test_a_run_still_being_written_is_not_truncated(self, base_path, basic_meta):
+        first = CsvExporter(base_path, basic_meta, self.COLUMNS)
+        first.write_row([0.0, 1.05])
+        first.flush()
+        second = CsvExporter(base_path, basic_meta, self.COLUMNS)
+        assert second.csv_path != first.csv_path
+        assert "0,1.05" in first.csv_path.read_text(encoding='utf-8')
+        first.finalize()
+        second.finalize()
+
+    def test_third_run_counts_on(self, base_path, basic_meta):
+        names = []
+        for _ in range(3):
+            exp = CsvExporter(base_path, basic_meta, self.COLUMNS)
+            exp.finalize()
+            names.append(exp.output_paths[0].name)
+        assert names == ['run_001.csv', 'run_001-2.csv', 'run_001-3.csv']
+
+    def test_a_compressed_first_run_also_holds_the_name(self, base_path, basic_meta):
+        first = CsvExporter(base_path, basic_meta, self.COLUMNS, compression='always')
+        first.write_row([0.0, 1.05])
+        first.finalize()
+        before = first.output_paths[0].read_bytes()
+
+        second = CsvExporter(base_path, basic_meta, self.COLUMNS, compression='always')
+        second.write_row([0.0, 2.10])
+        second.finalize()
+
+        assert first.output_paths[0].name == 'run_001.csv.gz'
+        assert second.output_paths[0].name == 'run_001-2.csv.gz'
+        assert first.output_paths[0].read_bytes() == before
+
+    def test_second_hdf5_run_gets_a_new_name(self, base_path, basic_meta):
+        pytest.importorskip("h5py")
+        first = Hdf5Exporter(base_path, basic_meta, self.COLUMNS)
+        first.write_row([0.0, 1.05])
+        first.finalize()
+        before = first.output_paths[0].read_bytes()
+
+        second = Hdf5Exporter(base_path, basic_meta, self.COLUMNS)
+        second.write_row([0.0, 2.10])
+        second.finalize()
+
+        assert second.output_paths[0].name == 'run_001-2.h5'
+        assert first.output_paths[0].read_bytes() == before
+
+    def test_second_legacy_run_gets_a_new_pair(self, base_path, basic_meta):
+        first = LegacyDualExporter(base_path, basic_meta, self.COLUMNS)
+        first.write_row([0.0, 1.05])
+        first.finalize()
+        before = [p.read_bytes() for p in first.output_paths]
+
+        second = LegacyDualExporter(base_path, basic_meta, self.COLUMNS)
+        second.write_row([0.0, 2.10])
+        second.finalize()
+
+        assert [p.name for p in second.output_paths] == ['run_001-2.csv', 'run_001-2.json']
+        assert [p.read_bytes() for p in first.output_paths] == before
+
+    def test_a_crashed_legacy_run_keeps_its_checkpoint(self, base_path, basic_meta):
+        # A leftover checkpoint is the crashed run's data: the name is taken.
+        crashed = LegacyDualExporter(base_path, basic_meta, self.COLUMNS)
+        crashed.write_row([0.0, 1.05])
+        crashed.flush()
+        crashed._csv_file.close()  # the process died; nothing finalized it
+        checkpoint = base_path.with_name('run_001.json.tmp')
+        before = checkpoint.read_bytes()
+
+        second = LegacyDualExporter(base_path, basic_meta, self.COLUMNS)
+        second.write_row([0.0, 2.10])
+        second.flush()
+        second.finalize()
+
+        assert checkpoint.read_bytes() == before
+
+    def test_a_name_taken_after_the_check_is_an_error_not_an_overwrite(
+            self, base_path, basic_meta, monkeypatch):
+        # Another process creating the file between the check and the open.
+        import resistamet_gui.data_export as data_export
+        taken = base_path.with_name('run_001.csv')
+        taken.write_text("someone else's data\n")
+        monkeypatch.setattr(data_export, '_unused_base_path', lambda base, exts: base)
+        with pytest.raises(FileExistsError):
+            CsvExporter(base_path, basic_meta, self.COLUMNS)
+        assert taken.read_text() == "someone else's data\n"

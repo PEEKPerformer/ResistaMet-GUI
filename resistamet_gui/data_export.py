@@ -437,6 +437,26 @@ def _with_extension(base_path: Path, extension: str) -> Path:
     return base_path.with_name(base_path.name + extension)
 
 
+def _unused_base_path(base_path: Path, extensions: Tuple[str, ...]) -> Path:
+    """``base_path``, or the first of ``base_path-2``, ``-3``, ... that is free.
+
+    Free means none of the files the exporter will write (``extensions``)
+    exists yet. The stamp in a run's name has one-second resolution, so two
+    runs of one sample inside the same second ask for the same path; the
+    second used to be opened with ``'w'`` and replaced the first run's data.
+
+    The exporters then create their files in exclusive mode, so a name taken
+    between this check and the open (another process, same second) is an
+    error for the second run and never an overwrite of the first.
+    """
+    candidate = base_path
+    number = 1
+    while any(_with_extension(candidate, ext).exists() for ext in extensions):
+        number += 1
+        candidate = base_path.with_name(f"{base_path.name}-{number}")
+    return candidate
+
+
 # --------------------------------- Backends ---------------------------------
 
 
@@ -511,7 +531,9 @@ class CsvExporter(_BaseExporter):
         on_large_file: Optional[Callable[[Path, float], None]] = None,
         large_file_notify_mb: float = LARGE_FILE_NOTIFY_MB,
     ):
-        self.base_path = Path(base_path)
+        # '.csv.gz' too: finalize may compress, and must not land on another
+        # run's compressed file.
+        self.base_path = _unused_base_path(Path(base_path), ('.csv', '.csv.gz'))
         self.csv_path = _with_extension(self.base_path, '.csv')
         self.metadata = metadata
         self.columns = list(columns)
@@ -533,7 +555,8 @@ class CsvExporter(_BaseExporter):
     def _init_csv(self) -> None:
         try:
             self.csv_path.parent.mkdir(parents=True, exist_ok=True)
-            self._csv_file = open(self.csv_path, 'w', newline='', encoding='utf-8')
+            # 'x': never open an existing file for writing (_unused_base_path).
+            self._csv_file = open(self.csv_path, 'x', newline='', encoding='utf-8')
             _write_metadata_block(self._csv_file, self.metadata, self.units)
             self._csv_writer = csv.writer(self._csv_file)
             self._csv_writer.writerow(self.columns)
@@ -610,7 +633,7 @@ class CsvExporter(_BaseExporter):
             return self.csv_path
         gz_path = _with_extension(self.csv_path, '.gz')
         try:
-            with open(self.csv_path, 'rb') as src, gzip.open(gz_path, 'wb', compresslevel=6) as dst:
+            with open(self.csv_path, 'rb') as src, gzip.open(gz_path, 'xb', compresslevel=6) as dst:
                 shutil.copyfileobj(src, dst)
             self.csv_path.unlink()
             gz_size_mb = gz_path.stat().st_size / (1024 * 1024)
@@ -661,7 +684,7 @@ class Hdf5Exporter(_BaseExporter):
             ) from e
         self._h5py = h5py
 
-        self.base_path = Path(base_path)
+        self.base_path = _unused_base_path(Path(base_path), ('.h5',))
         self.h5_path = _with_extension(self.base_path, '.h5')
         self.metadata = metadata
         self.columns = list(columns)
@@ -674,7 +697,8 @@ class Hdf5Exporter(_BaseExporter):
 
     def _init_h5(self) -> None:
         self.h5_path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = self._h5py.File(self.h5_path, 'w')
+        # 'x': create, fail if it exists (_unused_base_path).
+        self._file = self._h5py.File(self.h5_path, 'x')
         vlen_str = self._h5py.string_dtype(encoding='utf-8')
         dtype = [(c, vlen_str) for c in self.columns]
         self._dataset = self._file.create_dataset(
@@ -762,7 +786,7 @@ class LegacyDualExporter(_BaseExporter):
         columns: List[str],
         units: Optional[List[str]] = None,
     ):
-        self.base_path = Path(base_path)
+        self.base_path = _unused_base_path(Path(base_path), ('.csv', '.json', '.json.tmp'))
         self.json_path = _with_extension(self.base_path, '.json')
         self.csv_path = _with_extension(self.base_path, '.csv')
         self.metadata = metadata
@@ -778,7 +802,8 @@ class LegacyDualExporter(_BaseExporter):
     def _init_csv(self) -> None:
         try:
             self.csv_path.parent.mkdir(parents=True, exist_ok=True)
-            self._csv_file = open(self.csv_path, 'w', newline='', encoding='utf-8')
+            # 'x': never open an existing file for writing (_unused_base_path).
+            self._csv_file = open(self.csv_path, 'x', newline='', encoding='utf-8')
             self._csv_writer = csv.writer(self._csv_file)
             self._csv_writer.writerow(self.columns)
             self._csv_file.flush()
@@ -854,7 +879,7 @@ class LegacyDualExporter(_BaseExporter):
             "data": self._data_rows
         }
         try:
-            with open(self.json_path, 'w', encoding='utf-8') as f:
+            with open(self.json_path, 'x', encoding='utf-8') as f:
                 json.dump(json_data, f, indent=2, ensure_ascii=False)
             checkpoint_path = _with_extension(self.base_path, '.json.tmp')
             if checkpoint_path.exists():
