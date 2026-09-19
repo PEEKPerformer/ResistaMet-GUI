@@ -6,8 +6,9 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
+from .. import visa_backend
 from ..config import ConfigManager
-from .visa_helpers import configured_resource_manager
+from .visa_helpers import configured_resource_manager, gpib_interface_problem
 from .widgets import EngineeringSpinBox, NoScrollSpinBox
 
 
@@ -97,6 +98,16 @@ class SettingsDialog(QDialog):
         gpib_layout.addWidget(self.gpib_address)
         gpib_layout.addWidget(self.detect_gpib_button)
         general_layout.addRow("GPIB Address:", gpib_layout)
+        self.visa_library = QComboBox()
+        # (data_key, label) pairs. Data key is what the config stores.
+        self._visa_library_choices = list(visa_backend.CHOICES.items())
+        for _key, label in self._visa_library_choices:
+            self.visa_library.addItem(label)
+        self.visa_library.setToolTip("VISA implementation that opens the bus on this machine.\nAutomatic: vendor VISA if installed, else pyvisa-py.")
+        general_layout.addRow("VISA Backend:", self.visa_library)
+        self.gpib_interface = QLineEdit()
+        self.gpib_interface.setToolTip("Prologix-style GPIB adapter, opened before the instrument. pyvisa-py only.\nExample: PRLGX-ASRL::5::INTFC (COM5)\nEmpty = none.")
+        general_layout.addRow("GPIB Interface:", self.gpib_interface)
 
         self.sampling_rate = QDoubleSpinBox(decimals=1, minimum=0.1, maximum=100.0, singleStep=1.0, suffix=" Hz")
         self.sampling_rate.setToolTip("Default readings per second. Can be overridden per-tab.\nActual rate may be limited by NPLC and instrument speed.")
@@ -360,6 +371,15 @@ class SettingsDialog(QDialog):
     def load_settings(self):
         m_cfg = self.settings['measurement']
         self.gpib_address.setText(m_cfg['gpib_address'])
+        library = self.config_manager.get_visa_library()
+        lib_keys = [k for k, _ in self._visa_library_choices]
+        if library not in lib_keys:
+            # A path to a VISA library, set by hand. Offer it so Save keeps it.
+            self._visa_library_choices.append((library, library))
+            self.visa_library.addItem(library)
+            lib_keys.append(library)
+        self.visa_library.setCurrentIndex(lib_keys.index(library))
+        self.gpib_interface.setText(self.config_manager.get_gpib_interface())
         self.sampling_rate.setValue(m_cfg['sampling_rate'])
         self.nplc.setValue(m_cfg['nplc'])
         self.settling_time.setValue(m_cfg['settling_time'])
@@ -423,9 +443,18 @@ class SettingsDialog(QDialog):
         )
         self._on_output_format_changed(self.output_format.currentIndex())
 
+    def _selected_visa_library(self) -> str:
+        return self._visa_library_choices[self.visa_library.currentIndex()][0]
+
     def save_settings(self):
+        problem = gpib_interface_problem(self.gpib_interface.text())
+        if problem:
+            QMessageBox.warning(self, "GPIB Interface", problem)
+            return
         m_cfg = self.settings['measurement']
         m_cfg['gpib_address'] = self.gpib_address.text()
+        m_cfg['visa_library'] = self._selected_visa_library()
+        m_cfg['gpib_interface'] = self.gpib_interface.text().strip()
         m_cfg['sampling_rate'] = self.sampling_rate.value()
         m_cfg['nplc'] = self.nplc.value()
         m_cfg['settling_time'] = self.settling_time.value()
