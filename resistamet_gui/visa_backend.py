@@ -54,7 +54,8 @@ def register_py_extension(hook: Callable[[], None]) -> None:
 
     That is ``@py`` and also the automatic choice, which pyvisa resolves to
     pyvisa-py when no vendor library is installed (the usual Mac). Hooks
-    must be idempotent and must not touch any bus.
+    must be idempotent and must not touch any bus. A hook that raises is
+    logged as a warning and skipped; the manager is opened regardless.
     """
     if hook not in _PY_EXTENSIONS:
         _PY_EXTENSIONS.append(hook)
@@ -86,7 +87,14 @@ def resource_manager(visa_library: str = AUTO, gpib_interface: str = '') -> Any:
     library = (visa_library or AUTO).strip()
     if library in (AUTO, PY):
         for hook in _PY_EXTENSIONS:
-            hook()
+            # An extension only adds a route. One that fails must not take
+            # the others down with it, the vendor library least of all.
+            try:
+                hook()
+            except Exception as exc:
+                logger.warning("pyvisa-py extension %s skipped: %s: %s",
+                               getattr(hook, '__name__', repr(hook)),
+                               type(exc).__name__, exc)
     rm = pyvisa.ResourceManager(library) if library else pyvisa.ResourceManager()
     open_gpib_interface(rm, gpib_interface)
     return rm
