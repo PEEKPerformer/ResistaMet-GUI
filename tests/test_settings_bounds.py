@@ -6,7 +6,8 @@ goes stale the first time someone widens a spin box, so this reads
 model's ``ge``/``le`` (or ``gt``/``lt``) metadata.
 
 A deliberate divergence is allowed — it just has to be listed in
-``LOOSER_THAN_WIDGET`` with the reason, so it shows up in review.
+``LOOSER_THAN_WIDGET`` (lower bound) or ``UPPER_LOOSER_THAN_WIDGET`` (upper
+bound) with the reason, so it shows up in review.
 """
 import os
 
@@ -83,6 +84,9 @@ LOOSER_THAN_WIDGET = {
     'sweep_step': 'widget minimum is a display resolution, model requires > 0',
 }
 
+# field -> why the model's upper bound is deliberately above the widget's
+UPPER_LOOSER_THAN_WIDGET = {}
+
 
 def _bounds(model, field):
     """Return (lower, upper) numeric constraints declared on a model field."""
@@ -107,10 +111,15 @@ def test_bounds_match_widgets(main_window, model, tab_attr, mapping):
         lower, upper = _bounds(model, field)
         assert lower is not None and upper is not None, f"{field} declares no bounds"
 
-        assert upper == pytest.approx(widget.maximum()), (
-            f"{model.__name__}.{field} upper bound {upper} != widget "
-            f"{widget.maximum()}"
-        )
+        if field in UPPER_LOOSER_THAN_WIDGET:
+            assert upper >= widget.maximum(), (
+                f"{field} is documented as looser than the widget but is tighter"
+            )
+        else:
+            assert upper == pytest.approx(widget.maximum()), (
+                f"{model.__name__}.{field} upper bound {upper} != widget "
+                f"{widget.maximum()}"
+            )
         if field in LOOSER_THAN_WIDGET:
             assert lower <= widget.minimum(), (
                 f"{field} is documented as looser than the widget but is tighter"
@@ -126,3 +135,4 @@ def test_every_documented_divergence_is_used():
     """A stale LOOSER_THAN_WIDGET entry would hide a real mismatch."""
     covered = {field for _, _, mapping in FIELD_WIDGETS for field in mapping}
     assert set(LOOSER_THAN_WIDGET) <= covered
+    assert set(UPPER_LOOSER_THAN_WIDGET) <= covered
