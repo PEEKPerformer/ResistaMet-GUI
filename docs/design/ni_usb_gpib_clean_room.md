@@ -113,7 +113,7 @@ codec.
 The first bench day (`tauri_ui_status.md`) found
 two specification errors on the wire. To find the rest without touching
 GPL text again, the lab desktop — NI-488.2 driving the same adapter model —
-was captured with USBPcap, one VISA operation per scenario, 22 scenarios,
+was captured with USBPcap, one VISA operation per scenario, 27 scenarios,
 stored with checksums in `captures/ni_usb_gpib_2026-09-19/`. Before the
 capture filter could be attached, Windows USB ETW gave URB headers without
 payloads; that method (`trace.bat`, `etw_urbs.py`) is kept beside the
