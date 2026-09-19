@@ -160,3 +160,79 @@ class TestTheSessionRefusesWithoutRaising:
             assert ':OUTP ON' not in _writes(fake_rm)
         finally:
             session.close(timeout=5.0)
+
+
+def _returns_within(seconds, target):
+    """Run ``target`` on a thread; its result, or fail if it is still parked."""
+    result = []
+    thread = threading.Thread(target=lambda: result.append(target()), daemon=True)
+    thread.start()
+    thread.join(seconds)
+    assert not thread.is_alive(), "still waiting: the stop was swallowed"
+    return result[0]
+
+
+class TestAStopIsNeverSwallowedByAPrompt:
+    """finish() sets the proceed gate; raising a prompt used to clear it again.
+
+    With no timeout, which is how the Qt workers run, the run then sat on the
+    question for ever with the instrument held and Stop already pressed.
+    """
+
+    def test_a_prompt_raised_after_the_stop_does_not_wait(self):
+        control = RunControl()
+        control.finish('user_stop')
+        control.raise_prompt('vdp_geometry', ['proceed', 'abort'])
+        assert _returns_within(2.0, lambda: control.wait_for_prompt(None)) == (None, {})
+
+    def test_the_wait_returns_on_a_stop_even_if_the_gate_was_cleared(self):
+        control = RunControl()
+        control.raise_prompt('vdp_geometry', ['proceed', 'abort'])
+        control.finish('user_stop')
+        control.proceed_event.clear()
+        assert _returns_within(2.0, lambda: control.wait_for_prompt(None)) == (None, {})
+
+    def test_a_prompt_before_any_stop_still_waits(self):
+        control = RunControl()
+        control.raise_prompt('vdp_geometry', ['proceed', 'abort'])
+        assert control.wait_for_prompt(0.05) == (None, {})
+        assert not control.stopped()
+
+    def test_the_geometry_prompt(self, fake_rm, tmp_path):
+        """The stop lands between the loop's running check and the prompt."""
+        control, sink = RunControl(), ListSink()
+        run = VdpRun("wafer1", "alice", _vdp_settings(tmp_path), control, EventEmitter(sink),
+                      prompt_timeout_s=None)
+        raise_prompt = control.raise_prompt
+
+        def stop_then_raise(*args, **kwargs):
+            control.finish('user_stop')
+            return raise_prompt(*args, **kwargs)
+
+        control.raise_prompt = stop_then_raise
+        _returns_within(5.0, run.execute)
+        assert [e.payload['reason'] for e in sink.of_type('run_ended')] == ['user_stop']
+        assert not any(cmd.startswith(':OUTP ON') for cmd in _writes(fake_rm))
+
+    def test_the_safety_prompt(self, tmp_path):
+        """A stop that is already in when the question would be asked."""
+        from resistamet_gui.session.continuous_run import ContinuousRun
+
+        settings = _vdp_settings(tmp_path)
+        settings['measurement'].update({'vsource_voltage': 60.0})
+        control, sink = RunControl(), ListSink()
+        run = ContinuousRun('source_v', "wafer1", "alice", settings, control,
+                             EventEmitter(sink), safety_ack='prompt', prompt_timeout_s=None)
+        control.finish('user_stop')
+        assert _returns_within(2.0, run._safety_prompt_declined) is True
+        assert sink.of_type('prompt') == [], "nobody is asked a question after Stop"
+
+    def test_the_safety_prompt_of_a_van_der_pauw_run(self, tmp_path):
+        settings = _vdp_settings(tmp_path)
+        settings['measurement'].update({'vdp_voltage_compliance': 60.0})
+        control, sink = RunControl(), ListSink()
+        run = VdpRun("wafer1", "alice", settings, control, EventEmitter(sink),
+                      safety_ack='prompt', prompt_timeout_s=None)
+        control.finish('user_stop')
+        assert _returns_within(2.0, run._safety_prompt_declined) is True
+        assert sink.of_type('prompt') == []
