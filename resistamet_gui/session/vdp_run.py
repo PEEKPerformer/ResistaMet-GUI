@@ -546,10 +546,22 @@ class VdpRun:
             if result_dict is not None:
                 end_metadata['vdp_result'] = result_dict
             self.exporter.finalize(end_metadata)
+            self._take_final_path()
             self._events.emit('file_finalized', {
                 'path': self.filename, 'end_metadata': end_metadata})
         except Exception as e:
             self._events.warn('finalize_failed', f"Warning: Error finalizing export - {str(e)}")
+
+    def _take_final_path(self) -> None:
+        """After finalize: the file as it is now on disk.
+
+        Compression replaces ``run.csv`` with ``run.csv.gz``. Every event
+        after this point, and the session's status, names the file a reader
+        can open, not the one that no longer exists.
+        """
+        paths = self.exporter.output_paths if self.exporter else []
+        if paths:
+            self.filename = str(paths[0])
 
     def _release_instrument_lock(self) -> None:
         held = getattr(self, '_instrument_lock', None)

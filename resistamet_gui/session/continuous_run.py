@@ -1153,6 +1153,7 @@ class ContinuousRun:
                 if spot_stats is not None:
                     end_metadata['spot_stats'] = spot_stats
                 self.exporter.finalize(end_metadata)
+                self._take_final_path()
                 self._events.emit('file_finalized', {
                     'path': self.filename, 'end_metadata': end_metadata})
             except Exception as e:
@@ -1163,6 +1164,17 @@ class ContinuousRun:
             final_message = f"Measurement ({self._mode_name}) completed! Data saved to: {self.filename}"
         self._events.log('completed', final_message)
         self._events.emit('acquisition_finished', {'mode': self.mode})
+
+    def _take_final_path(self) -> None:
+        """After finalize: the file as it is now on disk.
+
+        Compression replaces ``run.csv`` with ``run.csv.gz``. Every event
+        after this point, and the session's status, names the file a reader
+        can open, not the one that no longer exists.
+        """
+        paths = self.exporter.output_paths if self.exporter else []
+        if paths:
+            self.filename = str(paths[0])
 
     def _warn_once_if_ratio_negative(self, data_dict, compliance_status):
         """Say so, once, when a four-point sample's V/I is negative.
