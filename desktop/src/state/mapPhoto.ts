@@ -1,17 +1,21 @@
 // The optional photograph under the map.
 //
 // The image is loaded from a file the operator picks and shown through an
-// object URL. Nothing is uploaded and the bytes are not copied anywhere: what
-// is kept, in localStorage under the map's id, is where the image sits on the
-// sample (four numbers), its pixel size, its file name and its SHA-256. After
-// a reload the image is gone and the numbers are not; picking the same file
-// again -- same hash -- puts it back where it was.
+// object URL. Once the map has an id the bytes are copied beside its runs
+// (PUT /maps/{id}/image) and the placement follows every change, so a reload
+// or another PC shows the same picture in the same place.
 //
-// Copying the image beside the runs, as the spots design wants, needs a
-// backend route that does not exist yet.
+// The browser's own record stays as the fallback for a backend that refuses
+// or cannot be reached: in localStorage under the map's id, where the image
+// sits on the sample (four numbers), its pixel size, its file name and its
+// SHA-256. Picking the same file again -- same hash -- puts it back.
 
 import { useSyncExternalStore } from "react";
+import type { ApiClient } from "../lib/api";
+import { ApiError } from "../lib/api";
+import type { MapImage } from "../generated/maps";
 import { initialRegistration, type Point, type Registration } from "../lib/map/geometry";
+import { placementFor, registrationBody, REGISTRATION_DEBOUNCE_MS, uploadRefusal } from "../lib/map/photoSync";
 
 /** What is kept about a photograph: everything but the pixels. */
 export interface PhotoRecord {
@@ -33,11 +37,29 @@ export interface PhotoState {
   /** A stored record whose image is not loaded (after a reload). */
   stored: PhotoRecord | null;
   error: string | null;
+  /** Where the loaded image is kept: beside the runs ("stored"), in this
+   *  browser only ("local"), or in this browser while the map holds a
+   *  different one ("conflict", which Replace resolves). */
+  server: "local" | "stored" | "conflict";
+  /** Why the image is not beside the runs, when the backend said. */
+  notice: string | null;
 }
 
 const KEY_PREFIX = "resistamet.map.photo.";
 
-let state: PhotoState = { photo: null, mapId: null, stored: null, error: null };
+let state: PhotoState = { photo: null, mapId: null, stored: null, error: null, server: "local", notice: null };
+
+/** Who the image routes are asked as. null: nothing leaves the browser. */
+let backend: { api: ApiClient; user: string } | null = null;
+/** Maps whose stored photograph the operator took off the map: it is not
+ *  fetched again this session. The backend has no route to delete one. */
+const dismissed = new Set<string>();
+let loading: string | null = null;
+let registrationTimer: ReturnType<typeof setTimeout> | undefined;
+
+export function setPhotoBackend(next: { api: ApiClient; user: string } | null): void {
+  backend = next;
+}
 const listeners = new Set<() => void>();
 
 function publish(next: PhotoState): void {
@@ -141,8 +163,12 @@ export async function addPhoto(file: File, halfExtents: Point | null): Promise<v
       photo: { file, url, name: file.name, sha256, naturalWidth: size.width, naturalHeight: size.height, registration, calibrated },
       stored: null,
       error: null,
+      server: "local",
+      notice: null,
     });
     persist();
+    if (state.mapId !== null) dismissed.delete(state.mapId);
+    void upload(false);
   } catch (e) {
     URL.revokeObjectURL(url);
     publish({ ...state, error: `${file.name}: ${e instanceof Error ? e.message : String(e)}` });
@@ -151,8 +177,78 @@ export async function addPhoto(file: File, halfExtents: Point | null): Promise<v
 
 export function removePhoto(): void {
   if (state.photo) URL.revokeObjectURL(state.photo.url);
-  publish({ ...state, photo: null, stored: null, error: null });
+  if (state.mapId !== null) dismissed.add(state.mapId);
+  publish({ ...state, photo: null, stored: null, error: null, server: "local", notice: null });
   persist();
+}
+
+/** Copy the loaded image beside the map's runs, then its placement. */
+async function upload(replace: boolean): Promise<void> {
+  const { photo, mapId } = state;
+  if (backend === null || photo === null || mapId === null) return;
+  const { file } = photo;
+  const current = () => state.photo?.file === file && state.mapId === mapId;
+  try {
+    const stored = await backend.api.putMapImage(mapId, backend.user, file, file.type || "application/octet-stream", replace);
+    if (!current() || !state.photo) return;
+    // The backend's hash is of the bytes it holds, and is there even where
+    // WebCrypto is not.
+    publish({ ...state, photo: { ...state.photo, sha256: stored.sha256 }, server: "stored", notice: null });
+    persist();
+    await pushRegistration();
+  } catch (e) {
+    if (!current()) return;
+    const refusal = uploadRefusal(e instanceof ApiError ? e.status : 0, e instanceof Error ? e.message : String(e));
+    publish({ ...state, server: refusal.conflict ? "conflict" : "local", notice: refusal.notice });
+  }
+}
+
+/** Move the map's other image aside and store this one. */
+export function replaceStoredPhoto(): void {
+  void upload(true);
+}
+
+async function pushRegistration(): Promise<void> {
+  const { photo, mapId } = state;
+  if (backend === null || photo === null || mapId === null || photo.sha256 === null || state.server !== "stored") return;
+  try {
+    await backend.api.putMapRegistration(mapId, backend.user, registrationBody(photo, photo.sha256));
+  } catch (e) {
+    if (state.photo?.file === photo.file) publish({ ...state, notice: `Placement kept in this browser only (${e instanceof Error ? e.message : String(e)}).` });
+  }
+}
+
+/** Show the photograph the backend holds for this map, where it was put.
+ *  Does nothing while an image is loaded or after the operator removed it. */
+export async function loadStoredPhoto(mapId: string, image: MapImage, halfExtents: Point | null): Promise<void> {
+  if (backend === null || state.photo !== null || state.mapId !== mapId || dismissed.has(mapId) || loading === mapId) return;
+  loading = mapId;
+  try {
+    const blob = await backend.api.mapImage(mapId, backend.user);
+    const file = new File([blob], image.file, { type: blob.type });
+    const url = URL.createObjectURL(file);
+    try {
+      const size = await naturalSize(url);
+      if (state.photo !== null || state.mapId !== mapId || dismissed.has(mapId)) throw new Error("superseded");
+      const placed = placementFor(image, size, state.stored, halfExtents);
+      publish({
+        ...state,
+        photo: { file, url, name: state.stored?.name ?? image.file, sha256: image.sha256, naturalWidth: size.width, naturalHeight: size.height, ...placed },
+        stored: null,
+        error: null,
+        server: "stored",
+        notice: null,
+      });
+      persist();
+    } catch (e) {
+      URL.revokeObjectURL(url);
+      throw e;
+    }
+  } catch {
+    // The browser's record, if any, stays on offer as before.
+  } finally {
+    loading = null;
+  }
 }
 
 export function setRegistration(patch: Partial<Registration>, calibrated?: boolean): void {
@@ -162,6 +258,8 @@ export function setRegistration(patch: Partial<Registration>, calibrated?: boole
     photo: { ...state.photo, registration: { ...state.photo.registration, ...patch }, calibrated: calibrated ?? state.photo.calibrated },
   });
   persist();
+  clearTimeout(registrationTimer);
+  registrationTimer = setTimeout(() => void pushRegistration(), REGISTRATION_DEBOUNCE_MS);
 }
 
 /** Follow the map. `mapId` is the active map, or null when the next run will
@@ -173,13 +271,14 @@ export function followMap(mapId: string | null, fresh: boolean): void {
     // The photograph was there before the map's first run: it is this map's.
     publish({ ...state, mapId });
     persist();
+    void upload(false);
     return;
   }
   if (mapId === null && fresh && state.photo) {
     // A new map of the same sample keeps the photograph, as a draft.
-    publish({ ...state, mapId: null, stored: null });
+    publish({ ...state, mapId: null, stored: null, server: "local", notice: null });
     return;
   }
   if (state.photo) URL.revokeObjectURL(state.photo.url);
-  publish({ photo: null, mapId, stored: mapId === null ? null : readRecord(mapId), error: null });
+  publish({ photo: null, mapId, stored: mapId === null ? null : readRecord(mapId), error: null, server: "local", notice: null });
 }

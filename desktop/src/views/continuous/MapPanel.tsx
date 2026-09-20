@@ -44,7 +44,7 @@ import { activeMap, activeMapId, setPending, useSpots } from "../../state/spots"
 import { setMapView, useMapView } from "../../state/mapView";
 import { useOverrides } from "../../state/overrides";
 import { useApi } from "../../app/AppContext";
-import { addPhoto, followMap, removePhoto, setRegistration, useMapPhoto } from "../../state/mapPhoto";
+import { addPhoto, followMap, loadStoredPhoto, removePhoto, replaceStoredPhoto, setPhotoBackend, setRegistration, useMapPhoto } from "../../state/mapPhoto";
 import { Button, Panel, Select, Toggle } from "../../components/ui";
 import { EngineeringInput } from "../../components/ui/EngineeringInput";
 import { Icons } from "../../components/icons";
@@ -107,7 +107,7 @@ export function figureTitles(sample: string, quantity: Quantity, spots: MapSpot[
 export function MapPanel({ owner, measurement, running, start }: Props) {
   const view = useMapView();
   const { pending, current } = useSpots();
-  const { photo, stored: storedPhoto, error: photoError } = useMapPhoto();
+  const { photo, stored: storedPhoto, error: photoError, server: photoServer, notice: photoNotice } = useMapPhoto();
   const svgRef = useRef<SVGSVGElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [tool, setTool] = useState<Tool>("place");
@@ -274,6 +274,18 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
   }, [tool, open]);
 
   const halfExtents = outline ? outlineHalfExtents(outline) : null;
+
+  // The photograph kept beside the map's runs, shown where it was put: the
+  // same picture after a reload or on another PC.
+  useEffect(() => {
+    setPhotoBackend(user === null ? null : { api, user });
+  }, [api, user]);
+  const storedImage = map?.image ?? null;
+  useEffect(() => {
+    if (map && storedImage && photo === null) void loadStoredPhoto(map.map_id, storedImage, halfExtents);
+    // `halfExtents` is a fresh object every render; the outline it comes from is not.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, storedImage, photo, outline]);
   const fitScale = photo && halfExtents ? initialRegistration(halfExtents, photo.naturalWidth, photo.naturalHeight).mmPerPx : null;
 
   // The figure as drawn, in the print palette, with the photograph inlined
@@ -376,7 +388,7 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
               }}
             />
             {photo === null ? (
-              <Button size="sm" disabled={outline === null} onClick={() => fileRef.current?.click()} title="Shown under the outline. The file stays where it is; nothing is uploaded.">
+              <Button size="sm" disabled={outline === null} onClick={() => fileRef.current?.click()} title="Shown under the outline. A copy is kept beside the map's runs.">
                 Add photo
               </Button>
             ) : (
@@ -413,6 +425,19 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
               </span>
             ) : null}
             {photoError ? <span className={styles.danger}>{photoError}</span> : null}
+            {photo !== null && photoNotice ? (
+              <span className={styles.warn}>
+                {photoNotice}
+                {photoServer === "conflict" ? (
+                  <>
+                    {" "}
+                    <Button size="sm" variant="ghost" disabled={running} onClick={replaceStoredPhoto} title="The other image is kept beside the runs under a new name.">
+                      Replace
+                    </Button>
+                  </>
+                ) : null}
+              </span>
+            ) : null}
             <span className={styles.exportTools}>
               {photo ? (
                 <label className={styles.toggle} title="Include the photograph in the exported figure">
