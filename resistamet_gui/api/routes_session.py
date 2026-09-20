@@ -7,7 +7,7 @@ calls the session, and maps the two failure modes: ``SessionBusy`` is 409
 """
 from typing import Annotated, Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, StringConstraints
 
 from ..schema.settings_modes import RunRequest
@@ -54,19 +54,32 @@ def shutdown(request: Request, session: MeasurementSession = Depends(get_session
 
 
 @router.get("/events")
-def read_events(request: Request, since_seq: int = 0, run_id: str = "",
-                 limit: int = 500, role: str = Depends(require_token)):
+def read_events(request: Request, since_seq: int = Query(default=0, ge=0),
+                 run_id: str = "",
+                 since_cursor: Optional[int] = Query(default=None, ge=0),
+                 limit: int = Query(default=500, ge=1, le=10000),
+                 role: str = Depends(require_token)):
     """Poll for events. The same stream the WebSocket carries.
 
     Request/response clients — the MCP layer among them — should not have to
     hold a socket open to follow a run.
+
+    Page with ``since_cursor``: pass back the ``cursor`` of the last reply
+    (0 to start). It counts across runs, so a poller neither repeats nor
+    skips an event when a new run begins, which ``since_seq`` cannot promise
+    because ``seq`` restarts with every run (``EventHub.history``).
     """
     hub = request.app.state.api.hub
-    events, gap = hub.history(run_id or None, since_seq, limit)
+    events, gap = hub.history(run_id or None, since_seq, limit, since_cursor=since_cursor)
+    if events:
+        cursor = events[-1].cursor
+    else:
+        cursor = since_cursor if since_cursor is not None else hub.cursor
     return {
         'events': [event.model_dump() for event in events],
         'gap': gap,
         'last_seq': events[-1].seq if events else since_seq,
+        'cursor': cursor,
     }
 
 

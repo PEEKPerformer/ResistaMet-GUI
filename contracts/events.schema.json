@@ -3,6 +3,19 @@
     "additionalProperties": false,
     "description": "One thing that happened during a run.",
     "properties": {
+      "cursor": {
+        "anyOf": [
+          {
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Cursor"
+      },
       "payload": {
         "additionalProperties": true,
         "title": "Payload",
