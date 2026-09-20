@@ -1,0 +1,40 @@
+{
+  "mode": "resistance",
+  "measurement": {
+    "res_test_current": -0.002,
+    "res_voltage_compliance": 2.0,
+    "res_measurement_type": "2-wire",
+    "res_auto_range": false,
+    "res_offset_comp": true,
+    "res_cable_null": 1.5,
+    "filter_enabled": true,
+    "filter_type": "moving",
+    "filter_count": 7,
+    "auto_zero": "once"
+  },
+  "writes": [
+    "*RST",
+    "*CLS",
+    ":SYST:AZER:STAT ON",
+    ":SYST:AZER:STAT ONCE",
+    ":SENS:FUNC:CONC OFF",
+    ":OUTP:SMOD HIMP",
+    ":SYST:RSEN OFF",
+    ":SENS:FUNC 'RES'",
+    ":SENS:RES:MODE MAN",
+    ":SOUR:FUNC CURR",
+    ":SOUR:CURR:RANG 0.002",
+    ":SOUR:CURR -0.002",
+    ":SENS:VOLT:PROT 2.0",
+    ":SENS:RES:NPLC 1.0",
+    ":SENS:RES:RANG 1000.0",
+    ":SENS:RES:OCOM ON",
+    ":FORM:ELEM VOLT,CURR,RES,STAT",
+    ":SENS:AVER:TCON MOV",
+    ":SENS:AVER:COUN 7",
+    ":SENS:AVER ON",
+    ":TRIG:DEL 0",
+    ":SOUR:DEL:AUTO ON",
+    ":OUTP ON"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "mode": "sweep",
+  "measurement": {
+    "sweep_source": "current",
+    "sweep_start": 0.0,
+    "sweep_stop": 0.001,
+    "sweep_step": 0.00025,
+    "sweep_compliance": 5.0,
+    "sweep_delay": 0.0,
+    "sweep_direction": "up_down"
+  },
+  "writes": [
+    "*RST",
+    "*CLS",
+    ":SYST:AZER:STAT ON",
+    ":SENS:FUNC:CONC OFF",
+    ":OUTP:SMOD HIMP",
+    ":SENS:FUNC:CONC OFF",
+    ":SOUR:FUNC CURR",
+    ":SENS:FUNC 'VOLT:DC'",
+    ":SENS:VOLT:PROT 5.0",
+    ":SENS:VOLT:NPLC 1.0",
+    ":SOUR:CURR:START 0.0",
+    ":SOUR:CURR:STOP 0.001",
+    ":SOUR:CURR:STEP 0.00025",
+    ":SOUR:CURR:MODE SWE",
+    ":SOUR:SWE:SPAC LIN",
+    ":SOUR:SWE:RANG AUTO",
+    ":TRIG:COUN 5",
+    ":SOUR:DEL 0.0",
+    ":FORM:ELEM VOLT,CURR,STAT",
+    ":SOUR:SWE:DIR UP",
+    ":TRIG:DEL 0",
+    ":SOUR:DEL:AUTO ON",
+    ":OUTP ON"
+  ]
+}

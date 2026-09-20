@@ -1,0 +1,30 @@
+{
+  "mode": "vdp",
+  "measurement": {
+    "vdp_current": 0.001,
+    "vdp_voltage_compliance": 5.0,
+    "vdp_voltage_range_auto": true,
+    "vdp_thickness_cm": 0.01,
+    "vdp_settling_s": 0.0,
+    "vdp_readings_per_polarity": 2
+  },
+  "writes": [
+    "*RST",
+    "*CLS",
+    ":SYST:AZER:STAT ON",
+    ":SENS:FUNC:CONC OFF",
+    ":OUTP:SMOD HIMP",
+    ":SYST:RSEN ON",
+    ":SENS:FUNC 'VOLT:DC'",
+    ":SOUR:FUNC CURR",
+    ":SOUR:CURR:RANG 0.001",
+    ":SOUR:CURR 0.001",
+    ":SENS:VOLT:PROT 5.0",
+    ":SENS:VOLT:RANG:AUTO ON",
+    ":SENS:VOLT:NPLC 1.0",
+    ":FORM:ELEM VOLT,CURR,STAT",
+    ":TRIG:DEL 0",
+    ":SOUR:DEL:AUTO ON",
+    ":OUTP ON"
+  ]
+}
