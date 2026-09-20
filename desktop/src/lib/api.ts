@@ -14,7 +14,7 @@ import type { SpotMap } from "../generated/maps";
 import { version as packageVersion } from "../../package.json";
 import { describeDetail } from "./apiDetail";
 import { ReplyOrder } from "./replyOrder";
-import { isTimeout, timeoutFor } from "./requestTimeout";
+import { isTimeout, timeoutFor, timeoutSignal } from "./requestTimeout";
 
 /** Written into the header of every file a run started from here produces,
  *  so desktop output can be told from the PySide6 app's. */
@@ -301,7 +301,7 @@ export class ApiClient {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(body);
     }
-    init.signal = AbortSignal.timeout(timeoutFor(method, path));
+    init.signal = timeoutSignal(timeoutFor(method, path));
     let response: Response;
     try {
       response = await fetch(`${this.backend.url}${path}`, init);
