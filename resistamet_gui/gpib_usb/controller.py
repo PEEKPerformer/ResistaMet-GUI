@@ -892,12 +892,19 @@ class Controller:
     def abort(self) -> StatusBlock:
         """§5.11 stop request. Sequential recovery only: the lock serialises it."""
         with self._guard():
+            self._refuse_when_closed()
             return p.parse_status_block(self._control(t.STOP_REQUEST))
 
     def status(self) -> StatusBlock:
         """§5.12 status query: current ibsta without touching the bus."""
         with self._guard():
+            self._refuse_when_closed()
             return p.parse_status_block(self._control(t.STATUS_QUERY))
+
+    def _refuse_when_closed(self) -> None:
+        """For the control requests that need no attach: pyusb would reopen a released handle for them."""
+        if self._closed:
+            raise AdapterNotReady('controller is closed')
 
     def bus_lines(self) -> int:
         """§5.13 BSR: REN, IFC, SRQ, EOI, NRFD, NDAC, DAV, ATN as bits."""
