@@ -28,7 +28,9 @@ def _sidecar_env(tmp_path):
     importing this checkout from there."""
     home = tmp_path / 'home'
     home.mkdir(exist_ok=True)
-    env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
+    # RESISTAMET_DISABLE_NI_USB: nothing here may reach an adapter on the bench.
+    env = dict(os.environ, HOME=str(home), USERPROFILE=str(home),
+               RESISTAMET_DISABLE_NI_USB='1')
     env['PYTHONPATH'] = os.pathsep.join(filter(None, [str(_REPO), env.get('PYTHONPATH')]))
     return env
 
@@ -106,3 +108,19 @@ class TestParentGoesAway:
         process.wait(timeout=45)
 
         _assert_finalized(process, path)
+
+
+class TestCheckVisaIsReadOnly:
+    def test_it_does_not_create_the_config_it_is_asked_about(self, tmp_path):
+        config = tmp_path / 'config.json'
+
+        result = subprocess.run(
+            [sys.executable, '-m', 'resistamet_gui.api', '--check-visa',
+             '--visa-library', '@py', '--config', str(config)],
+            capture_output=True, text=True, timeout=120,
+            cwd=str(tmp_path), env=_sidecar_env(tmp_path))
+
+        assert result.returncode == 0, result.stderr[-600:]
+        assert json.loads(result.stdout)['requested'] == '@py'
+        assert not config.exists()
+        assert sorted(p.name for p in tmp_path.iterdir()) == ['home']

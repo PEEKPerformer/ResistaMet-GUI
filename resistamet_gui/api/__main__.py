@@ -143,7 +143,10 @@ def check_visa(args) -> int:
 
     library, interface = args.visa_library, args.gpib_interface
     if library is None or interface is None:
-        config = ConfigManager(config_file=args.config) if args.config else ConfigManager()
+        # Read-only: a diagnostic must not create the config it is asked
+        # about, nor run the migrations that rewrite profiles.
+        config = (ConfigManager(config_file=args.config, read_only=True)
+                  if args.config else ConfigManager(read_only=True))
         if library is None:
             library = config.get_visa_library()
         if interface is None:
