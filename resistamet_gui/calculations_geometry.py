@@ -57,7 +57,15 @@ class PositionEffect(NamedTuple):
 
     ``relative_error`` is ``factor_centre / factor_here - 1``: the fractional
     error in a sheet resistance computed with the centred factor. Positive
-    means the centred factor overstates Rs, which is what an edge does.
+    means the centred factor overstates Rs.
+
+    Positive is what an edge does on a disc, and on a rectangle whose shorter
+    side is at least 3.5 spacings (``tests/test_property_geometry.py`` holds
+    both over drawn positions and angles). It is not universal: on a strip
+    narrower than the probe is long, where the probe only fits at a slant,
+    moving off centre can raise the factor slightly. A 1.276 s by 3.244 s
+    strip with the probe at 159 degrees and 0.17 s off centre gives -0.24 %.
+    Judge the size of the effect by ``abs(relative_error)``.
     """
 
     factor_here: float
