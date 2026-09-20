@@ -3,9 +3,12 @@
 // A WebSocket to /session/events/ws. When it drops — the backend restarted,
 // the machine slept — it reconnects with backoff and resumes from the last
 // sequence number it saw, so a UI that was watching a run does not lose the
-// samples in between. If the backend says it no longer has them, listeners
-// get a `gap` and the UI can refetch the file rather than draw a chart with a
-// hole it cannot see.
+// samples in between. If the backend says it no longer has them, or a run is
+// first seen part-way through and its beginning cannot be fetched, listeners
+// get a `gap` and the UI says the chart is partial rather than draw one with
+// a hole nobody can see. If the backend that comes back is a new process,
+// counting its runs from 1 again, listeners get `restarted` and everything is
+// read afresh (see streamCursor.ts for how that is told).
 //
 // A page that has seen nothing yet — first load, or a reload — starts by
 // fetching the backend's event history over HTTP and delivering it as if it
@@ -14,10 +17,14 @@
 
 import type { AnyEvent, EventEnvelope } from "../generated/events";
 import type { ApiClient } from "./api";
+import { judge, type Cursor, type ResumePoint } from "./streamCursor";
 
 export type StreamMessage =
   | { kind: "event"; event: AnyEvent }
+  /** Events before this point in the current run were not delivered. */
   | { kind: "gap"; sinceSeq: number }
+  /** The backend is a new process: what was shown belongs to the old one. */
+  | { kind: "restarted" }
   | { kind: "connection"; connected: boolean };
 
 export type StreamListener = (message: StreamMessage) => void;
@@ -30,8 +37,11 @@ const HISTORY_LIMIT = 10000;
 export class EventStream {
   private socket: WebSocket | null = null;
   private listeners = new Set<StreamListener>();
-  private lastSeq = 0;
-  private runId: string | null = null;
+  private cursor: Cursor = { runId: null, lastSeq: 0 };
+  /** Where the open socket resumed from; null while reading the history. */
+  private resume: ResumePoint = null;
+  /** Live events waiting for the head of their run to be fetched. */
+  private held: AnyEvent[] | null = null;
   private attempt = 0;
   private closed = false;
   private backfilled = false;
@@ -52,8 +62,7 @@ export class EventStream {
     this.closed = true;
     this.generation += 1;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.socket?.close();
-    this.socket = null;
+    this.dropSocket();
   }
 
   /** Try now instead of waiting out the backoff. No-op while connected. */
@@ -69,20 +78,31 @@ export class EventStream {
     return () => this.listeners.delete(listener);
   }
 
-  /** Forget the cursor: the next run starts its own sequence at 1. */
-  resetCursor(runId: string | null = null): void {
-    this.lastSeq = 0;
-    this.runId = runId;
+  /** Let go of the socket without hearing from it again: its onclose would
+   *  otherwise report a disconnect and start a second connection. */
+  private dropSocket(): void {
+    const socket = this.socket;
+    this.socket = null;
+    if (!socket) return;
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onclose = null;
+    socket.onerror = null;
+    socket.close();
   }
 
   private async connect(): Promise<void> {
     if (this.closed) return;
     const generation = ++this.generation;
+    this.held = null;
     if (!this.backfilled) {
       try {
         const page = await this.api.events(0, undefined, HISTORY_LIMIT);
         if (this.closed || generation !== this.generation) return;
-        for (const event of page.events) this.accept(event as AnyEvent);
+        this.resume = null;
+        // The history cannot be asked for more than it holds, so a run it
+        // picks up part-way through is reported as a gap, not refetched.
+        for (const event of page.events) this.accept(event as AnyEvent, false);
         this.backfilled = true;
       } catch {
         // No history without the backend, and no socket either: try both
@@ -93,23 +113,34 @@ export class EventStream {
         return;
       }
     }
-    const socket = new WebSocket(this.api.eventsSocketUrl(this.runId, this.lastSeq));
+    this.resume = { ...this.cursor };
+    const socket = new WebSocket(this.api.eventsSocketUrl(this.cursor.runId, this.cursor.lastSeq));
     this.socket = socket;
 
     socket.onopen = () => {
+      if (this.socket !== socket) return;
       this.attempt = 0;
       this.emit({ kind: "connection", connected: true });
     };
     socket.onmessage = (message: MessageEvent<string>) => {
-      const parsed = JSON.parse(message.data) as EventEnvelope | { type: "gap"; since_seq: number };
+      if (this.socket !== socket) return;
+      let parsed: EventEnvelope | { type: "gap"; since_seq: number };
+      try {
+        parsed = JSON.parse(message.data) as EventEnvelope | { type: "gap"; since_seq: number };
+      } catch (error) {
+        console.error("unreadable event stream message", error);
+        return;
+      }
       if (parsed.type === "gap") {
         this.emit({ kind: "gap", sinceSeq: (parsed as { since_seq: number }).since_seq });
         return;
       }
-      this.accept(parsed as AnyEvent);
+      this.accept(parsed as AnyEvent, true);
     };
     socket.onclose = () => {
-      if (this.socket === socket) this.socket = null;
+      // A socket this stream has already let go of has nothing to report.
+      if (this.socket !== socket) return;
+      this.socket = null;
       this.emit({ kind: "connection", connected: false });
       this.scheduleReconnect();
     };
@@ -118,17 +149,68 @@ export class EventStream {
     };
   }
 
-  /** Deliver one event, from the history or the socket, and move the cursor. */
-  private accept(event: AnyEvent): void {
-    const runId = event.run_id ?? null;
-    // A replay after reconnect can overlap what we already saw.
-    if (runId === this.runId && event.seq <= this.lastSeq) return;
-    if (runId !== this.runId) {
-      this.runId = runId;
-      this.lastSeq = 0;
+  /** Take one event, from the history or the socket. `canRefetch`: the head
+   *  of a run first seen part-way through can be asked for. */
+  private accept(event: AnyEvent, canRefetch: boolean): void {
+    if (this.held) {
+      this.held.push(event);
+      return;
     }
-    this.lastSeq = event.seq;
+    switch (judge(this.cursor, event, this.resume)) {
+      case "replay":
+        return;
+      case "restarted":
+        this.startOver();
+        return;
+      case "missed-head":
+        if (canRefetch) {
+          this.held = [event];
+          void this.fetchHead(event.run_id as string);
+          return;
+        }
+        this.deliver(event);
+        this.emit({ kind: "gap", sinceSeq: 0 });
+        return;
+      case "deliver":
+        this.deliver(event);
+    }
+  }
+
+  private deliver(event: AnyEvent): void {
+    this.cursor = { runId: event.run_id ?? null, lastSeq: event.seq };
     this.emit({ kind: "event", event });
+  }
+
+  /** A run began while the socket was down. Fetch what it said before the
+   *  first event seen here; if the backend no longer has all of it, say so. */
+  private async fetchHead(runId: string): Promise<void> {
+    const generation = this.generation;
+    let head: AnyEvent[] = [];
+    try {
+      const page = await this.api.events(0, runId, HISTORY_LIMIT);
+      head = (page.events as AnyEvent[]).filter((event) => event.run_id === runId);
+    } catch {
+      // Nothing fetched: the gap below covers it.
+    }
+    if (this.closed || generation !== this.generation || this.held === null) return;
+    const held = this.held;
+    this.held = null;
+    const firstLive = held[0]?.seq ?? 0;
+    const firstSeen = head[0]?.seq ?? firstLive;
+    for (const event of head) if (event.seq < firstLive) this.deliver(event);
+    for (const event of held) this.accept(event, true);
+    if (firstSeen > 1) this.emit({ kind: "gap", sinceSeq: 0 });
+  }
+
+  /** The backend is a new process. Forget the old one's position, tell the
+   *  listeners, and read the new one from its history on. */
+  private startOver(): void {
+    this.cursor = { runId: null, lastSeq: 0 };
+    this.backfilled = false;
+    this.emit({ kind: "restarted" });
+    this.dropSocket();
+    this.emit({ kind: "connection", connected: false });
+    void this.connect();
   }
 
   private scheduleReconnect(): void {
