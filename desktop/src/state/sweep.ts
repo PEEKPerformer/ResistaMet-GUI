@@ -3,6 +3,7 @@
 
 import { useSyncExternalStore } from "react";
 import type { Event } from "../generated/events";
+import { fitSweep, type Sourced, type SweepFit } from "../lib/sweepFit";
 
 export interface SweepSegment {
   direction: "forward" | "reverse";
@@ -57,36 +58,21 @@ export function applySweepSegment(event: Event<"sweep_segment">): void {
   });
 }
 
-/** Least-squares slope dI/dV over all points, as a resistance. NaN when
- *  there are not two distinct voltages. */
-export function fitResistance(segments: SweepSegment[]): { r: number; r2: number } {
-  const xs: number[] = [];
-  const ys: number[] = [];
-  for (const s of segments) {
-    s.voltages.forEach((v, i) => {
-      const c = s.currents[i];
-      if (Number.isFinite(v) && c !== undefined && Number.isFinite(c)) {
-        xs.push(v);
-        ys.push(c);
-      }
-    });
-  }
-  const n = xs.length;
-  if (n < 2) return { r: NaN, r2: NaN };
-  const mx = xs.reduce((a, b) => a + b, 0) / n;
-  const my = ys.reduce((a, b) => a + b, 0) / n;
-  let sxy = 0;
-  let sxx = 0;
-  let syy = 0;
-  for (let i = 0; i < n; i++) {
-    const dx = xs[i]! - mx;
-    const dy = ys[i]! - my;
-    sxy += dx * dy;
-    sxx += dx * dx;
-    syy += dy * dy;
-  }
-  if (sxx === 0) return { r: NaN, r2: NaN };
-  const slope = sxy / sxx; // dI/dV in siemens
-  const r2 = syy === 0 ? 1 : (sxy * sxy) / (sxx * syy);
-  return { r: slope === 0 ? Infinity : 1 / slope, r2 };
+/** The sweep's resistance: each leg fitted on its own, the measured quantity
+ *  on the sourced one, points in compliance left out (lib/sweepFit.ts).
+ *
+ *  `r` and `r2` are the single figure for a view that shows one: the pooled
+ *  fit, which exists only when the legs agree. When they do not they are NaN,
+ *  and `fit.legs` has the two resistances to show instead. `n` is the number
+ *  of points behind `r`.
+ *
+ *  `sourced` is the run's sweep_source. It decides which way the regression
+ *  runs, and nothing in a segment says which it was. */
+export function fitResistance(
+  segments: SweepSegment[],
+  sourced: Sourced = "voltage",
+): { r: number; r2: number; n: number; fit: SweepFit } {
+  const fit = fitSweep(segments, sourced);
+  const pooled = fit.pooled;
+  return { r: pooled?.r ?? NaN, r2: pooled?.r2 ?? NaN, n: pooled?.n ?? 0, fit };
 }
