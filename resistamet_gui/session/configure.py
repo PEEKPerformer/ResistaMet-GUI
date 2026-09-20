@@ -1,6 +1,6 @@
 """Per-mode instrument configuration, and the state each mode decides.
 
-Split out of ``workers.py`` unchanged. Each function drives the SCPI setup for
+Began as part of ``workers.py``. Each function drives the SCPI setup for
 one mode and returns its frozen state plus the metadata, CSV headers and
 filename fragment the run needs. They take the instrument and an outputs facade
 explicitly, so nothing here needs a worker.

@@ -1,6 +1,6 @@
 """Where a run's data files go and which exporter writes them.
 
-Split out of ``workers.py`` unchanged. Pure path and exporter construction: no
+Began as part of ``workers.py``. Pure path and exporter construction: no
 Qt, no instrument, so the headless session builds a run's files the same way
 the GUI worker does.
 """
