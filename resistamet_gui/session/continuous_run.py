@@ -341,6 +341,8 @@ class ContinuousRun:
                 # Not a sweep error: execute() shuts the run down.
                 raise
             except Exception as e:
+                # First writer wins, so the 'completed' below leaves this be.
+                self._control.finish('sweep_error')
                 self._events.error('sweep_error', 'smu', f"Sweep error: {str(e)}")
             # Sweep is done — skip to finalization
             self._control.finish('completed')
