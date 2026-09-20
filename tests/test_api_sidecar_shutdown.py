@@ -124,3 +124,55 @@ class TestCheckVisaIsReadOnly:
         assert json.loads(result.stdout)['requested'] == '@py'
         assert not config.exists()
         assert sorted(p.name for p in tmp_path.iterdir()) == ['home']
+
+
+class TestTheTokenStaysOutOfTheLog:
+    def test_a_websocket_connect_does_not_log_the_token(self, tmp_path):
+        import http.client
+        from urllib.parse import urlsplit
+
+        process = subprocess.Popen(
+            [sys.executable, '-m', 'resistamet_gui.api', '--port', '0', '--simulate',
+             '--config', str(tmp_path / 'config.json')],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, cwd=str(tmp_path), env=_sidecar_env(tmp_path))
+        try:
+            handshake = json.loads(process.stdout.readline())
+            parts = urlsplit(handshake['url'])
+            connection = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
+            connection.request('GET', f"/session/events/ws?token={handshake['token']}&since_seq=0",
+                               headers={'Connection': 'Upgrade', 'Upgrade': 'websocket',
+                                        'Sec-WebSocket-Version': '13',
+                                        'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ=='})
+            assert connection.getresponse().status == 101
+            connection.close()
+            process.stdin.close()
+            process.wait(timeout=30)
+            stderr = process.stderr.read()
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=10)
+
+        assert handshake['token'] not in stderr
+        assert 'token=***' in stderr
+
+
+class TestBindAddress:
+    @pytest.mark.parametrize('host', ['0.0.0.0', '192.168.1.20', 'lab-pc.example'])
+    def test_a_host_that_is_not_loopback_is_refused(self, host, capsys):
+        from resistamet_gui.api.__main__ import _parse_args
+
+        with pytest.raises(SystemExit) as refused:
+            _parse_args(['--host', host])
+
+        assert refused.value.code == 2
+        assert '--allow-remote' in capsys.readouterr().err
+
+    @pytest.mark.parametrize('argv', [[], ['--host', '127.0.0.1'], ['--host', 'localhost'],
+                                      ['--host', '::1'],
+                                      ['--host', '0.0.0.0', '--allow-remote']])
+    def test_loopback_or_an_explicit_opt_in_is_accepted(self, argv):
+        from resistamet_gui.api.__main__ import _parse_args
+
+        assert _parse_args(argv).host == (argv[1] if argv else '127.0.0.1')

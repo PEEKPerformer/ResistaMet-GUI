@@ -21,9 +21,11 @@ JSON line and exits, which is how a frozen install is diagnosed on a PC with
 no development tools.
 """
 import argparse
+import ipaddress
 import json
 import logging
 import os
+import re
 import secrets
 import signal
 import socket
@@ -78,7 +80,45 @@ def _parse_args(argv):
     parser.add_argument("--gpib-interface", default=None, metavar="'' | PRLGX-...::INTFC",
                          help="Override the machine's configured GPIB interface, for "
                               "--check-visa. Only 'bus' opens it.")
-    return parser.parse_args(argv)
+    parser.add_argument("--allow-remote", action="store_true",
+                         help="Permit a --host that is not a loopback address. The "
+                              "token then crosses the network in plaintext.")
+    args = parser.parse_args(argv)
+    if not args.allow_remote and not _is_loopback(args.host):
+        parser.error(f"--host {args.host} is not a loopback address: the API has no "
+                     "transport security and the token would cross the network in "
+                     "plaintext. Pass --allow-remote if that is really intended.")
+    return args
+
+
+class _RedactToken(logging.Filter):
+    """Keep the bearer token out of the log.
+
+    A browser cannot set a header on a WebSocket, so the token travels in
+    the query string, and uvicorn logs the path of every WebSocket it accepts
+    -- query string included, whatever ``access_log`` says. stderr is
+    inherited by the parent and may end up in a file.
+    """
+
+    _TOKEN = re.compile(r'(token=)[^&\s"\']+')
+
+    def _clean(self, value):
+        return self._TOKEN.sub(r'\1***', value) if isinstance(value, str) else value
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = self._clean(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(self._clean(arg) for arg in record.args)
+        return True
+
+
+def _is_loopback(host: str) -> bool:
+    if host == 'localhost':
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _watch_stdin(on_eof):
@@ -161,6 +201,8 @@ def main(argv=None):
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     logging.basicConfig(stream=sys.stderr, level=logging.INFO,
                          format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(_RedactToken())
 
     if args.check_visa is not None:
         return check_visa(args)
@@ -177,7 +219,11 @@ def main(argv=None):
     # --port 0 the OS picks it, and the parent cannot connect to a port we
     # only learn about later.
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if sys.platform != 'win32':
+        # On POSIX this only lets a restart rebind a port in TIME_WAIT. On
+        # Windows it would let another local process bind the same port while
+        # we hold it, which is the threat the token exists for.
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind((args.host, args.port))
     listener.listen(128)
     port = listener.getsockname()[1]
