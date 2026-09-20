@@ -209,7 +209,10 @@ class TestCommands:
                                       for e in sink.of_type('sample')))
         client.post('/session/stop')
 
-    @pytest.mark.parametrize("label", ['x' * 200_000, 'x' * 81, "two\nlines", "", "  "])
+    # Named ids: pytest puts the test id in PYTEST_CURRENT_TEST, and Windows
+    # refuses an environment variable as long as the 200 kB label.
+    @pytest.mark.parametrize("label", ['x' * 200_000, 'x' * 81, "two\nlines", "", "  "],
+                             ids=['200kB', '81-chars', 'two-lines', 'empty', 'spaces'])
     def test_a_mark_label_is_one_short_line(self, client, fake_rm, sink, label):
         _start(client)
         assert _wait_for(lambda: sink.of_type('sample'))
