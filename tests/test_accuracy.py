@@ -163,6 +163,26 @@ class TestResistanceUncertainty:
         assert math.isnan(resistance_uncertainty(float("nan"), 1e-3))
         assert math.isnan(resistance_uncertainty(1.0, float("nan")))
 
+    def test_zero_volts_gives_sigma_v_over_i(self):
+        # R = 0, and σ_R = sqrt(σ_V² + (R σ_I)²) / |I| = σ_V / |I|. It was
+        # 0 × inf = NaN. σ_V on the 200 mV range at 0 V is the 300 µV offset.
+        assert resistance_uncertainty(0.0, 1e-3) == pytest.approx(300e-6 / 1e-3)
+        assert resistance_uncertainty(0.0, -1e-3) == pytest.approx(300e-6 / 1e-3)
+        # Continuous with the readings either side of zero.
+        assert resistance_uncertainty(1e-12, 1e-3) == pytest.approx(300e-6 / 1e-3, rel=1e-6)
+
+    @pytest.mark.parametrize("v", [1e-160, 1e-300, 5e-324])
+    def test_a_vanishing_voltage_does_not_overflow(self, v):
+        # (σ_V / V) ** 2 raised OverflowError below 2.2e-158 V.
+        assert resistance_uncertainty(v, 1e-3) == pytest.approx(300e-6 / 1e-3)
+
+    def test_the_rewritten_root_is_the_documented_one(self):
+        v, i = 1.0, 1e-3
+        rel_v = voltage_uncertainty(v) / v
+        rel_i = current_uncertainty(i) / i
+        assert resistance_uncertainty(v, i) == pytest.approx(
+            (v / i) * math.sqrt(rel_v ** 2 + rel_i ** 2), rel=1e-12)
+
 
 class TestEnhancedResistance:
     """Enhanced R-spec lookup (offset-comp ON + source-readback ON).

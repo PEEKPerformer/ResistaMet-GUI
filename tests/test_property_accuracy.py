@@ -281,12 +281,6 @@ class TestResistanceUncertainty:
         elif v != 0:
             assert sigma > 0
 
-    @pytest.mark.xfail(strict=True, raises=OverflowError, reason=(
-        "resistance_uncertainty squares sigma_V / V with `**`. For 0 < |V| below "
-        "about 3e-158 the ratio is finite but its square is not, and `**` raises "
-        "OverflowError where math.hypot would return inf (accuracy.py, last line "
-        "of resistance_uncertainty). four_point_combined_uncertainty calls it "
-        "unguarded."))
     @pytest.mark.parametrize("v", [1e-160, 1e-200, 1e-300])
     def test_a_vanishing_voltage_does_not_raise(self, v):
         sigma = acc.resistance_uncertainty(v, 1e-3)
