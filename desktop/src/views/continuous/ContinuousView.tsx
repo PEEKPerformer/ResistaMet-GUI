@@ -117,9 +117,12 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
   );
   useEffect(() => {
     if (!ui.username) return;
+    // Seed the operator the profile was fetched for: by the time it answers,
+    // another may have been selected.
+    const username = ui.username;
     api
-      .profile(ui.username)
-      .then((profile) => seedOverrides(mode, fieldKeys, profile.measurement ?? {}))
+      .profile(username)
+      .then((profile) => seedOverrides(mode, fieldKeys, profile.measurement ?? {}, username))
       .catch(() => undefined);
   }, [api, ui.username, mode, fieldKeys]);
 
