@@ -420,3 +420,62 @@ def test_one_amp_on_a_2440_uses_the_2440s_row():
     900 µA, measure 0.060 % + 570 µA."""
     assert current_uncertainty(1.0, model="2440") == pytest.approx(0.00060 * 1.0 + 570e-6)
     assert current_source_uncertainty(1.0, model="2440") == pytest.approx(0.00067 * 1.0 + 900e-6)
+
+
+# ---------------------------------------------------------------------------
+# Row-by-row transcription of the datasheet's Voltage Accuracy table
+# ---------------------------------------------------------------------------
+
+# (range in V, source % rdg, source offset in V, measure % rdg, measure offset in V)
+_MV, _UV = 1e-3, 1e-6
+_DATASHEET_LOW_VOLTAGE_ROWS = (
+    (0.2, 0.02, 600 * _UV, 0.012, 300 * _UV),
+    (2.0, 0.02, 600 * _UV, 0.012, 300 * _UV),
+)
+_DATASHEET_VOLTAGE = {
+    "2400": _DATASHEET_LOW_VOLTAGE_ROWS + (
+        (20.0,   0.02, 2.4 * _MV, 0.015, 1.5 * _MV),
+        (200.0,  0.02, 24 * _MV,  0.015, 10 * _MV),
+    ),
+    # "*Not available on 2401" against the 200 V range.
+    "2401": _DATASHEET_LOW_VOLTAGE_ROWS + (
+        (20.0,   0.02, 2.4 * _MV, 0.015, 1.5 * _MV),
+    ),
+    "2410": _DATASHEET_LOW_VOLTAGE_ROWS + (
+        (20.0,   0.02, 2.4 * _MV, 0.015, 1 * _MV),
+        (1000.0, 0.02, 100 * _MV, 0.015, 50 * _MV),
+    ),
+    "2420": _DATASHEET_LOW_VOLTAGE_ROWS + (
+        (20.0,   0.02, 2.4 * _MV, 0.015, 1 * _MV),
+        (60.0,   0.02, 7.2 * _MV, 0.015, 3 * _MV),
+    ),
+    "2440": _DATASHEET_LOW_VOLTAGE_ROWS + (
+        (10.0,   0.02, 1.2 * _MV, 0.015, 750 * _UV),
+        (40.0,   0.02, 4.8 * _MV, 0.015, 3 * _MV),
+    ),
+}
+
+
+@pytest.mark.parametrize("model", sorted(_DATASHEET_VOLTAGE))
+def test_voltage_tables_are_the_datasheets_rows(model):
+    """Datasheet 1KW-2798-3 (April 2021), p. 5, "Voltage Accuracy (Local
+    or Remote Sense)": Source Accuracy (1 Year) and Measurement Accuracy
+    (1 Year) columns, every range of the 2400/2401, 2410, 2420 and 2440
+    blocks. The 20 V measurement offset is 1.5 mV on the 2400 and 2401
+    and 1 mV on the 2410 and 2420."""
+    from resistamet_gui import accuracy as acc
+
+    expected = _DATASHEET_VOLTAGE[model]
+    assert _rows(acc._V_SOURCE[model]) == _approx_rows(
+        [(rng, pct, off) for rng, pct, off, _, _ in expected])
+    assert _rows(acc._V_MEASURE[model]) == _approx_rows(
+        [(rng, pct, off) for rng, _, _, pct, off in expected])
+
+
+def test_ten_volts_on_a_2420_uses_the_2420s_20_v_row():
+    """Datasheet p. 5, 2420 block, 20.0000 V range, measurement:
+    0.015 % + 1 mV (the 2400's row of the same range is 0.015 % + 1.5 mV,
+    which is the user's manual's Appendix A example)."""
+    assert voltage_uncertainty(10.0, model="2420") == pytest.approx(0.00015 * 10.0 + 1e-3)
+    assert voltage_uncertainty(10.0, model="2410") == pytest.approx(0.00015 * 10.0 + 1e-3)
+    assert voltage_uncertainty(10.0, model="2400") == pytest.approx(0.00015 * 10.0 + 1.5e-3)
