@@ -2661,8 +2661,8 @@ at that address answered, `00 00 00 00` if not, then `04 00 00 00`
 (open.pcap 0.0085 OUT / 0.0103 IN84: present, 1.8 ms; nolistener.pcap
 0.0235 OUT / 0.0252 IN84: absent, 1.7 ms). What the adapter does on the
 bus during those 1.7 ms is not visible in USB captures; the count field
-being rewritten shows a data-type operation. For `GPIB0::5::INSTR` with nothing at 5, NI probed
-50 times at 104 ms intervals (0.0235 .. 5.1099), from the second probe on
+being rewritten shows a data-type operation. For `GPIB0::5::INSTR` with
+nothing at 5, NI probed 50 times at 104 ms intervals (0.0235 .. 5.1099), from the second probe on
 each preceded by `0c fc 00 fd 40 3f 25 04` (MTA 0, UNL, LAD 5, SDC; 49
 times), then opened the session anyway
 (nolistener.stdout: `viOpen` returned after 5.2 s) and wrote the bank-2
@@ -2991,6 +2991,109 @@ says what has not been mixed.
 
 ## 11. Open questions for the bench
 
-The checklist is assembled at the end of the editorial pass of
-2026-09-19 (section 9). Until it lands, the open questions are the "not
-established" and "uncertain" notes where they stand.
+Every "not established", "uncertain", "not captured" and "not measured"
+in this document, in one list. Nothing here is new: each item points
+back to where the text leaves it open. Ordered by how much an
+implementer's choice depends on the answer; the first group decides
+what to send, the last is curiosity.
+
+### 11.1 Decide which bytes to send
+
+- [ ] **Do NI's paths work from this project's driver at all?** 0x0b,
+  0x0e, 0x10, 0x02, 0x03, batched messages and the interrupt push are
+  [captured] only; none has run on the bench ("How to read this
+  document"; the clean-room record lists the first runs to make: reads of
+  1024 and 1025 bytes, a chunked `:TRAC:DATA?`, writes of 2048 and 2049
+  bytes, a long write to an empty address followed by a normal query, a
+  read and a serial poll that time out, the REN modes, SRQ on `*OPC`).
+- [ ] **Mixtures nobody has seen.** 0x06 followed by 0x0b or 0x10; NI's
+  batched 0x0c + 0x0a under AUXRA 0x81; the two-write block behind a 0x0a
+  under AUXRA 0x99; 5.18 rows taken from different columns (section 5 ATN
+  rule, 5.2, 2.6, 5.18).
+- [ ] **Error 4 for `e` != 0 with `m` = 0.** Never returned in 100
+  captured reads under AUXRA 0x99; whether it is returned under 0x81 is
+  not established (4.3, 5.2, 8.3, §10.1.6). With it: what rows 3 and 4 of
+  the initialisation (0x81 against 0x99: XEOS, BIN) change on the wire
+  (2.6), and whether the BIN bit in write #3 has any effect or ever needs
+  re-sending (5.2).
+- [ ] **Are the bank-2 0x03..0x07 writes required for anything?** The
+  bench's framed paths ran without them; NI never omits them. Meaning of
+  0x03 and 0x04 not established (8.15, 2.8, §10.2.4).
+- [ ] **Does the interrupt push need the monitor mask?** No mask request
+  in any capture, but every capture starts after NI's driver owned the
+  adapter (2.5, 2.8 steps 4 and 6, §10.4.1). With it: the function of
+  control request 0x3b (2.2, §10.4.2); bytes 4-7 of the push (2.5);
+  whether pushes for bits other than SRQ look the same (2.5); whether
+  SRQI ever shows in a 0x21 reply while SRQ is held (5.12, §10.4.4).
+- [ ] **What the timeout code bounds.** The whole instruction, or an
+  interval inside it: the longest error-free instruction under 0xfc ran
+  3.999 s, below that code's measured expiry of 4.194 s, so the captures
+  do not say (7.1, 7.3, §10.1.8). The host wait of 7.2 for a long
+  transfer depends on it. What a 0x0c does at its expiry was not seen
+  either (5.3).
+- [ ] **Expiry of the codes not measured**: 0xf1-0xf8, 0xff, 0x01, 0x02;
+  whether 0x01 / 0x02 follow the power-of-two pattern at all; the expiry
+  of a 0x0c, 0x0d or 0x0e under any code; any adapter other than this
+  GPIB-USB-HS; two timed blocks of one message both expiring (7.2, 7.3).
+- [ ] **Width of the 0x0b / 0x0e count field**: 32 bits, or 16 bits
+  followed by `ff ff`; no count above 0xffff was captured (3.3, §10.1.2).
+
+### 11.2 Decide how to parse and recover
+
+- [ ] **The reply behind a 0x0a.** On the bench the two-write 0x09 block
+  behind the 0x0a drew no status (trailer 16 bytes); in the captures the
+  one-write 0x09 block behind NI's 0x0a drew its 12-byte status (12 + 12
+  + 4 = 28). Why the two differ is not established (5.2, 8.6, §10.1.5).
+  Also: whether one reply ever mixes 0x36 and 0x37 blocks (5.2); what the
+  four `11 00 00 00` blocks mean (§10.1.5).
+- [ ] **Raw-path failures not captured** (§10.6.7): whether 0x06 is
+  halted when the host has submitted no data by the time the 0x0e fails;
+  what the 0x06 transfer and the count do when a write fails part-way;
+  whether the adapter completes a pending 0x88 transfer for read errors
+  other than the timeout; whether the halt on 0x06 clears without the
+  reset; why NI resets 0x02 as well (§10.6.5). How many bytes crossed
+  before the STALL is not recorded (§10.6.5).
+- [ ] **Does a message whose length is a multiple of 512 need a
+  zero-length packet?** None was captured (§10.5.2). Likewise whether the
+  device ends a 20480-byte 0x88 transfer with one (§10.1.4).
+- [ ] **The stop request 0x20** and error code 1: [inherited] only; NI
+  never sends it, not even after a failure (5.11, 4.3, 8.2, §10.6.7,
+  §10.7.3). Its effect on a pending instruction has not been seen.
+- [ ] **When error 2 is returned**, if ever: not by a read behind a 0x0c,
+  nor by a bare 0x0a with ATN set (4.3, 8.13). Errors 3 and 5 likewise
+  [inherited] only (4.3).
+- [ ] **0x35 count `k` for more than 3 register reads**, and the padding
+  bytes of a partial 0x34 chunk (3.5).
+- [ ] **What 0x02 does on the bus** during its 1.7 ms (§10.6.1, §10.7.4);
+  the probe with a secondary address in ASSERT_ADDRESS mode was not
+  captured (§10.7.4).
+- [ ] **Why the board-level read of board_io.pcap timed out** with the
+  instrument addressed to talk (§10.7.2).
+
+### 11.3 Bytes whose meaning is unknown but which can be copied
+
+- [ ] Byte 3 = 0x0a of NI's 0x06 (5.4, §10.7.1).
+- [ ] Byte `x` (0x00 / 0x01) of 0x10 (5.9, §10.5.4).
+- [ ] Byte 5 (`e`) of 0x0d and 0x0e: whether it has any effect; `f` = 0x00
+  and other `e` values on 0x0e were not observed (5.1, §10.5.1, §10.5.2).
+- [ ] Why NI's addressing 0x0c carried 0xfc instead of 0xfd after an INTFC
+  session had been opened and closed in the same process (§10.1.9).
+- [ ] Bank-1 0x0c reading as the low byte of ibsta (3.4, §10.3.2); the
+  write to bank-1 offset 0x06 in the initialisation, note (a) of 2.6;
+  bank 3 addr 0x10, bank 2 addrs 0x00-0x02, bank 1 addr 0x0f (8.15); the
+  one `aa 55` in the captures (§10.3.1).
+- [ ] `VI_GPIB_REN_DEASSERT` on an instrument session was not exercised
+  (§10.7.4).
+
+### 11.4 Other models and rarely used operations ([inherited] throughout)
+
+- [ ] What the alternate endpoints of the USB-B and HS+ carry (1.2); the
+  readiness-byte attributions to the 0x725c model (2.3); everything HS+
+  and USB-B in 2.4.
+- [ ] Parallel poll: only timeout code 0xf0 observed; termination block
+  after its reply uncertain (3.5, 5.10).
+- [ ] Pass control: how the adapter reports losing CIC (5.17). Neither it
+  nor the universal device clear (DCL, 5.8) was captured.
+- [ ] Take / release system control (5.7), changing the adapter's own
+  address (5.14), AUXMR 0x05 (5.15): never seen on a wire.
+- [ ] The cause of the hung adapter of 8.17 (8.18 offers a conjecture).
