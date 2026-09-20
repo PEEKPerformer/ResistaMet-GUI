@@ -101,7 +101,9 @@ def circle_factor(diameter: float, spacing: float,
     of the same sign at the inverse point ``R**2 / conj(Q)``; written without
     the division it stays finite for a source at the centre.
 
-    Raises ``ValueError`` when a tip is not inside the disc.
+    Raises ``ValueError`` when a tip is not inside the disc, and when the
+    spacing is so small against the diameter (below about 1e-16 of it) that
+    the tips cannot be told apart in floating point.
     """
     _require_positive(diameter, "diameter")
     radius = diameter / 2.0
@@ -111,10 +113,23 @@ def circle_factor(diameter: float, spacing: float,
     if not circle_edge_clearance(diameter, spacing, centre, angle) > 0:
         raise ValueError("a probe tip is on or outside the edge of the sample")
 
-    def kernel(p: complex, q: complex) -> float:
-        return math.log(abs(p - q) * abs(radius * radius - q.conjugate() * p))
+    # In units of the radius. The factor depends on ratios of lengths only,
+    # and the constant this drops from the kernel cancels in the bracket.
+    # Written with the lengths as given, R**2 overflows for a diameter near
+    # 1e155 and the product underflows to log(0) near 1e-100, in any unit
+    # system that happens to put the numbers there.
+    scaled = tuple(t / radius for t in tips)
 
-    return _factor_from(kernel, tips)
+    def kernel(p: complex, q: complex) -> float:
+        return math.log(abs(p - q) * abs(1.0 - q.conjugate() * p))
+
+    try:
+        factor = _factor_from(kernel, scaled)
+    except (ValueError, ZeroDivisionError, OverflowError):
+        factor = float("nan")
+    if not math.isfinite(factor):
+        raise ValueError("the spacing is too small against the diameter to evaluate the factor")
+    return factor
 
 
 def rectangle_factor(width: float, length: float, spacing: float,
