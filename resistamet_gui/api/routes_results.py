@@ -20,7 +20,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from ..session.run_files import sanitize_path_component
-from ..session.spot_map import MAP_SUMMARY_SUFFIX
+from ..session.spot_map import MAP_IMAGE_SIDECAR_SUFFIX, MAP_SUMMARY_SUFFIX
 from .app import require_token
 
 router = APIRouter(prefix="/results", tags=["results"])
@@ -104,10 +104,10 @@ def list_results(request: Request, user: Optional[str] = Query(default=None),
         for path in root.rglob('*'):
             if not path.is_file() or not path.name.endswith(RESULT_SUFFIXES):
                 continue
-            if path.name.endswith(MAP_SUMMARY_SUFFIX):
-                # A four-point map's summary, not a run: derived from the runs
-                # beside it and served by /maps. '.json' is listed for the
-                # legacy CSV+JSON pair, which is how these got in.
+            if path.name.endswith((MAP_SUMMARY_SUFFIX, MAP_IMAGE_SIDECAR_SUFFIX)):
+                # A four-point map's summary or its image record, not a run:
+                # both are served by /maps. '.json' is listed for the legacy
+                # CSV+JSON pair, which is how these got in.
                 continue
             if path in seen:
                 continue  # one directory inside another
