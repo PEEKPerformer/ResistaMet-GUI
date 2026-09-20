@@ -6,12 +6,60 @@
  * A map: its spots in index order and the spread between them.
  */
 export interface SpotMap {
+  image?: MapImage | null;
   map_id: string;
   rho: InterSpotStats;
   rs: InterSpotStats;
   sigma: InterSpotStats;
   skipped?: SkippedRun[];
   spots?: MapSpot[];
+}
+/**
+ * The photograph kept beside a map's runs.
+ *
+ * ``sha256`` and ``bytes`` are those of the file as it is on disk now.
+ * ``registration`` is absent until a client has stored one, and when the
+ * stored one was fitted to a different image than the file holds.
+ */
+export interface MapImage {
+  bytes: number;
+  file: string;
+  registration?: MapImageRegistration | null;
+  sha256: string;
+}
+/**
+ * Where a map's photograph sits on the sample: numbers, never pixels.
+ *
+ * The image's centre is at (``centre_x_mm``, ``centre_y_mm``) in sample
+ * coordinates (millimetres from the sample's centre, y up), one image pixel
+ * is ``mm_per_px`` wide, and the image is turned ``rotation_deg``
+ * anticlockwise as seen on the sample. ``sha256`` names the image the
+ * numbers were fitted to, so they cannot end up beside another picture.
+ * ``calibrated`` says the scale is real -- fitted to the outline or set from
+ * two points -- rather than the placeholder a fresh image starts with.
+ */
+export interface MapImageRegistration {
+  calibrated?: boolean;
+  calibration?: TwoPointCalibration | null;
+  centre_x_mm: number;
+  centre_y_mm: number;
+  image_height_px: number;
+  image_width_px: number;
+  mm_per_px: number;
+  rotation_deg: number;
+  sha256: string;
+}
+/**
+ * Two image points a known distance apart: the scale of a photograph of
+ * a sample that has no outline to fit. Pixel coordinates of the image as it
+ * was taken, x to the right and y down, origin at its top-left corner.
+ */
+export interface TwoPointCalibration {
+  distance_mm: number;
+  x1_px: number;
+  x2_px: number;
+  y1_px: number;
+  y2_px: number;
 }
 /**
  * The spread of one quantity between the spots of a map.

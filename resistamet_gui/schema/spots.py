@@ -100,6 +100,51 @@ class SpotRequest(BaseModel):
         return self.x_mm is not None and self.y_mm is not None
 
 
+class TwoPointCalibration(BaseModel):
+    """Two image points a known distance apart: the scale of a photograph of
+    a sample that has no outline to fit. Pixel coordinates of the image as it
+    was taken, x to the right and y down, origin at its top-left corner."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    x1_px: float = Field(ge=-1e6, le=1e6, allow_inf_nan=False)
+    y1_px: float = Field(ge=-1e6, le=1e6, allow_inf_nan=False)
+    x2_px: float = Field(ge=-1e6, le=1e6, allow_inf_nan=False)
+    y2_px: float = Field(ge=-1e6, le=1e6, allow_inf_nan=False)
+    distance_mm: float = Field(gt=0.0, le=1e5, allow_inf_nan=False)
+
+    @model_validator(mode='after')
+    def _two_different_points(self):
+        if self.x1_px == self.x2_px and self.y1_px == self.y2_px:
+            raise ValueError("the two calibration points are the same point")
+        return self
+
+
+class MapImageRegistration(BaseModel):
+    """Where a map's photograph sits on the sample: numbers, never pixels.
+
+    The image's centre is at (``centre_x_mm``, ``centre_y_mm``) in sample
+    coordinates (millimetres from the sample's centre, y up), one image pixel
+    is ``mm_per_px`` wide, and the image is turned ``rotation_deg``
+    anticlockwise as seen on the sample. ``sha256`` names the image the
+    numbers were fitted to, so they cannot end up beside another picture.
+    ``calibrated`` says the scale is real -- fitted to the outline or set from
+    two points -- rather than the placeholder a fresh image starts with.
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+    image_width_px: int = Field(ge=1, le=100_000)
+    image_height_px: int = Field(ge=1, le=100_000)
+    mm_per_px: float = Field(gt=0.0, le=1000.0, allow_inf_nan=False)
+    centre_x_mm: float = Field(ge=-1e5, le=1e5, allow_inf_nan=False)
+    centre_y_mm: float = Field(ge=-1e5, le=1e5, allow_inf_nan=False)
+    rotation_deg: float = Field(ge=-360.0, le=360.0, allow_inf_nan=False)
+    calibrated: bool = False
+    calibration: Optional[TwoPointCalibration] = None
+
+
 def check_spot_mode(mode: str) -> None:
     """Raise ``ValueError`` when a run of ``mode`` may not carry a spot."""
     if mode not in SPOT_MODES:
