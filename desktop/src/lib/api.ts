@@ -13,6 +13,7 @@ import type { InstrumentInfo, SessionStatus } from "../generated/session";
 import type { SpotMap } from "../generated/maps";
 import { version as packageVersion } from "../../package.json";
 import { ReplyOrder } from "./replyOrder";
+import { isTimeout, timeoutFor } from "./requestTimeout";
 
 /** Written into the header of every file a run started from here produces,
  *  so desktop output can be told from the PySide6 app's. */
@@ -299,7 +300,14 @@ export class ApiClient {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(body);
     }
-    const response = await fetch(`${this.backend.url}${path}`, init);
+    init.signal = AbortSignal.timeout(timeoutFor(method, path));
+    let response: Response;
+    try {
+      response = await fetch(`${this.backend.url}${path}`, init);
+    } catch (error) {
+      if (isTimeout(error)) throw new ApiError(0, "The backend did not answer in time.");
+      throw error;
+    }
     if (!response.ok) {
       let detail = response.statusText;
       try {
