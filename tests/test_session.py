@@ -735,8 +735,15 @@ class TestInstrumentHeldElsewhere:
         from resistamet_gui.session import instrument_lock
         from resistamet_gui.session.instrument_lock import InstrumentBusy
 
+        import functools
+        from resistamet_gui.session import manager
+
         monkeypatch.setattr(instrument_lock, 'default_lock_dir', lambda: tmp_path / 'locks')
-        monkeypatch.setattr(instrument_lock, 'ACQUIRE_GRACE_S', 0.3)
+        # The grace is a default argument, bound when the class was defined:
+        # patching ACQUIRE_GRACE_S changes nothing. Shorten it where the
+        # session takes the lock.
+        monkeypatch.setattr(manager, 'HeldInstrument', functools.partial(
+            instrument_lock.HeldInstrument, wait_s=0.3))
         holder_script = textwrap.dedent(f"""
             import sys, time
             from resistamet_gui.session.instrument_lock import hold_instrument
@@ -748,8 +755,10 @@ class TestInstrumentHeldElsewhere:
                                    stdout=subprocess.PIPE, text=True)
         try:
             assert holder.stdout.readline().strip() == 'held'
+            asked = time.monotonic()
             with pytest.raises(InstrumentBusy, match='in use by another ResistaMet process'):
                 session.start(_four_point(profile), 'four_point', 'wafer1', 'alice')
+            assert time.monotonic() - asked < 2.0  # the short grace, not the 3 s default
             assert session.state == 'idle'
             assert sink.events == []  # nothing started, nothing reported
         finally:
