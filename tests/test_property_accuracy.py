@@ -69,20 +69,13 @@ table_names = st.sampled_from(sorted(TABLES))
 models = st.sampled_from(MODELS + ("2450", "bogus", ""))
 
 
-_DUPLICATE_1A = (
-    "_I_SRC_2440 is `_I_SRC_2400[1:] + (1 A row, 5 A row)`, and the slice "
-    "already ends with the 2400's 1 A row, so the table has two 1 A ranges. "
-    "_pick_range returns the first: the 2440's own 0.067 % + 900 uA row is "
-    "unreachable and a 2440 sourcing 1 A is given the 2400's 0.27 %.")
-
-
 class TestTablesAreWellFormed:
     def test_every_table_names_the_same_models(self):
         for lookup in (acc._V_MEASURE, acc._I_MEASURE, acc._V_SOURCE, acc._I_SOURCE, acc._R_ENHANCED):
             assert tuple(sorted(lookup)) == MODELS
         assert acc._DEFAULT_MODEL in MODELS
 
-    @pytest.mark.parametrize("table, model", _cases({("i_source", "2440"): _DUPLICATE_1A}))
+    @pytest.mark.parametrize("table, model", _cases())
     def test_ranges_ascend_without_repeats(self, table, model):
         """``_pick_range`` requires ascending order; a repeated full scale
         makes the later row dead."""
@@ -97,9 +90,7 @@ class TestTablesAreWellFormed:
             assert 0 < spec.pct_reading < 0.01        # a fraction, not a percentage
             assert 0 < spec.offset < 0.01 * spec.range_max
 
-    @pytest.mark.parametrize("model", [
-        pytest.param(m, marks=[pytest.mark.xfail(strict=True, reason=_DUPLICATE_1A)] if m == "2440" else [])
-        for m in MODELS])
+    @pytest.mark.parametrize("model", MODELS)
     def test_measure_and_source_tables_have_the_same_ranges(self, model):
         for measure, source in ((acc._V_MEASURE, acc._V_SOURCE), (acc._I_MEASURE, acc._I_SOURCE)):
             assert [s.range_max for s in measure[model]] == [s.range_max for s in source[model]]
@@ -202,27 +193,25 @@ class TestUncertainty:
         b = data.draw(st.floats(low, high, exclude_min=True))
         assert abs(function(a, model, nplc) - function(b, model, nplc)) <= specs[index].pct_reading * abs(a - b) * (1 + 1e-9) + 1e-18
 
-    _INHERITED_1A = (
-        "The 2420/2425/2430/2440 current tables reuse the 2400's 1 A row "
-        "(0.22 % measure, 0.27 % source). Ranging up from it to the model's own "
-        "3 A or 5 A row makes the uncertainty at 1.05 A *fall* (2.88 mA -> 2.26 mA "
-        "measured on a 2420), which a coarser range cannot do. Together with the "
-        "dead 0.067 % row in _I_SRC_2440 this points at the 1 A row being "
-        "model-specific in the datasheet; check it against 1KW-2798-3.")
+    _FAST_1A_ADDER = (
+        "As printed, not a transcription error: at 0.01 PLC the datasheet's speed "
+        "footnote (1KW-2798-3 p. 6, note 5) adds 0.5 % of range to the offset on "
+        "the 1 A range but 0.05 % on every range it does not name, and it does not "
+        "name the 3 A range. 1.05 A on the 1 A range is then 0.693 mA + 0.57 mA + "
+        "5 mA = 6.26 mA, and just above it on the 3 A range 0.546 mA + 1.71 mA + "
+        "1.5 mA = 3.76 mA. Whether the 3 A range should take the larger adder is "
+        "not something the datasheet settles.")
 
-    @pytest.mark.parametrize("table, model", _cases({
-        ("i_measure", "2420"): _INHERITED_1A, ("i_measure", "2425"): _INHERITED_1A,
-        ("i_measure", "2430"): _INHERITED_1A, ("i_measure", "2440"): _INHERITED_1A,
-        ("i_source", "2420"): _INHERITED_1A, ("i_source", "2425"): _INHERITED_1A,
-        ("i_source", "2430"): _INHERITED_1A,
-    }))
-    def test_ranging_up_never_improves_the_uncertainty(self, table, model):
+    @pytest.mark.parametrize("nplc", NPLCS)
+    @pytest.mark.parametrize("table, model", _cases())
+    def test_ranging_up_never_improves_the_uncertainty(self, request, table, model, nplc):
+        if table == "i_measure" and model in ("2420", "2425", "2430") and nplc == 0.01:
+            request.applymarker(pytest.mark.xfail(strict=True, reason=self._FAST_1A_ADDER))
         lookup, function, _ = TABLES[table]
         specs = lookup[model]
-        for nplc in NPLCS:
-            for spec in specs[:-1]:
-                edge = spec.range_max * 1.05
-                assert function(edge * (1 + 1e-9), model, nplc) >= function(edge * (1 - 1e-9), model, nplc)
+        for spec in specs[:-1]:
+            edge = spec.range_max * 1.05
+            assert function(edge * (1 + 1e-9), model, nplc) >= function(edge * (1 - 1e-9), model, nplc)
 
     @PROPERTY
     @given(st.sampled_from(["v_measure", "i_measure"]), st.sampled_from(MODELS), _signed(-12.0, 4.0),
