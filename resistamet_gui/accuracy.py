@@ -96,13 +96,17 @@ _I_MEAS_2410 = _I_MEAS_2400[:4] + (
     AccuracySpec(range_max=20e-3,  pct_reading=0.00035, offset=1.2e-6),   # 20 mA
 ) + _I_MEAS_2400[5:]
 
-# 2420 starts at 10 µA (no 1 µA), adds a 3 A range.
-_I_MEAS_2420 = _I_MEAS_2400[1:] + (
+# 2420 starts at 10 µA (no 1 µA), adds a 3 A range. The 10 µA to 100 mA
+# rows are the 2400's; the 1 A row is NOT (0.066 %, against the 2400's
+# 0.22 %), so the slice stops before it.
+_I_MEAS_2420 = _I_MEAS_2400[1:6] + (
+    AccuracySpec(range_max=1.0,    pct_reading=0.00066, offset=570e-6),   # 1 A
     AccuracySpec(range_max=3.0,    pct_reading=0.00052, offset=1.71e-3),  # 3 A
 )
 
-# 2440 starts at 10 µA, tops at 5 A.
-_I_MEAS_2440 = _I_MEAS_2400[1:] + (
+# 2440 starts at 10 µA, tops at 5 A. Its 1 A row is its own too (0.060 %).
+_I_MEAS_2440 = _I_MEAS_2400[1:6] + (
+    AccuracySpec(range_max=1.0,    pct_reading=0.00060, offset=570e-6),   # 1 A
     AccuracySpec(range_max=5.0,    pct_reading=0.0010,  offset=3.42e-3),  # 5 A
 )
 
@@ -150,12 +154,16 @@ _I_SRC_2400 = (
 _I_SRC_2410 = _I_SRC_2400[:4] + (
     AccuracySpec(range_max=20e-3,  pct_reading=0.00045, offset=4e-6),     # 20 mA
 ) + _I_SRC_2400[5:]
-_I_SRC_2420 = _I_SRC_2400[1:] + (
-    AccuracySpec(range_max=3.0,    pct_reading=0.00059, offset=2.7e-3),
+# 2420 and 2440: the 10 µA to 100 mA rows are the 2400's, the 1 A row is
+# their own (0.067 %, against the 2400's 0.27 %), so the slice stops
+# before the 2400's 1 A row.
+_I_SRC_2420 = _I_SRC_2400[1:6] + (
+    AccuracySpec(range_max=1.0,    pct_reading=0.00067, offset=900e-6),   # 1 A
+    AccuracySpec(range_max=3.0,    pct_reading=0.00059, offset=2.7e-3),   # 3 A
 )
-_I_SRC_2440 = _I_SRC_2400[1:] + (
-    AccuracySpec(range_max=1.0,    pct_reading=0.00067, offset=900e-6),
-    AccuracySpec(range_max=5.0,    pct_reading=0.0010,  offset=5.4e-3),
+_I_SRC_2440 = _I_SRC_2400[1:6] + (
+    AccuracySpec(range_max=1.0,    pct_reading=0.00067, offset=900e-6),   # 1 A
+    AccuracySpec(range_max=5.0,    pct_reading=0.0010,  offset=5.4e-3),   # 5 A
 )
 
 

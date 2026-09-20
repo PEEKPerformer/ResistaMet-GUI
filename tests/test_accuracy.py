@@ -339,3 +339,84 @@ class TestDerivedRForSourceModes:
         rel = (sigma_v_meas / v_meas) ** 2 + (sigma_i_src / i_set) ** 2
         sigma_r = abs(r) * math.sqrt(rel)
         assert math.isclose(sigma_r, 0.684, rel_tol=0.005), f"σ_R = {sigma_r}"
+
+
+# ---------------------------------------------------------------------------
+# Row-by-row transcription of the datasheet's Current Accuracy table
+# ---------------------------------------------------------------------------
+
+# (range in A, source % rdg, source offset in A, measure % rdg, measure offset in A)
+_UA, _NA, _PA, _MA = 1e-6, 1e-9, 1e-12, 1e-3
+_DATASHEET_LOW_CURRENT_ROWS = (
+    (10 * _UA,  0.033, 2 * _NA,   0.027, 700 * _PA),
+    (100 * _UA, 0.031, 20 * _NA,  0.025, 6 * _NA),
+    (1 * _MA,   0.034, 200 * _NA, 0.027, 60 * _NA),
+)
+_DATASHEET_CURRENT = {
+    "2400": (
+        (1 * _UA,   0.035, 600 * _PA, 0.029, 300 * _PA),
+    ) + _DATASHEET_LOW_CURRENT_ROWS + (
+        (10 * _MA,  0.045, 2 * _UA,   0.035, 600 * _NA),
+        (100 * _MA, 0.066, 20 * _UA,  0.055, 6 * _UA),
+        (1.0,       0.27,  900 * _UA, 0.22,  570 * _UA),
+    ),
+    "2410": (
+        (1 * _UA,   0.035, 600 * _PA, 0.029, 300 * _PA),
+    ) + _DATASHEET_LOW_CURRENT_ROWS + (
+        (20 * _MA,  0.045, 4 * _UA,   0.035, 1.2 * _UA),
+        (100 * _MA, 0.066, 20 * _UA,  0.055, 6 * _UA),
+        (1.0,       0.27,  900 * _UA, 0.22,  570 * _UA),
+    ),
+    "2420": _DATASHEET_LOW_CURRENT_ROWS + (
+        (10 * _MA,  0.045, 2 * _UA,   0.035, 600 * _NA),
+        (100 * _MA, 0.066, 20 * _UA,  0.055, 6 * _UA),
+        (1.0,       0.067, 900 * _UA, 0.066, 570 * _UA),
+        (3.0,       0.059, 2.7 * _MA, 0.052, 1.71 * _MA),
+    ),
+    "2440": _DATASHEET_LOW_CURRENT_ROWS + (
+        (10 * _MA,  0.045, 2 * _UA,   0.035, 600 * _NA),
+        (100 * _MA, 0.066, 20 * _UA,  0.055, 6 * _UA),
+        (1.0,       0.067, 900 * _UA, 0.060, 570 * _UA),
+        (5.0,       0.10,  5.4 * _MA, 0.10,  3.42 * _MA),
+    ),
+}
+_DATASHEET_CURRENT["2401"] = _DATASHEET_CURRENT["2400"]
+
+
+def _rows(specs):
+    return [(s.range_max, s.pct_reading * 100.0, s.offset) for s in specs]
+
+
+def _approx_rows(rows):
+    return [pytest.approx(row, rel=1e-9) for row in rows]
+
+
+@pytest.mark.parametrize("model", sorted(_DATASHEET_CURRENT))
+def test_current_tables_are_the_datasheets_rows(model):
+    """Datasheet 1KW-2798-3 (April 2021), p. 6, "Current Accuracy (Local
+    or Remote Sense)": Source Accuracy (1 Year) and Measurement Accuracy
+    (1 Year) columns, every range of the 2400/2401, 2410, 2420 and 2440
+    blocks. The 1 A row differs by model: 0.27 % / 0.22 % on the 2400,
+    2401 and 2410, 0.067 % / 0.066 % on the 2420, 0.067 % / 0.060 % on
+    the 2440."""
+    from resistamet_gui import accuracy as acc
+
+    expected = _DATASHEET_CURRENT[model]
+    assert _rows(acc._I_SOURCE[model]) == _approx_rows(
+        [(rng, pct, off) for rng, pct, off, _, _ in expected])
+    assert _rows(acc._I_MEASURE[model]) == _approx_rows(
+        [(rng, pct, off) for rng, _, _, pct, off in expected])
+
+
+def test_one_amp_on_a_2420_uses_the_2420s_row():
+    """Datasheet p. 6, 2420 block, 1.00000 A range: source 0.067 % +
+    900 µA, measure 0.066 % + 570 µA."""
+    assert current_uncertainty(1.0, model="2420") == pytest.approx(0.00066 * 1.0 + 570e-6)
+    assert current_source_uncertainty(1.0, model="2420") == pytest.approx(0.00067 * 1.0 + 900e-6)
+
+
+def test_one_amp_on_a_2440_uses_the_2440s_row():
+    """Datasheet p. 6, 2440 block, 1.00000 A range: source 0.067 % +
+    900 µA, measure 0.060 % + 570 µA."""
+    assert current_uncertainty(1.0, model="2440") == pytest.approx(0.00060 * 1.0 + 570e-6)
+    assert current_source_uncertainty(1.0, model="2440") == pytest.approx(0.00067 * 1.0 + 900e-6)
