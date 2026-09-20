@@ -1,7 +1,9 @@
 # NI GPIB-USB user-space driver — clean-room record
 
-**Status:** implemented and reviewed; not yet run against a real adapter
-**Date:** 2026-09-18
+**Status:** implemented and reviewed. The attach sequence and the framed
+paths ran on a real adapter on 2026-09-18; the instructions taken from NI's
+captures (0x0b, 0x0e, 0x10) and the SRQ wait have not, and are off by default
+**Date:** 2026-09-18, second round 2026-09-19
 **Result:** `resistamet_gui/gpib_usb/` (MIT, like the rest of ResistaMet)
 
 ## Why a clean room
@@ -78,9 +80,10 @@ or narration of the sources' structure.
    resynchronisation after a malformed reply; session timeout not applied
    to housekeeping operations; a latent interface leak on a failed open),
    and named tests that would have passed with a broken implementation.
-6. **Implementer** fixed all of it, split the modules to the project's size
-   rule, and added the missing tests, including a fake `usb` module that
-   catches the handle leak.
+6. **Implementer** fixed all of it, split the package into the modules
+   listed below, and added the missing tests, including a fake `usb` module
+   that catches the handle leak. The split met the project's 400-line
+   guideline then; it no longer does (see "What exists").
 7. **Code reviewer** verified the fixes and found one more: a failed
    re-attach after a fault left the controller refusing every later
    operation until the resource was reopened. Fixed, with tests that assert
@@ -103,10 +106,17 @@ register initialisation, IEEE-488 command bytes, the timeout table),
 `device_ops.py` (device clear, trigger, serial poll, presence probe),
 `boards.py` (board registry), `visa_session.py` (pyvisa-py instrument
 session and dispatcher), `visa_intfc.py` (the board as `GPIB<n>::INTFC`).
-547 driver tests over scripted and fake transports; every worked hex
-example in the specification is asserted byte for byte in both directions,
-and `test_gpib_usb_captures.py` replays the NI captures (below) through the
-codec.
+630 driver tests (2026-09-19) over scripted and fake transports; every
+worked hex example in the specification is asserted byte for byte in both
+directions, `test_gpib_usb_captures.py` replays the NI captures (below)
+through the codec, and `test_gpib_usb_protocol_properties.py` checks the
+codec's invariants with seeded random input.
+
+Size: the second round grew `controller.py` to about 1100 lines and
+`protocol.py` to about 830, well past the project's 400-line guideline
+(`visa_session.py` and `transport.py` are a little over it). The split
+is planned for after the bench session, as pure moves, so that what is
+moved is code that has run on hardware.
 
 ## The second round: NI's driver as the oracle (2026-09-19)
 
@@ -160,7 +170,18 @@ bytes (the two instructions either side of the threshold), a chunked
 `:TRAC:DATA?`, writes of 2048 and 2049 bytes, a long write to an empty
 address followed by a normal query with no replug, a read and a serial poll
 that time out, the REN modes from the front panel's point of view, and SRQ
-on `*OPC`. Plain reads send the bench-proven bytes; the termination
+on `*OPC`.
+
+Because of that, the new instructions are opt-in. By default every
+transfer, of any size, is a framed 0x0a / 0x0d and the serial poll is the
+IEEE-488.1 command sequence of §5.9: the instructions that ran on the
+bench. pyvisa reads in 20480-byte chunks, so with 0x0b on by default the
+application's first `*IDN?` would have been the first 0x0b ever sent to
+our adapter, in a message sequence no capture shows (0x0c, 0x06 and 0x0b
+as separate messages, under AUXRA 0x81, without NI's bank-2 session
+configuration). `RESISTAMET_GPIB_NI_INSTRUCTIONS=1` switches on 0x0b and
+0x0e for large transfers and 0x10 for the serial poll
+(`RESISTAMET_GPIB_RAW_TRANSFERS`, the switch's first name, is still read);
+the attach log line says which set a board uses. Plain reads send the
+bench-proven `m e` = `00 00` on both read instructions; the termination
 character goes out only when the session enables it.
-`RESISTAMET_GPIB_RAW_TRANSFERS=0` turns the new transfer paths off for a
-one-flag comparison.
