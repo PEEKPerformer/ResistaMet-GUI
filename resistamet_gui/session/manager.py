@@ -284,6 +284,14 @@ class MeasurementSession:
             # resort so a crash cannot leave the session wedged in 'running'.
             logger.exception("run thread died")
         finally:
+            # A run cleans up after itself, and cleaning up twice does
+            # nothing. After a run that died with its instrument open this is
+            # what turns the output off and closes the session, before the
+            # lock below lets anyone else onto the bus.
+            try:
+                run._cleanup()
+            except Exception:
+                logger.exception("cleanup after a dead run failed")
             # The run releases the instrument in its own cleanup. Releasing
             # again is a no-op; after a run that died before its cleanup it
             # is what stops every later start being refused as "in use by
