@@ -198,7 +198,7 @@ class ContinuousRun:
                     "Auxiliary sensor: " + _aux_connection_message(e, aux_address)
                 )
                 self._control.finish('aux_connect_failed')
-                return
+                return False
         return True
 
     def _effective_settings(self):
@@ -255,7 +255,7 @@ class ContinuousRun:
         except Exception as e:
             self._events.error('file_create_failed', 'file', f"Error creating output files: {str(e)}")
             self._control.finish('file_create_failed')
-            return
+            return False
         return True
 
     def _run_sweep(self):
