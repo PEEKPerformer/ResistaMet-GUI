@@ -6,20 +6,29 @@
 // Anything a panel needs at low rate — the latest reading, the count — is
 // exposed through a small versioned snapshot that only React-visible changes
 // bump.
+//
+// The arrays are bounded (lib/thinSeries.ts): the newest samples are kept as
+// they came, and older ones are thinned to a min/max envelope, so a run of
+// any length fits in the webview. The backend's file is the full record.
 
 import { useSyncExternalStore } from "react";
 import type { Event } from "../generated/events";
+import { newThinning, thin, type Thinning } from "../lib/thinSeries.ts";
 
 export interface SampleSeries {
   /** Which mode produced these samples; a view for another mode shows none. */
   mode: string | null;
   runId: string | null;
-  /** Elapsed seconds since run start, one per sample. */
+  /** Elapsed seconds since run start, one per row: one per sample in the
+   *  tail, fewer in the thinned history before it. */
   t: number[];
   /** Per-key value arrays, same length as t. Missing values are NaN. */
   values: Record<string, number[]>;
   compliance: string[];
   marks: { t: number; label: string }[];
+  /** Samples received, which the row count stops matching once thinned. */
+  received: number;
+  thinning: Thinning;
 }
 
 export interface LatestSample {
@@ -29,9 +38,15 @@ export interface LatestSample {
   compliance: string;
   derived: Record<string, unknown> | null;
   count: number;
+  /** The older part of the plot is a min/max envelope, not every sample. */
+  thinned: boolean;
 }
 
-let series: SampleSeries = { mode: null, runId: null, t: [], values: {}, compliance: [], marks: [] };
+function emptySeries(mode: string | null, runId: string | null): SampleSeries {
+  return { mode, runId, t: [], values: {}, compliance: [], marks: [], received: 0, thinning: newThinning() };
+}
+
+let series: SampleSeries = emptySeries(null, null);
 let latest: LatestSample | null = null;
 let version = 0;
 
@@ -52,7 +67,7 @@ export function getLatest(): LatestSample | null {
 }
 
 export function resetSamples(mode: string | null = null, runId: string | null = null): void {
-  series = { mode, runId, t: [], values: {}, compliance: [], marks: [] };
+  series = emptySeries(mode, runId);
   latest = null;
   notify();
 }
@@ -87,13 +102,16 @@ export function applySample(event: Event<"sample">): void {
   if (payload.event_marker) {
     series.marks.push({ t: payload.elapsed_s, label: payload.event_marker });
   }
+  series.received += 1;
+  series.thinning = thin(series, series.thinning);
   latest = {
     mode: series.mode,
     elapsedS: payload.elapsed_s,
     values,
     compliance: payload.compliance ?? "OK",
     derived: (payload.derived as Record<string, unknown> | null | undefined) ?? null,
-    count: n + 1,
+    count: series.received,
+    thinned: series.thinning.level > 0,
   };
   // Panels showing the readout are throttled by their own timers; this
   // notification is cheap (a counter bump) and lets them know there is news.
