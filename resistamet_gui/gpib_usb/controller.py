@@ -5,8 +5,11 @@ module owns the order things happen in: the attach sequence (§2.8), the
 addressing before every transfer (§6), the go-to-standby between command
 bytes and a read (the ATN rule at the top of §5), 16-byte command chunks
 (§5.3), and turning a nonzero error code into an exception in exactly one
-place. Everything is synchronous and serialised behind one re-entrant lock;
-there are no background threads. Sequences built from these primitives
+place. Everything is synchronous and the controller starts no thread of its
+own. Every operation holds one re-entrant lock from start to end, with one
+exception: ``wait_srq`` releases it while its interrupt read blocks, so a
+caller with a second thread can run other operations during the wait (and
+``close`` waits for that read to end). Sequences built from these primitives
 (device clear, trigger, the presence probe) live in ``device_ops``.
 
 Faults: a malformed reply or a USB error means the bulk pipes may be out of
@@ -30,6 +33,8 @@ operation without it reliable), so attach skips the interrupt-monitor-mask
 steps 4 and 6 of §2.8 and ``status()`` polls the control endpoint instead.
 ``wait_srq`` reads it on demand: the adapter pushes one 8-byte packet there
 when an instrument asserts SRQ, having serial-polled it itself (§10.4.2).
+That wait has no caller in the application and has not run on hardware; see
+the note at the top of its section.
 
 Transfers of every size take the framed 0x0a / 0x0d instructions unless the
 controller is built with ``ni_instructions=True``: those are the paths that
@@ -749,10 +754,27 @@ class Controller:
 
     # ------------------------------------------------------------------
     # service request
+    #
+    # Status of this section: kept, not proven, and not reachable from the
+    # application. pyvisa-py 0.8.1 has no enable_event / wait_on_event, so
+    # nothing above the controller calls wait_srq; only tests do. It has never
+    # run on hardware. And it rests on a premise the captures do not
+    # establish: every capture with a push began after NI's driver already
+    # owned the adapter, and in each NI had written its bank-2 session
+    # configuration (0x04, 0x05 := PAD, 0x06 := SAD, §10.2.4) before the push
+    # was seen -- the only way shown for the adapter to know which device to
+    # poll. This driver writes neither those registers nor the monitor mask
+    # §2.5 calls for, so whether the adapter pushes anything for it is open.
     # ------------------------------------------------------------------
 
     def wait_srq(self, timeout_s: Optional[float]) -> int:
         """Block until an instrument requests service; return its status byte (§10.4.2).
+
+        Unproven: no production caller (pyvisa-py 0.8.1 offers no way to
+        reach it), never run on hardware, and the pushes NI's driver got
+        were all preceded by its bank-2 session configuration, which this
+        driver does not write. Treat a timeout here as "no push", not as
+        "no service request".
 
         The adapter answers an SRQ by polling the requesting device itself
         and pushing ``30 18 00 sb ..`` on the interrupt endpoint, ``sb``
