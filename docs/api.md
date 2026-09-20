@@ -120,16 +120,16 @@ Non-finite floats (an unmeasured temperature, an uncertainty that could not be c
 | `GET /schema/settings` | | `{"modes": {mode: {"model", "fields": [...], "override_keys": [...]}}}` | |
 | `POST /settings/resolve` | `{"mode", "username", "overrides": {}, "strict": true}` | `{"settings", "derived", "ok", "issues": [{"key","message","severity"}], "hazard"}` | 422 unknown mode |
 
-`/settings/resolve` answers "what would this run use, and what is wrong with it" without touching the instrument. `derived` has `max_rate_hz`, plus `sweep_points` for a sweep and `worst_case_power_w` for four-point. `hazard` is `{"hazardous", "voltage_v", "threshold_v", "reason"}`, the touch-safety check on the resolved values. `ok` is false when any issue has severity `error`; `start` refuses exactly those requests. JSON Schemas of the settings, events, session status and maps are in the repository under `contracts/`.
+`/settings/resolve` answers "what would this run use, and what is wrong with it" without touching the instrument. `derived` has `max_rate_hz`, plus `sweep_points` for a sweep and `worst_case_power_w` for four-point. `hazard` is `{"hazardous", "voltage_v", "threshold_v", "reason"}`, the touch-safety check on the resolved values. `ok` is false when any issue has severity `error`; `start` refuses exactly those requests. A strict resolve also checks the profile's `file`, `output` and `display` sections; their issues are keyed with the section (`output.format`), and `display` problems are warnings only. JSON Schemas of the settings, events, session status and maps are in the repository under `contracts/`.
 
 ### Instruments
 
 | Method and path | Request | Reply | Errors |
 |---|---|---|---|
-| `GET /instruments/resources` | query `visa_library`, `gpib_interface` (both optional: default to this PC's settings) | `{"resources": [...], "backend": {"requested","kind","library","version"}, "gpib_interface": name or null}` | 409 session not idle (a scan puts traffic on the bus); 503 VISA unavailable or the GPIB interface did not open |
-| `POST /instruments/identify` | `{"address", "visa_library"?, "gpib_interface"?}` | `{"address","idn","model","max_source_v","max_source_i","max_power_w"}` | 409 session not idle; 503 anything that went wrong talking to it, including the instrument lock being held |
+| `GET /instruments/resources` | query `visa_library`, `gpib_interface` (both optional: default to this PC's settings) | `{"resources": [...], "backend": {"requested","kind","library","version"}, "gpib_interface": name or null}` | 409 session not idle (a scan puts traffic on the bus); 422 override not allowed (below); 503 VISA unavailable or the GPIB interface did not open |
+| `POST /instruments/identify` | `{"address", "visa_library"?, "gpib_interface"?}` | `{"address","idn","model","max_source_v","max_source_i","max_power_w"}` | 409 session not idle; 422 override not allowed; 503 anything that went wrong talking to it, including the instrument lock being held |
 
-Passing `visa_library` or `gpib_interface` tries a value before it is saved. `backend.kind` is `ivi` (vendor library), `py` (pyvisa-py) or `unknown` (the simulator).
+Passing `visa_library` or `gpib_interface` tries a value before it is saved. The per-request `visa_library` may only be `""`, `@ivi`, `@py`, or the value this PC already has stored; the per-request `gpib_interface` must be a Prologix `…::INTFC` name or the stored value. Anything else is a 422 and nothing is opened. A path to a VISA library can only be stored through `PATCH /profiles/{username}`, by the `ui` role, and only if the file exists. `backend.kind` is `ivi` (vendor library), `py` (pyvisa-py) or `unknown` (the simulator).
 
 ### Results and maps
 
