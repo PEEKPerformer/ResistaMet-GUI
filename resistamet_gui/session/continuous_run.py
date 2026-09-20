@@ -43,6 +43,28 @@ logger = logging.getLogger(__name__)
 _STAT_BIT_COMPLIANCE = 1 << 3
 
 
+def _aux_connection_message(exc: BaseException, address: str) -> str:
+    """Why the auxiliary sensor did not open, in the sensor's own terms.
+
+    ``humanize_connection_error`` is written for the SMU: it says to power on
+    the Keithley and to pick another GPIB address, neither of which helps
+    with a thermocouple board on a serial port.
+    """
+    where = address or 'the configured port'
+    text = str(exc)
+    lowered = text.lower()
+    code = getattr(exc, 'error_code', None)
+    status = pyvisa.constants.StatusCode
+    if code == status.error_resource_busy:
+        return f"{where} is open in another program."
+    if code == status.error_timeout or 'timeout' in lowered:
+        return f"no data from {where} in time. Check that the sensor is streaming."
+    if (code == status.error_resource_not_found or 'not found' in lowered
+            or 'rsrc_nfound' in lowered):
+        return f"nothing found at {where}. Check the USB cable and the port in Settings."
+    return f"could not open {where}: {text}"
+
+
 class ContinuousRun:
     """One continuous-mode or sweep run, start to finalize.
 
@@ -174,7 +196,7 @@ class ContinuousRun:
                 )
             except Exception as e:
                 self._events.error('aux_connect_failed', 'aux', 
-                    "Auxiliary sensor: " + humanize_connection_error(e, aux_address)
+                    "Auxiliary sensor: " + _aux_connection_message(e, aux_address)
                 )
                 self._control.finish('aux_connect_failed')
                 return
