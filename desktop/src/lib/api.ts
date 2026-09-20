@@ -181,13 +181,16 @@ export class ApiClient {
     return this.request("GET", `/session/events?${params}`);
   }
 
-  /** The WebSocket URL for the live stream, resuming from a cursor if given. */
-  eventsSocketUrl(runId?: string | null, sinceSeq = 0): string {
+  /** The WebSocket URL for the live stream, resuming from a position if
+   *  given. `sinceCursor` is the backend's cross-run cursor and is what it
+   *  resumes from when sent; (run id, seq) is for a backend without one. */
+  eventsSocketUrl(runId?: string | null, sinceSeq = 0, sinceCursor: number | null = null): string {
     const url = new URL(this.backend.url.replace(/^http/, "ws"));
     url.pathname = "/session/events/ws";
     url.searchParams.set("token", this.backend.token);
     if (runId) url.searchParams.set("run_id", runId);
     if (sinceSeq) url.searchParams.set("since_seq", String(sinceSeq));
+    if (sinceCursor !== null) url.searchParams.set("since_cursor", String(sinceCursor));
     return url.toString();
   }
 
