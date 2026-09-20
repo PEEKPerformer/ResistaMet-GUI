@@ -145,3 +145,18 @@ class TestEveryExitAfterTheFileIsOpen:
         sink = _Driven(tmp_path).join()
         assert sink.of_type('file_finalized') == []
         assert sink.types()[-1] == 'run_ended'
+
+
+class TestTheFileIsAnnounced:
+    def test_file_opened_is_sent_like_every_other_mode(self, fake_rm, tmp_path):
+        driven = _Driven(tmp_path)
+        driven.wait_for_prompt()
+        driven.run.stop_measurement()
+        sink = driven.join()
+
+        opened = [e.payload for e in sink.of_type('file_opened')]
+        assert len(opened) == 1
+        assert opened[0]['path'] == sink.of_type('run_ended')[0].payload['path']
+        assert len(opened[0]['columns']) == len(opened[0]['units']) > 0
+        types = sink.types()
+        assert types.index('file_opened') < types.index('prompt')
