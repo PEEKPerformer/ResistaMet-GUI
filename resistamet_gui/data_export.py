@@ -26,6 +26,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -112,12 +113,35 @@ def _parse_scalar(value: str) -> Any:
         return value
 
 
+#: Everything a reader may end a line on: ``str.splitlines`` and universal
+#: newlines between them split on all of these, not just CR and LF.
+_LINE_BREAKS = re.compile('\r\n|[\r\n\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]')
+
+
+def _one_line(text: str) -> str:
+    """``text`` with every line break written as the two characters ``\\n``.
+
+    A metadata value can come from a client -- the sample name does -- and a
+    line break inside it would start a header line, or a data row, of the
+    value's own choosing. Nothing else is changed, backslashes included, so a
+    Windows path reads as it always did; the price is that the break is not
+    restored on reading. A header line is one line.
+    """
+    return _LINE_BREAKS.sub(r'\\n', text)
+
+
+def _metadata_line(key: str, value: Any) -> str:
+    """One ``# key: value`` line. The key also loses its colons, which would
+    move the split between key and value."""
+    return f"# {_one_line(str(key)).replace(':', '_')}: {_one_line(_format_scalar(value))}\n"
+
+
 def _write_metadata_block(f, meta: Dict[str, Any], units: Optional[List[str]] = None) -> None:
-    f.write(f"# resistamet_format_version: {FORMAT_VERSION}\n")
+    f.write(_metadata_line('resistamet_format_version', FORMAT_VERSION))
     for key, value in _flatten_metadata(meta):
-        f.write(f"# {key}: {_format_scalar(value)}\n")
+        f.write(_metadata_line(key, value))
     if units:
-        f.write(f"# units: {','.join(units)}\n")
+        f.write(_metadata_line('units', ','.join(units)))
 
 
 def parse_metadata(path: Union[str, Path], text_keys: Iterable[str] = ()) -> Dict[str, Any]:
@@ -614,7 +638,7 @@ class CsvExporter(_BaseExporter):
                 if end_metadata:
                     self._csv_file.write(f"{_CSV_END_MARKER}\n")
                     for key, value in _flatten_metadata(end_metadata):
-                        self._csv_file.write(f"# {key}: {_format_scalar(value)}\n")
+                        self._csv_file.write(_metadata_line(key, value))
                 self._csv_file.flush()
                 self._csv_file.close()
             except Exception as e:
