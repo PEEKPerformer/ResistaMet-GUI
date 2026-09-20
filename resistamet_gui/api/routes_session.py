@@ -5,7 +5,7 @@ calls the session, and maps the two failure modes: ``SessionBusy`` is 409
 (the instrument is doing something else) and a rejected run request is 422
 (the settings could not be resolved).
 """
-from typing import Annotated, Any, Dict
+from typing import Annotated, Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, StringConstraints
@@ -23,6 +23,10 @@ class AnswerRequest(BaseModel):
     prompt_id: str
     choice: str
     fields: Dict[str, Any] = Field(default_factory=dict)
+    # Prompt ids repeat from run to run ("safety_voltage_ack-1"). A client
+    # that says which run it is answering cannot have a dialog left over from
+    # the last run answer this one's question.
+    run_id: Optional[str] = None
 
 
 class MarkRequest(BaseModel):
@@ -141,20 +145,46 @@ def mark(body: MarkRequest, session: MeasurementSession = Depends(get_session),
 def answer_prompt(body: AnswerRequest,
                    session: MeasurementSession = Depends(get_session),
                    role: str = Depends(require_token)):
-    pending = session.status()['pending_prompt']
+    """Answer the pending prompt.
+
+    409 when there is nothing to answer, or the answer is for another prompt
+    or another run; 403 when the prompt needs a person and the caller is not
+    one; 422 when the choice is not one the prompt offered, with the options
+    in the detail. A refused answer leaves the prompt pending.
+    """
+    current = session.status()
+    pending = current['pending_prompt']
     if pending is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                              detail="no prompt is pending")
+    if body.run_id is not None and body.run_id != current['run_id']:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                             detail=f"the pending prompt belongs to {current['run_id']}, "
+                                    f"not {body.run_id}")
     if pending['requires_human'] and role != UI_ROLE:
         # D4: a client that is not a person at the bench may not assert that
         # leads were rewired or that a hazardous voltage was acknowledged.
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                              detail="this prompt requires a human answer")
+    if body.prompt_id == pending['prompt_id'] and body.choice not in pending['options']:
+        # Checked here as well as in the control, which refuses it too: the
+        # session reports that refusal as a plain False, and "not one of the
+        # options" is a different thing to tell a client than "too late".
+        raise _not_an_option(body.choice, pending['options'])
     try:
         accepted = session.answer_prompt(body.prompt_id, body.choice, body.fields)
     except SessionBusy as exc:
         raise busy_as_conflict(exc)
+    except ValueError:
+        raise _not_an_option(body.choice, pending['options'])
     if not accepted:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                              detail="prompt_id is stale or already answered")
     return session.status()
+
+
+def _not_an_option(choice: str, options) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=f"{choice!r} is not an answer to this prompt; "
+               f"the options are: {', '.join(options)}")
