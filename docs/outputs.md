@@ -148,7 +148,7 @@ Value encoding in both blocks: booleans are `true` / `false`, a missing value is
 
 `params.*` is what was asked for. `effective.*` is what the instrument reported after it was configured, recorded so that a reader comparing the two sees what the instrument overrode.
 
-It exists in resistance mode only, as one of two keys. Both hold the reply to `:SENS:VOLT:PROT?` read once, after configuration and before the output comes on (the requested value if the query fails):
+It exists in resistance mode only, as one of two keys. Both hold the reply to `:SENS:VOLT:PROT?` read once, after configuration and before the output comes on. If the query times out, does not parse, or returns a value outside what the model can source (the overflow value, for one), the run logs a warning and writes **no** `effective.*` key; in manual range the requested limit is then used for flagging.
 
 | Key | Unit | Written when | Meaning |
 |---|---|---|---|

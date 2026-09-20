@@ -78,7 +78,7 @@ A run refused because a tip would be off the sample shows the backend's message 
 
 ### I-V sweep
 
-Configure, run once, look at the curve: one trace per direction, the point count, and a least-squares resistance and R² over all points as a sanity check on an ohmic sample. The instrument runs the sweep itself and returns all points at once, so there is no live trace and no Pause. The compliance field is a current for a voltage sweep and a voltage for a current sweep ([bounds](settings.md#i-v-sweep-compliance)).
+Configure, run once, look at the curve: one trace per direction, the point count, and a least-squares resistance with R² as a sanity check on an ohmic sample. The fit leaves out points taken in compliance and fits the two legs of an up-down sweep separately, giving one figure only when they agree. The instrument runs the sweep itself and returns all points at once, so there is no live trace and no Pause. The compliance field is a current for a voltage sweep and a voltage for a current sweep ([bounds](settings.md#i-v-sweep-compliance)).
 
 ### van der Pauw
 
@@ -94,7 +94,7 @@ Profile settings that do not belong to one tab, in six sections: **Timing** (NPL
 
 ### Prompts
 
-When a run is blocked on a decision (the touch-safety acknowledgement, a van der Pauw rewiring) a dialog appears that cannot be dismissed; its buttons are the only way on. It is driven by the backend's state, so it reappears after a reload. "Don't ask again for this profile" on the touch-safety dialog is sent with the answer, but the backend does not save it at this commit; to silence the warning, set **Warning silenced for this profile** under Settings ▸ Safety.
+When a run is blocked on a decision (the touch-safety acknowledgement, a van der Pauw rewiring) a dialog appears that cannot be dismissed; its buttons are the only way on. It is driven by the backend's state, so it reappears after a reload. The touch-safety dialog has no "don't ask again" box, because an answer cannot silence a profile yet; to silence the warning, set **Warning silenced for this profile** under Settings ▸ Safety.
 
 ## Closing the window
 
