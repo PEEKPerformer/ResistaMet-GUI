@@ -60,7 +60,9 @@ class TestEncoders:
     @PROPERTY
     @given(st.binary(min_size=1, max_size=300), timeout_codes, st.booleans(), eos_chars)
     def test_write(self, data, code, eoi, eos):
-        message = p.write_message(data, code, eoi, eos)
+        # write_message is the form the driver sends (e = 0x00); the block
+        # builder under it still takes the character NI puts there.
+        message = p.build_message(p.write_block(data, code, eoi, eos))
         assert _well_framed(message)
         assert message[0] == p.OP_WRITE and message[3] == code
         assert _minus16(message[1:3]) == len(data)
@@ -175,7 +177,7 @@ class TestEncoders:
             except ValueError:
                 return False
 
-        assert attempt(lambda: p.write_message(b"x", 0xFC, True, eos)) == (0 <= eos <= 0xFF)
+        assert attempt(lambda: p.build_message(p.write_block(b"x", 0xFC, True, eos))) == (0 <= eos <= 0xFF)
         assert attempt(lambda: p.read_message(10, 0xFC, eos)) == (0 <= eos <= 0xFF)
         assert attempt(lambda: p.read_raw_message(10, 0xFC, None, False, eos)) == (0 <= eos <= 0xFF)
         assert attempt(lambda: p.serial_poll_message(pad, 0xFC, sad)) == (0 <= pad <= 30 and 0 <= sad <= 31)
