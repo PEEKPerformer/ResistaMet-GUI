@@ -132,3 +132,30 @@
 .faint {
   color: var(--fg-faint);
 }
+
+.photoBar,
+.alignBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  font-size: var(--text-sm);
+}
+
+.photoName {
+  color: var(--fg-muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.alignBar label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--fg-muted);
+}
+
+.alignBar input[type="range"] {
+  width: 140px;
+  accent-color: var(--accent);
+}
