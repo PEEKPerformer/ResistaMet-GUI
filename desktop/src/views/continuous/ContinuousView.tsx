@@ -25,6 +25,7 @@ import { Badge, Button, Notice, Panel } from "../../components/ui";
 import { BackendNotice } from "../../components/BackendNotice";
 import { Icons } from "../../components/icons";
 import { LivePlot, type TraceSpec } from "../../components/plot/LivePlot";
+import { isMarkKey } from "../../lib/markKey";
 import { FieldRow, SettingsForm } from "../../components/forms/SettingsForm";
 import { FourPointPanel } from "./FourPointPanel";
 import { describeClearance, preflightFor, prepareSpot, useMapSync } from "./fourPointSpot";
@@ -154,9 +155,9 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
   useEffect(() => {
     if (!thisModeRunning) return;
     const onKey = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
-      if (e.key === "m" || e.key === "M") void api.mark();
+      const targetTag = (e.target as HTMLElement | null)?.tagName ?? null;
+      const { key, metaKey, ctrlKey, altKey, repeat } = e;
+      if (isMarkKey({ key, metaKey, ctrlKey, altKey, repeat, targetTag })) void api.mark();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
