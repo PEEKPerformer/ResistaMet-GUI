@@ -89,18 +89,12 @@ function renderPrim(p: Prim, key: number, onSpot: Props["onSpot"]): ReactNode {
         </text>
       );
     case "image":
+      // The clip goes on a group: on the image it would be read in the
+      // image's own, transformed coordinates.
       return (
-        <image
-          key={key}
-          href={p.href}
-          width={p.width}
-          height={p.height}
-          transform={p.transform}
-          preserveAspectRatio="none"
-          clipPath={clipUrl(p.clip)}
-          opacity={p.opacity}
-          pointerEvents="none"
-        />
+        <g key={key} clipPath={clipUrl(p.clip)} pointerEvents="none">
+          <image href={p.href} width={p.width} height={p.height} transform={p.transform} preserveAspectRatio="none" opacity={p.opacity} />
+        </g>
       );
   }
 }
