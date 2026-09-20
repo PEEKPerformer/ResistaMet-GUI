@@ -37,7 +37,7 @@ const HISTORY_LIMIT = 10000;
 export class EventStream {
   private socket: WebSocket | null = null;
   private listeners = new Set<StreamListener>();
-  private cursor: Cursor = { runId: null, lastSeq: 0 };
+  private cursor: Cursor = { runId: null, lastSeq: 0, hub: null };
   /** Where the open socket resumed from; null while reading the history. */
   private resume: ResumePoint = null;
   /** Live events waiting for the head of their run to be fetched. */
@@ -120,7 +120,7 @@ export class EventStream {
       }
     }
     this.resume = { ...this.cursor };
-    const socket = new WebSocket(this.api.eventsSocketUrl(this.cursor.runId, this.cursor.lastSeq));
+    const socket = new WebSocket(this.api.eventsSocketUrl(this.cursor.runId, this.cursor.lastSeq, this.cursor.hub));
     this.socket = socket;
 
     socket.onopen = () => {
@@ -183,7 +183,7 @@ export class EventStream {
   }
 
   private deliver(event: AnyEvent): void {
-    this.cursor = { runId: event.run_id ?? null, lastSeq: event.seq };
+    this.cursor = { runId: event.run_id ?? null, lastSeq: event.seq, hub: event.cursor ?? null };
     this.emit({ kind: "event", event });
   }
 
@@ -211,7 +211,7 @@ export class EventStream {
   /** The backend is a new process. Forget the old one's position, tell the
    *  listeners, and read the new one from its history on. */
   private startOver(): void {
-    this.cursor = { runId: null, lastSeq: 0 };
+    this.cursor = { runId: null, lastSeq: 0, hub: null };
     this.backfilled = false;
     this.emit({ kind: "restarted" });
     this.dropSocket();

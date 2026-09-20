@@ -39,7 +39,8 @@ function harness(pages: Record<string, object[][]>) {
       const events = pages[key]?.shift() ?? [];
       return Promise.resolve({ events, gap: false, last_seq: 0 } as unknown as EventPage);
     },
-    eventsSocketUrl: (runId?: string | null, sinceSeq = 0) => `ws://test/?run_id=${runId ?? ""}&since_seq=${sinceSeq}`,
+    eventsSocketUrl: (runId?: string | null, sinceSeq = 0, sinceCursor: number | null = null) =>
+      `ws://test/?run_id=${runId ?? ""}&since_seq=${sinceSeq}` + (sinceCursor === null ? "" : `&since_cursor=${sinceCursor}`),
   } as unknown as ApiClient;
   const stream = new EventStream(api);
   const seen: string[] = [];
@@ -134,5 +135,25 @@ test("a message that is not JSON is ignored", async () => {
   }
   h.socket().send(ev("sample", "run-1", 1));
   assert.deepEqual(h.seen, ["run-1:1"]);
+  h.stream.close();
+});
+
+test("a backend's cross-run cursor is what the socket resumes from, and tells a restart", async () => {
+  const stamped = (type: string, run_id: string, seq: number, cursor: number) => ({ ...ev(type, run_id, seq), cursor });
+  const h = harness({
+    "": [
+      [stamped("run_started", "run-1", 1, 7), stamped("sample", "run-1", 2, 8)],
+      [stamped("run_started", "run-2", 1, 1)],
+    ],
+  });
+  h.stream.open();
+  await flush();
+  assert.equal(h.socket().url, "ws://test/?run_id=run-1&since_seq=2&since_cursor=8");
+  h.socket().send(stamped("run_started", "run-2", 1, 9));
+  // Counting from 1 again: another process, though the run id is new.
+  h.socket().send(stamped("run_started", "run-2", 1, 1));
+  await flush();
+  assert.deepEqual(h.seen, ["run-1:1", "run-1:2", "run-2:1", "restarted", "run-2:1"]);
+  assert.equal(h.socket().url, "ws://test/?run_id=run-2&since_seq=1&since_cursor=1");
   h.stream.close();
 });
