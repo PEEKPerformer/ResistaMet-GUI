@@ -257,3 +257,31 @@ class TestTheLockIsReleasedLast:
                              EventEmitter(ListSink()))
         run.execute()
         assert _lock_is_free()
+
+
+class TestTheLastResortTurnsTheOutputOff:
+    """A run object that died with its instrument open is cleaned up for it."""
+
+    def test_output_off_and_closed_before_the_lock_is_given_back(self, fake_rm, profile,
+                                                                   monkeypatch):
+        from resistamet_gui.instrument import Keithley2400
+        sink = ListSink()
+        session = MeasurementSession(sink)
+
+        def dies_with_the_output_on(run):
+            run.keithley = Keithley2400(ADDRESS).connect()
+            run.keithley.write(":OUTP ON")
+            raise RuntimeError("boom")
+        monkeypatch.setattr(ContinuousRun, 'execute', dies_with_the_output_on)
+        try:
+            session.start(profile, 'four_point', 'wafer1', 'alice')
+            assert _wait_for(lambda: session.state == 'idle')
+            session._thread.join(5.0)
+        finally:
+            session.close(timeout=5.0)
+
+        writes = [cmd for fake in fake_rm.opened for op, cmd in fake.command_log if op == 'write']
+        assert writes == [':OUTP ON', ':OUTP OFF']
+        assert _ended(sink) == [('worker_error', False)]
+        assert sink.events[-1].type == 'run_ended'
+        assert _lock_is_free()
