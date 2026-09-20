@@ -317,10 +317,6 @@ class TestUnusableInputsReturnNaN:
         if out.rho_23 is not None:
             assert math.isfinite(out.f_T)
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "Finite, positive but absurd magnitudes escape the NaN contract as "
-        "OverflowError: f_thickness_correction squares n*w/S with `**`, which "
-        "raises where `*` would give inf (calculations.py, the sum1 loop)."))
     @pytest.mark.parametrize("w, s", [(1e200, 1.0), (1.0, 1e-200), (1e-100, 5e-324)])
     def test_absurd_but_finite_thickness_ratio_does_not_raise(self, w, s):
         value = calc.f_thickness_correction(w, s)
