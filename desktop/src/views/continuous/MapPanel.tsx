@@ -29,12 +29,15 @@ import {
   FIGURE_WIDTH,
   hasPosition,
   layoutFigure,
+  PRINT_PALETTE,
   QUANTITIES,
   SCREEN_PALETTE,
   type FigureModel,
   type LabelMode,
   type Quantity,
 } from "../../lib/map/figure";
+import { downloadAll, figureFiles, fileToDataUrl } from "../../lib/map/exportFigure";
+import { spotsCsv } from "../../lib/map/spotsCsv";
 import { formatWithUncertainty } from "../../lib/format";
 import { activeMap, activeMapId, setPending, useSpots } from "../../state/spots";
 import { setMapView, useMapView } from "../../state/mapView";
@@ -108,6 +111,8 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
   const [scalePoints, setScalePoints] = useState<Point[]>([]);
   const [scaleDistance, setScaleDistance] = useState<number | null>(null);
   const drag = useRef<{ x: number; y: number } | null>(null);
+  /** null, "busy", "done", or what went wrong. */
+  const [exporting, setExporting] = useState<string | null>(null);
   const { map, mapId, outline, spacingMm, arrayAngleDeg, edgeWarnPct } = useFigureInputs(owner, measurement);
   const [hovered, setHovered] = useState<number | null>(null);
 
@@ -125,8 +130,8 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
   }, [photo]);
   const unplaced = spots.filter((s) => !hasPosition(s)).length;
 
-  const layout = useMemo(() => {
-    const model: FigureModel = {
+  const model = useMemo<FigureModel>(() => {
+    return {
       ...figureTitles(owner?.sample ?? "", quantity, spots, mapId),
       outline: outline ?? { shape: "unbounded" },
       spacingMm,
@@ -149,10 +154,10 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
         : null,
       palette: SCREEN_PALETTE,
     };
-    return layoutFigure(model);
     // `spots` is a fresh array every render while there is no map.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner?.sample, quantity, map, mapId, outline, spacingMm, arrayAngleDeg, edgeWarnPct, view.labels, view.cells, photo, bounded]);
+  const layout = useMemo(() => layoutFigure(model), [model]);
 
   // A position is millimetres, so it needs a real scale: an outline with
   // dimensions, or a photograph whose scale has been set.
@@ -232,6 +237,22 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
 
   const halfExtents = outline ? outlineHalfExtents(outline) : null;
   const fitScale = photo && halfExtents ? initialRegistration(halfExtents, photo.naturalWidth, photo.naturalHeight).mmPerPx : null;
+
+  // The figure as drawn, in the print palette, with the photograph inlined
+  // so the files stand alone.
+  const exportFigure = async () => {
+    if (!map || !owner) return;
+    setExporting("busy");
+    try {
+      const href = photo && view.exportPhoto ? await fileToDataUrl(photo.file) : null;
+      const printed = layoutFigure({ ...model, palette: PRINT_PALETTE, photo: model.photo && href ? { ...model.photo, href } : null });
+      const csv = spotsCsv(map, { sample: owner.sample, operator: owner.user, exportedAt: new Date() });
+      downloadAll(await figureFiles(printed.scene, csv, `${map.map_id}_${quantity}`));
+      setExporting("done");
+    } catch (e) {
+      setExporting(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   const applyScale = () => {
     if (!photo || scalePoints.length !== 2 || scaleDistance === null) return;
@@ -354,7 +375,30 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
               </span>
             ) : null}
             {photoError ? <span className={styles.danger}>{photoError}</span> : null}
+            <span className={styles.exportTools}>
+              {photo ? (
+                <label className={styles.toggle} title="Include the photograph in the exported figure">
+                  <Toggle checked={view.exportPhoto} onChange={(exportPhoto) => setMapView({ exportPhoto })} label="Photo in export" />
+                  Photo in export
+                </label>
+              ) : null}
+              <Button
+                size="sm"
+                disabled={map === null || spots.length === 0 || exporting === "busy"}
+                onClick={() => void exportFigure()}
+                title="SVG, PNG at 2× and 4×, and a CSV of the spots, to the downloads folder"
+              >
+                Export figure
+              </Button>
+            </span>
           </div>
+          {exporting !== null && exporting !== "busy" ? (
+            <div className={styles.status}>
+              <span className={exporting === "done" ? undefined : styles.danger}>
+                {exporting === "done" ? `Saved to the downloads folder as ${map?.map_id ?? "map"}_${quantity}.svg, @2x.png, @4x.png and .csv.` : `Export failed: ${exporting}`}
+              </span>
+            </div>
+          ) : null}
           {tool === "align" && photo && fitScale ? (
             <div className={styles.alignBar}>
               <span className={styles.faint}>Drag to move, wheel to scale.</span>
