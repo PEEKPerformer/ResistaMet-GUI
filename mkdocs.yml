@@ -44,6 +44,9 @@ nav:
     - Concepts & glossary: concepts.md
     - Settings: settings.md
     - Data outputs: outputs.md
+    - VISA backends and GPIB adapters: gpib.md
+    - Desktop app: desktop.md
+    - Backend API: api.md
     - Troubleshooting: troubleshooting.md
     - Simulator fidelity: sim_fidelity.md
   - Citation: citation.md
