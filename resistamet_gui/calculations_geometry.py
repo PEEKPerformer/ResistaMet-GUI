@@ -66,9 +66,19 @@ class PositionEffect(NamedTuple):
 
 
 def probe_tips(centre: Point, angle: float, spacing: float) -> Tuple[complex, complex, complex, complex]:
-    """The four tip positions as complex numbers, first current tip first."""
+    """The four tip positions as complex numbers, first current tip first.
+
+    Raises ``ValueError`` for a spacing that is not positive and finite, and
+    for a position or an angle that is not finite: NaN compares false with
+    everything, so it would otherwise pass every "is the tip inside" test
+    that follows and come out as a NaN factor.
+    """
     if not (math.isfinite(spacing) and spacing > 0):
         raise ValueError("probe spacing must be positive and finite")
+    if not (math.isfinite(centre[0]) and math.isfinite(centre[1])):
+        raise ValueError("probe position must be finite")
+    if not math.isfinite(angle):
+        raise ValueError("probe angle must be finite")
     origin = complex(centre[0], centre[1])
     direction = cmath.exp(1j * angle)
     return tuple(origin + (k - 1.5) * spacing * direction for k in range(4))  # type: ignore[return-value]
@@ -96,7 +106,9 @@ def circle_factor(diameter: float, spacing: float,
     _require_positive(diameter, "diameter")
     radius = diameter / 2.0
     tips = probe_tips(centre, angle, spacing)
-    if circle_edge_clearance(diameter, spacing, centre, angle) <= 0:
+    # "not > 0" rather than "<= 0": a clearance that overflowed to NaN is
+    # not inside the sample either.
+    if not circle_edge_clearance(diameter, spacing, centre, angle) > 0:
         raise ValueError("a probe tip is on or outside the edge of the sample")
 
     def kernel(p: complex, q: complex) -> float:
@@ -124,7 +136,7 @@ def rectangle_factor(width: float, length: float, spacing: float,
     _require_positive(width, "width")
     _require_positive(length, "length")
     tips = probe_tips(centre, angle, spacing)
-    if rectangle_edge_clearance(width, length, spacing, centre, angle) <= 0:
+    if not rectangle_edge_clearance(width, length, spacing, centre, angle) > 0:
         raise ValueError("a probe tip is on or outside the edge of the sample")
 
     # The image sum has a closed form along one axis and converges

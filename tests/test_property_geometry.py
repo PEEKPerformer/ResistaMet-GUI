@@ -364,11 +364,6 @@ class TestProbeOffTheSample:
         with pytest.raises(ValueError, match="edge"):
             geo.circle_factor(d, s, centre, phi)
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "A NaN position or angle is not 'inside the sample', but the guard is "
-        "`clearance <= 0`, which NaN fails, so rectangle_factor and "
-        "circle_factor return NaN instead of raising ValueError "
-        "(calculations_geometry.py, the two `_edge_clearance(...) <= 0` tests)."))
     @pytest.mark.parametrize("centre, angle", [
         ((float("nan"), 0.0), 0.0),
         ((0.0, float("nan")), 0.0),
@@ -380,6 +375,14 @@ class TestProbeOffTheSample:
             geo.rectangle_factor(10.0, 10.0, 1.0, centre, angle)
         with pytest.raises(ValueError):
             geo.circle_factor(10.0, 1.0, centre, angle)
+        with pytest.raises(ValueError):
+            geo.rectangle_edge_clearance(10.0, 10.0, 1.0, centre, angle)
+        with pytest.raises(ValueError):
+            geo.circle_edge_clearance(10.0, 1.0, centre, angle)
+        with pytest.raises(ValueError):
+            geo.rectangle_position_effect(10.0, 10.0, 1.0, centre, angle)
+        with pytest.raises(ValueError):
+            geo.circle_position_effect(10.0, 1.0, centre, angle)
 
 
 class TestLargeSampleLimit:
