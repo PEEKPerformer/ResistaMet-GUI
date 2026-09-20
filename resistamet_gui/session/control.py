@@ -229,6 +229,21 @@ class RunControl:
         with self._lock:
             self._event_markers.append(name)
 
+    def pending_marks(self) -> List[str]:
+        """The marks waiting for a row, in arrival order. Takes nothing."""
+        with self._lock:
+            return list(self._event_markers)
+
+    def consume_marks(self, count: int) -> None:
+        """Drop the first ``count`` marks: the ones a row has just carried.
+
+        Separate from reading them so that a row which fails to write leaves
+        its marks queued for the next one, and by count so that a mark made
+        while the row was being written is not dropped with them.
+        """
+        with self._lock:
+            del self._event_markers[:max(0, count)]
+
     def get_and_clear_event_marker(self) -> str:
         """Atomically take every pending mark."""
         with self._lock:
