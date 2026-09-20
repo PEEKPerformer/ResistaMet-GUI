@@ -18,10 +18,10 @@ npm install
 RESISTAMET_SIMULATE=1 npm run tauri dev      # simulator; drop the variable for real hardware
 ```
 
-The shell looks for a backend in this order: the interpreter named by `RESISTAMET_PYTHON`; a frozen `resistamet-api` in the app bundle's resources or next to the executable; the repository's `.venv`; `python3` (`python` on Windows) on the PATH.
+The shell looks for a backend in this order: the interpreter named by `RESISTAMET_PYTHON`; a frozen `resistamet-api` in the app bundle's resources or next to the executable; the repository's `.venv`; `python3` (`python` on Windows) on the PATH. `RESISTAMET_PYTHON`, `RESISTAMET_SIMULATE` and the use of the checkout are honored by development (debug) builds only; an installed build ignores all three, so a variable left set on a lab PC cannot point it at the simulator. While the backend runs with `--simulate`, a fixed **SIMULATED** badge stays at the top of the window.
 
 !!! note "A source checkout shares the PySide6 app's data"
-    Run from a checkout, the backend's working directory is the repository root and its profile file is the repository's `config.json`, so the desktop app and `resistamet-gui` started from the same checkout share operators, profiles and `measurement_data/`.
+    Run from a checkout with `tauri dev`, the backend's working directory is the repository root and its profile file is the repository's `config.json`, so the desktop app and `resistamet-gui` started from the same checkout share operators, profiles and `measurement_data/`.
 
 To work on the user interface in a plain browser, start the backend yourself and pass its address to the page:
 
