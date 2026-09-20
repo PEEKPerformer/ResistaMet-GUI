@@ -183,6 +183,22 @@ class TestClearance:
                 with pytest.raises(ValueError, match="finite"):
                     call()
 
+    @pytest.mark.parametrize("unit", [1e-200, 1e-150, 1e-100, 1e100, 1e160, 1e200, 1e300])
+    def test_the_disc_does_not_care_what_the_unit_is(self, unit):
+        # R**2 overflowed near 1e155 (NaN came back) and the kernel's
+        # product underflowed near 1e-100 ("math domain error").
+        expected = geo.circle_factor(10.0, 1.0, (2.0, 1.0), 0.3)
+        assert geo.circle_factor(10.0 * unit, 1.0 * unit, (2.0 * unit, 1.0 * unit), 0.3) == pytest.approx(
+            expected, rel=1e-12)
+
+    def test_a_huge_disc_is_the_unbounded_sheet(self):
+        assert geo.circle_factor(1e200, 1.0) == pytest.approx(geo.UNBOUNDED_FACTOR, rel=1e-12)
+
+    def test_a_spacing_lost_in_rounding_is_refused_not_nan(self):
+        # Off centre, tips 1e-17 of the diameter apart are the same float.
+        with pytest.raises(ValueError, match="spacing is too small"):
+            geo.circle_factor(10.0, 1e-17, (2.5, 0.0))
+
     @pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])
     def test_nonsense_dimensions_are_refused(self, bad):
         with pytest.raises(ValueError):
