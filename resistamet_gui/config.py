@@ -217,8 +217,15 @@ def _file_lock(path: str):
 class ConfigManager:
     def __init__(self, config_file: str = CONFIG_FILE, hostname: Optional[str] = None,
                  machine_file: Optional[str] = None, raise_on_save_error: bool = False,
-                 read_only: bool = False):
+                 read_only: bool = False, persist_on_open: bool = True):
         self.config_file = config_file
+        #: False: opening writes nothing. A missing file is not created and
+        #: the migrations are applied in memory only, so runs already use the
+        #: migrated settings; the first deliberate save carries them to disk.
+        #: For a manager that may be built as a side effect of a read -- the
+        #: API's -- where rewriting whatever config.json the process was
+        #: started beside is not acceptable.
+        self.persist_on_open = persist_on_open
         #: A diagnostic that only wants to know what is configured must not
         #: change it: no file is created, no migration runs, nothing is saved.
         self.read_only = read_only
@@ -254,8 +261,9 @@ class ConfigManager:
             # file, which may only be half-synced and whole again in a moment.
             return
         try:
-            self._migrate_machine_file()
-            if self._migrate_output_reset():
+            if self.persist_on_open:
+                self._migrate_machine_file()
+            if self._migrate_output_reset() and self.persist_on_open:
                 self.save_config()
         except ConfigSaveError:
             # Already logged. The application still opens, on what is in
@@ -425,7 +433,7 @@ class ConfigManager:
                     "The file is left as it is, and is copied aside before anything "
                     "is saved over it.")
                 return copy.deepcopy(DEFAULT_SETTINGS)
-        elif self.read_only:
+        elif self.read_only or not self.persist_on_open:
             logger.info(f"Configuration file '{self.config_file}' not found. Using defaults.")
             return copy.deepcopy(DEFAULT_SETTINGS)
         else:
