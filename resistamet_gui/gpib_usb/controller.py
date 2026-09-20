@@ -517,8 +517,10 @@ class Controller:
         The failure is the adapter saying the instruction is over, so the
         reply is already due (NI's came 0.3 ms after the STALL) and gets the
         short wait. What is raised is the adapter's own error when the reply
-        carries one -- error 8, nobody listens -- and the next operation
-        then follows with nothing else done, as in the capture. Otherwise it
+        carries one. For error 8, nobody listens, with the instruction ended
+        by the adapter itself, the next operation then follows with nothing
+        else done, as in the capture; for any other error, or when the reply
+        had to be forced with a stop request, it re-attaches first. Otherwise it
         is the transport error itself, which the fault rule answers with a
         re-attach; a reply that is missing or malformed is drained first.
         The log line names the error as the transport delivered it, which
@@ -538,6 +540,13 @@ class Controller:
             logger.warning('%s: reading the reply after the refused data failed: %s', self._model.name, exc)
         self._reset_out_pipes()
         if status is not None:
+            if self._host_stopped or status.error != t.ERR_NO_LISTENER:
+                # Only the refusal NI's captures show -- error 8, ended by the
+                # adapter -- is known to leave the adapter ready for the next
+                # operation. Ended by our stop request, or for another reason,
+                # the alternate OUT may hold bytes that would lead the data of
+                # the next 0x0e, as after a stranded write.
+                self._resync_pending = True
             self._raise_for_error(status, 'write')
         raise refusal
 

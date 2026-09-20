@@ -683,6 +683,37 @@ class TestRawWrite:
             controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
         assert ('in', 512, SHORT_MS) in transport.timeouts[-1:]
 
+    def test_refused_data_ended_by_our_own_stop_request_reattaches_next(self):
+        # The refusal came but the reply did not, so the host stopped the instruction. What the
+        # alternate OUT still holds is as unknown as after a stranded write: it would lead the
+        # data of the next 0x0e.
+        controller, transport = attached_ni(address_listener(pad=5) + [
+            ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY, self.STALL),
+            ('in', TransportTimeout('no reply yet'), 512), STOP,
+            ('in', raw_write_reply(2502, 0, error=1), 512),
+            ('clear_halt', 0x06), ('clear_halt', 0x02),
+        ] + reattach_after_usb_fault_script(raw=True) + [
+            ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
+        ])
+        with pytest.raises(GpibTimeout):
+            controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
+        assert controller.command(b'\x14', timeout_s=3.0) == 1
+        transport.assert_done()
+
+    def test_refused_data_with_an_error_other_than_no_listener_reattaches_next(self):
+        controller, transport = attached_ni(address_listener(pad=5) + [
+            ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY, self.STALL),
+            ('in', raw_write_reply(2502, 0, error=7), 512),
+            ('clear_halt', 0x06), ('clear_halt', 0x02),
+        ] + reattach_after_usb_fault_script(raw=True) + [
+            ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
+        ])
+        with pytest.raises(GpibError) as info:
+            controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
+        assert info.value.code == 7
+        assert controller.command(b'\x14', timeout_s=3.0) == 1
+        transport.assert_done()
+
     def test_scripted_expectation_a_long_raw_write_follows_a_refused_one_without_a_reattach(self):
         # Not a hardware result. After the refusal NI's next operations were a raw read, a
         # serial poll and a framed query (§10.6.7): no capture has a second 0x0e after a refused
