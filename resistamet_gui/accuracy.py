@@ -57,13 +57,17 @@ _V_MEAS_2400 = (
     AccuracySpec(range_max=200.0, pct_reading=0.00015, offset=10e-3),    # 200 V
 )
 
-# 2410 adds a 1000 V range; lower ranges match the 2400.
-_V_MEAS_2410 = _V_MEAS_2400[:3] + (
+# 2410 adds a 1000 V range. The 200 mV and 2 V rows match the 2400; the
+# 20 V row does not (1 mV offset, against the 2400's 1.5 mV).
+_V_MEAS_2410 = _V_MEAS_2400[:2] + (
+    AccuracySpec(range_max=20.0,   pct_reading=0.00015, offset=1e-3),    # 20 V
     AccuracySpec(range_max=1000.0, pct_reading=0.00015, offset=50e-3),   # 1000 V
 )
 
 # 2420 tops out at 60 V (no 200 V); accuracy on 60 V is 0.015% + 3 mV.
-_V_MEAS_2420 = _V_MEAS_2400[:3] + (
+# Its 20 V row carries the 1 mV offset too.
+_V_MEAS_2420 = _V_MEAS_2400[:2] + (
+    AccuracySpec(range_max=20.0, pct_reading=0.00015, offset=1e-3),      # 20 V
     AccuracySpec(range_max=60.0, pct_reading=0.00015, offset=3e-3),      # 60 V
 )
 
