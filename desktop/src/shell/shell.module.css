@@ -99,3 +99,21 @@
   border-color: var(--danger);
   color: var(--danger);
 }
+
+/* Above the alerts too, and never in the way of a click. */
+.simulated {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  padding: 3px var(--sp-4);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  background: var(--warn);
+  color: #1a1200;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  pointer-events: none;
+  user-select: none;
+}

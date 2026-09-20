@@ -33,6 +33,11 @@ pub struct BackendInfo {
     pub url: String,
     pub token: String,
     pub pid: u32,
+    /// Whether this backend was started against the simulator. Not part of
+    /// the handshake: the shell knows because it passed `--simulate`, and
+    /// the UI must say so, since the simulator answers like the instrument.
+    #[serde(default)]
+    pub simulated: bool,
 }
 
 /// The running backend. Held in Tauri state for the life of the app.
@@ -251,8 +256,8 @@ pub fn spawn(mut options: SpawnOptions) -> Result<Backend, String> {
         Ok(Err(e)) => return Err(abandon(e)),
         Err(_) => return Err(abandon("backend did not answer within 30 s".into())),
     };
-    let info: BackendInfo = match serde_json::from_str(line.trim()) {
-        Ok(info) => info,
+    let info: BackendInfo = match serde_json::from_str::<BackendInfo>(line.trim()) {
+        Ok(info) => BackendInfo { simulated: options.simulate, ..info },
         Err(e) => return Err(abandon(format!("backend handshake was not JSON ({e}): {line}"))),
     };
 
@@ -398,6 +403,31 @@ pub(crate) mod tests {
     }
 
     pub(crate) const HANDSHAKE: &str = r#"echo '{"url":"http://127.0.0.1:1","token":"t","pid":1}'"#;
+
+    #[test]
+    fn a_simulated_backend_is_marked_as_one() {
+        let script = fake_backend("simulated", &format!("echo \"$*\" > args\n{HANDSHAKE}\ncat >/dev/null"));
+        let mut opts = options(&script);
+        opts.simulate = true;
+        let backend = spawn(opts).unwrap();
+        assert!(backend.info.simulated);
+        backend.shutdown();
+        let args = std::fs::read_to_string(script.parent().unwrap().join("args")).unwrap();
+        assert!(args.contains("--simulate"), "{args}");
+
+        // And a real one is not, whatever a handshake might claim.
+        let real = fake_backend(
+            "notsimulated",
+            r#"echo '{"url":"http://127.0.0.1:1","token":"t","pid":1,"simulated":true}'
+cat >/dev/null"#,
+        );
+        let backend = spawn(options(&real)).unwrap();
+        assert!(!backend.info.simulated);
+        backend.shutdown();
+        for script in [script, real] {
+            let _ = std::fs::remove_dir_all(script.parent().unwrap());
+        }
+    }
 
     #[test]
     fn stderr_lands_in_the_log_file() {
