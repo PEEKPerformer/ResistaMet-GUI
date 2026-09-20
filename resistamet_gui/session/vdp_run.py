@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
+from ..constants import KEITHLEY_STAT_BIT_COMPLIANCE as _STAT_BIT_COMPLIANCE
 from ..data_export import build_metadata, get_column_config, make_exporter
 from ..instrument import Keithley2400, humanize_connection_error
 from ..system_utils import SleepInhibitor
@@ -19,10 +20,6 @@ from .instrument_lock import HeldInstrument, InstrumentBusy
 from .run_files import create_base_path
 
 logger = logging.getLogger(__name__)
-
-# Keithley 2400 series STATUS word bit masks (24-bit)
-# Bit 3: Compliance — source is in real compliance
-_STAT_BIT_COMPLIANCE = 1 << 3
 
 
 class _VdpAborted(Exception):

@@ -15,10 +15,6 @@ from ..accuracy import (
 from ..constants import KEITHLEY_COMPLIANCE_MAGIC_NUMBER
 from ..data_export import splice_before_tail
 
-# Keithley 2400 series STATUS word bit masks (24-bit)
-# Bit 3: Compliance — source is in real compliance
-_STAT_BIT_COMPLIANCE = 1 << 3
-
 
 def _is_overflow(reading) -> bool:
     """True for the 2400's overflow value (+9.9E37; 9.91E37 on some paths)."""
