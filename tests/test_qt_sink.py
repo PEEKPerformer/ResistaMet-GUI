@@ -17,21 +17,27 @@ from resistamet_gui.workers import _QtSink
 
 
 class _FakeSignal:
-    def __init__(self):
+    def __init__(self, name='', order=None):
         self.emitted = []
+        self._name = name
+        self._order = order
 
     def emit(self, *args):
         self.emitted.append(args)
+        if self._order is not None:
+            self._order.append(self._name)
 
 
 class _FakeWorker:
     def __init__(self):
-        for name in ('data_point', 'compliance_hit', 'overpower_hit', 'sweep_complete',
-                      'measurement_complete', 'instrument_identified', 'status_update',
-                      'error_occurred'):
-            setattr(self, name, _FakeSignal())
+        #: Signal names in the order they fired, across all signals.
+        self.order = []
+        for name in ('data_point', 'sample_derived', 'compliance_hit', 'overpower_hit',
+                      'sweep_complete', 'measurement_complete', 'instrument_identified',
+                      'status_update', 'error_occurred'):
+            setattr(self, name, _FakeSignal(name, self.order))
         for name in ('geometry_ready', 'geometry_complete', 'vdp_complete'):
-            setattr(self, name, _FakeSignal())
+            setattr(self, name, _FakeSignal(name, self.order))
 
 
 def _send(event_type, payload):
@@ -51,6 +57,27 @@ def test_values_are_passed_through_uncoerced():
     worker = _send('sample', {'t_unix': 1.0, 'elapsed_s': 1.0, 'compliance': 'OK',
                                'event_marker': '', 'values': {'aux_fault': '0', 'r': 1.0}})
     assert worker.data_point.emitted[0][1] == {'aux_fault': '0', 'r': 1.0}
+
+
+def test_derived_values_arrive_before_their_data_point():
+    """The 4PP panel pairs a data_point with the derived values it already
+    holds. Were data_point first, every panel row would show this sample's
+    V and I beside the previous sample's Rs and rho."""
+    derived = {'ratio': 10.0, 'rs': 45.32, 'rho': None, 'sigma': None,
+               'v_unc': 1e-6, 'i_unc': 1e-9, 'method': 'legacy'}
+    worker = _send('sample', {'t_unix': 12.5, 'elapsed_s': 2.5, 'compliance': 'OK',
+                               'event_marker': '', 'values': {'voltage': 1e-3},
+                               'derived': derived})
+    assert worker.order == ['sample_derived', 'data_point']
+    assert worker.sample_derived.emitted == [(12.5, derived)]
+    assert worker.data_point.emitted[0][0] == 12.5
+
+
+def test_a_sample_without_derived_values_fires_only_data_point():
+    worker = _send('sample', {'t_unix': 1.0, 'elapsed_s': 1.0, 'compliance': 'OK',
+                               'event_marker': '', 'values': {'resistance': 100.0}})
+    assert worker.order == ['data_point']
+    assert worker.sample_derived.emitted == []
 
 
 def test_compliance_becomes_compliance_hit():
