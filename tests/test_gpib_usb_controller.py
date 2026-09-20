@@ -1603,6 +1603,17 @@ class TestWaitSrq:
             controller.wait_srq(2.5)
         transport.assert_done()
 
+    @pytest.mark.parametrize('timeout_s, slices', [(2.001, [1000, 1000, 1]), (1.0005, [1000]),
+                                                   (0.0004, [1]), (2.0, [1000, 1000])])
+    def test_no_slice_is_ever_zero_milliseconds(self, timeout_s, slices):
+        # libusb reads a timeout of 0 as no timeout at all: the read would never return and
+        # close() would release the transport under it.
+        controller, transport = attached([('intr', TransportTimeout('nothing'), 64)] * len(slices))
+        with pytest.raises(GpibTimeout):
+            controller.wait_srq(timeout_s)
+        transport.assert_done()
+        assert [tm for kind, _, tm in transport.timeouts if kind == 'intr'] == slices
+
     def test_infinite_wait_uses_the_controller_wait_in_slices(self):
         controller, transport = attached([('intr', TransportTimeout('nothing'), 64), ('intr', SRQ_PUSH, 64), ACK_3B],
                                          infinite_wait_s=1.5)
