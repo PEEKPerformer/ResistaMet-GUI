@@ -94,6 +94,18 @@ class ApiState:
         return self._config
 
     @property
+    def stored_config(self):
+        """The ConfigManager, unless the app was given profiles and no config.
+
+        A caller that injects ``profile_provider`` has said where settings
+        come from. A route that only needs to know where an operator's files
+        are must not open the ambient ``./config.json`` behind its back.
+        """
+        if self._config is None and self._profile_provider is not None:
+            return None
+        return self.config
+
+    @property
     def profile_provider(self):
         return self._profile_provider or self.config.get_user_settings
 
@@ -120,7 +132,9 @@ def _default_config():
     """The config file the sidecar was pointed at."""
     from ..config import ConfigManager
 
-    return ConfigManager(raise_on_save_error=True)
+    # persist_on_open=False: this is built the first time a route wants it,
+    # which may be a GET, and a read must not rewrite the file.
+    return ConfigManager(raise_on_save_error=True, persist_on_open=False)
 
 
 #: Origins the desktop shell and the UI dev server load the page from.

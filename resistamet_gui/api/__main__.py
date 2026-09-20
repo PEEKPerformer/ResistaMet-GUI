@@ -164,8 +164,11 @@ def build(args):
     hub = EventHub()
     session = MeasurementSession(hub.publish)
     # The API can tell its client that a save failed, so it asks to be told.
-    config = (ConfigManager(config_file=args.config, raise_on_save_error=True)
-              if args.config else ConfigManager(raise_on_save_error=True))
+    # persist_on_open=False: starting the server writes nothing; migrations
+    # apply in memory and reach the file with the first deliberate save.
+    options = dict(raise_on_save_error=True, persist_on_open=False)
+    config = (ConfigManager(config_file=args.config, **options)
+              if args.config else ConfigManager(**options))
     token = args.token or secrets.token_urlsafe(32)
     app = create_app(session, token=token, config=config, hub=hub)
     return app, session, token
