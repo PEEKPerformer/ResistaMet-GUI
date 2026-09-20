@@ -115,9 +115,11 @@ def circle_factor(diameter: float, spacing: float,
 
     # In units of the radius. The factor depends on ratios of lengths only,
     # and the constant this drops from the kernel cancels in the bracket.
-    # Written with the lengths as given, R**2 overflows for a diameter near
-    # 1e155 and the product underflows to log(0) near 1e-100, in any unit
-    # system that happens to put the numbers there.
+    # Written with the lengths as given, R**2 overflows for a diameter above
+    # 2.7e154 (the factor came back NaN); for a D/s = 10 disc the product
+    # goes subnormal below a diameter of about 1e-104 (the factor was wrong
+    # from the sixth digit, then 4.5324 at 1e-107) and reaches log(0) at
+    # 1e-108.
     scaled = tuple(t / radius for t in tips)
 
     def kernel(p: complex, q: complex) -> float:
