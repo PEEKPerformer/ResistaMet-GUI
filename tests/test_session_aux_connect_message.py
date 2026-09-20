@@ -72,3 +72,26 @@ class TestAuxConnectFailures:
             raise RuntimeError("no channel description received")
         monkeypatch.setattr(continuous_run, 'make_sensor', refuse)
         assert 'no channel description received' in _aux_error(tmp_path, 'ASRL6::INSTR')
+
+
+class TestTheOpenStepsAnswerTrueOrFalse:
+    """Their docstrings say "False on failure"; they returned None."""
+
+    def _run(self, tmp_path, aux_address):
+        return ContinuousRun('resistance', 'r100', 'alice', _settings(tmp_path, aux_address),
+                              RunControl(), EventEmitter(ListSink()))
+
+    def test_the_aux_sensor(self, fake_rm, tmp_path):
+        run = self._run(tmp_path, 'ASRL99::INSTR')
+        assert run._open_aux_sensor(run.settings['measurement']) is False
+        run = self._run(tmp_path, 'ASRL6::INSTR')
+        try:
+            assert run._open_aux_sensor(run.settings['measurement']) is True
+        finally:
+            run._cleanup()
+
+    def test_the_output_file(self, fake_rm, tmp_path):
+        run = self._run(tmp_path, 'ASRL6::INSTR')
+        blocker = tmp_path / 'data'
+        blocker.write_text('a file where the data directory should be')
+        assert run._open_output_file(run.settings['measurement'], '1.00mA') is False
