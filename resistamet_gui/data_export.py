@@ -476,24 +476,46 @@ def _with_extension(base_path: Path, extension: str) -> Path:
     return base_path.with_name(base_path.name + extension)
 
 
-def _unused_base_path(base_path: Path, extensions: Tuple[str, ...]) -> Path:
-    """``base_path``, or the first of ``base_path-2``, ``-3``, ... that is free.
+# Names tried for one run (``name``, ``name-2``, ...) before giving up.
+MAX_NAME_ATTEMPTS = 1000
 
-    Free means none of the files the exporter will write (``extensions``)
-    exists yet. The stamp in a run's name has one-second resolution, so two
-    runs of one sample inside the same second ask for the same path; the
-    second used to be opened with ``'w'`` and replaced the first run's data.
 
-    The exporters then create their files in exclusive mode, so a name taken
-    between this check and the open (another process, same second) is an
-    error for the second run and never an overwrite of the first.
+def _name_in_use(candidate: Path, extensions: Tuple[str, ...]) -> bool:
+    """True when any file an exporter would write under ``candidate`` exists."""
+    return any(_with_extension(candidate, ext).exists() for ext in extensions)
+
+
+def _create_unused(base_path: Path, extensions: Tuple[str, ...],
+                   create: Callable[[Path], Any]) -> Tuple[Path, Any]:
+    """Create a run's file under ``base_path``, or ``base_path-2``, ``-3``, ...
+
+    Returns the base path that was free and whatever ``create(candidate)``
+    returned. ``create`` must open its file in exclusive mode and let
+    ``FileExistsError`` out.
+
+    The stamp in a run's name has one-second resolution, so two runs of one
+    sample inside the same second ask for the same path; the second used to
+    be opened with ``'w'`` and replaced the first run's data.
+
+    A name is skipped when any of the files the exporter will write
+    (``extensions``) exists. That check alone leaves a window: another
+    process can create the file between the check and the open. So the
+    exclusive create is the real probe, and losing that race moves on to
+    the next name like any other taken name. An existing file is never
+    opened for writing.
     """
     candidate = base_path
-    number = 1
-    while any(_with_extension(candidate, ext).exists() for ext in extensions):
-        number += 1
-        candidate = base_path.with_name(f"{base_path.name}-{number}")
-    return candidate
+    for number in range(1, MAX_NAME_ATTEMPTS + 1):
+        if number > 1:
+            candidate = base_path.with_name(f"{base_path.name}-{number}")
+        if _name_in_use(candidate, extensions):
+            continue
+        try:
+            return candidate, create(candidate)
+        except FileExistsError:
+            continue
+    raise FileExistsError(
+        f"No free file name for {base_path} after {MAX_NAME_ATTEMPTS} tries")
 
 
 # --------------------------------- Backends ---------------------------------
@@ -579,8 +601,7 @@ class CsvExporter(_BaseExporter):
     ):
         # '.csv.gz' too: finalize may compress, and must not land on another
         # run's compressed file.
-        self.base_path = _unused_base_path(Path(base_path), ('.csv', '.csv.gz'))
-        self.csv_path = _with_extension(self.base_path, '.csv')
+        self._requested_base_path = Path(base_path)
         self.metadata = metadata
         self.columns = list(columns)
         self.units = list(units or [])
@@ -594,15 +615,19 @@ class CsvExporter(_BaseExporter):
         self._csv_file = None
         self._csv_writer = None
         self._finalized = False
-        self._final_path = self.csv_path
 
         self._init_csv()
+        self._final_path = self.csv_path
 
     def _init_csv(self) -> None:
         try:
-            self.csv_path.parent.mkdir(parents=True, exist_ok=True)
-            # 'x': never open an existing file for writing (_unused_base_path).
-            self._csv_file = open(self.csv_path, 'x', newline='', encoding='utf-8')
+            self._requested_base_path.parent.mkdir(parents=True, exist_ok=True)
+            # 'x': never open an existing file for writing (_create_unused).
+            self.base_path, self._csv_file = _create_unused(
+                self._requested_base_path, ('.csv', '.csv.gz'),
+                lambda base: open(_with_extension(base, '.csv'), 'x',
+                                  newline='', encoding='utf-8'))
+            self.csv_path = _with_extension(self.base_path, '.csv')
             _write_metadata_block(self._csv_file, self.metadata, self.units)
             self._csv_writer = csv.writer(self._csv_file)
             self._csv_writer.writerow(self.columns)
@@ -681,9 +706,18 @@ class CsvExporter(_BaseExporter):
             return self.csv_path
         if self.compression == "auto" and size_mb < self.threshold_mb:
             return self.csv_path
-        gz_path = _with_extension(self.csv_path, '.gz')
         try:
-            with open(self.csv_path, 'rb') as src, gzip.open(gz_path, 'xb', compresslevel=6) as dst:
+            # The .csv.gz name was free when the run started; if another
+            # process has taken it since, the archive gets the next name.
+            def create_gz(base: Path):
+                # Another run's .csv holds its .csv.gz name too.
+                if base != self.base_path and _with_extension(base, '.csv').exists():
+                    raise FileExistsError(str(base))
+                return gzip.open(_with_extension(base, '.csv.gz'), 'xb', compresslevel=6)
+
+            gz_base, dst = _create_unused(self.base_path, ('.csv.gz',), create_gz)
+            gz_path = _with_extension(gz_base, '.csv.gz')
+            with open(self.csv_path, 'rb') as src, dst:
                 shutil.copyfileobj(src, dst)
             self.csv_path.unlink()
             gz_size_mb = gz_path.stat().st_size / (1024 * 1024)
@@ -740,8 +774,7 @@ class Hdf5Exporter(_BaseExporter):
             ) from e
         self._h5py = h5py
 
-        self.base_path = _unused_base_path(Path(base_path), ('.h5',))
-        self.h5_path = _with_extension(self.base_path, '.h5')
+        self._requested_base_path = Path(base_path)
         self.metadata = metadata
         self.columns = list(columns)
         self.units = list(units or [])
@@ -752,9 +785,12 @@ class Hdf5Exporter(_BaseExporter):
         self._init_h5()
 
     def _init_h5(self) -> None:
-        self.h5_path.parent.mkdir(parents=True, exist_ok=True)
-        # 'x': create, fail if it exists (_unused_base_path).
-        self._file = self._h5py.File(self.h5_path, 'x')
+        self._requested_base_path.parent.mkdir(parents=True, exist_ok=True)
+        # 'x': create, fail if it exists (_create_unused).
+        self.base_path, self._file = _create_unused(
+            self._requested_base_path, ('.h5',),
+            lambda base: self._h5py.File(_with_extension(base, '.h5'), 'x'))
+        self.h5_path = _with_extension(self.base_path, '.h5')
         vlen_str = self._h5py.string_dtype(encoding='utf-8')
         dtype = [(c, vlen_str) for c in self.columns]
         self._dataset = self._file.create_dataset(
@@ -846,9 +882,7 @@ class LegacyDualExporter(_BaseExporter):
         columns: List[str],
         units: Optional[List[str]] = None,
     ):
-        self.base_path = _unused_base_path(Path(base_path), ('.csv', '.json', '.json.tmp'))
-        self.json_path = _with_extension(self.base_path, '.json')
-        self.csv_path = _with_extension(self.base_path, '.csv')
+        self._requested_base_path = Path(base_path)
         self.metadata = metadata
         self.columns = columns
         self.units = units or []
@@ -861,9 +895,16 @@ class LegacyDualExporter(_BaseExporter):
 
     def _init_csv(self) -> None:
         try:
-            self.csv_path.parent.mkdir(parents=True, exist_ok=True)
-            # 'x': never open an existing file for writing (_unused_base_path).
-            self._csv_file = open(self.csv_path, 'x', newline='', encoding='utf-8')
+            self._requested_base_path.parent.mkdir(parents=True, exist_ok=True)
+            # 'x': never open an existing file for writing (_create_unused).
+            # The CSV's name holds the pair: a name whose .json or .json.tmp
+            # exists is skipped, and finalize never replaces a .json.
+            self.base_path, self._csv_file = _create_unused(
+                self._requested_base_path, ('.csv', '.json', '.json.tmp'),
+                lambda base: open(_with_extension(base, '.csv'), 'x',
+                                  newline='', encoding='utf-8'))
+            self.csv_path = _with_extension(self.base_path, '.csv')
+            self.json_path = _with_extension(self.base_path, '.json')
             self._csv_writer = csv.writer(self._csv_file)
             self._csv_writer.writerow(self.columns)
             self._csv_file.flush()
