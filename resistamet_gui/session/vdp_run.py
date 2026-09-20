@@ -203,12 +203,13 @@ class VdpRun:
             self._connect_and_configure()
             self._run_geometries()
             self._compute_and_emit_result()
-        except RunStopped:
+        except (RunStopped, _VdpAborted):
             self._control.finish('user_stop')
-            self._events.log('aborted', "vdP measurement aborted by user")
-        except _VdpAborted:
-            self._control.finish('user_stop')
-            self._events.log('aborted', "vdP measurement aborted by user")
+            if self._control.finish_reason == 'prompt_timeout':
+                # Nobody aborted it: nobody answered.
+                self._events.log('aborted', "vdP measurement abandoned: no answer at the prompt")
+            else:
+                self._events.log('aborted', "vdP measurement aborted by user")
         except Exception as e:
             self._control.finish('worker_error')
             logger.exception("vdP measurement failed")
