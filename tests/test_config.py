@@ -387,6 +387,39 @@ class TestSaveRobustness:
         assert manager.get_users() == []
 
 
+class TestReadOnly:
+    """A diagnostic looks at the configuration; it does not change it."""
+
+    def test_a_missing_config_is_not_created(self, temp_config_file, machine_file):
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                                read_only=True)
+
+        assert manager.get_gpib_address() == DEFAULT_SETTINGS['measurement']['gpib_address']
+        assert list(Path(temp_config_file).parent.iterdir()) == []
+
+    def test_no_migration_touches_an_old_config(self, temp_config_file, machine_file):
+        old = {'users': ['alice'], 'machines': {'HOST-A': {'visa_library': '@py'}},
+               'user_settings': {'alice': {'output': {'format': 'hdf5'}}}}
+        Path(temp_config_file).write_text(json.dumps(old))
+
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                                hostname='HOST-A', read_only=True)
+
+        assert manager.get_visa_library() == '@py'
+        assert json.loads(Path(temp_config_file).read_text()) == old
+        assert not os.path.exists(machine_file)
+        assert sorted(p.name for p in Path(temp_config_file).parent.iterdir()) == \
+            ['test_config.json']
+
+    def test_it_refuses_to_save(self, temp_config_file, machine_file):
+        from resistamet_gui.config import ConfigSaveError
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                                read_only=True)
+        with pytest.raises(ConfigSaveError):
+            manager.add_user('alice')
+        assert not os.path.exists(temp_config_file)
+
+
 class TestDefaultMerging:
     """Tests for merging defaults with loaded config."""
 
