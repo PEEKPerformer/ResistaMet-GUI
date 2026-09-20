@@ -197,9 +197,22 @@ jobs:
         # Windows the adapter belongs to NI's driver and nothing is bundled.
         shell: python
         run: |
-          import json, os, subprocess, sys
-          exe = os.path.join("desktop", "sidecar", "resistamet-api",
-                             "resistamet-api.exe" if os.name == "nt" else "resistamet-api")
+          import json, os, re, subprocess, sys
+          bundle = os.path.join("desktop", "sidecar", "resistamet-api")
+          exe = os.path.join(bundle, "resistamet-api.exe" if os.name == "nt" else "resistamet-api")
+          # libusb is LGPL-2.1: wherever a copy of it is in the bundle, put
+          # there by the spec or by PyInstaller's usb hook, its licence text
+          # is too. The spec fails the build otherwise; this checks what
+          # was actually collected.
+          libusb = re.compile(r"^(?:lib|cyg)?usb(?:-?[0-9.]+)*\.(?:dylib|dll|so(?:\.[0-9]+)*)$", re.I)
+          shipped = [os.path.join(folder, name) for folder, _, names in os.walk(bundle)
+                     for name in names if libusb.match(name)]
+          print("bundled libusb:", shipped or "none")
+          for path in shipped:
+              licence = os.path.join(os.path.dirname(path), "libusb-COPYING")
+              assert os.path.isfile(licence), f"{path} is bundled without {licence}"
+          if sys.platform == "darwin":
+              assert shipped, "no libusb in the macOS bundle"
           done = subprocess.run([exe, "--check-visa", "--visa-library", "@py",
                                  "--config", "ci-config.json"],
                                 capture_output=True, text=True, timeout=120)
