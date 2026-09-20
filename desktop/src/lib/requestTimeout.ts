@@ -21,7 +21,20 @@ export function timeoutFor(method: string, path: string): number {
   return DEFAULT_TIMEOUT_MS;
 }
 
-/** Whether a rejected fetch was the timeout firing. */
+/** A signal that aborts after `ms`. AbortSignal.timeout where the webview
+ *  has it; older WebKit (macOS 12 and before) does not, and without this
+ *  every request there would throw before it was sent. */
+export function timeoutSignal(ms: number): AbortSignal {
+  if (typeof AbortSignal.timeout === "function") return AbortSignal.timeout(ms);
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), ms);
+  return controller.signal;
+}
+
+/** Whether a rejected fetch was the time limit. Nothing else aborts these
+ *  requests, so the fallback signal's plain AbortError counts too. */
 export function isTimeout(error: unknown): boolean {
-  return typeof error === "object" && error !== null && (error as { name?: unknown }).name === "TimeoutError";
+  if (typeof error !== "object" || error === null) return false;
+  const name = (error as { name?: unknown }).name;
+  return name === "TimeoutError" || name === "AbortError";
 }
