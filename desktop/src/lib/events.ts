@@ -17,7 +17,7 @@
 
 import type { AnyEvent, EventEnvelope } from "../generated/events";
 import type { ApiClient } from "./api";
-import { judge, type Cursor, type ResumePoint } from "./streamCursor";
+import { judge, type Cursor, type ResumePoint } from "./streamCursor.ts";
 
 export type StreamMessage =
   | { kind: "event"; event: AnyEvent }
@@ -50,7 +50,13 @@ export class EventStream {
   private generation = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly api: ApiClient) {}
+  private readonly api: ApiClient;
+
+  // Not a parameter property: the unit tests run this file through Node's
+  // type stripping, which does not rewrite those.
+  constructor(api: ApiClient) {
+    this.api = api;
+  }
 
   /** Start streaming. Idempotent. */
   open(): void {
