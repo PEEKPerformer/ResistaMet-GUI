@@ -5,10 +5,23 @@
 // The drawing is a Scene laid out by lib/map/figure.ts; this file decides
 // what goes into it and handles the pointer.
 
-import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import type { MapSpot } from "../../generated/maps";
 import type { MapOwner } from "../../lib/map/mapId";
-import { outlineFromSettings, probeTips, roundMm, toFigure, toSample, type Outline, type Preflight, type Viewport } from "../../lib/map/geometry";
+import {
+  calibratedScale,
+  initialRegistration,
+  outlineFromSettings,
+  outlineHalfExtents,
+  probeTips,
+  roundMm,
+  toFigure,
+  toSample,
+  type Outline,
+  type Point,
+  type Preflight,
+  type Viewport,
+} from "../../lib/map/geometry";
 import {
   defaultQuantity,
   edgeError,
@@ -25,6 +38,7 @@ import {
 import { formatWithUncertainty } from "../../lib/format";
 import { activeMap, activeMapId, setPending, useSpots } from "../../state/spots";
 import { setMapView, useMapView } from "../../state/mapView";
+import { addPhoto, followMap, removePhoto, setRegistration, useMapPhoto } from "../../state/mapPhoto";
 import { Button, Panel, Select, Toggle } from "../../components/ui";
 import { EngineeringInput } from "../../components/ui/EngineeringInput";
 import { Icons } from "../../components/icons";
@@ -52,6 +66,9 @@ function numberOf(settings: Record<string, unknown>, key: string, fallback: numb
   const value = settings[key];
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
+
+/** What the pointer does on the map. */
+type Tool = "place" | "align" | "scale";
 
 /** Everything the figure needs that is not the operator's taste. */
 export function useFigureInputs(owner: MapOwner | null, measurement: Record<string, unknown>) {
@@ -83,15 +100,29 @@ export function figureTitles(sample: string, quantity: Quantity, spots: MapSpot[
 
 export function MapPanel({ owner, measurement, running, start }: Props) {
   const view = useMapView();
-  const { pending } = useSpots();
+  const { pending, current } = useSpots();
+  const { photo, stored: storedPhoto, error: photoError } = useMapPhoto();
   const svgRef = useRef<SVGSVGElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [tool, setTool] = useState<Tool>("place");
+  const [scalePoints, setScalePoints] = useState<Point[]>([]);
+  const [scaleDistance, setScaleDistance] = useState<number | null>(null);
+  const drag = useRef<{ x: number; y: number } | null>(null);
   const { map, mapId, outline, spacingMm, arrayAngleDeg, edgeWarnPct } = useFigureInputs(owner, measurement);
   const [hovered, setHovered] = useState<number | null>(null);
 
   const spots = map?.spots ?? [];
   const quantity = view.quantity ?? defaultQuantity(spots);
   const bounded = outline !== null && outline.shape !== "unbounded";
-  const open = view.open ?? bounded;
+  const open = view.open ?? (bounded || photo !== null || storedPhoto !== null);
+
+  // The photograph is stored with the map. A map that ended because the
+  // operator asked for a new one keeps it; another sample does not.
+  useEffect(() => followMap(mapId, current === null), [mapId, current]);
+  // A tool that has lost its photograph has nothing to act on.
+  useEffect(() => {
+    if (photo === null) setTool("place");
+  }, [photo]);
   const unplaced = spots.filter((s) => !hasPosition(s)).length;
 
   const layout = useMemo(() => {
@@ -105,29 +136,114 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
       quantity,
       labels: view.labels,
       cells: view.cells,
-      photo: null,
+      photo: photo
+        ? {
+            href: photo.url,
+            naturalWidth: photo.naturalWidth,
+            naturalHeight: photo.naturalHeight,
+            // With no outline the photograph is the canvas: upright, centered,
+            // and only its scale means anything.
+            registration: bounded ? photo.registration : { mmPerPx: photo.registration.mmPerPx, centreXmm: 0, centreYmm: 0, rotationDeg: 0 },
+            calibrated: photo.calibrated,
+          }
+        : null,
       palette: SCREEN_PALETTE,
     };
     return layoutFigure(model);
     // `spots` is a fresh array every render while there is no map.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [owner?.sample, quantity, map, mapId, outline, spacingMm, arrayAngleDeg, edgeWarnPct, view.labels, view.cells]);
+  }, [owner?.sample, quantity, map, mapId, outline, spacingMm, arrayAngleDeg, edgeWarnPct, view.labels, view.cells, photo, bounded]);
 
-  // A position means something on an outline with real dimensions.
-  const canPlace = bounded && !running;
+  // A position is millimetres, so it needs a real scale: an outline with
+  // dimensions, or a photograph whose scale has been set.
+  const scaled = bounded || (outline !== null && photo !== null && photo.calibrated);
+  const canPlace = scaled && !running && tool === "place";
   const check = preflightFor(measurement, pending);
 
-  const place = (e: PointerEvent<SVGSVGElement>) => {
+  /** The pointer in figure units. The SVG keeps its aspect, so client pixels
+   *  scale evenly. null outside the map box. */
+  const figurePoint = (e: { clientX: number; clientY: number }): Point | null => {
     const svg = svgRef.current;
-    if (!canPlace || !svg || e.button !== 0) return;
-    // The SVG keeps its aspect, so client pixels scale evenly into figure units.
+    if (!svg) return null;
     const rect = svg.getBoundingClientRect();
     const fx = ((e.clientX - rect.left) / rect.width) * FIGURE_WIDTH;
     const fy = ((e.clientY - rect.top) / rect.height) * FIGURE_HEIGHT;
     const box = layout.mapBox;
-    if (fx < box.x || fx > box.x + box.width || fy < box.y || fy > box.y + box.height) return;
-    const at = toSample(layout.view, { x: fx, y: fy });
-    setPending({ x_mm: roundMm(at.x, NUDGE_MM), y_mm: roundMm(at.y, NUDGE_MM) });
+    return fx < box.x || fx > box.x + box.width || fy < box.y || fy > box.y + box.height ? null : { x: fx, y: fy };
+  };
+
+  const pointerDown = (e: PointerEvent<SVGSVGElement>) => {
+    if (e.button !== 0) return;
+    const at = figurePoint(e);
+    if (at === null) return;
+    if (tool === "align" && photo) {
+      drag.current = at;
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } else if (tool === "scale" && photo) {
+      setScalePoints((points) => (points.length >= 2 ? [toSample(layout.view, at)] : [...points, toSample(layout.view, at)]));
+    } else if (canPlace) {
+      const p = toSample(layout.view, at);
+      setPending({ x_mm: roundMm(p.x, NUDGE_MM), y_mm: roundMm(p.y, NUDGE_MM) });
+    }
+  };
+
+  // Dragging moves the photograph under the outline; the outline stays put,
+  // because it is the sample and the sample is the coordinate system.
+  const pointerMove = (e: PointerEvent<SVGSVGElement>) => {
+    if (tool !== "align" || !photo || drag.current === null) return;
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const at = { x: ((e.clientX - rect.left) / rect.width) * FIGURE_WIDTH, y: ((e.clientY - rect.top) / rect.height) * FIGURE_HEIGHT };
+    const from = toSample(layout.view, drag.current);
+    const to = toSample(layout.view, at);
+    drag.current = at;
+    setRegistration({ centreXmm: photo.registration.centreXmm + (to.x - from.x), centreYmm: photo.registration.centreYmm + (to.y - from.y) });
+  };
+
+  const pointerUp = () => {
+    drag.current = null;
+  };
+
+  // The wheel scales the photograph about the pointer. React's wheel handler
+  // is passive and cannot stop the page from scrolling, hence the listener.
+  const wheelState = useRef({ view: layout.view, photo });
+  wheelState.current = { view: layout.view, photo };
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (tool !== "align" || !svg) return;
+    const onWheel = (e: WheelEvent) => {
+      const { view: v, photo: p } = wheelState.current;
+      if (!p) return;
+      e.preventDefault();
+      const rect = svg.getBoundingClientRect();
+      const anchor = toSample(v, { x: ((e.clientX - rect.left) / rect.width) * FIGURE_WIDTH, y: ((e.clientY - rect.top) / rect.height) * FIGURE_HEIGHT });
+      const k = Math.exp(-e.deltaY * 0.0015);
+      const reg = p.registration;
+      setRegistration({
+        mmPerPx: reg.mmPerPx * k,
+        centreXmm: anchor.x + (reg.centreXmm - anchor.x) * k,
+        centreYmm: anchor.y + (reg.centreYmm - anchor.y) * k,
+      });
+    };
+    svg.addEventListener("wheel", onWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", onWheel);
+  }, [tool, open]);
+
+  const halfExtents = outline ? outlineHalfExtents(outline) : null;
+  const fitScale = photo && halfExtents ? initialRegistration(halfExtents, photo.naturalWidth, photo.naturalHeight).mmPerPx : null;
+
+  const applyScale = () => {
+    if (!photo || scalePoints.length !== 2 || scaleDistance === null) return;
+    const mmPerPx = calibratedScale(photo.registration, scalePoints[0]!, scalePoints[1]!, scaleDistance);
+    if (mmPerPx === null) return;
+    setRegistration({ mmPerPx }, true);
+    // Positions are millimetres: a spot placed under the old scale would
+    // now be somewhere else on the photograph.
+    setPending(null);
+    setScalePoints([]);
+    setScaleDistance(null);
+    setTool("place");
   };
 
   const nudge = (e: KeyboardEvent<SVGSVGElement>) => {
@@ -188,6 +304,104 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
     >
       {open ? (
         <>
+          <div className={styles.photoBar}>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              hidden
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file && outline) void addPhoto(file, halfExtents);
+              }}
+            />
+            {photo === null ? (
+              <Button size="sm" disabled={outline === null} onClick={() => fileRef.current?.click()} title="Shown under the outline. The file stays where it is; nothing is uploaded.">
+                Add photo
+              </Button>
+            ) : (
+              <>
+                {bounded ? (
+                  <Button size="sm" variant={tool === "align" ? "primary" : "default"} disabled={running} onClick={() => setTool(tool === "align" ? "place" : "align")}>
+                    {tool === "align" ? "Done" : "Align photo"}
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant={tool === "scale" ? "primary" : "default"}
+                    disabled={running}
+                    onClick={() => {
+                      setScalePoints([]);
+                      setTool(tool === "scale" ? "place" : "scale");
+                    }}
+                  >
+                    {tool === "scale" ? "Cancel" : photo.calibrated ? "Reset scale" : "Set scale"}
+                  </Button>
+                )}
+                <Button size="sm" variant="ghost" disabled={running} onClick={removePhoto}>
+                  Remove photo
+                </Button>
+                <span className={styles.photoName} title={photo.sha256 ? `SHA-256 ${photo.sha256}` : "SHA-256 unavailable in this webview"}>
+                  {photo.name} · <span className="num">{photo.naturalWidth} × {photo.naturalHeight}</span>
+                  {photo.sha256 ? <span className="mono"> · {photo.sha256.slice(0, 8)}</span> : null}
+                </span>
+              </>
+            )}
+            {photo === null && storedPhoto ? (
+              <span className={styles.photoName}>
+                {storedPhoto.name} is not loaded; only its placement is kept. Add it again to show it.
+              </span>
+            ) : null}
+            {photoError ? <span className={styles.danger}>{photoError}</span> : null}
+          </div>
+          {tool === "align" && photo && fitScale ? (
+            <div className={styles.alignBar}>
+              <span className={styles.faint}>Drag to move, wheel to scale.</span>
+              <label>
+                Scale
+                <input
+                  type="range"
+                  min={-3}
+                  max={3}
+                  step={0.005}
+                  value={Math.log2(photo.registration.mmPerPx / fitScale)}
+                  onChange={(e) => setRegistration({ mmPerPx: fitScale * 2 ** Number(e.target.value) })}
+                />
+                <span className="num">{(1 / photo.registration.mmPerPx).toFixed(1)} px/mm</span>
+              </label>
+              <label>
+                Rotation
+                <input
+                  type="range"
+                  min={-180}
+                  max={180}
+                  step={0.1}
+                  value={photo.registration.rotationDeg}
+                  onChange={(e) => setRegistration({ rotationDeg: Number(e.target.value) })}
+                />
+                <span className="num">{photo.registration.rotationDeg.toFixed(1)}°</span>
+              </label>
+              <Button size="sm" variant="ghost" onClick={() => halfExtents && setRegistration(initialRegistration(halfExtents, photo.naturalWidth, photo.naturalHeight))}>
+                Reset
+              </Button>
+            </div>
+          ) : null}
+          {tool === "scale" && photo ? (
+            <div className={styles.alignBar}>
+              <span className={styles.faint}>{scalePoints.length < 2 ? `Click two points a known distance apart (${scalePoints.length}/2).` : "Distance between them:"}</span>
+              {scalePoints.length === 2 ? (
+                <>
+                  <span className={styles.coordinate}>
+                    <EngineeringInput value={scaleDistance} unit="mm" nullable min={0} placeholder="distance" onChange={setScaleDistance} />
+                  </span>
+                  <Button size="sm" variant="primary" disabled={scaleDistance === null || !(scaleDistance > 0)} onClick={applyScale}>
+                    Apply
+                  </Button>
+                </>
+              ) : null}
+            </div>
+          ) : null}
           <div className={styles.canvas}>
             <SceneSvg
               scene={layout.scene}
@@ -196,17 +410,21 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
               role="application"
               aria-label="Map of the sample. Click to place the next spot; arrow keys move it by 0.1 mm, with Shift by 1 mm."
               tabIndex={canPlace ? 0 : -1}
-              onPointerDown={place}
+              onPointerDown={pointerDown}
+              onPointerMove={pointerMove}
+              onPointerUp={pointerUp}
+              onPointerCancel={pointerUp}
               onKeyDown={nudge}
-              style={{ cursor: canPlace ? "crosshair" : "default" }}
+              style={{ cursor: tool === "align" ? "move" : canPlace || tool === "scale" ? "crosshair" : "default", touchAction: tool === "align" ? "none" : undefined }}
             >
-              {pending && bounded ? (
+              {pending && scaled ? (
                 <PendingMarker view={layout.view} at={pending} angleDeg={arrayAngleDeg} spacingMm={spacingMm} state={check?.state ?? "none"} />
               ) : null}
+              {tool === "scale" ? <ScalePoints view={layout.view} points={scalePoints} /> : null}
             </SceneSvg>
             {hoveredSpot ? <SpotTip spot={hoveredSpot.spot} quantity={quantity} x={hoveredSpot.at.x} y={hoveredSpot.at.y} /> : null}
           </div>
-          {bounded ? (
+          {scaled ? (
             <div className={styles.position}>
               <span className={styles.positionLabel}>Next spot</span>
               <span className={styles.coordinate}>
@@ -240,12 +458,20 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
                 </>
               ) : null}
               <span className={check ? positionTone(check, styles) : styles.faint}>
-                {check ? `${describeClearance(check)}${check.state === "caution" ? "; the backend reports the error at Start" : ""}` : "No position: click the map, or Start without one."}
+                {check && check.state !== "none"
+                  ? `${describeClearance(check)}${check.state === "caution" ? "; the backend reports the error at Start" : ""}`
+                  : pending
+                    ? ""
+                    : "No position: click the map, or Start without one."}
               </span>
             </div>
           ) : null}
           <div className={styles.status}>
             {outline === null ? <span className={styles.warn}>Enter the sample's dimensions in Settings ▸ Sample to draw its outline.</span> : null}
+            {outline !== null && !bounded && photo === null ? (
+              <span>No outline. Choose one in Settings ▸ Sample, or add a photo and set its scale, to place spots.</span>
+            ) : null}
+            {!bounded && photo !== null && !photo.calibrated && tool !== "scale" ? <span className={styles.warn}>Set the photo's scale to place spots.</span> : null}
             {unplaced > 0 ? (
               <span>
                 {unplaced} of {spots.length} {spots.length === 1 ? "spot" : "spots"} not drawn: no position.
@@ -282,6 +508,24 @@ function PendingMarker({ view, at, angleDeg, spacingMm, state }: { view: Viewpor
       <line x1={tips[0]!.x} y1={tips[0]!.y} x2={tips[3]!.x} y2={tips[3]!.y} style={{ stroke: "currentColor", strokeWidth: 1.25 }} />
       {tips.map((tip, k) => (
         <circle key={k} cx={tip.x} cy={tip.y} r={tipRadius} style={{ fill: "currentColor", stroke: "var(--bg-inset)", strokeWidth: 1 }} />
+      ))}
+    </g>
+  );
+}
+
+/** The two points of a scale calibration, and the line between them. */
+function ScalePoints({ view, points }: { view: Viewport; points: Point[] }) {
+  const at = points.map((p) => toFigure(view, p));
+  return (
+    <g pointerEvents="none">
+      {at.length === 2 ? (
+        <>
+          <line x1={at[0]!.x} y1={at[0]!.y} x2={at[1]!.x} y2={at[1]!.y} style={{ stroke: "var(--bg-inset)", strokeWidth: 4, opacity: 0.7 }} />
+          <line x1={at[0]!.x} y1={at[0]!.y} x2={at[1]!.x} y2={at[1]!.y} style={{ stroke: "var(--accent)", strokeWidth: 1.5 }} />
+        </>
+      ) : null}
+      {at.map((p, k) => (
+        <circle key={k} cx={p.x} cy={p.y} r={4} style={{ fill: "var(--accent)", stroke: "var(--bg-inset)", strokeWidth: 1.5 }} />
       ))}
     </g>
   );
