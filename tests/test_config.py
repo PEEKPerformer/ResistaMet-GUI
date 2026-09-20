@@ -544,6 +544,34 @@ class TestMachineLocalGpib:
         assert manager.config['measurement']['sampling_rate'] == 42.0
 
 
+class TestTheSuiteStaysOutOfTheRealHome:
+    """The machine file's real home is ~/.resistamet; no test may reach it.
+
+    conftest's autouse ``_private_machine_settings`` redirects the default.
+    If that fixture is removed or renamed, these fail, instead of some test
+    quietly writing a simulated address into the developer's own settings.
+    """
+
+    def test_the_default_path_is_redirected(self):
+        from resistamet_gui import config as config_module
+
+        default = Path(config_module.default_machine_file()).resolve()
+        real = (Path.home() / '.resistamet').resolve()
+
+        assert real != default.parent and real not in default.parents
+
+    def test_a_manager_built_without_a_path_gets_the_redirected_one(self, temp_config_file):
+        from resistamet_gui import config as config_module
+
+        manager = ConfigManager(config_file=temp_config_file)
+        manager.set_gpib_address('GPIB0::25::INSTR')
+
+        assert manager.machine_file == config_module.default_machine_file()
+        assert Path(manager.machine_file).exists()
+        assert not (Path.home() / '.resistamet' / 'machine.json').exists() or \
+            'GPIB0::25::INSTR' not in (Path.home() / '.resistamet' / 'machine.json').read_text()
+
+
 class TestMachineFileMigration:
     """The first open after the move takes this host's old slot along, once."""
 
