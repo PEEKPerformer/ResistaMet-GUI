@@ -63,9 +63,12 @@ export function VdpView() {
   const fieldKeys = useMemo(() => [...Object.keys(FIELD_META.VdpSettings ?? {}), ...MODE_TIMING.vdp], []);
   useEffect(() => {
     if (!ui.username) return;
+    // The reply may arrive after the operator has changed: seed the tab of
+    // the operator the profile was fetched for.
+    const username = ui.username;
     api
-      .profile(ui.username)
-      .then((profile) => seedOverrides(MODE, fieldKeys, profile.measurement ?? {}))
+      .profile(username)
+      .then((profile) => seedOverrides(MODE, fieldKeys, profile.measurement ?? {}, username))
       .catch(() => undefined);
   }, [api, ui.username, fieldKeys]);
 
