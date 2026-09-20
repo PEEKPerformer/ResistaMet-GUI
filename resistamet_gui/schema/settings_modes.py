@@ -156,9 +156,11 @@ class FourPointSettings(SettingsModel):
     """Four-point probe, with the ASTM F84 correction-factor inputs.
 
     ``fpp_temperature_c`` is ``None`` when the temperature was not measured.
-    The UI carries that as a -50 C sentinel on its spin box (the widget's
-    "not measured" special value) and the worker as NaN; the resolver converts
-    between the two, and neither representation reaches this model.
+    The PySide6 UI carries that as a -50 C sentinel on its spin box (the
+    widget's "not measured" special value) and a profile as NaN. The resolver
+    shows this model ``None`` in place of NaN and converts nothing in the run
+    settings: NaN from a profile stays NaN and a JSON client's ``null`` stays
+    ``None``. The consumers read both as "not measured".
     """
 
     fpp_current: float = Field(default=_M['fpp_current'], ge=-3.0, le=3.0)
