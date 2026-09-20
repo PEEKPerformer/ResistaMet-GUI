@@ -661,6 +661,17 @@ class TestInstrumentSession:
         assert adapter.bulk_in_timeouts[-1] == 1_075_741 + 7
         inst.close()
 
+    def test_an_immediate_timeout_goes_out_as_the_shortest_code_seen_on_the_wire(self, rm, adapter):
+        # VI_TMO_IMMEDIATE has no device analogue. The table's shortest row, 10 us, goes into
+        # the addressing as well, where no handshake can finish in it: every operation would
+        # time out. 0xf9 (100 ms) is the shortest code captured and the shortest one timed.
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 0
+        assert inst.write('*IDN?') == 7
+        assert adapter.instructions(p.OP_COMMAND)[-1][3] == 0xF9
+        assert adapter.instructions(p.OP_WRITE)[-1][3] == 0xF9
+        inst.close()
+
     def test_host_wait_outlasts_the_expiry_of_the_code_sent(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 5000

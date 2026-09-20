@@ -49,6 +49,9 @@ logger = logging.getLogger(__name__)
 GPIB_INSTR = (constants.InterfaceType.gpib, 'INSTR')
 _REGISTRY = BoardRegistry()
 
+#: What VI_TMO_IMMEDIATE is sent as; see ``NiUsbGpibSession._device_timeout``.
+IMMEDIATE_TIMEOUT_S = 0.1
+
 #: A device address as the REN operations need it: (primary, secondary or None).
 DeviceAddress = Tuple[int, Optional[int]]
 
@@ -192,10 +195,16 @@ class NiUsbGpibSession(Session):
         return status
 
     def _device_timeout(self) -> Optional[float]:
-        # VISA "immediate" (0) has no device analogue; the shortest device
-        # timeout, 10 us, is the honest reading. None stays infinite.
+        # VISA "immediate" (0) has no device analogue. The table's shortest
+        # row (10 us, code 0xf1) would go into every instruction of the
+        # operation, the addressing included, and no handshake completes in
+        # it: everything would time out. So immediate means the shortest
+        # timeout known to let a handshake finish: 100 ms, code 0xf9, the
+        # shortest code NI's driver was captured sending and the shortest
+        # whose expiry was timed (§7.1, §7.3). The codes below it are
+        # inherited, never seen on the wire. None stays infinite.
         if self.timeout == 0:
-            return 10e-6
+            return IMMEDIATE_TIMEOUT_S
         return self.timeout
 
     def _device(self) -> Optional[DeviceAddress]:
