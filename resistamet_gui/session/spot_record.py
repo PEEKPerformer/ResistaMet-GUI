@@ -37,7 +37,8 @@ from typing import Any, Dict, Optional
 
 from .. import calculations_geometry as geo
 from ..calculations import f_thickness_correction
-from ..schema.spots import SampleGeometry, SpotRequest, sample_geometry_from_settings
+from ..schema.spots import (SampleGeometry, SpotPreflight, SpotRequest,
+                            sample_geometry_from_settings)
 from .samples import build_row
 
 
@@ -235,3 +236,83 @@ def spot_record_from_settings(settings: Dict[str, Any]) -> Optional[SpotRecord]:
         position=position,
         factor_rows=factor_rows,
     )
+
+
+def position_message(record: SpotRecord) -> Optional[str]:
+    """What a run says about this spot's position before its first sample.
+
+    The refusal for a spot that is off the sample, the warning for one near
+    an edge, None otherwise. The text of the run's ``geometry_warning`` event
+    (``ContinuousRun``); a test holds the two together.
+    """
+    position = record.position
+    if position is None:
+        return None
+    if record.off_sample:
+        return (f"Spot '{record.spot.label}' is off the sample: a probe tip is "
+                f"{abs(position.edge_clearance_s):.2f} s beyond the edge.")
+    if not record.near_edge:
+        return None
+    if record.warning_compares_with == 'rows':
+        compared = (f"the geometry factor this run applies ({record.factor_rows:.4g}) "
+                    f"differs from the factor at the spot ({position.factor_here:.4g})")
+    else:
+        compared = (f"the factor at the centre of the sample ({position.factor_centre:.4g}) "
+                    f"differs from the factor at the spot ({position.factor_here:.4g})")
+    return (f"Spot '{record.spot.label}' is {position.edge_clearance_s:.1f} s from "
+            f"the edge: {compared} by {abs(record.warning_error) * 100.0:.1f} % "
+            f"(threshold {record.edge_warn_pct:g} %). No position correction is applied.")
+
+
+def centred_factor(geometry: SampleGeometry, spacing_mm: float,
+                   angle_deg: float) -> Optional[float]:
+    """The closed-form factor with the probe at the centre of the outline.
+
+    None when the probe does not fit on the sample even there.
+    """
+    if geometry.shape == 'unbounded':
+        return geo.UNBOUNDED_FACTOR
+    position = check_spot_position(geometry, spacing_mm, 0.0, 0.0, angle_deg)
+    return None if position is None or position.off_sample else position.factor_here
+
+
+def spot_preflight(settings: Dict[str, Any]) -> SpotPreflight:
+    """What a four-point run of ``settings`` would record, without the run.
+
+    ``settings`` are resolved run settings, with or without a ``spot``. The
+    spot goes through ``spot_record_from_settings`` exactly as the run's
+    does, so the numbers shown before Start are the numbers in the file.
+    Raises ``ValueError`` as that function does.
+    """
+    measurement = settings.get('measurement', {})
+    record = spot_record_from_settings(settings)
+    if record is None:
+        geometry = sample_geometry_from_settings(measurement)
+        angle_deg = float(measurement.get('fpp_array_angle_deg') or 0.0)
+        edge_warn_pct = float(measurement.get('fpp_edge_warn_pct', 1.0))
+    else:
+        geometry, angle_deg, edge_warn_pct = (record.geometry, record.angle_deg,
+                                              record.edge_warn_pct)
+    spacing_mm = float(measurement.get('fpp_spacing_cm') or _DEFAULT_SPACING_CM) * 10.0
+    found = SpotPreflight(
+        sample=geometry, spacing_mm=spacing_mm, angle_deg=angle_deg,
+        edge_warn_pct=edge_warn_pct,
+        geometry_factor=centred_factor(geometry, spacing_mm, angle_deg),
+        factor_rows=rows_lateral_factor(measurement),
+    )
+    if record is None or record.position is None:
+        return found
+    position = record.position
+    return found.model_copy(update={
+        'checked': True,
+        'off_sample': record.off_sample,
+        'near_edge': record.near_edge,
+        'edge_clearance_s': position.edge_clearance_s,
+        'factor_here': position.factor_here,
+        'factor_centre': position.factor_centre,
+        'relative_error': position.relative_error,
+        'factor_rows': record.factor_rows,
+        'relative_error_rows': record.relative_error_rows,
+        'compared_with': record.warning_compares_with,
+        'message': position_message(record),
+    })

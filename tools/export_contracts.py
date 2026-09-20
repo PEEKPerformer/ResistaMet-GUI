@@ -64,10 +64,16 @@ def events_schema():
 
 
 def maps_schema():
-    """What ``GET /maps/{map_id}`` returns and ``<map_id>_map.json`` holds."""
+    """What ``GET /maps/{map_id}`` returns and ``<map_id>_map.json`` holds,
+    and the body and answer of ``POST /spots/preflight``."""
+    from resistamet_gui.schema.spots import SpotPreflight, SpotPreflightRequest
     from resistamet_gui.session.spot_map import SpotMap
 
-    return {'definitions': {'SpotMap': SpotMap.model_json_schema()}}
+    return {'definitions': {
+        'SpotMap': SpotMap.model_json_schema(),
+        'SpotPreflightRequest': SpotPreflightRequest.model_json_schema(),
+        'SpotPreflight': SpotPreflight.model_json_schema(),
+    }}
 
 
 def session_schema():
