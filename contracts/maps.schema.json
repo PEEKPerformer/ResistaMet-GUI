@@ -53,6 +53,116 @@
           "title": "InterSpotStats",
           "type": "object"
         },
+        "MapImage": {
+          "additionalProperties": false,
+          "description": "The photograph kept beside a map's runs.\n\n``sha256`` and ``bytes`` are those of the file as it is on disk now.\n``registration`` is absent until a client has stored one, and when the\nstored one was fitted to a different image than the file holds.",
+          "properties": {
+            "bytes": {
+              "title": "Bytes",
+              "type": "integer"
+            },
+            "file": {
+              "title": "File",
+              "type": "string"
+            },
+            "registration": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MapImageRegistration"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "sha256": {
+              "title": "Sha256",
+              "type": "string"
+            }
+          },
+          "required": [
+            "file",
+            "sha256",
+            "bytes"
+          ],
+          "title": "MapImage",
+          "type": "object"
+        },
+        "MapImageRegistration": {
+          "additionalProperties": false,
+          "description": "Where a map's photograph sits on the sample: numbers, never pixels.\n\nThe image's centre is at (``centre_x_mm``, ``centre_y_mm``) in sample\ncoordinates (millimetres from the sample's centre, y up), one image pixel\nis ``mm_per_px`` wide, and the image is turned ``rotation_deg``\nanticlockwise as seen on the sample. ``sha256`` names the image the\nnumbers were fitted to, so they cannot end up beside another picture.\n``calibrated`` says the scale is real -- fitted to the outline or set from\ntwo points -- rather than the placeholder a fresh image starts with.",
+          "properties": {
+            "calibrated": {
+              "default": false,
+              "title": "Calibrated",
+              "type": "boolean"
+            },
+            "calibration": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TwoPointCalibration"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "centre_x_mm": {
+              "maximum": 100000.0,
+              "minimum": -100000.0,
+              "title": "Centre X Mm",
+              "type": "number"
+            },
+            "centre_y_mm": {
+              "maximum": 100000.0,
+              "minimum": -100000.0,
+              "title": "Centre Y Mm",
+              "type": "number"
+            },
+            "image_height_px": {
+              "maximum": 100000,
+              "minimum": 1,
+              "title": "Image Height Px",
+              "type": "integer"
+            },
+            "image_width_px": {
+              "maximum": 100000,
+              "minimum": 1,
+              "title": "Image Width Px",
+              "type": "integer"
+            },
+            "mm_per_px": {
+              "exclusiveMinimum": 0.0,
+              "maximum": 1000.0,
+              "title": "Mm Per Px",
+              "type": "number"
+            },
+            "rotation_deg": {
+              "maximum": 360.0,
+              "minimum": -360.0,
+              "title": "Rotation Deg",
+              "type": "number"
+            },
+            "sha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Sha256",
+              "type": "string"
+            }
+          },
+          "required": [
+            "sha256",
+            "image_width_px",
+            "image_height_px",
+            "mm_per_px",
+            "centre_x_mm",
+            "centre_y_mm",
+            "rotation_deg"
+          ],
+          "title": "MapImageRegistration",
+          "type": "object"
+        },
         "MapSpot": {
           "additionalProperties": false,
           "description": "One spot of a map: the newest run with that index.",
@@ -335,11 +445,67 @@
           ],
           "title": "SpotStats",
           "type": "object"
+        },
+        "TwoPointCalibration": {
+          "additionalProperties": false,
+          "description": "Two image points a known distance apart: the scale of a photograph of\na sample that has no outline to fit. Pixel coordinates of the image as it\nwas taken, x to the right and y down, origin at its top-left corner.",
+          "properties": {
+            "distance_mm": {
+              "exclusiveMinimum": 0.0,
+              "maximum": 100000.0,
+              "title": "Distance Mm",
+              "type": "number"
+            },
+            "x1_px": {
+              "maximum": 1000000.0,
+              "minimum": -1000000.0,
+              "title": "X1 Px",
+              "type": "number"
+            },
+            "x2_px": {
+              "maximum": 1000000.0,
+              "minimum": -1000000.0,
+              "title": "X2 Px",
+              "type": "number"
+            },
+            "y1_px": {
+              "maximum": 1000000.0,
+              "minimum": -1000000.0,
+              "title": "Y1 Px",
+              "type": "number"
+            },
+            "y2_px": {
+              "maximum": 1000000.0,
+              "minimum": -1000000.0,
+              "title": "Y2 Px",
+              "type": "number"
+            }
+          },
+          "required": [
+            "x1_px",
+            "y1_px",
+            "x2_px",
+            "y2_px",
+            "distance_mm"
+          ],
+          "title": "TwoPointCalibration",
+          "type": "object"
         }
       },
       "additionalProperties": false,
       "description": "A map: its spots in index order and the spread between them.",
       "properties": {
+        "image": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MapImage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "map_id": {
           "title": "Map Id",
           "type": "string"
