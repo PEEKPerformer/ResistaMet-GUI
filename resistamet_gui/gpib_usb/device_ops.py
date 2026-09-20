@@ -97,17 +97,21 @@ def find_listeners(controller: Controller, addresses: Iterable[int],
 
     Addresses each candidate to listen, drops ATN, and reads the bus lines:
     a listener holds NDAC asserted while it waits for data; an empty
-    address leaves it released. No data byte is sent to the instrument.
+    address leaves it released. No data byte is sent by the adapter. UNT
+    leads the addressing (§6 allows it) so that no instrument sends one
+    either: a talker left addressed with output pending would source its
+    bytes into the probed listener the moment ATN drops.
     """
     # Bench-verified on the GPIB-USB-HS with a Keithley 2400 at PAD 3: BSR reads
     # 0x01 (REN only) for empty addresses and has NDAC set for the instrument.
+    # That run sent ``3f 20+N``; the leading 0x5f was added afterwards.
     with controller.lock:
         found: List[int] = []
         for pad in addresses:
             if pad == controller.own_address:
                 continue
             try:
-                controller.command(bytes((t.CMD_UNL, t.listen_address(pad))), timeout_s)
+                controller.command(bytes((t.CMD_UNT, t.CMD_UNL, t.listen_address(pad))), timeout_s)
             except NoListener as exc:
                 if exc.code == t.ERR_NO_ACCEPTOR:
                     break  # nothing on the bus accepts command bytes: it is empty

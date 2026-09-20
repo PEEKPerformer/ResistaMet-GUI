@@ -2387,7 +2387,8 @@ class TestSerialPoll:
 
 def probe_steps(pad: int, ndac: bool) -> List[Tuple[Any, ...]]:
     return [
-        ('out', p.command_message(bytes((0x3F, 0x20 + pad)), T3S)), ('in', status_reply(0x0C)),
+        # UNT first: a talker still addressed would source its bytes into the probed listener.
+        ('out', p.command_message(bytes((0x5F, 0x3F, 0x20 + pad)), T3S)), ('in', status_reply(0x0C)),
         ('out', p.go_to_standby_message()), ('in', status_reply(0x06)),
         ('out', p.register_read_message([t.BSR_REGISTER])), ('in', regread_reply([0x20 if ndac else 0x00]), 32),
         ('out', p.take_control_message(True)), ('in', status_reply(0x01)),
@@ -2408,7 +2409,7 @@ class TestFindListeners:
 
     def test_empty_bus_stops_at_the_first_error_5(self):
         controller, transport = attached([
-            ('out', p.command_message(bytes((0x3F, 0x21)), T3S)), ('in', status_reply(0x0C, error=5, count=-2)),
+            ('out', p.command_message(bytes((0x5F, 0x3F, 0x21)), T3S)), ('in', status_reply(0x0C, error=5, count=-3)),
         ])
         assert ops.find_listeners(controller, [1, 2, 3]) == []
         transport.assert_done()
