@@ -531,6 +531,13 @@ class TestThicknessCorrection:
         assert math.isnan(f_thickness_correction(0.01, 0))
         assert math.isnan(f_thickness_correction(float('nan'), 0.1))
 
+    def test_an_absurd_thickness_ratio_does_not_raise(self):
+        # (n * w/S) ** 2 raised OverflowError for w/S above 1.3e154. The
+        # thick-sample limit of X1.1 is F = 2 ln 2 * S / w.
+        assert f_thickness_correction(1e200, 1.0) == pytest.approx(1.3863e-200, rel=1e-6)
+        assert f_thickness_correction(1.0, 1e-200) == pytest.approx(1.3863e-200, rel=1e-6)
+        assert f_thickness_correction(1e300, 1e-300) == 0.0
+
 
 class TestTemperatureCorrection:
     """F84 Table 5: F_T = 1 - C_T(T - 23) for silicon."""

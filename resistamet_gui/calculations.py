@@ -555,7 +555,10 @@ def f_thickness_correction(thickness_cm: float, spacing_cm: float) -> float:
 
     sum1 = 0.0
     for n in range(1, M + 1):
-        x = (n * w_over_s) ** 2
+        # A product, not `** 2`: float `**` raises OverflowError where the
+        # product gives inf, and an infinite x contributes the correct 0.
+        nw_over_s = n * w_over_s
+        x = nw_over_s * nw_over_s
         sum1 += (0.25 + x) ** -0.5 - (1.0 + x) ** -0.5
 
     sum2 = 0.0
