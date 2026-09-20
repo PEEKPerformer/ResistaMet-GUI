@@ -47,7 +47,6 @@ function useAnswer(prompt: PendingPrompt) {
 
 function SafetyPrompt({ prompt }: Props) {
   const { answer, busy, error } = useAnswer(prompt);
-  const [silence, setSilence] = useState(false);
   const detail = prompt.detail as { voltage_v?: number; threshold_v?: number; reason?: string; message?: string };
 
   return (
@@ -62,7 +61,7 @@ function SafetyPrompt({ prompt }: Props) {
           <Button
             variant="danger"
             disabled={busy}
-            onClick={() => void answer("acknowledge", silence ? { silence_for_profile: true } : {})}
+            onClick={() => void answer("acknowledge")}
           >
             Acknowledge and energize
           </Button>
@@ -75,10 +74,6 @@ function SafetyPrompt({ prompt }: Props) {
           {detail.reason ?? "The configured voltage"} is at or above the {detail.threshold_v ?? 30} V touch-safety threshold
           (IEC 61010-1 SELV). Output is off.
         </p>
-        <label className={styles.checkbox}>
-          <input type="checkbox" checked={silence} onChange={(e) => setSilence(e.target.checked)} />
-          Don&apos;t ask again for this profile
-        </label>
         {error ? <Notice tone="danger">{error}</Notice> : null}
       </div>
     </Dialog>
