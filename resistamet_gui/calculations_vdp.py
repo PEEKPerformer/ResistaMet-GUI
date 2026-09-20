@@ -41,6 +41,8 @@ from __future__ import annotations
 import math
 from typing import List, Mapping, NamedTuple, Tuple
 
+from .constants import KEITHLEY_COMPLIANCE_MAGIC_NUMBER
+
 
 F76_HOMOGENEITY_TOLERANCE_PCT = 10.0
 
@@ -48,6 +50,15 @@ F76_HOMOGENEITY_TOLERANCE_PCT = 10.0
 F76_CONSTANT = math.pi / (4.0 * math.log(2.0))
 
 _LN2 = math.log(2.0)
+
+# What a 2400 returns for a reading it could not make (overflow): 9.9e37,
+# constants.KEITHLEY_COMPLIANCE_MAGIC_NUMBER. No voltage is this large.
+_OVERFLOW_READING = KEITHLEY_COMPLIANCE_MAGIC_NUMBER
+
+_GENERIC_READING_LABELS = (
+    "first geometry +I", "first geometry -I",
+    "second geometry +I", "second geometry -I",
+)
 
 
 class VdpConfiguration(NamedTuple):
@@ -229,6 +240,7 @@ def vdp_resistivity_pair(
     v_perp_neg: float,
     current: float,
     thickness_cm: float,
+    labels: Tuple[str, str, str, str] = _GENERIC_READING_LABELS,
 ) -> Tuple[float, float, float]:
     """Compute one of (rho_A, rho_B) per F76 eq. (1) or (2).
 
@@ -248,14 +260,31 @@ def vdp_resistivity_pair(
         v_perp_neg: second geometry, -I polarity (e.g. V_23,41).
         current: source current magnitude (A, positive).
         thickness_cm: sample thickness (cm, positive).
+        labels: names of the four readings, in argument order, for the
+            error messages.
 
     Returns:
         (rho, Q, f). Q is normalized to >= 1.
+
+    Raises:
+        ValueError: if current or thickness is non-positive, if a reading
+            is not finite or is the instrument's overflow value, or if
+            either geometry reads the same at both polarities (Q is then
+            undefined). The message names the readings.
     """
     if current <= 0:
         raise ValueError("current must be > 0 A; got %r" % (current,))
     if thickness_cm <= 0:
         raise ValueError("thickness must be > 0 cm; got %r" % (thickness_cm,))
+
+    for label, value in zip(labels, (v_pos, v_neg, v_perp_pos, v_perp_neg)):
+        if not math.isfinite(value) or abs(value) >= _OVERFLOW_READING:
+            raise ValueError(
+                "%s is not a usable voltage (%r): the reading overflowed or "
+                "is not a number. Check the connections and the voltage "
+                "range for that geometry and measure it again."
+                % (label, value)
+            )
 
     # Both deltas should be same-signed on a physical sample (current
     # reversal flips V; the subtraction doubles the signal and cancels
@@ -264,11 +293,18 @@ def vdp_resistivity_pair(
     delta_first = v_pos - v_neg
     delta_second = v_perp_pos - v_perp_neg
 
-    if delta_second == 0.0:
-        raise ValueError(
-            "Cannot compute Q: orthogonal voltage difference is exactly zero "
-            "(degenerate sample or non-physical readings)."
-        )
+    for delta, pos_label, neg_label, value in (
+        (delta_first, labels[0], labels[1], v_pos),
+        (delta_second, labels[2], labels[3], v_perp_pos),
+    ):
+        if delta == 0.0:
+            raise ValueError(
+                "Cannot compute Q: %s and %s read the same (%r V) at both "
+                "current polarities, so their difference is zero. An open "
+                "or shorted lead reads like this; check the connections "
+                "for that geometry and measure it again."
+                % (pos_label, neg_label, value)
+            )
 
     q = abs(delta_first / delta_second)
     if q < 1.0:
@@ -308,8 +344,10 @@ def calculate_van_der_pauw(
 
     Raises:
         KeyError: if a required label is missing from voltages.
-        ValueError: if current or thickness is non-positive, or if Q is
-            undefined (zero orthogonal voltage difference).
+        ValueError: if current or thickness is non-positive, if a reading
+            is not finite or is the instrument's overflow value, or if Q
+            is undefined (a geometry reads the same at both polarities).
+            The message names the F76 labels concerned.
     """
     missing = [label for label in _REQUIRED_BASE_LABELS if label not in voltages]
     if missing:
@@ -320,12 +358,12 @@ def calculate_van_der_pauw(
     rho_a, q_a, f_a = vdp_resistivity_pair(
         voltages["V_21,34"], voltages["V_12,34"],
         voltages["V_32,41"], voltages["V_23,41"],
-        current, thickness_cm,
+        current, thickness_cm, labels=_BASE_LABELS_A,
     )
     rho_b, q_b, f_b = vdp_resistivity_pair(
         voltages["V_43,12"], voltages["V_34,12"],
         voltages["V_14,23"], voltages["V_41,23"],
-        current, thickness_cm,
+        current, thickness_cm, labels=_BASE_LABELS_B,
     )
 
     rho_avg = 0.5 * (rho_a + rho_b)
