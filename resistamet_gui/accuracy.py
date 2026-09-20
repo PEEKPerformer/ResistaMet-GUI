@@ -390,7 +390,9 @@ def resistance_uncertainty(
 
     σ_R = R × √((σ_V/V)² + (σ_I/I)²), where R = V/I. The V and I
     uncertainties come from the per-range accuracy tables. Returns NaN
-    when V or I aren't usable (NaN, zero current, etc).
+    when V or I aren't usable (NaN, infinite, zero current). A reading of
+    exactly 0 V is usable: R is 0 and σ_R is σ_V/|I|, the limit of the
+    expression above.
 
     NOTE on RSS vs linear sum: Keithley's user manual (Section 4, Ohms
     accuracy calculations) sums the relative V and I uncertainties
@@ -433,9 +435,13 @@ def resistance_uncertainty(
             return spec.uncertainty(r)
     sigma_v = voltage_uncertainty(voltage, model, nplc)
     sigma_i = current_uncertainty(current, model, nplc)
-    rel_v = sigma_v / voltage if voltage != 0.0 else float("inf")
-    rel_i = sigma_i / current
-    return abs(r) * math.sqrt(rel_v ** 2 + rel_i ** 2)
+    # The same expression with |R| taken inside the root:
+    #   |R| * sqrt((σ_V/V)² + (σ_I/I)²) = sqrt(σ_V² + (R σ_I)²) / |I|
+    # which is GUM Eq. 10 for R = V/I before it is divided through by R². In
+    # this form V = 0 gives σ_V/|I| instead of 0 × inf = NaN, and a
+    # vanishing V cannot overflow: (σ_V/V) ** 2 raised OverflowError for
+    # |V| below 2.2e-158 (at 1 PLC). math.hypot returns inf where `**` raises.
+    return math.hypot(sigma_v, abs(r) * sigma_i) / abs(current)
 
 
 def voltage_source_uncertainty(
