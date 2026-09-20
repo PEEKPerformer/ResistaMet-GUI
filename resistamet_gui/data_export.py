@@ -113,9 +113,12 @@ def _parse_scalar(value: str) -> Any:
         return value
 
 
-#: Everything a reader may end a line on: ``str.splitlines`` and universal
-#: newlines between them split on all of these, not just CR and LF.
-_LINE_BREAKS = re.compile('\r\n|[\r\n\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]')
+#: What ends a line of the file: the universal newlines a text-mode reader,
+#: ``csv`` and ``pandas.read_csv`` split on. ``parse_metadata`` splits on
+#: exactly these and nothing else (not ``str.splitlines``, which also breaks
+#: on VT, FF, FS, GS, RS, NEL, LS and PS), so any other character in a value
+#: stays inside its line and reads back as written.
+_LINE_BREAKS = re.compile('\r\n|\r|\n')
 
 
 def _one_line(text: str) -> str:
@@ -200,7 +203,9 @@ def parse_metadata(path: Union[str, Path], text_keys: Iterable[str] = ()) -> Dic
             with open(path, 'rb') as fb:
                 fb.seek(max(0, size - 8192))
                 tail_text = fb.read().decode('utf-8', errors='replace')
-            tail_lines = tail_text.splitlines()
+            # Not splitlines(): see _LINE_BREAKS. A value holding, say, U+2028
+            # would otherwise end its line here and start a forged one.
+            tail_lines = _LINE_BREAKS.split(tail_text)
         for line in reversed(tail_lines):
             line = line.rstrip()
             if not line:
