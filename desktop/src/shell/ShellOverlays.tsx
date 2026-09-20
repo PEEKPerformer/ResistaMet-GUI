@@ -4,12 +4,14 @@
 
 import { BackendExitAlert } from "./BackendExitAlert";
 import { CloseGuard } from "./CloseGuard";
+import { SimulatedBadge } from "./SimulatedBadge";
 import { inTauri } from "./tauri";
 
 export function ShellOverlays() {
   if (!inTauri()) return null;
   return (
     <>
+      <SimulatedBadge />
       <CloseGuard />
       <BackendExitAlert />
     </>
