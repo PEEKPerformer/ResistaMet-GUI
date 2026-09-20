@@ -295,6 +295,66 @@ class TestPromptAuthorization:
         assert response.status_code == 409
         client.post('/session/abort')
 
+    def test_a_choice_the_prompt_did_not_offer_is_unprocessable(self, client, fake_rm, sink,
+                                                                profile):
+        self._hazardous(profile)
+        _start(client, mode='source_v')
+        assert _wait_for(lambda: client.get('/session').json()['pending_prompt'])
+        prompt = client.get('/session').json()['pending_prompt']
+
+        response = client.post('/session/prompt', json={'prompt_id': prompt['prompt_id'],
+                                                         'choice': 'proceed'})
+        assert response.status_code == 422
+        assert 'acknowledge, cancel' in response.json()['detail']
+        # Still waiting for a real answer; nothing was energised.
+        assert client.get('/session').json()['pending_prompt']['prompt_id'] == prompt['prompt_id']
+        assert sink.of_type('instrument_connected') == []
+        client.post('/session/abort')
+
+    def test_a_wrong_choice_for_a_stale_id_is_still_a_conflict(self, client, fake_rm, sink,
+                                                               profile):
+        self._hazardous(profile)
+        _start(client, mode='source_v')
+        assert _wait_for(lambda: client.get('/session').json()['pending_prompt'])
+        response = client.post('/session/prompt', json={'prompt_id': 'nope', 'choice': 'x'})
+        assert response.status_code == 409
+        client.post('/session/abort')
+
+    def test_a_non_ui_role_is_refused_before_its_choice_is_looked_at(self, session, profile,
+                                                                     fake_rm, sink):
+        self._hazardous(profile)
+        app = create_app(session, token=TOKEN, role='mcp',
+                          profile_provider=lambda username: profile)
+        with TestClient(app) as client:
+            client.headers.update({'Authorization': f'Bearer {TOKEN}'})
+            _start(client, mode='source_v')
+            assert _wait_for(lambda: client.get('/session').json()['pending_prompt'])
+            prompt = client.get('/session').json()['pending_prompt']
+            response = client.post('/session/prompt', json={
+                'prompt_id': prompt['prompt_id'], 'choice': 'not-an-option'})
+            assert response.status_code == 403
+            client.post('/session/abort')
+
+    def test_an_answer_meant_for_another_run_is_a_conflict(self, client, fake_rm, sink, profile):
+        """Prompt ids repeat: every run's first safety prompt is ...-1."""
+        self._hazardous(profile)
+        _start(client, mode='source_v')
+        assert _wait_for(lambda: client.get('/session').json()['pending_prompt'])
+        status_now = client.get('/session').json()
+        prompt = status_now['pending_prompt']
+
+        stale = client.post('/session/prompt', json={
+            'prompt_id': prompt['prompt_id'], 'choice': 'acknowledge', 'run_id': 'run-0'})
+        assert stale.status_code == 409
+        assert 'run-0' in stale.json()['detail']
+        assert client.get('/session').json()['pending_prompt'] is not None
+        assert sink.of_type('instrument_connected') == []
+
+        current = client.post('/session/prompt', json={
+            'prompt_id': prompt['prompt_id'], 'choice': 'cancel',
+            'run_id': status_now['run_id']})
+        assert current.status_code == 200
+
     def test_answering_with_no_prompt_is_a_conflict(self, client):
         response = client.post('/session/prompt', json={'prompt_id': 'x', 'choice': 'y'})
         assert response.status_code == 409
