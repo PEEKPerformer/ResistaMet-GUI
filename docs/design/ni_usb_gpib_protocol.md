@@ -1885,25 +1885,35 @@ Everything in this section was recorded with the adapter initialised by
 NI's 26-write sequence (10.3.1), which differs from 2.6 in one value; where
 a fact may depend on that (EOS handling, 10.1.6), it is said so.
 
+Evidence level: everything in this section is **[captured]** and is not
+tagged line by line. None of it has yet been run by this project's
+driver on hardware ("How to read this document"). Several subsections
+were written after the first batch of 22 captures and extended after the
+later six; where the later captures settled what the earlier text left
+open, the settled statement now comes first and the earlier wording
+stands in a Superseded note. Counts of packets are for all 28 captures
+unless they say otherwise.
+
 ### 10.1 Read path
 
 #### 10.1.1 Two read instructions
 
-NI uses two read instructions, chosen by the requested count:
+NI uses two read instructions, chosen by the requested count alone:
+**requested count <= 1024 -> 0x0a, 16-bit count, data framed on 0x84;
+requested count >= 1025 -> 0x0b, 4-byte count, data raw on 0x88.**
 
 | Requested count | Instruction | Data returned on | Observed counts |
 |-----------------|-------------|------------------|-----------------|
-| 1 .. 1024 | 0x0a (5.2) | bulk IN 0x84, framed in 0x36 / 0x37 blocks | 1, 2, 8, 10, 15, 16, 30, 31, 32, 60, 63, 64, 65, 100, 127, 128, 200, 255, 256, 511, 512, 1023, 1024 (counts.pcap 0.4288 .. 12.8188; partial.pcap; eosmodes.pcap; eos.pcap 1.5455) |
-| 4096 .. 20480 | 0x0b (new) | bulk IN 0x88, raw, unframed, padded to an even length (10.1.3) | 4096 (counts.pcap 13.4323), 20480 (counts.pcap 14.0488; every 0x0b in idn, clear, eos, trac, srq, timeouts, nolistener, two_sessions, longwrite, readtimeout_long, terminate) |
+| 1 .. 1024 | 0x0a (5.2) | bulk IN 0x84, framed in 0x36 / 0x37 blocks | 1, 2, 8, 10, 15, 16, 30, 31, 32, 60, 63, 64, 65, 100, 127, 128, 200, 255, 256, 511, 512, 1023, 1024 (counts.pcap 0.4288 .. 12.8188; partial.pcap; eosmodes.pcap; eos.pcap 1.5455; timeout_expiry.pcap) |
+| 1025 .. 20480 | 0x0b (new) | bulk IN 0x88, raw, unframed, padded to an even length (10.1.3) | 1025, 1500, 2000, 2047, 2048, 2049, 3000, 4095, 4096 (read_thresholds.pcap, below); 4096 (counts.pcap 13.4323); 20480 (counts.pcap 14.0488; every 0x0b in idn, clear, eos, trac, srq, timeouts, nolistener, two_sessions, longwrite, readtimeout_long, terminate) |
 
-The switch lies between 1024 and 4096; no count in between was captured.
-20480 is pyvisa's default chunk size, so every `viRead` issued by pyvisa's
-`read()` used 0x0b.
+20480 is pyvisa's default chunk size, so every `viRead` issued by
+pyvisa's `read()` used 0x0b. No count above 20480 was captured.
 
-Observed in read_thresholds.pcap: the boundary is 1024 / 1025. `*IDN?`
-followed by `viRead` with each of nine counts; every one was sent as 0x0b
-in the 40-byte message of 10.1.2 (`m e t` = `00 0a fc`), the 82 bytes came
-raw on bulk IN 0x88 and the 56-byte reply on 0x84:
+The boundary, from read_thresholds.pcap: `*IDN?` followed by `viRead` with
+each of nine counts; every one was sent as 0x0b in the 40-byte message of
+10.1.2 (`m e t` = `00 0a fc`), the 82 bytes came raw on bulk IN 0x88 and the
+56-byte reply on 0x84:
 
 | Count | `c0..c3` sent | Reply count (82 - count) | OUT 40 B at | IN88 82 B at |
 |-------|---------------|--------------------------|-------------|--------------|
@@ -1918,14 +1928,19 @@ raw on bulk IN 0x88 and the 56-byte reply on 0x84:
 | 4096 | `00 f0 ff ff` | `52 f0 ff ff` | 4.4493 | 4.4587 |
 
 With 1024 the last 0x0a (counts.pcap 12.8188 OUT 32 B, `0a 00 0a fc 00 fc
-00 00`) and 1025 the first 0x0b, the rule NI appears to follow is:
-**requested count <= 1024 -> 0x0a, 16-bit count, data framed on 0x84;
-requested count >= 1025 -> 0x0b, 32-bit count, data raw on 0x88.** Only
-the requested count decides: all nine reads returned the same 82 bytes.
+00 00`) and 1025 the first 0x0b, the rule at the head of this subsection
+follows. Only the requested count decides: all nine reads returned the
+same 82 bytes.
 Nothing changes at 2048 / 2049 (the write boundary, 10.5.2) or at 4096.
 In each of these nine reads the host submitted its IN transfer on 0x88
 first and the one on 0x84 second, both within 0.1 ms of the OUT and
 before any data had come back (0.3160 OUT, 0.3161 IN88, 0.3161 IN84).
+
+**Superseded (10.1.1).** First-batch table row "4096 .. 20480 -> 0x0b" and
+"The switch lies between 1024 and 4096; no count in between was
+captured." Replaced by the 1024 / 1025 boundary from read_thresholds.pcap.
+The rule was worded "32-bit count"; the width of the field is open
+(10.1.2).
 
 #### 10.1.2 The 0x0b instruction
 
@@ -2080,10 +2095,11 @@ So `m` = 0x14 (REOS + BIN) enables the compare and END is reported for an
 EOS match exactly as for EOI, distinguishable only by bit 7 of the tail
 byte. With the character disabled NI sends `m` = 0x00 and **`e` = the
 current TERMCHAR (0x0a), not 0x00**, and none of these reads returned
-error 4 (36 in 0x0a form and 44 in 0x0b form across the captures; every
-one of them returned error 0 or, when nothing was pending, 0x0a). This
-contradicts the "both must be 0x00, else error 4" rule of 5.2 and 8.3, at
-least with NI's initialisation (AUXRA 0x99, 10.3.1).
+error 4 (42 in 0x0a form and 58 in 0x0b form across the 28 captures; 36
+and 44 in the first batch; every one of them returned error 0 or, when
+nothing was pending, 0x0a). This contradicts the [inherited] "both must
+be 0x00, else error 4" rule, at least with NI's initialisation (AUXRA
+0x99, 10.3.1); 4.3, 5.2 and 8.3 now carry that rule as not reproduced.
 
 #### 10.1.7 Count-limited read leaving data in the instrument
 
@@ -2136,16 +2152,29 @@ transfer ends with zero bytes at 9.812110); raw_errors.pcap 6.107460 ->
 Each is a power of two in microseconds -- 2^17, 2^18, 2^20, 2^22, 2^24,
 2^25 for 0xf9..0xfe -- plus 0.8-1.9 ms; the comparison, the one code
 that expires early (0xfa: 0.2635 s against a nominal 300 ms), what was
-not measured and what the pattern would predict for it are in 7.3. The
-earlier description of this as "12-40 % over nominal" came from 0xfc
-and 0xfe alone and is withdrawn: across the six codes the expiry runs
-from 12 % under nominal to 68 % over.
+not measured and what the pattern would predict for it are in 7.3.
 
-The code does not bound the whole instruction: with code
-0xfc every 20480-byte chunk of the 61 768-byte read took 4.0 s and
-completed with error 0 (readtimeout_long.pcap 0.5227 -> 4.5212, 4.5223 ->
-8.5142, 8.5152 -> 12.4405). What the code bounds (a per-byte or handshake
-interval) cannot be read off the wire.
+What the code bounds cannot be read off these captures. With code 0xfc
+the three full 20480-byte chunks of the 61 768-byte read took 3.999,
+3.992 and 3.926 s and completed with error 0 (readtimeout_long.pcap
+0.5227 -> 4.5217, 4.5223 -> 8.5146, 8.5152 -> 12.4410, OUT to IN84), in a
+session whose VISA timeout was 2000 ms. That is longer than the
+application asked for and longer than the nominal 3 s of 0xfc, but
+shorter than the 4.194 s the adapter waits under 0xfc. The same chunks
+took the same time under 0xfe (trac.pcap), so the 4.0 s is the
+instrument's pace, not a limit. No instruction was captured running
+longer than the measured expiry of its code; whether the code bounds the
+whole instruction or an interval within it (per byte, per handshake) is
+therefore not established (7.1).
+
+**Superseded (10.1.8).** "12-40 % over nominal" as the description of the
+expiry: it came from 0xfc and 0xfe alone; across the six codes the
+expiry runs from 12 % under nominal to 68 % over (7.3). "The code does
+not bound the whole instruction: with code 0xfc every 20480-byte chunk
+... took 4.0 s and completed with error 0. What the code bounds (a
+per-byte or handshake interval) cannot be read off the wire": the second
+sentence stands, the first does not follow once 0xfc is known to run
+4.194 s.
 
 #### 10.1.9 VISA timeout to code byte
 
@@ -2218,7 +2247,9 @@ that change not established.
 the ibsta current when the block executes (idn.pcap 0.5154: 0x0030 before
 the write; 0.5259: 0x0028 = CIC|TACS left by the write). It is the first
 block of every INSTR-session message that carries a 0x0c, 0x0d, 0x0e,
-0x0a, 0x0b or 0x10, of the first bank-2 configuration message of a session
+0x0a, 0x0b or 0x10 -- with one exception, the lone LLO 0x0c of
+`viGpibControlREN` (10.7.4, ren_device.pcap 0.9192, 1.3241) -- of the
+first bank-2 configuration message of a session
 (open.pcap 0.0070 OUT 32 B) and of the second session's first message
 (two_sessions.pcap 0.3543 OUT 16 B: `03 | 09 bank2 03 | 04`). Never sent
 alone, never in INTFC-session operations (intfc.pcap, board_io.pcap,
@@ -2255,7 +2286,7 @@ All observed writes to bank 2 outside the 26-write initialisation:
 
 | addr | values | when |
 |------|--------|------|
-| 0x03 | 0x01 (481 writes) | 10.2.5 |
+| 0x03 | 0x01, never another value (655 writes in the 28 captures; the first batch counted 481) | 10.2.5 |
 | 0x04 | 0x01 at session open (open.pcap 0.0070), 0x00 at the close of the last session on the address (open.pcap 1.0126 OUT 20 B; two_sessions.pcap 1.9060) | |
 | 0x05 | 0x18 = the instrument's primary address 24; 0x05 for `GPIB0::5::INSTR` (nolistener.pcap 0.0215) | |
 | 0x06 | 0x00 with no secondary address; 0x61 = 0x60 \| 1 for `GPIB0::24::1::INSTR` (nolistener.pcap 10.8794) | |
@@ -2331,14 +2362,15 @@ and 6 (readiness poll, model extras, monitor mask) are not in the captures
 initialisation, IFC and REN agree; the take-control of step 7 is absent;
 the bank-2 configuration and the probe are additions.
 
-The three register values read at open: bank-1 0x0d always 0x00 (all 50
-reads in the captures); bank-1 0x0c equal to the low byte of the current
-ibsta in every read (0x00 before IFC, 0x30 after IFC, 0x64 / 0x74 later:
-nolistener.pcap 10.8702, srq.pcap 2.0333), which does not match the ADR0
-label of 3.4; bank-1 0x1f = BSR: 0x00 before IFC with REN off (0x20, NDAC
-alone, in six captures, e.g. ren_device.pcap 0.0017), 0xa0 (ATN, NDAC)
-after IFC, 0xa1 with REN, 0x31 (NDAC, NRFD, REN) at the second open
-of nolistener.pcap (10.8702) after a read had left ATN false.
+The three register values read at open: bank-1 0x0d always 0x00 (all 68
+reads in the 28 captures; 50 in the first batch); bank-1 0x0c equal to the
+low byte of the current ibsta in every read (0x00 before IFC, 0x30 after
+IFC, 0x64 / 0x74 later: nolistener.pcap 10.8702, srq.pcap 2.0333), which
+does not match the ADR0 label of 3.4; bank-1 0x1f = BSR: 0x00 before IFC
+with REN off (0x20, NDAC alone, in six captures, e.g. ren_device.pcap
+0.0017), 0xa0 (ATN, NDAC) after IFC, 0xa1 with REN, 0x31 (NDAC, NRFD, REN)
+at the second open of nolistener.pcap (10.8702) after a read had left ATN
+false.
 
 #### 10.3.3 Close
 
@@ -2347,14 +2379,18 @@ of nolistener.pcap (10.8702) after a read had left ATN false.
 1.0126). Of a session that is not the last: the 12-byte bank-2 0x03 write
 only (two_sessions.pcap 1.2908). About 0.5 s after the last close, at the
 end of the process, the shutdown of 2.9 byte for byte: `09 02 00 01 0a 02
-03 10 00 00 00 00 04 00 00 00` (open.pcap 1.5764 OUT 16 B), reply `09 ff
-ff 00 cc cc ff ff 02 00 00 00 04..` -- ibsta reads 0xffff after the chip
-reset (every capture; 0x1010 in board_io.pcap 9.6195, see 10.7.2).
-Correction from the second batch: not every capture. The shutdown reply
-was `09 00 00 00 00 00 00 00 02 ..`, ibsta 0x0000, in read_thresholds.pcap
-(5.2342) and in counts.pcap (20.5265), the two captures whose last bus
-operation was the SDC of a `viClear` (ibsta 0x0078 before the close). An
+03 10 00 00 00 00 04 00 00 00` (open.pcap 1.5764 OUT 16 B), reply `09 ss
+ss 00 cc cc xx xx 02 00 00 00 04..`. The ibsta of that reply is not
+stable: 0xffff in 25 of the 28 captures (e.g. open.pcap 1.5771); 0x0000
+with bytes 4-7 zero as well, `09 00 00 00 00 00 00 00 02 ..`, in
+read_thresholds.pcap (5.2342) and counts.pcap (20.5265), the two captures
+whose last bus operation was the SDC of a `viClear` (ibsta 0x0078 before
+the close); 0x1010 in board_io.pcap (9.6195, see 10.7.2). An
 implementation must not test the shutdown reply's ibsta.
+
+**Superseded (10.3.3).** "ibsta reads 0xffff after the chip reset (every
+capture; 0x1010 in board_io.pcap)", written after the first batch and
+corrected after the second.
 
 #### 10.3.4 Second session in the same process (two_sessions.pcap)
 
@@ -2457,18 +2493,23 @@ having already polled the device (10.4.2). Whether SRQI ever appears in a
 Header as sent by NI: `0d cl ch t 00 e f 00`, i.e. 5.1 with **byte 5 = the
 session's termination character** (0x0a by default; 0x2c and 0x0d after
 `VI_ATTR_TERMCHAR` was set to 44 / 13, eosmodes.pcap 1.6576, 2.2707) and
-byte 4 = 0x00 in all 83 writes captured. `f` = 0x08 with `VI_ATTR_SEND_END_EN`
-true, 0x00 with it false (write.pcap 0.5133 vs 1.0173 OUT 40 B, `*CLS\r\n`).
-The terminator is ordinary data: `*CLS\r\n` = 6 bytes, count `fa ff`;
-`viWrite` of `*CLS` without terminator = 4 bytes, `fc ff`, block 12 bytes,
-message 36 (write.pcap 1.5201). Reply block `0d 00 28 00 00 00 ff ff`:
-ibsta CIC|TACS with ATN clear, error 0, count 0. Whether `e` in the 0x0d
-header has any effect (e.g. EOI on the character) was not tested; every
-write carried EOI or not per `f` alone.
+byte 4 = 0x00 in all 114 writes captured (83 in the first batch). `f` = 0x08
+with `VI_ATTR_SEND_END_EN` true, 0x00 with it false (write.pcap 0.5133 vs
+1.0173 OUT 40 B, `*CLS\r\n`). The terminator is ordinary data: `*CLS\r\n` =
+6 bytes, count `fa ff`; `viWrite` of `*CLS` without terminator = 4 bytes,
+`fc ff`, block 12 bytes, message 36 (write.pcap 1.5201). Reply block `0d 00
+28 00 00 00 ff ff`: ibsta CIC|TACS with ATN clear, error 0, count 0. Whether
+`e` in the 0x0d header has any effect (e.g. EOI on the character) was not
+tested; every write carried EOI or not per `f` alone.
 
 #### 10.5.2 Long write (0x0e, new; longwrite.pcap)
 
-A 2050-byte `viWrite` (2048 bytes + `\r\n`) was sent as
+NI chooses between 0x0d and 0x0e by length alone: **length <= 2048 ->
+0x0d, length >= 2049 -> 0x0e** (write_thresholds.pcap, below). The write
+boundary is not the read boundary (1024 / 1025, 10.1.1).
+
+The first raw write captured, a 2050-byte `viWrite` (2048 bytes +
+`\r\n`), was sent as
 ```
 03 00 00 00
 0c fd 00 fd 40 3f 38 00
@@ -2482,17 +2523,15 @@ termination block. The 0x0e block is 12 bytes: `0e 00 00 t 00 e f 00` +
 32-bit little-endian negative count (`fe f7 ff ff` = -2050); `t`, `e`, `f`
 as in 0x0d. The reply (2.0354 IN84 40 B) is `03 .. | 0c .. | 0e 00 28 00 00
 00 00 00 | 09 .. 01 00 00 00 | 04..`: an 8-byte status block with id 0x0e,
-count `00 00 00 00`. The switch from 0x0d lies between 17 bytes (trac.pcap
-13.0009, 0x0d) and 2050 bytes; no length in between was captured. 0x0e is
+count `00 00 00 00`. 0x0e is
 to 0x0d what 0x0b is to 0x0a, and the endpoint pairs 0x02/0x84 (framed) and
 0x06/0x88 (raw) are the "alternate endpoints" of 1.2.
 
-Observed in write_thresholds.pcap: the boundary is 2048 / 2049. `viWrite`
-of 18, 24, 32, 48, 63, 64, 65, 100, 128, 255, 256, 257, 512, 1024, 1025
-and 2048 bytes (`*CLS;` repeated, `\n` last, EOI on) each went as one
-framed 0x0d on 0x02; 2049 bytes went as 0x0e with the data on 0x06. The
-rule NI appears to follow: **length <= 2048 -> 0x0d, length >= 2049 ->
-0x0e.** The write boundary is not the read boundary (1024 / 1025, 10.1.1).
+The boundary, from write_thresholds.pcap: `viWrite` of 18, 24, 32, 48, 63,
+64, 65, 100, 128, 255, 256, 257, 512, 1024, 1025 and 2048 bytes (`*CLS;`
+repeated, `\n` last, EOI on) each went as one framed 0x0d on 0x02; 2049
+bytes went as 0x0e with the data on 0x06, which gives the rule at the head
+of this subsection.
 
 *0x0d beyond 17 bytes.* Nothing in the layout changes with length. The
 block is the 8-byte header `0d cl ch fc 00 0a 08 00`, the data bytes
@@ -2554,6 +2593,10 @@ blocks read `00 00` (6.8561), as 10.8 says. Both raw writes captured had
 EOI on and the default termination character, so `f` = 0x00 and other `e`
 values on 0x0e were not observed. A raw write that fails is in 10.6.5.
 
+**Superseded (10.5.2).** "The switch from 0x0d lies between 17 bytes
+(trac.pcap 13.0009, 0x0d) and 2050 bytes; no length in between was
+captured" -- first batch; replaced by the 2048 / 2049 boundary.
+
 #### 10.5.3 Trigger and device clear
 
 `viAssertTrigger`: `03 | 0c fc 00 fd 40 3f 38 08 | 09 bank-2 0x03 | 04` (24
@@ -2580,10 +2623,10 @@ There is a dedicated instruction. `viReadSTB`:
 ```
 03 00 00 00 | 10 01 00 x P S t 00 | 09 01 00 02 03 01 00 00 | 04 00 00 00     (24 B)
 ```
-`P` = 0x18 primary address, `S` = 0x00 (secondary byte, presumably 0x60|S
-when present -- not captured), `t` = timeout code 0xfe; `x` = 0x00 in three
-polls of a fresh session (stb.pcap 0.5134, 0.7167, 0.9191) and 0x01 in the
-poll after an SRQ had been serviced (srq_poll.pcap 2.5361), meaning not
+`P` = 0x18 primary address, `S` = 0x00 without a secondary address and 0x60
+| S with one (sad_poll.pcap, below), `t` = timeout code 0xfe; `x` = 0x00 in
+three polls of a fresh session (stb.pcap 0.5134, 0.7167, 0.9191) and 0x01 in
+the poll after an SRQ had been serviced (srq_poll.pcap 2.5361), meaning not
 established. Reply (36 B):
 ```
 03 00 74 00 00 00 ff ff
@@ -2597,12 +2640,15 @@ established. Reply (36 B):
 IEEE-488.1 procedure but is not what the vendor driver sends.
 
 Observed in sad_poll.pcap: through secondary address 1 the instruction is
-`10 01 00 00 18 61 fc 00` (0.5152 OUT 24 B) -- `S` = 0x61 = 0x60 | 1,
-which settles the presumption above -- and the reply's 0x3a block echoes
+`10 01 00 00 18 61 fc 00` (0.5152 OUT 24 B) -- `S` = 0x61 = 0x60 | 1 --
+and the reply's 0x3a block echoes
 both address bytes: `3a 18 61 04 | 39 00 74 00 00 00 ff ff` (0.5170 IN84
 36 B; status byte 4, the value `viReadSTB` returned). `x` was 0x00 here
 and in raw_errors.pcap (10.8046); its meaning stays not established. When
 the poll fails the 0x3a block is missing from the reply (10.6.6).
+
+**Superseded (10.5.4).** "`S` = 0x00 (secondary byte, presumably 0x60|S
+when present -- not captured)" -- captured since, in sad_poll.pcap.
 
 ### 10.6 Errors and addressing
 
@@ -2614,9 +2660,8 @@ error 0 and count field written to `00 00`, then `01 00 00 00` if a device
 at that address answered, `00 00 00 00` if not, then `04 00 00 00`
 (open.pcap 0.0085 OUT / 0.0103 IN84: present, 1.8 ms; nolistener.pcap
 0.0235 OUT / 0.0252 IN84: absent, 1.7 ms). What the adapter does on the
-bus during those 1.7 ms
-is not visible in USB captures; the count field being rewritten shows a
-data-type operation. For `GPIB0::5::INSTR` with nothing at 5, NI probed
+bus during those 1.7 ms is not visible in USB captures; the count field
+being rewritten shows a data-type operation. For `GPIB0::5::INSTR` with nothing at 5, NI probed
 50 times at 104 ms intervals (0.0235 .. 5.1099), from the second probe on
 each preceded by `0c fc 00 fd 40 3f 25 04` (MTA 0, UNL, LAD 5, SDC; 49
 times), then opened the session anyway
@@ -2859,8 +2904,11 @@ deassert, as in 10.7.1.
   order without a termination block between them (10.3.2, 0.0020).
 - **Count field after 0x01 / 0x06 / 0x0f** is the stale value of the last
   data operation on this unit (`52 b0`, `02 b0`, `fd ff`, `00 00`), not
-  `aa 55`; after a 0x02 probe it is `00 00`.
-- **ibsta after chip reset** (shutdown reply) reads 0xffff.
+  the `aa 55` the bench unit showed (4.1); after a 0x02 probe it is `00
+  00`. `aa 55` did appear once on this unit, in the first reply of
+  read_thresholds.pcap (10.3.1).
+- **ibsta after chip reset** (shutdown reply) is not stable: 0xffff in 25
+  captures, 0x0000 in two, 0x1010 in one (10.3.3). Do not test it.
 - **Readiness (0x40), serial-number (0x41), stop (0x20) and monitor-mask
   (0x21 / 0x0300) control requests** appear in none of the captures; each
   capture starts after the driver had already owned the adapter, so these
@@ -2877,6 +2925,11 @@ deassert, as in 10.7.1.
   the host.
 
 ### 10.9 What an implementer must do to interoperate (from this section)
+
+Everything below is **[captured]** behaviour of NI's driver: it says how
+to match NI, under NI's initialisation. The framed path of sections 5
+and 6 is the one with **[bench]** evidence; "How to read this document"
+says what has not been mixed.
 
 - Use 0x0b with data on 0x88 for large reads and 0x0e with data on 0x06
   for large writes when matching NI's behaviour; the framed 0x0a / 0x0d
@@ -2915,7 +2968,8 @@ deassert, as in 10.7.1.
   rely on error 4 for that combination.
 - Parse replies block by block using the per-block lengths of 10.2.1,
   skipping `11 00 00 00` blocks; do not assume fixed total lengths beyond
-  the single-block cases of 3.5.
+  the single-block cases of 3.5. Behind a 0x0a, accept a following 0x09
+  block's status or its absence (5.2).
 - Expect error 7 for 0x01 / 0x06 / 0x0c while not CIC, error 8 for a write
   with no listener, and error 0x0a for a device timeout.
 - The adapter's wait under a timeout code is the measured expiry of 7.3,
