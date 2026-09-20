@@ -180,6 +180,37 @@ class TestOverflowedClientIsDisconnected:
             session.close(timeout=5.0)
 
 
+class TestDisconnectWatcher:
+    def test_it_returns_on_disconnect_instead_of_asking_again(self):
+        """Starlette raises RuntimeError on a receive() after the disconnect."""
+        from resistamet_gui.api.events_ws import _watch_for_disconnect
+
+        class Socket:
+            def __init__(self):
+                self.messages = [{'type': 'websocket.receive', 'text': 'ping'},
+                                 {'type': 'websocket.disconnect', 'code': 1001}]
+
+            async def receive(self):
+                if not self.messages:
+                    raise RuntimeError('Cannot call "receive" once a disconnect message '
+                                       'has been received.')
+                return self.messages.pop(0)
+
+        assert asyncio.run(_watch_for_disconnect(Socket())) is None
+
+    def test_a_wrong_token_of_any_length_is_refused(self):
+        session = MeasurementSession(ListSink())
+        app = create_app(session, token=TOKEN, profile_provider=lambda u: {})
+        try:
+            with TestClient(app) as client:
+                for wrong in ('', 'x', TOKEN + 'x', 'tést'):
+                    with pytest.raises(Exception):
+                        with client.websocket_connect(f'/session/events/ws?token={wrong}'):
+                            pass
+        finally:
+            session.close(timeout=5.0)
+
+
 class TestHistory:
     """A dropped connection must be resumable, or say it is not."""
 
