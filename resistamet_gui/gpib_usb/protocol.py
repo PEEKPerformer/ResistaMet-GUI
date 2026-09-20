@@ -244,9 +244,10 @@ def _eos_byte(eos: Optional[int], name: str) -> int:
 def write_block(data: bytes, timeout_code: int, send_eoi: bool, eos_char: Optional[int] = None) -> bytes:
     """§5.1: ``0d cl ch t 00 e f 00 <data...>`` (unpadded).
 
-    ``e`` (byte 5) is 0x00 in the bench-proven form. NI fills it with the
-    session's termination character on every write (§10.5.1); whether it has
-    any effect was not tested, so callers choose.
+    ``e`` (byte 5) is 0x00 in the bench-proven form, which is all the driver
+    sends. NI fills it with the session's termination character on every
+    write (§10.5.1); ``eos_char`` exists so the capture tests can rebuild
+    NI's blocks byte for byte.
     """
     return (bytes((OP_WRITE,)) + encode_count16(len(data))
             + bytes((timeout_code, 0x00, _eos_byte(eos_char, 'termination character'),
@@ -254,9 +255,9 @@ def write_block(data: bytes, timeout_code: int, send_eoi: bool, eos_char: Option
             + data)
 
 
-def write_message(data: bytes, timeout_code: int, send_eoi: bool,
-                  eos_char: Optional[int] = None) -> bytes:
-    return build_message(write_block(data, timeout_code, send_eoi, eos_char))
+def write_message(data: bytes, timeout_code: int, send_eoi: bool) -> bytes:
+    """The framed write as this driver sends it: ``e`` = 0x00, the bench-proven form."""
+    return build_message(write_block(data, timeout_code, send_eoi))
 
 
 def write_raw_block(length: int, timeout_code: int, send_eoi: bool,
@@ -285,6 +286,8 @@ def read_eos_bytes(eos: Optional[int], eos_8bit: bool, termchar: Optional[int]) 
     ``m`` = 0x00 and ``e`` = ``termchar`` -- NI puts the session's
     termination character there with the compare disabled and never got
     error 4 (§10.1.6); ``termchar`` None keeps the bench-proven ``00 00``.
+    The controller never passes ``termchar``: it is here, and in the read
+    message builders, so the capture tests can rebuild NI's blocks.
     """
     if eos is None:
         return bytes((0x00, _eos_byte(termchar, 'termination character')))

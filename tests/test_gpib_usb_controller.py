@@ -1075,27 +1075,28 @@ class TestRawRead:
         # counts.pcap 13.4323 / 13.4419 / 13.4424: the 0x0b of 4096 with the 3 s code. Our
         # message is the 0x0b block and the clear-END write; the reply is those two blocks.
         controller, transport = attached_ni(address_talker(pad=24) + [
-            ('out', h('0b 00 0a fc 00 f0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),
+            ('out', h('0b 00 00 fc 00 f0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),  # NI's e is 0a, ours 00
             ('raw_in', IDN_2420, 4608),
             ('in', h('0b 20 64 00 52 f0 ff ff e0 00 00 00 09 00 64 00 52 f0 ff ff 01 00 00 00 04 00 00 00'), 512),
         ])
-        assert controller.read(24, max_bytes=4096, timeout_s=3.0, termchar=0x0A) == (IDN_2420, True)
+        assert controller.read(24, max_bytes=4096, timeout_s=3.0) == (IDN_2420, True)
         transport.assert_done()
 
     def test_the_threshold_is_ni_s_1024_1025(self):
         # §10.1.1: counts.pcap 12.8188 is the last 0x0a (1024), read_thresholds.pcap 0.3160 the
-        # first 0x0b (1025); the instruction blocks below are NI's bytes.
+        # first 0x0b (1025); the instruction blocks below are NI's bytes but for e, which NI
+        # fills with the termination character and this driver leaves 0x00 with the compare off.
         assert RAW_READ_MIN_BYTES == 1025
         controller, transport = attached_ni(address_talker() + [
-            ('out', h('0a 00 0a fc 00 fc 00 00') + p.read_message(1024, T3S)[8:]),
+            ('out', h('0a 00 00 fc 00 fc 00 00') + p.read_message(1024, T3S)[8:]),
             ('in', read_reply(b'x', 1024), p.read_reply_buffer_size(1024, 512)),
         ] + address_talker() + [
-            ('out', h('0b 00 0a fc ff fb ff ff') + p.read_raw_message(1025, T3S)[8:]),
+            ('out', h('0b 00 00 fc ff fb ff ff') + p.read_raw_message(1025, T3S)[8:]),
             ('raw_in', b'x', p.raw_read_buffer_size(1025, 512)),
             ('in', raw_read_reply(1025, 1), 512),
         ])
-        assert controller.read(22, max_bytes=1024, timeout_s=3.0, termchar=0x0A) == (b'x', True)
-        assert controller.read(22, max_bytes=1025, timeout_s=3.0, termchar=0x0A) == (b'x', True)
+        assert controller.read(22, max_bytes=1024, timeout_s=3.0) == (b'x', True)
+        assert controller.read(22, max_bytes=1025, timeout_s=3.0) == (b'x', True)
         transport.assert_done()
 
     def test_data_is_read_before_the_reply_and_the_reply_wait_is_short(self):
@@ -1177,14 +1178,14 @@ class TestRawRead:
         # zero-length packet at its timeout, the reply follows, and the next operation is
         # ordinary (§10.6.6, §10.6.7). NI's reply blocks, in our two-block message.
         controller, transport = attached_ni(address_talker(pad=5) + [
-            ('out', h('0b 00 0a fc 00 b0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),
+            ('out', h('0b 00 00 fc 00 b0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),
             ('raw_in', b'', 20992),
             ('in', h('0b 00 64 0a 00 b0 ff ff 60 00 00 00 09 00 64 00 00 b0 ff ff 01 00 00 00 04 00 00 00'), 512),
         ] + address_listener(pad=24) + [
             ('out', p.write_message(b'*IDN?\n', T3S, True)), ('in', status_reply(0x0D)),
         ])
         with pytest.raises(GpibTimeout) as info:
-            controller.read(5, max_bytes=20480, timeout_s=3.0, termchar=0x0A)
+            controller.read(5, max_bytes=20480, timeout_s=3.0)
         assert info.value.code == 0x0A and info.value.partial == b''
         assert controller.write(24, b'*IDN?\n', timeout_s=3.0) == 6
         transport.assert_done()  # no ('ctrl', 0x20 ...) step anywhere in the script
@@ -1396,15 +1397,15 @@ class TestRawRead:
             controller.read_raw(4096, timeout_s=3.0)
         transport.assert_done()
 
-    def test_termination_character_and_eos_reach_the_instruction(self):
+    def test_the_eos_character_reaches_the_instruction_and_plain_reads_send_00_00(self):
         controller, transport = attached_ni([
-            ('out', h('0b 00 0a fc 00 f0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),
+            ('out', h('0b 00 00 fc 00 f0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),
             ('raw_in', b'x', 4608), ('in', raw_read_reply(4096, 1), 512),
             ('out', h('0b 14 2c fc 00 f0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),
             ('raw_in', b'x', 4608), ('in', raw_read_reply(4096, 1), 512),
         ])
-        controller.read_raw(4096, timeout_s=3.0, termchar=0x0A)
-        controller.read_raw(4096, timeout_s=3.0, eos=0x2C, eos_8bit=True, termchar=0x0A)
+        controller.read_raw(4096, timeout_s=3.0)
+        controller.read_raw(4096, timeout_s=3.0, eos=0x2C, eos_8bit=True)
         transport.assert_done()
 
     def test_a_model_without_the_alternate_pair_stays_framed(self):
