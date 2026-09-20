@@ -577,15 +577,16 @@ class Controller:
 
     def read(self, pad: int, *, sad: Optional[int] = None, max_bytes: int,
              timeout_s: Optional[float], eos: Optional[int] = None,
-             eos_8bit: bool = False, termchar: Optional[int] = None,
-             readdress: bool = True) -> Tuple[bytes, bool]:
+             eos_8bit: bool = False, readdress: bool = True) -> Tuple[bytes, bool]:
         """Address ``pad`` to talk, go to standby, then read up to ``max_bytes`` (§5.2, §10.1).
 
         Returns the data and whether END (EOI, or the EOS character when
         ``eos`` is given) ended it. False means the count was reached. A
         device-side timeout raises ``GpibTimeout`` carrying the partial data.
-        ``termchar`` fills the instruction's ``e`` byte when ``eos`` is None,
-        as NI does (§10.1.6); None sends the bench-proven 0x00.
+        Without ``eos`` the instruction's ``m e`` bytes are the bench-proven
+        ``00 00``. NI puts the session's termination character into ``e``
+        even then (§10.1.6), under its own AUXRA value; the codec can build
+        that form, this controller does not send it.
         """
         with self._guard():
             self._ensure_attached()
@@ -595,11 +596,10 @@ class Controller:
             self._address(_TALK, pad, sad, code, self._reply_wait_s(code), readdress)
             # ATN rule (§5): a 0x06 between the addressing 0x0c and the read.
             self._go_to_standby()
-            return self._read_bytes(max_bytes, code, eos, eos_8bit, termchar, 'read')
+            return self._read_bytes(max_bytes, code, eos, eos_8bit, 'read')
 
     def read_raw(self, max_bytes: int, timeout_s: Optional[float],
-                 eos: Optional[int] = None, eos_8bit: bool = False,
-                 termchar: Optional[int] = None) -> Tuple[bytes, bool]:
+                 eos: Optional[int] = None, eos_8bit: bool = False) -> Tuple[bytes, bool]:
         """Read with the bus as it stands: no addressing, no standby.
 
         For callers that addressed the bus themselves. ATN must already be
@@ -609,10 +609,10 @@ class Controller:
             self._ensure_attached()
             if max_bytes < 1:
                 return b'', False
-            return self._read_bytes(max_bytes, p.timeout_code(timeout_s), eos, eos_8bit, termchar, 'read')
+            return self._read_bytes(max_bytes, p.timeout_code(timeout_s), eos, eos_8bit, 'read')
 
     def _read_bytes(self, max_bytes: int, code: int, eos: Optional[int],
-                    eos_8bit: bool, termchar: Optional[int], operation: str) -> Tuple[bytes, bool]:
+                    eos_8bit: bool, operation: str) -> Tuple[bytes, bool]:
         """Read instructions until END, the count, or a short result; framed or raw by size.
 
         One instruction carries at most 0xffff bytes on either path, so a
@@ -636,10 +636,10 @@ class Controller:
             count = min(remaining, p.MAX_TRANSFER_BYTES)
             try:
                 if raw:
-                    data, end = self._raw_read_instruction(count, code, eos, eos_8bit, termchar, operation)
+                    data, end = self._raw_read_instruction(count, code, eos, eos_8bit, operation)
                 else:
                     data, end = self._read_instruction(count, code, self._transfer_wait_s(code, count), eos,
-                                                       eos_8bit, termchar, operation)
+                                                       eos_8bit, operation)
             except GpibTimeout as exc:
                 exc.partial = b''.join(chunks) + exc.partial
                 raise
@@ -650,19 +650,19 @@ class Controller:
         return b''.join(chunks), False
 
     def _read_instruction(self, count: int, code: int, wait_s: float, eos: Optional[int],
-                          eos_8bit: bool, termchar: Optional[int], operation: str) -> Tuple[bytes, bool]:
+                          eos_8bit: bool, operation: str) -> Tuple[bytes, bool]:
         """One framed 0x0a (§5.2): the data comes back in blocks on the primary bulk IN."""
         buffer = p.read_reply_buffer_size(count, self._transport.max_packet_size)
-        _, reply = self._exchange(p.read_message(count, code, eos, eos_8bit, termchar), buffer, wait_s,
+        _, reply = self._exchange(p.read_message(count, code, eos, eos_8bit), buffer, wait_s,
                                   operation, tolerate=(t.ERR_TIMEOUT, t.ERR_STOPPED))
         parsed = p.parse_read_reply(reply, count)
         self._raise_for_error(parsed.status, operation, partial=parsed.data)
         return parsed.data, parsed.end
 
     def _raw_read_instruction(self, count: int, code: int, eos: Optional[int],
-                              eos_8bit: bool, termchar: Optional[int], operation: str) -> Tuple[bytes, bool]:
+                              eos_8bit: bool, operation: str) -> Tuple[bytes, bool]:
         """One 0x0b (§10.1.2-10.1.3): the data arrives raw on the alternate bulk IN, the status on the primary."""
-        message = p.read_raw_message(count, code, eos, eos_8bit, termchar)
+        message = p.read_raw_message(count, code, eos, eos_8bit)
         buffer = p.raw_read_buffer_size(count, self._transport.max_packet_size_raw)
         wait_s = self._transfer_wait_s(code, count)
         data, reply = self._raw_read_transact(message, buffer, wait_s)
