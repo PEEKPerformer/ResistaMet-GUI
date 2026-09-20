@@ -291,6 +291,9 @@ class TestOperatorActions:
         assert _wait_for(lambda: len(session.sink.of_type('sample')) >= 2)
         session.pause()
         assert _wait_for(lambda: session.state == 'paused')
+        # pause() returns at once; a reading already on the bus still lands.
+        # The run says when it has actually parked.
+        assert _wait_for(lambda: session.sink.of_type('paused'))
         during_pause = len(session.sink.of_type('sample'))
         time.sleep(0.3)
         assert len(session.sink.of_type('sample')) == during_pause, "sampled while paused"
