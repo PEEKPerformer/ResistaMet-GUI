@@ -200,6 +200,14 @@ _R_ENH_2400 = (
 # ---------------------------------------------------------------------------
 # Per-model lookup. Mirrors instrument._MODELS so callers can pass the
 # model string straight from IDN parsing.
+#
+# The 2425 and 2430 are NOT in the datasheet this module cites (it covers
+# the 2400, 2401, 2410, 2420 and 2440). They are given the 2420's rows here
+# as a stand-in, not from a source. Their top voltage range is 100 V, not
+# the 2420's 60 V (2400 Series User's Manual 2400S-900-01 Rev. K, Table 3-1,
+# p. 3-5: 200 mV, 2 V, 20 V, 100 V), and no 100 V accuracy row is tabulated
+# here: a reading above 63 V on these models is given the 60 V row's
+# numbers. The current ranges (10 µA to 3 A in DC) do match the 2420's.
 # ---------------------------------------------------------------------------
 
 _V_MEASURE: dict[str, Sequence[AccuracySpec]] = {
@@ -207,7 +215,7 @@ _V_MEASURE: dict[str, Sequence[AccuracySpec]] = {
     "2401": _V_MEAS_2400[:3],   # no 200 V range
     "2410": _V_MEAS_2410,
     "2420": _V_MEAS_2420,
-    "2425": _V_MEAS_2420,       # same V coverage as 2420
+    "2425": _V_MEAS_2420,       # stand-in; see the note above
     "2430": _V_MEAS_2420,
     "2440": _V_MEAS_2440,
 }
