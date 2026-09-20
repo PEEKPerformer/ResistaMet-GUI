@@ -3,9 +3,11 @@
 **Status:** design, 2026-09-19. Steps 1–5 of §5 have landed: the geometry
 math, the schema, the spot in the file and the events, the map with its API,
 and the spot sent with every four-point run the PySide6 window starts.
-Steps 6–7 wait on the questions in §7. The position-aware correction is
-reported, never applied: the schema accepts only `warn` until question 1 is
-answered.
+Steps 6–7 have landed in the Tauri UI on defaults for questions 2–5 of §7,
+each a one-line change (listed under step 7 in §5); the image is not yet
+copied beside the runs, and there is no exact factor before Start, because
+both need a backend route. The position-aware correction is reported, never
+applied: the schema accepts only `warn` until question 1 is answered.
 **Depends on:** `tauri_backend_split.md` (run layer, events, contract)
 
 ## 1. What is wrong today
@@ -280,11 +282,28 @@ identical numbers (a test pins this).
    first run after *Clear All* each start a new map. The window still
    computes the numbers it shows; it does not yet read `spot_complete`.)*
 6. Tauri: spots panel reads the map; settings form shows the geometry and
-   the factor.
-7. Tauri: the map canvas, registration, figure export.
+   the factor. *(landed: every four-point Start sends a spot; `state/spots.ts`
+   holds the current map and caches `GET /maps/{id}`; the panel shows
+   `spot_complete` and the map, never its own arithmetic; Redo; a refusal is
+   a notice, a near-edge warning sits with the spot; a "Sample" settings
+   group. The form does not show the factor: `/settings/resolve` does not
+   return one, with or without a spot.)*
+7. Tauri: the map canvas, registration, figure export. *(landed:
+   `lib/map/` — geometry and the y flip, viridis, the figure as a list of
+   primitives rendered on screen and into the SVG, the CSV — with
+   `npm test`; `views/continuous/MapPanel.tsx`; `state/mapPhoto.ts`.
+   Defaults taken for the open questions, each one line: Q2 one array angle
+   per map, the setting (`useFigureInputs` in `MapPanel.tsx`); Q3 the
+   PySide6 rule, a new map on application start
+   (`NEW_MAP_ON_APP_START` in `state/spots.ts`); Q4 σ when the map has any,
+   else Rs, labels off (`defaultQuantity` in `lib/map/figure.ts`,
+   `DEFAULTS` in `state/mapView.ts`); Q5 no outline = the photograph is the
+   canvas, no edge check, a two-point scale. Not done: the image is kept
+   as name, size, SHA-256 and registration in `localStorage`, not copied
+   beside the runs; the pre-flight edge check is distance-only.)*
 
 Steps 1–5 change no measurement behaviour and have landed without waiting
-for the questions below. Steps 6–7 depend on them.
+for the questions below. Steps 6–7 were built on defaults for them.
 
 ## 6. Verification
 
