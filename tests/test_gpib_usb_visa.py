@@ -7,6 +7,7 @@ presence probe), holding one fake instrument at address 24 that answers
 ``list_resources``, ``open_resource``, ``query``.
 """
 import sys
+import threading
 from typing import Dict, List, Optional, Tuple
 
 import pytest
@@ -996,6 +997,107 @@ class TestBoardRegistry:
         calls = enumeration['calls']
         registry.owns('0')
         assert enumeration['calls'] == calls + 1
+
+
+class SlowCloseAdapter(SimulatedAdapter):
+    """The shutdown write blocks until the test lets it go, like a close behind an operation in flight."""
+
+    def __init__(self) -> None:
+        super().__init__({})
+        self.closing = threading.Event()
+        self.may_close = threading.Event()
+
+    def bulk_out(self, data: bytes, timeout_ms: int) -> None:
+        if data == p.register_write_message(t.SHUTDOWN_WRITES):
+            self.closing.set()
+            assert self.may_close.wait(10)
+        super().bulk_out(data, timeout_ms)
+
+
+class TestBoardRegistryLocking:
+    @pytest.fixture
+    def quiet(self, enumeration, monkeypatch):
+        monkeypatch.setattr(controller_module, 'IFC_SETTLE_S', 0.0)
+        monkeypatch.setattr(transport, 'dispose_adapter', lambda info: None)
+
+    def test_a_slow_close_does_not_hold_up_the_rest_of_the_registry(self, quiet):
+        slow = SlowCloseAdapter()
+        registry = BoardRegistry(open_transport=lambda i: slow, first_board=0)
+        registry.acquire('0')
+        closer = threading.Thread(target=registry.release, args=('0',), daemon=True)
+        closer.start()
+        assert slow.closing.wait(5)
+        names: List[List[str]] = []
+        asker = threading.Thread(target=lambda: names.append(registry.board_names()), daemon=True)
+        asker.start()
+        asker.join(2)
+        blocked = asker.is_alive()
+        slow.may_close.set()
+        closer.join(5)
+        asker.join(5)
+        assert not blocked and names == [['0']]
+        assert slow.closed
+
+    def test_opening_a_board_that_is_closing_waits_for_the_close(self, quiet):
+        slow = SlowCloseAdapter()
+        opened: List[SimulatedAdapter] = []
+
+        def opener(info):
+            if opened:
+                assert slow.closed, 'the adapter was opened again before its close had finished'
+            opened.append(slow if not opened else SimulatedAdapter({}))
+            return opened[-1]
+
+        registry = BoardRegistry(open_transport=opener, first_board=0)
+        first = registry.acquire('0')
+        closer = threading.Thread(target=registry.release, args=('0',), daemon=True)
+        closer.start()
+        assert slow.closing.wait(5)
+        registry.refresh()               # must not hand the closing board a fresh, unlocked entry
+        second: List[object] = []
+        again = threading.Thread(target=lambda: second.append(registry.acquire('0')), daemon=True)
+        again.start()
+        again.join(0.3)
+        assert again.is_alive()          # waiting for the close, not opening beside it
+        slow.may_close.set()
+        closer.join(5)
+        again.join(5)
+        assert len(opened) == 2 and second and second[0] is not first
+
+    def test_a_release_run_by_the_garbage_collector_inside_an_open_does_not_deadlock(self, quiet, enumeration):
+        # Resource.__del__ closes a forgotten session wherever the collector happens to run,
+        # which can be on this thread in the middle of acquire().
+        enumeration['adapters'] = [fake_adapter_info(serial='AAA'), fake_adapter_info(serial='BBB', address=6)]
+        registry = BoardRegistry(open_transport=lambda i: SimulatedAdapter({}), first_board=0)
+        registry.acquire('1')
+        released: List[str] = []
+
+        def opener(info):
+            registry.release('1')            # as a finaliser would, under the registry's lock
+            released.append(registry.board_names()[0])
+            return SimulatedAdapter({})
+
+        registry._open_transport = opener
+        worker = threading.Thread(target=registry.acquire, args=('0',), daemon=True)
+        worker.start()
+        worker.join(5)
+        assert not worker.is_alive() and released == ['0']
+
+    def test_a_failed_open_leaves_no_session_behind(self, quiet):
+        attempts: List[int] = []
+
+        def opener(info):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise TransportError('claimed by another process')
+            return SimulatedAdapter({})
+
+        registry = BoardRegistry(open_transport=opener, first_board=0)
+        with pytest.raises(TransportError):
+            registry.acquire('0')
+        controller = registry.acquire('0')
+        registry.release('0')
+        assert controller._closed  # one session, so one release closes it
 
 
 class TestAvailability:
