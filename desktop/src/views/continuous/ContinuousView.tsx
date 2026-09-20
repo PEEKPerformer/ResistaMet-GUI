@@ -273,6 +273,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
             <>
               {/* The stream lost part of this run; the backend's file did not. */}
               {session.gap && status?.mode === mode ? <Badge tone="warn">Plot partial — file is complete</Badge> : null}
+              <ThinnedBadge mode={mode} />
               <div className={styles.windowPicker} role="group" aria-label="Time window">
                 {WINDOWS.map((w) => (
                   <button
@@ -344,6 +345,17 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
 function numberSetting(settings: Record<string, unknown>, key: string, fallback: number): number {
   const value = settings[key];
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+/** Shown once the series store has thinned the older part of a long run. */
+function ThinnedBadge({ mode }: { mode: Mode }) {
+  const sample = useLatestSample();
+  if (!sample || sample.mode !== mode || !sample.thinned) return null;
+  return (
+    <span title="Older samples are drawn as their minimum and maximum; the newest are drawn in full. The file has every sample.">
+      <Badge>Older history: min/max</Badge>
+    </span>
+  );
 }
 
 function RunState({ mode }: { mode: Mode }) {
