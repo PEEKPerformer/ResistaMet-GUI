@@ -49,9 +49,12 @@ export function SweepView() {
   const fieldKeys = useMemo(() => [...Object.keys(FIELD_META.SweepSettings ?? {}), ...MODE_TIMING.sweep], []);
   useEffect(() => {
     if (!ui.username) return;
+    // The reply may arrive after the operator has changed: seed the tab of
+    // the operator the profile was fetched for.
+    const username = ui.username;
     api
-      .profile(ui.username)
-      .then((profile) => seedOverrides(MODE, fieldKeys, profile.measurement ?? {}))
+      .profile(username)
+      .then((profile) => seedOverrides(MODE, fieldKeys, profile.measurement ?? {}, username))
       .catch(() => undefined);
   }, [api, ui.username, fieldKeys]);
 
@@ -121,7 +124,9 @@ export function SweepView() {
       })),
     [sweep.segments],
   );
-  const fit = useMemo(() => fitResistance(sweep.segments), [sweep.segments]);
+  // A segment does not say which quantity was sourced; the run's settings do.
+  const sourced = overrides.sweep_source === "current" ? "current" : "voltage";
+  const fit = useMemo(() => fitResistance(sweep.segments, sourced), [sweep.segments, sourced]);
   const totalPoints = sweep.segments.reduce((n, s) => n + s.voltages.length, 0);
   const inCompliance = sweep.segments.reduce((n, s) => n + s.compliance.filter((c) => c !== "OK").length, 0);
 
@@ -167,6 +172,17 @@ export function SweepView() {
             <span className={own.statLabel}>Fit R</span>
             <span className={`${own.statValue} num`}>{Number.isFinite(fit.r) ? formatEngineering(fit.r, "Ω") : "—"}</span>
           </div>
+          {fit.fit.pooled === null && fit.fit.legs.length > 1
+            ? fit.fit.legs.map((leg) => (
+                <div className={own.stat} key={leg.direction}>
+                  <span className={own.statLabel}>R {leg.direction} (n={leg.n})</span>
+                  <span className={`${own.statValue} num`}>
+                    {Number.isFinite(leg.r) ? formatEngineering(leg.r, "Ω") : "—"}
+                    {Number.isFinite(leg.u) ? ` ± ${formatEngineering(leg.u, "Ω")}` : ""}
+                  </span>
+                </div>
+              ))
+            : null}
           <div className={own.stat}>
             <span className={own.statLabel}>R²</span>
             <span className={`${own.statValue} num`}>{Number.isFinite(fit.r2) ? fit.r2.toFixed(5) : "—"}</span>
