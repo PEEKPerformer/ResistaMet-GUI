@@ -548,3 +548,33 @@ class TestProfileSections:
         resolved = resolve_run_settings(profile, 'resistance', {})
         assert resolved.issues == []
         assert resolved.settings['output']['format'] == 'xml'
+
+
+class TestForcedTiming:
+    """Four-point and van der Pauw run with fixed auto-zero and filter count."""
+
+    @pytest.mark.parametrize("mode", ['four_point', 'vdp'])
+    def test_a_strict_client_is_told_its_value_was_replaced(self, profile, mode):
+        profile['measurement']['vdp_thickness_cm'] = 0.05
+        resolved = resolve_run_settings(profile, mode, {
+            'auto_zero': 'off', 'filter_count': 50}, strict=True)
+        assert [(i.key, i.severity) for i in resolved.issues] == [
+            ('auto_zero', 'warning'), ('filter_count', 'warning')]
+        assert resolved.ok, "told, not refused"
+        assert resolved.settings['measurement']['auto_zero'] == 'on'
+        assert resolved.settings['measurement']['filter_count'] == 10
+
+    def test_asking_for_the_forced_value_is_not_worth_a_warning(self, profile):
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'auto_zero': 'on', 'filter_count': 10}, strict=True)
+        assert resolved.issues == []
+
+    def test_the_other_modes_keep_what_was_asked_for(self, profile):
+        resolved = resolve_run_settings(profile, 'resistance', {
+            'auto_zero': 'off', 'filter_count': 50}, strict=True)
+        assert resolved.issues == []
+        assert resolved.settings['measurement']['filter_count'] == 50
+
+    def test_the_lenient_path_says_nothing(self, profile):
+        resolved = resolve_run_settings(profile, 'four_point', {'auto_zero': 'off'})
+        assert resolved.issues == []

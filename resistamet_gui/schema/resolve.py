@@ -195,7 +195,12 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
 
     # 8. Accuracy-critical modes force the slow, low-noise timing knobs last,
     #    exactly as gather does before the worker reads the config.
+    #    A strict client that asked for something else is told: the keys
+    #    are legal overrides, and would otherwise be replaced in silence.
     for key, value in MODE_TIMING_OVERRIDES.get(mode, {}).items():
+        if strict and key in overrides and overrides[key] != value:
+            issues.append(Issue(key, f"mode '{mode}' always runs with {key}={value!r}; "
+                                     f"{overrides[key]!r} was not used", severity='warning'))
         m_cfg[key] = value
 
     # 9. Validate against the models; strict adds the GUI's Start-time checks.
