@@ -274,11 +274,37 @@ class TestInputValidation:
     def test_degenerate_zero_orthogonal_delta_raises(self):
         # If one geometry yields zero net delta after current reversal,
         # Q is undefined.
-        with pytest.raises(ValueError, match="orthogonal voltage difference"):
+        with pytest.raises(ValueError, match="second geometry .* read the same"):
             vdp_resistivity_pair(
                 +1.0e-3, -1.0e-3, +1.0e-3, +1.0e-3,
                 current=1.0e-3, thickness_cm=1.0e-5,
             )
+
+    def test_degenerate_zero_first_delta_raises(self):
+        # The first geometry reading the same at both polarities used to
+        # reach `1.0 / 0.0` and raise ZeroDivisionError.
+        with pytest.raises(ValueError, match="first geometry .* read the same"):
+            vdp_resistivity_pair(
+                +1.0e-3, +1.0e-3, +1.0e-3, -1.0e-3,
+                current=1.0e-3, thickness_cm=1.0e-5,
+            )
+
+    @pytest.mark.parametrize("pair", [("V_21,34", "V_12,34"), ("V_32,41", "V_23,41"),
+                                      ("V_43,12", "V_34,12"), ("V_14,23", "V_41,23")])
+    def test_a_geometry_that_reads_the_same_is_named(self, pair):
+        # A lifted sense lead: 0.0 V at both polarities of one geometry.
+        v = _uniform_sample_voltages(100.0, 1.0e-3)
+        v[pair[0]] = v[pair[1]] = 0.0
+        with pytest.raises(ValueError) as caught:
+            calculate_van_der_pauw(v, 1.0e-3, 1.0e-5)
+        assert pair[0] in str(caught.value) and pair[1] in str(caught.value)
+
+    @pytest.mark.parametrize("bad", [9.9e37, -9.9e37, float("inf"), float("-inf"), float("nan")])
+    def test_an_overflow_or_non_finite_reading_is_named(self, bad):
+        v = _uniform_sample_voltages(100.0, 1.0e-3)
+        v["V_14,23"] = bad
+        with pytest.raises(ValueError, match=r"V_14,23 is not a usable voltage"):
+            calculate_van_der_pauw(v, 1.0e-3, 1.0e-5)
 
 
 class TestResultDataclass:
