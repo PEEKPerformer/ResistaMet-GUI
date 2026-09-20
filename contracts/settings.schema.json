@@ -624,11 +624,14 @@
         "prompt_timeout_s": {
           "default": 900.0,
           "exclusiveMinimum": 0.0,
+          "maximum": 86400.0,
           "title": "Prompt Timeout S",
           "type": "number"
         },
         "sample_name": {
+          "maxLength": 120,
           "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
           "title": "Sample Name",
           "type": "string"
         },
@@ -644,7 +647,9 @@
           "default": null
         },
         "username": {
+          "maxLength": 64,
           "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
           "title": "Username",
           "type": "string"
         }

@@ -131,6 +131,54 @@ class TestRunRequest:
             RunRequest(mode='resistance', username='alice', sample_name='w', smaple_rate=5)
 
 
+class TestRunRequestText:
+    """The names go onto ``# key: value`` lines of the data file, and the
+    sample name into the file name."""
+
+    PLANTED = "wafer\n# total_samples: 999\n0.0,1,1,1,1,OK,"
+
+    @pytest.mark.parametrize("field", ['sample_name', 'username'])
+    @pytest.mark.parametrize("text", [PLANTED, "a\rb", "tab\there", "nul\x00", "del\x7f"])
+    def test_a_control_character_is_refused_by_field(self, field, text):
+        request = {'mode': 'resistance', 'username': 'alice', 'sample_name': 'wafer1',
+                   field: text}
+        with pytest.raises(ValidationError) as excinfo:
+            RunRequest(**request)
+        assert [error['loc'] for error in excinfo.value.errors()] == [(field,)]
+
+    @pytest.mark.parametrize("field, limit", [('sample_name', 120), ('username', 64)])
+    def test_length_is_bounded(self, field, limit):
+        request = {'mode': 'resistance', 'username': 'alice', 'sample_name': 'wafer1'}
+        RunRequest(**{**request, field: 'x' * limit})
+        with pytest.raises(ValidationError) as excinfo:
+            RunRequest(**{**request, field: 'x' * (limit + 1)})
+        assert [error['loc'] for error in excinfo.value.errors()] == [(field,)]
+
+    def test_names_are_stripped_as_the_pyside6_app_strips_them(self):
+        request = RunRequest(mode='resistance', username=' alice ', sample_name='  wafer 1\n')
+        assert (request.username, request.sample_name) == ('alice', 'wafer 1')
+
+    def test_a_name_of_only_whitespace_is_empty(self):
+        with pytest.raises(ValidationError):
+            RunRequest(mode='resistance', username='alice', sample_name=' \n ')
+
+    def test_ordinary_lab_names_pass(self):
+        for name in ('wafer7_anneal 300°C run#2', 'PES-12 (film B), 5 µm', 'Ωtest'):
+            assert RunRequest(mode='resistance', username='alice',
+                              sample_name=name).sample_name == name
+
+    @pytest.mark.parametrize("timeout", [float('inf'), float('nan'), 86_400.1, 0.0, -1.0])
+    def test_the_prompt_timeout_is_finite_and_at_most_a_day(self, timeout):
+        with pytest.raises(ValidationError) as excinfo:
+            RunRequest(mode='resistance', username='alice', sample_name='w',
+                       prompt_timeout_s=timeout)
+        assert [error['loc'] for error in excinfo.value.errors()] == [('prompt_timeout_s',)]
+
+    def test_a_day_is_allowed(self):
+        assert RunRequest(mode='resistance', username='alice', sample_name='w',
+                          prompt_timeout_s=86_400).prompt_timeout_s == 86_400.0
+
+
 class TestRunRequestSpot:
     SPOT = {'map_id': 'wafer7', 'index': 2, 'label': 'edge', 'x_mm': 10.0, 'y_mm': 0.0}
 
