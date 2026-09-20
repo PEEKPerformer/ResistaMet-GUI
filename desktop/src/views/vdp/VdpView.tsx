@@ -169,7 +169,9 @@ export function VdpView() {
                   <Button variant="primary" size="lg" disabled={busy} onClick={() => void measure(geometryPrompt!)}>
                     <Icons.check /> Measure
                   </Button>
-                  {geometry.index === 0 ? <div className={own.muted}>Output is off while you rewire.</div> : null}
+                  {/* True at every wiring, not only the first: the run turns the
+                      output off after each geometry and on again after Measure. */}
+                  <div className={own.muted}>Output off</div>
                 </div>
               </div>
             ) : thisRunning ? (
