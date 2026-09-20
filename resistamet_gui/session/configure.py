@@ -9,6 +9,9 @@ The SCPI order in these functions is bench-verified; see ``instrument.py`` for
 the 2400-series quirks it works around.
 """
 from dataclasses import dataclass
+from typing import Optional
+
+import pyvisa
 
 from ..formatting import format_power
 
@@ -34,12 +37,38 @@ class ResistanceState:
     auto_range: bool = False
 
 
-def _read_back_float(keithley, query: str, fallback: float) -> float:
-    """Ask the instrument what a setting became; the request if it will not say."""
+#: The highest source voltage in the 2400 family (the 2410), for bounding a
+#: read-back when the model is not known.
+_FAMILY_MAX_SOURCE_V = 1100.0
+
+
+def _read_back_voltage_limit(keithley, events, max_source_v: Optional[float]) -> Optional[float]:
+    """Ask the instrument what its voltage limit became. None if it will not say.
+
+    None means nothing is recorded as reported: the caller must not put the
+    request in its place, because the request is exactly the number auto-ohms
+    is known to override. Only the instrument not answering, or answering
+    something that is not a number, is handled here; anything else is a bug
+    and is left to fail the configure step.
+
+    A reply outside ``(0, max_source_v * 1.05]`` is not a limit either. The
+    overflow value 9.91e37 is finite and positive, and as a limit it would
+    mean no sample could ever be flagged.
+    """
     try:
-        return float(keithley.query(query).strip())
-    except Exception:
-        return float(fallback)
+        value = float(keithley.query(":SENS:VOLT:PROT?").strip())
+    except (pyvisa.errors.VisaIOError, ValueError) as exc:
+        events.warn('limit_readback_failed',
+                    f"Warning: Could not read back the voltage limit ({exc}). "
+                    f"The file will not record an effective limit.")
+        return None
+    ceiling = (max_source_v or _FAMILY_MAX_SOURCE_V) * 1.05
+    if not 0.0 < value <= ceiling:
+        events.warn('limit_readback_rejected',
+                    f"Warning: The instrument reported a voltage limit of {value:g} V, "
+                    f"which it cannot have. The file will not record an effective limit.")
+        return None
+    return value
 
 
 @dataclass(frozen=True)
@@ -64,8 +93,11 @@ class SweepState:
     up_down: bool
 
 
-def configure_resistance(keithley, events, measurement_settings, nplc):
+def configure_resistance(keithley, events, measurement_settings, nplc, max_source_v=None):
     """Source I, measure R. 2-wire or 4-wire, optional offset compensation.
+
+    ``max_source_v`` is the connected model's, when known; it bounds what is
+    accepted as a read-back of the voltage limit.
 
     Returns (state, metadata, csv_headers, source_value_str).
     """
@@ -98,11 +130,15 @@ def configure_resistance(keithley, events, measurement_settings, nplc):
     # status word does not report compliance in the ohms function, so in
     # manual range the loop compares readings against this number. In auto
     # range it is recorded and not compared: see ResistanceState.
-    effective_compliance = _read_back_float(keithley, ":SENS:VOLT:PROT?", voltage_compliance)
+    effective_compliance = _read_back_voltage_limit(keithley, events, max_source_v)
     # Cable null: software subtraction (2400 series lacks :SENS:RES:REL)
     state = ResistanceState(
         cable_null=float(measurement_settings.get('res_cable_null', 0.0)),
-        voltage_compliance_v=effective_compliance,
+        # No read-back leaves the state's default, which is not finite: the
+        # header then omits the key, and in manual range the parser falls
+        # back to the requested limit for flagging.
+        voltage_compliance_v=(float('inf') if effective_compliance is None
+                              else effective_compliance),
         auto_range=bool(auto_range))
     # Pull raw V and I alongside R so accuracy.py can propagate
     # the per-range V and I uncertainties into σ_R. The 2400's
