@@ -2654,19 +2654,18 @@ when present -- not captured)" -- captured since, in sad_poll.pcap.
 
 #### 10.6.1 Presence probe (0x02, new) and an absent device
 
-`02 P S 00`, `S` = 0x00 or the secondary byte 0x61 (nolistener.pcap
-10.8801 `02 18 61 00`). Reply 16 B: 8-byte status block id 0x02 with
-error 0 and count field written to `00 00`, then `01 00 00 00` if a device
-at that address answered, `00 00 00 00` if not, then `04 00 00 00`
-(open.pcap 0.0085 OUT / 0.0103 IN84: present, 1.8 ms; nolistener.pcap
-0.0235 OUT / 0.0252 IN84: absent, 1.7 ms). What the adapter does on the
-bus during those 1.7 ms is not visible in USB captures; the count field
-being rewritten shows a data-type operation. For `GPIB0::5::INSTR` with
-nothing at 5, NI probed 50 times at 104 ms intervals (0.0235 .. 5.1099), from the second probe on
-each preceded by `0c fc 00 fd 40 3f 25 04` (MTA 0, UNL, LAD 5, SDC; 49
-times), then opened the session anyway
-(nolistener.stdout: `viOpen` returned after 5.2 s) and wrote the bank-2
-configuration for address 5 (5.1127).
+`02 P S 00`, `S` = 0x00 or the secondary byte 0x61 (nolistener.pcap 10.8801
+`02 18 61 00`). Reply 16 B: 8-byte status block id 0x02 with error 0 and
+count field written to `00 00`, then `01 00 00 00` if a device at that
+address answered, `00 00 00 00` if not, then `04 00 00 00` (open.pcap 0.0085
+OUT / 0.0103 IN84: present, 1.8 ms; nolistener.pcap 0.0235 OUT / 0.0252
+IN84: absent, 1.7 ms). What the adapter does on the bus during those 1.7 ms
+is not visible in USB captures; the count field being rewritten shows a
+data-type operation. For `GPIB0::5::INSTR` with nothing at 5, NI probed 50
+times at 104 ms intervals (0.0235 .. 5.1099), from the second probe on each
+preceded by `0c fc 00 fd 40 3f 25 04` (MTA 0, UNL, LAD 5, SDC; 49 times),
+then opened the session anyway (nolistener.stdout: `viOpen` returned after
+5.2 s) and wrote the bank-2 configuration for address 5 (5.1127).
 
 #### 10.6.2 Write with no listener
 
