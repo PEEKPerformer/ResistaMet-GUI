@@ -702,20 +702,28 @@ class TestPauseClock:
 
     def test_paused_time_does_not_count_toward_the_duration(self, session, sink,
                                                               fake_rm, profile):
-        # 1.5 s of measuring time, then pause well past that deadline.
-        session.start(self._timed(profile, 1.5 / 3600.0), 'source_v', 'wafer1', 'alice')
+        # 2 s of measuring time, then pause well past that deadline.
+        duration_s = 2.0
+        started = time.monotonic()
+        session.start(self._timed(profile, duration_s / 3600.0), 'source_v', 'wafer1', 'alice')
         assert _wait_for(lambda: sink.of_type('sample'))
         session.pause()
+        # No more than this was measured before the pause (the run's clock
+        # starts after start() was called).
+        measured_before = time.monotonic() - started
         assert _wait_for(lambda: session.state == 'paused')
-        time.sleep(1.8)
+        time.sleep(duration_s + 0.3)
 
         assert session.state == 'paused', "run ended while paused"
+        resumed = time.monotonic()
         session.resume()
-        assert _wait_for(lambda: session.state == 'running')
-        # still measuring after the wall-clock deadline has passed
-        before = len(sink.of_type('sample'))
-        assert _wait_for(lambda: len(sink.of_type('sample')) > before)
-        session.stop()
+        # Nobody stops it: the run gets the rest of its measuring time and
+        # then ends on its own. A clock that counted the pause would end it
+        # on the first pass after the resume.
+        assert _wait_for(lambda: session.state == 'idle', timeout=10.0)
+        after_resume = time.monotonic() - resumed
+        assert after_resume >= duration_s - measured_before - 0.2
+        assert [e.payload['reason'] for e in sink.of_type('run_ended')] == ['duration']
 
     def test_an_unpaused_run_still_stops_on_time(self, session, sink, fake_rm, profile):
         session.start(self._timed(profile, 0.5 / 3600.0), 'source_v', 'wafer1', 'alice')
