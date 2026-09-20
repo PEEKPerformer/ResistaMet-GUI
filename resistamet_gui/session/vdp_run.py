@@ -347,6 +347,10 @@ class VdpRun:
         )
         primary_paths = self.exporter.output_paths
         self.filename = str(primary_paths[0]) if primary_paths else str(base_path)
+        # The typed event every other mode sends: without it a headless
+        # client learned a vdP file's path only from run_ended.
+        self._events.emit('file_opened', {
+            'path': self.filename, 'columns': list(columns), 'units': list(units)})
         names = ", ".join(p.name for p in primary_paths)
         self._events.log('file_opened', f"Data file: {names}")
 
