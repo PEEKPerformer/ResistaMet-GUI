@@ -76,7 +76,9 @@ pub fn locate(
         .flatten()
     {
         let sidecar = dir.join(binary);
-        if sidecar.exists() {
+        // A file, not merely something of that name: beside an unbundled
+        // unix binary the resources directory is called `resistamet-api` too.
+        if sidecar.is_file() {
             return Launch::Executable(sidecar);
         }
     }
@@ -326,6 +328,20 @@ mod override_tests {
         assert_eq!(overrides.python.as_deref(), Some(Path::new("/somewhere/python")));
         assert!(overrides.simulate);
         assert!(!dev_overrides(true, |_| None).simulate);
+    }
+
+    #[test]
+    fn a_directory_named_like_the_sidecar_is_not_the_sidecar() {
+        // Beside an unbundled unix binary, the bundled resources sit in a
+        // directory with the sidecar's own name.
+        let exe_dir = std::env::temp_dir().join(format!("resistamet-locate-{}", std::process::id()));
+        let binary = if cfg!(windows) { "resistamet-api.exe" } else { "resistamet-api" };
+        std::fs::create_dir_all(exe_dir.join(binary)).unwrap();
+
+        let launch = locate(None, Some(&exe_dir), None, None);
+
+        assert!(matches!(launch, Launch::Interpreter(_)), "{launch:?}");
+        let _ = std::fs::remove_dir_all(&exe_dir);
     }
 
     #[test]
