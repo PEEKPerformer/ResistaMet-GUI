@@ -14,6 +14,7 @@ import { EventStream } from "../lib/events";
 import type { AnyEvent } from "../generated/events";
 import {
   applyEvent,
+  backendRestarted,
   getSessionSnapshot,
   markPromptAnswered,
   promptRunId,
@@ -73,6 +74,9 @@ function beginRunIfNew(event: AnyEvent): void {
   resetSamples(mode, runId);
   resetSweep(runId);
   resetVdp(runId);
+  // A gap is about one run's trace. The stream reports a new run's own gap
+  // after the first of its events.
+  setGap(false);
 }
 
 export function useServices(): AppServices {
@@ -135,6 +139,13 @@ export function AppProvider({ children, fallback }: ProviderProps) {
           return;
         case "gap":
           setGap(true);
+          return;
+        case "restarted":
+          // Same run ids, another process: nothing on screen is this one's.
+          resetSamples();
+          resetSweep(null);
+          resetVdp(null);
+          backendRestarted();
           return;
         case "event":
           beginRunIfNew(message.event);
