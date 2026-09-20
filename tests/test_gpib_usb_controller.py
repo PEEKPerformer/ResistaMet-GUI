@@ -490,7 +490,7 @@ class TestWrite:
         ])
         assert controller.write_raw(b'*IDN?\n', timeout_s=3.0) == 6
         assert controller.write_raw(b'AB', send_eoi=False, timeout_s=3.0) == 2
-        assert transport.in_timeouts_after(p.OP_WRITE) == [WAIT_3S_MS, WAIT_3S_MS]
+        assert transport.in_timeouts_after(p.OP_WRITE) == [WAIT_3S_MS + 6, WAIT_3S_MS + 2]  # + 1 ms per byte
         transport.assert_done()
 
     def test_write_raw_error_8_raises_no_listener(self):
@@ -972,7 +972,7 @@ class TestRead:
         with pytest.raises(GpibTimeout):
             controller.read(22, max_bytes=256, timeout_s=None)
         transport.assert_done()
-        assert transport.in_timeouts_after(0x0A) == [10, int(RECOVERY_WAIT_S * 1000)]
+        assert transport.in_timeouts_after(0x0A) == [10 + 256, int(RECOVERY_WAIT_S * 1000)]  # + 1 ms per byte
 
     def test_error_2_and_3_are_plain_gpib_errors(self):
         controller, _ = attached(address_talker() + [
@@ -1359,7 +1359,7 @@ class TestHostWait:
         # 15 s that nominal + 50 % gives would stop it 1.78 s early.
         assert transport.in_timeouts_after(0x0C) == [WAIT_10S_MS]
         assert transport.in_timeouts_after(0x06) == [SHORT_MS]
-        assert transport.in_timeouts_after(0x0A) == [WAIT_10S_MS]
+        assert transport.in_timeouts_after(0x0A) == [WAIT_10S_MS + 8]  # and 1 ms per byte asked for
 
     def test_three_second_request(self):
         controller, transport = attached(address_listener() + [
@@ -1367,14 +1367,37 @@ class TestHostWait:
         ])
         controller.write(22, b'A', timeout_s=3.0)
         assert transport.in_timeouts_after(0x0C) == [WAIT_3S_MS]
-        assert transport.in_timeouts_after(0x0D) == [WAIT_3S_MS]
+        assert transport.in_timeouts_after(0x0D) == [WAIT_3S_MS + 1]  # and 1 ms for the byte
+
+    @pytest.mark.parametrize('timeout_s, code, base_ms', [(1.0, 0xFB, 3049), (3.0, T3S, WAIT_3S_MS)])
+    def test_the_reply_to_a_framed_read_allows_for_the_bytes_it_carries(self, timeout_s, code, base_ms):
+        # The code bounds a handshake, not the transfer (§10.1.8): a 2420 took 4.0 s over a
+        # 20480-byte chunk and finished with error 0. pyvisa asks for 20480 bytes every time,
+        # so under a 1 s timeout a bare expiry + 2 s would stop a healthy read from the host.
+        controller, transport = attached([
+            ('out', p.read_message(20480, code)),
+            ('in', read_reply(b'x', 20480), p.read_reply_buffer_size(20480, 512)),
+        ])
+        controller.read_raw(20480, timeout_s=timeout_s)
+        assert transport.in_timeouts_after(0x0A) == [base_ms + 20480]
+        assert base_ms + 20480 > 4000
+
+    def test_the_reply_to_a_framed_write_allows_for_what_the_adapter_still_holds(self):
+        # The OUT completes once the adapter has the message; up to its buffer (about 4 KB,
+        # §8.17) has then still to reach the instrument before the reply can come.
+        for length, allowance_ms in ((1, 1), (2048, 2048), (4096, 4096), (30000, 4096)):
+            controller, transport = attached([
+                ('out', p.write_message(bytes(length), T3S, True)), ('in', status_reply(0x0D)),
+            ])
+            controller.write_raw(bytes(length), timeout_s=3.0)
+            assert transport.in_timeouts_after(0x0D) == [WAIT_3S_MS + allowance_ms], length
 
     def test_disabled_timeout_uses_the_application_wait(self):
         controller, transport = attached(address_listener(code=0xF0) + [
             ('out', p.write_message(b'A', 0xF0, True)), ('in', status_reply(0x0D)),
         ], infinite_wait_s=42.0)
         controller.write(22, b'A', timeout_s=None)
-        assert transport.in_timeouts_after(0x0D) == [42000]
+        assert transport.in_timeouts_after(0x0D) == [42001]
 
     def test_only_a_message_that_carries_write_data_waits_longer_on_the_out(self):
         controller, transport = attached(address_listener() + [
@@ -1395,7 +1418,7 @@ class TestHostWait:
             ('out', p.write_message(data, code, True)), ('in', status_reply(0x0D)),
         ])
         controller.write_raw(data, timeout_s=timeout_s)
-        assert transport.timeouts[-2:] == [('out', 0x0D, base_ms + 2048), ('in', 12, base_ms)]
+        assert transport.timeouts[-2:] == [('out', 0x0D, base_ms + 2048), ('in', 12, base_ms + 2048)]
 
     def test_a_framed_write_of_a_full_instruction_on_a_model_without_the_pair(self):
         data = bytes(0xFFFF)
@@ -1424,7 +1447,7 @@ class TestHostWait:
             ('out', p.write_message(bytes(1000), 0xF0, True)), ('in', status_reply(0x0D)),
         ], infinite_wait_s=42.0)
         controller.write_raw(bytes(1000), timeout_s=None)
-        assert transport.timeouts[-2:] == [('out', 0x0D, 43000), ('in', 12, 42000)]
+        assert transport.timeouts[-2:] == [('out', 0x0D, 43000), ('in', 12, 43000)]
 
     #: §7.3 as the specification prints it, (code, measured expiry in seconds), every timed
     #: case: written out here so the test does not read the figures it checks from the code.
