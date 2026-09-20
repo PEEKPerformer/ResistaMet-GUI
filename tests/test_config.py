@@ -420,6 +420,44 @@ class TestReadOnly:
         assert not os.path.exists(temp_config_file)
 
 
+class TestOpeningWithoutWriting:
+    """persist_on_open=False: migrated in memory, on disk only with a real save."""
+
+    OLD = {'users': ['alice'], 'machines': {'HOST-A': {'visa_library': '@py'}},
+           'user_settings': {'alice': {'output': {'format': 'hdf5'},
+                                       'measurement': {'nplc': 2.0}}}}
+
+    def test_a_missing_config_is_not_created(self, temp_config_file, machine_file):
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                                persist_on_open=False)
+        assert manager.get_users() == []
+        assert list(Path(temp_config_file).parent.iterdir()) == []
+
+    def test_an_old_config_is_migrated_in_memory_only(self, temp_config_file, machine_file):
+        Path(temp_config_file).write_text(json.dumps(self.OLD))
+
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                                hostname='HOST-A', persist_on_open=False)
+
+        assert manager.get_user_settings('alice')['output']['format'] == 'csv'
+        assert manager.get_visa_library() == '@py'
+        assert json.loads(Path(temp_config_file).read_text()) == self.OLD
+        assert sorted(p.name for p in Path(temp_config_file).parent.iterdir()) == \
+            ['test_config.json']
+
+    def test_the_first_save_carries_the_migration(self, temp_config_file, machine_file):
+        Path(temp_config_file).write_text(json.dumps(self.OLD))
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                                persist_on_open=False)
+
+        manager.add_user('bob')
+
+        saved = json.loads(Path(temp_config_file).read_text())
+        assert saved['users'] == ['alice', 'bob']
+        assert saved['migrations'] == ['output_reset_1_13']
+        assert saved['user_settings']['alice'] == {'measurement': {'nplc': 2.0}}
+
+
 class TestDefaultMerging:
     """Tests for merging defaults with loaded config."""
 

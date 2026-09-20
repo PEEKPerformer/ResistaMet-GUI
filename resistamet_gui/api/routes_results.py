@@ -47,18 +47,21 @@ def _directory_of(section: dict) -> Path:
 
 def _data_directory(request: Request, user: Optional[str] = None) -> Path:
     """Where ``user``'s runs go; without one, the last operator's, else the default."""
-    config = request.app.state.api.config
-    user = user or config.get_last_user()
+    state = request.app.state.api
+    config = state.stored_config
+    user = user or (config.get_last_user() if config is not None else None)
     if user:
-        return _directory_of(request.app.state.api.profile_provider(user).get('file', {}))
-    return _directory_of(config.config.get('file', {}))
+        return _directory_of(state.profile_provider(user).get('file', {}))
+    return _directory_of(config.config.get('file', {}) if config is not None else {})
 
 
 def _data_directories(request: Request, user: Optional[str] = None) -> List[Path]:
     """Every directory a listed file can be in, without repeats."""
     if user:
         return [_data_directory(request, user)]
-    config = request.app.state.api.config
+    config = request.app.state.api.stored_config
+    if config is None:
+        return [_data_directory(request)]
     roots = [_data_directory(request, name) for name in config.get_users()]
     roots.append(_directory_of(config.config.get('file', {})))
     return list(dict.fromkeys(roots))
