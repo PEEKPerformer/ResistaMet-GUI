@@ -10,7 +10,7 @@ import type { BackendInfo } from "./backend";
 import type { ClientInfo, Mode, RunRequest } from "../generated/settings";
 import type { EventEnvelope } from "../generated/events";
 import type { InstrumentInfo, SessionStatus } from "../generated/session";
-import type { SpotMap } from "../generated/maps";
+import type { SpotMap, SpotPreflight, SpotPreflightRequest } from "../generated/maps";
 import { version as packageVersion } from "../../package.json";
 import { describeDetail } from "./apiDetail";
 import { ReplyOrder } from "./replyOrder";
@@ -265,6 +265,12 @@ export class ApiClient {
   /** The map as the run files describe it now. 404 until a run names it. */
   map(mapId: string, user: string): Promise<SpotMap> {
     return this.request("GET", `/maps/${encodeURIComponent(mapId)}?user=${encodeURIComponent(user)}`);
+  }
+
+  /** What a four-point run with this body would record about the spot's
+   *  position, without the run. 422 wherever Start would be. */
+  spotPreflight(body: SpotPreflightRequest): Promise<SpotPreflight> {
+    return this.request("POST", "/spots/preflight", body);
   }
 
   // --- instruments -------------------------------------------------------

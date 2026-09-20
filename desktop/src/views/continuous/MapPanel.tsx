@@ -6,7 +6,7 @@
 // what goes into it and handles the pointer.
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import type { MapSpot } from "../../generated/maps";
+import type { MapSpot, SpotPreflight } from "../../generated/maps";
 import type { MapOwner } from "../../lib/map/mapId";
 import {
   calibratedScale,
@@ -38,9 +38,12 @@ import {
 } from "../../lib/map/figure";
 import { downloadAll, figureFiles, fileToDataUrl } from "../../lib/map/exportFigure";
 import { spotsCsv } from "../../lib/map/spotsCsv";
+import { positionFeedback, preflightBody, PREFLIGHT_DEBOUNCE_MS, type PositionFeedback } from "../../lib/map/spotPreflight";
 import { formatWithUncertainty } from "../../lib/format";
 import { activeMap, activeMapId, setPending, useSpots } from "../../state/spots";
 import { setMapView, useMapView } from "../../state/mapView";
+import { useOverrides } from "../../state/overrides";
+import { useApi } from "../../app/AppContext";
 import { addPhoto, followMap, removePhoto, setRegistration, useMapPhoto } from "../../state/mapPhoto";
 import { Button, Panel, Select, Toggle } from "../../components/ui";
 import { EngineeringInput } from "../../components/ui/EngineeringInput";
@@ -164,6 +167,41 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
   const scaled = bounded || (outline !== null && photo !== null && photo.calibrated);
   const canPlace = scaled && !running && tool === "place";
   const check = preflightFor(measurement, pending);
+
+  // The backend's word on the position: the run's own check, so the numbers
+  // are the ones the file would carry. Asked once the position and the
+  // settings have rested; until it answers, and whenever it cannot, the
+  // distance check above stands in.
+  const api = useApi();
+  const overrides = useOverrides("four_point");
+  const user = owner?.user ?? null;
+  const askKey = useMemo(
+    () => (pending && scaled && user !== null ? JSON.stringify(preflightBody(user, overrides, pending, mapId)) : null),
+    [pending, scaled, user, overrides, mapId],
+  );
+  const [answer, setAnswer] = useState<{ key: string; value: SpotPreflight } | null>(null);
+  useEffect(() => {
+    if (askKey === null) return;
+    // Cleanup runs before the next request goes out, so a reply to an older
+    // question is dropped: the latest request wins.
+    let current = true;
+    const timer = setTimeout(() => {
+      api
+        .spotPreflight(JSON.parse(askKey))
+        .then((value) => {
+          if (current) setAnswer({ key: askKey, value });
+        })
+        .catch(() => {
+          if (current) setAnswer(null);
+        });
+    }, PREFLIGHT_DEBOUNCE_MS);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  }, [api, askKey]);
+  const localText = check && check.state !== "none" ? `${describeClearance(check)}${check.state === "caution" ? "; the backend reports the error at Start" : ""}` : "";
+  const feedback = positionFeedback(check, localText, answer !== null && answer.key === askKey ? answer.value : null);
 
   /** The pointer in figure units. The SVG keeps its aspect, so client pixels
    *  scale evenly. null outside the map box. */
@@ -462,7 +500,7 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
               style={{ cursor: tool === "align" ? "move" : canPlace || tool === "scale" ? "crosshair" : "default", touchAction: tool === "align" ? "none" : undefined }}
             >
               {pending && scaled ? (
-                <PendingMarker view={layout.view} at={pending} angleDeg={arrayAngleDeg} spacingMm={spacingMm} state={check?.state ?? "none"} />
+                <PendingMarker view={layout.view} at={pending} angleDeg={arrayAngleDeg} spacingMm={spacingMm} state={feedback?.state ?? "none"} />
               ) : null}
               {tool === "scale" ? <ScalePoints view={layout.view} points={scalePoints} /> : null}
             </SceneSvg>
@@ -496,17 +534,13 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
                   <Button size="sm" variant="ghost" disabled={!canPlace} onClick={() => setPending(null)}>
                     Clear
                   </Button>
-                  <Button size="sm" variant="primary" disabled={!start.enabled} onClick={start.run}>
+                  <Button size="sm" variant="primary" disabled={!start.enabled || feedback?.state === "off"} onClick={start.run}>
                     <Icons.play size={12} /> Start here
                   </Button>
                 </>
               ) : null}
-              <span className={check ? positionTone(check, styles) : styles.faint}>
-                {check && check.state !== "none"
-                  ? `${describeClearance(check)}${check.state === "caution" ? "; the backend reports the error at Start" : ""}`
-                  : pending
-                    ? ""
-                    : "No position: click the map, or Start without one."}
+              <span className={feedback ? positionTone(feedback, styles) : styles.faint}>
+                {feedback && feedback.text !== "" ? feedback.text : pending ? "" : "No position: click the map, or Start without one."}
               </span>
             </div>
           ) : null}
@@ -528,8 +562,8 @@ export function MapPanel({ owner, measurement, running, start }: Props) {
   );
 }
 
-function positionTone(check: Preflight, css: Record<string, string>): string | undefined {
-  return check.state === "off" ? css.danger : check.state === "caution" ? css.warn : css.faint;
+function positionTone(feedback: PositionFeedback, css: Record<string, string>): string | undefined {
+  return feedback.state === "off" ? css.danger : feedback.state === "caution" ? css.warn : css.faint;
 }
 
 const STATE_COLOR: Record<Preflight["state"], string> = {
