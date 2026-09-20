@@ -12,6 +12,7 @@ import type { EventEnvelope } from "../generated/events";
 import type { InstrumentInfo, SessionStatus } from "../generated/session";
 import type { SpotMap } from "../generated/maps";
 import { version as packageVersion } from "../../package.json";
+import { describeDetail } from "./apiDetail";
 import { ReplyOrder } from "./replyOrder";
 import { isTimeout, timeoutFor } from "./requestTimeout";
 
@@ -238,7 +239,7 @@ export class ApiClient {
     if (!response.ok) {
       let detail = response.statusText;
       try {
-        detail = String(((await response.json()) as { detail?: unknown }).detail ?? detail);
+        detail = describeDetail(((await response.json()) as { detail?: unknown }).detail, detail);
       } catch {
         // keep status text
       }
@@ -311,11 +312,7 @@ export class ApiClient {
     if (!response.ok) {
       let detail = response.statusText;
       try {
-        const parsed = (await response.json()) as { detail?: unknown };
-        if (parsed.detail !== undefined) {
-          detail =
-            typeof parsed.detail === "string" ? parsed.detail : JSON.stringify(parsed.detail);
-        }
+        detail = describeDetail(((await response.json()) as { detail?: unknown }).detail, detail);
       } catch {
         // no JSON body; keep the status text
       }
