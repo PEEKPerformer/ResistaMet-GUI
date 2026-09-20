@@ -17,11 +17,14 @@ and HDF5 files carry the header this reads; the legacy CSV+JSON pair does not.
 
 No Qt, no instrument.
 """
+import hashlib
+import json
 import logging
 import math
 import os
 import re
-from datetime import datetime
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -29,7 +32,7 @@ import numpy as np
 from pydantic import Field
 
 from ..data_export import parse_metadata
-from ..schema.spots import MAP_ID_PATTERN
+from ..schema.spots import MAP_ID_PATTERN, MapImageRegistration
 from .events import EventModel, SpotStats
 from .run_files import MODE_FILE_TAGS
 
@@ -53,6 +56,23 @@ MAP_SUMMARY_SUFFIX = '_map.json'
 _TEXT_KEYS = ('spot.map_id', 'spot.label', 'sample', 'started_at', 'spot_stats.end_reason')
 
 QUANTITIES = ('rs', 'rho', 'sigma')
+
+#: The photograph of a map's sample is kept beside the runs as
+#: ``<map_id>_sample.<ext>``, and what is known about it -- its hash and where
+#: it sits on the sample -- as ``<map_id>_map_image.json``. Neither name can be
+#: a run's (a run ends in ``.csv``, ``.csv.gz`` or ``.h5``) or a map summary's.
+MAP_IMAGE_STEM = '_sample'
+MAP_IMAGE_SIDECAR_SUFFIX = '_map_image.json'
+
+#: Content type -> the extension the stored file gets.
+IMAGE_EXTENSIONS = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/webp': 'webp',
+    'image/tiff': 'tif',
+}
+
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
 
 
 class MapSpot(EventModel):
@@ -97,10 +117,26 @@ class SkippedRun(EventModel):
     reason: str
 
 
+class MapImage(EventModel):
+    """The photograph kept beside a map's runs.
+
+    ``sha256`` and ``bytes`` are those of the file as it is on disk now.
+    ``registration`` is absent until a client has stored one, and when the
+    stored one was fitted to a different image than the file holds.
+    """
+
+    file: str
+    sha256: str
+    bytes: int
+    registration: Optional[MapImageRegistration] = None
+
+
 class SpotMap(EventModel):
     """A map: its spots in index order and the spread between them."""
 
     map_id: str
+    #: None when no photograph was stored for the map.
+    image: Optional[MapImage] = None
     spots: List[MapSpot] = Field(default_factory=list)
     rs: InterSpotStats
     rho: InterSpotStats
@@ -313,6 +349,7 @@ def assemble_map(directory: Union[str, Path], map_id: str) -> SpotMap:
             update={'superseded': [older.file for older in ordered[1:]]}))
     return SpotMap(
         map_id=map_id,
+        image=read_map_image(directory, map_id),
         spots=spots,
         rs=inter_spot_statistics([spot.stats.rs.mean for spot in spots]),
         rho=inter_spot_statistics([spot.stats.rho.mean for spot in spots]),
@@ -352,3 +389,223 @@ def write_map_summary(directory: Union[str, Path], map_id: str) -> Path:
             pass
         raise
     return target
+
+
+# --- the photograph ----------------------------------------------------------
+
+class UnsupportedImage(ValueError):
+    """Not one of ``IMAGE_EXTENSIONS``, or the bytes are not what they claim."""
+
+
+class ImageTooLarge(ValueError):
+    """More than ``MAX_IMAGE_BYTES``."""
+
+
+class MapImageConflict(Exception):
+    """The map already has a different image, or the registration names one
+    the map does not hold."""
+
+
+#: One server process writes here; the lock makes "is there an image already"
+#: and "put this one in place" a single step between its request threads.
+_IMAGE_LOCK = threading.Lock()
+
+
+def image_content_type(data: bytes) -> Optional[str]:
+    """The image type the first bytes of ``data`` announce, or None.
+
+    The signature only: nothing is decoded, so a file that starts like a PNG
+    and is damaged further on is stored as the PNG the operator chose.
+    """
+    if data.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png'
+    if data.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg'
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return 'image/webp'
+    if data[:4] in (b'II*\x00', b'MM\x00*', b'II+\x00', b'MM\x00+'):
+        return 'image/tiff'
+    return None
+
+
+def _check_map_id(map_id: str) -> None:
+    if not re.fullmatch(MAP_ID_PATTERN, map_id):
+        raise ValueError(f"'{map_id}' is not a valid map id")
+
+
+def map_image_sidecar_path(directory: Union[str, Path], map_id: str) -> Path:
+    _check_map_id(map_id)
+    return Path(directory) / f"{map_id}{MAP_IMAGE_SIDECAR_SUFFIX}"
+
+
+def find_map_image(directory: Union[str, Path], map_id: str) -> Optional[Path]:
+    """The map's image file, or None.
+
+    Only a regular file that really is in ``directory``: a link planted under
+    the image's name is not followed to whatever it points at.
+    """
+    _check_map_id(map_id)
+    directory = Path(directory)
+    for extension in IMAGE_EXTENSIONS.values():
+        path = directory / f"{map_id}{MAP_IMAGE_STEM}.{extension}"
+        if path.is_symlink() or not path.is_file():
+            continue
+        if path.resolve().parent != directory.resolve():
+            continue
+        return path
+    return None
+
+
+def map_image_media_type(path: Path) -> str:
+    """The content type a stored image is served with."""
+    for content_type, extension in IMAGE_EXTENSIONS.items():
+        if path.name.endswith(f".{extension}"):
+            return content_type
+    return 'application/octet-stream'
+
+
+def _sha256_of_file(path: Path) -> Tuple[str, int]:
+    digest, size = hashlib.sha256(), 0
+    with open(path, 'rb') as handle:
+        for block in iter(lambda: handle.read(1 << 20), b''):
+            digest.update(block)
+            size += len(block)
+    return digest.hexdigest(), size
+
+
+def _read_sidecar(directory: Path, map_id: str) -> Dict[str, Any]:
+    try:
+        with open(map_image_sidecar_path(directory, map_id), 'r', encoding='utf-8') as handle:
+            found = json.load(handle)
+        return found if isinstance(found, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def read_map_image(directory: Union[str, Path], map_id: str) -> Optional[MapImage]:
+    """What the files say about the map's image; None when it has none.
+
+    The hash is taken from the image file each time, not read back from the
+    sidecar, so the block describes the picture that is there. A registration
+    fitted to another picture (the file was exchanged by hand) is left out
+    rather than shown against the wrong pixels; so is one that does not parse.
+    """
+    directory = Path(directory)
+    path = find_map_image(directory, map_id)
+    if path is None:
+        return None
+    try:
+        sha256, size = _sha256_of_file(path)
+    except OSError as exc:
+        logger.warning("map image %s could not be read: %s", path.name, exc)
+        return None
+    registration = None
+    raw = _read_sidecar(directory, map_id).get('registration')
+    if isinstance(raw, dict) and raw.get('sha256') == sha256:
+        try:
+            registration = MapImageRegistration.model_validate(raw)
+        except ValueError as exc:
+            logger.warning("registration of map %s ignored: %s", map_id, _brief(exc))
+    return MapImage(file=path.name, sha256=sha256, bytes=size, registration=registration)
+
+
+def _write_atomically(target: Path, data: bytes) -> None:
+    """Temporary file in the same directory, flushed, then moved into place."""
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with open(temporary, 'wb') as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    except BaseException:
+        # Only ever our own temporary file.
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def _write_sidecar(directory: Path, map_id: str, image: MapImage) -> None:
+    text = image.model_dump_json(indent=2) + "\n"
+    _write_atomically(map_image_sidecar_path(directory, map_id), text.encode('utf-8'))
+
+
+def _set_aside(path: Path) -> Path:
+    """Rename a replaced image to ``<name>.replaced-<UTC stamp>``; never delete."""
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    target = path.with_name(f"{path.name}.replaced-{stamp}")
+    repeat = 1
+    while target.exists() or target.is_symlink():
+        repeat += 1
+        target = path.with_name(f"{path.name}.replaced-{stamp}-{repeat}")
+    os.rename(path, target)
+    return target
+
+
+def store_map_image(directory: Union[str, Path], map_id: str, data: bytes,
+                    content_type: str, *, replace: bool = False
+                    ) -> Tuple[MapImage, bool, Optional[str]]:
+    """Keep ``data`` beside the map's runs as ``<map_id>_sample.<ext>``.
+
+    Returns the image, whether anything was written, and the new name of the
+    image this one replaced. The same bytes again change nothing. Different
+    bytes raise ``MapImageConflict`` unless ``replace``, and then the old file
+    is renamed, not deleted: a figure somebody made from it can still be
+    traced to its picture.
+    """
+    _check_map_id(map_id)
+    if content_type not in IMAGE_EXTENSIONS:
+        raise UnsupportedImage(f"'{content_type}' is not one of {', '.join(IMAGE_EXTENSIONS)}")
+    if len(data) > MAX_IMAGE_BYTES:
+        raise ImageTooLarge(f"the image is {len(data)} bytes; the limit is {MAX_IMAGE_BYTES}")
+    announced = image_content_type(data)
+    if announced != content_type:
+        raise UnsupportedImage(
+            f"the data is not {content_type}"
+            + (f": it starts like {announced}" if announced else ""))
+    directory = Path(directory)
+    sha256 = hashlib.sha256(data).hexdigest()
+    with _IMAGE_LOCK:
+        current = read_map_image(directory, map_id)
+        if current is not None and current.sha256 == sha256:
+            return current, False, None
+        if current is not None and not replace:
+            raise MapImageConflict(
+                f"map '{map_id}' already has a different image ({current.file}, "
+                f"sha256 {current.sha256})")
+        directory.mkdir(parents=True, exist_ok=True)
+        set_aside = None if current is None else _set_aside(directory / current.file).name
+        target = directory / f"{map_id}{MAP_IMAGE_STEM}.{IMAGE_EXTENSIONS[content_type]}"
+        if target.exists() or target.is_symlink():
+            # Not an image this module would serve (a link, a directory), so
+            # it was not set aside above; it is not ours to write through.
+            raise MapImageConflict(f"'{target.name}' exists and is not a stored image")
+        _write_atomically(target, data)
+        # A registration belongs to the picture it was fitted to: a new
+        # picture starts without one.
+        image = MapImage(file=target.name, sha256=sha256, bytes=len(data))
+        _write_sidecar(directory, map_id, image)
+        return image, True, set_aside
+
+
+def store_map_registration(directory: Union[str, Path], map_id: str,
+                           registration: MapImageRegistration) -> MapImage:
+    """Record where the map's image sits on the sample, in the sidecar.
+
+    Raises ``LookupError`` when the map has no image and ``MapImageConflict``
+    when the registration was fitted to a different one.
+    """
+    directory = Path(directory)
+    with _IMAGE_LOCK:
+        current = read_map_image(directory, map_id)
+        if current is None:
+            raise LookupError(f"map '{map_id}' has no image")
+        if current.sha256 != registration.sha256:
+            raise MapImageConflict(
+                f"the registration is for image {registration.sha256}; map '{map_id}' "
+                f"holds {current.sha256}")
+        image = current.model_copy(update={'registration': registration})
+        _write_sidecar(directory, map_id, image)
+        return image
