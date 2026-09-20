@@ -16,7 +16,8 @@ from resistamet_gui.gpib_usb import protocol as p
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb.controller import (DRAIN_WAIT_S, IFC_SETTLE_S, RAW_READ_MIN_BYTES,
                                                  BUS_MIN_RATE_BPS, RAW_WRITE_MIN_BYTES, RECOVERY_WAIT_S,
-                                                 SHORT_WAIT_S, SRQ_WAIT_SLICE_S, Controller)
+                                                 RAW_READ_SLICE_S, RAW_REPLY_POLL_S, SHORT_WAIT_S,
+                                                 SRQ_WAIT_SLICE_S, Controller)
 from resistamet_gui.gpib_usb.protocol import AdapterNotReady, GpibError, GpibTimeout, NoListener, ProtocolError
 from resistamet_gui.gpib_usb.transport import TransportError, TransportStall, TransportTimeout
 
@@ -1038,6 +1039,21 @@ def raw_wait_ms(count: int, base_ms: int = WAIT_3S_MS) -> int:
     return base_ms + count * 1000 // BUS_MIN_RATE_BPS
 
 
+def raw_wait_slices(total_ms: int, buffer: int, partial: bytes = b'') -> List[Tuple[Any, ...]]:
+    """A 0x88 wait of ``total_ms`` that brings nothing: every slice times out, and so does every
+    look at the primary IN between two slices. ``partial`` arrives with the last slice."""
+    steps: List[Tuple[Any, ...]] = []
+    taken = 0
+    while total_ms > 0:
+        slice_ms = min(int(RAW_READ_SLICE_S * 1000), total_ms)
+        total_ms -= slice_ms
+        last = total_ms == 0
+        steps.append(('raw_in', TransportTimeout('nothing yet', partial=partial if last else b''), buffer - taken))
+        if not last:
+            steps.append(('in', TransportTimeout('no reply yet'), 512))
+    return steps
+
+
 IDN_2420 = b'KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L\n'
 
 
@@ -1080,7 +1096,7 @@ class TestRawRead:
         controller.read(22, max_bytes=20480, timeout_s=3.0)
         kinds = [kind for kind, _, _ in transport.timeouts][-3:]
         assert kinds == ['out', 'raw_in', 'in']
-        assert transport.timeouts[-2] == ('raw_in', 20992, raw_wait_ms(20480))  # host wait + 20480 / 1000 B/s
+        assert transport.timeouts[-2] == ('raw_in', 20992, int(RAW_READ_SLICE_S * 1000))  # the first slice
         assert transport.timeouts[-1] == ('in', 512, SHORT_MS)
 
     def test_full_chunk_has_end_clear(self):
@@ -1206,7 +1222,7 @@ class TestRawRead:
     def test_host_wait_expiry_on_the_data_stops_the_device_and_reports_a_timeout(self):
         controller, transport = attached_ni(address_talker(code=t.TIMEOUT_DISABLED_CODE) + [
             ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
-            ('raw_in', TransportTimeout('host wait'), 4608),
+        ] + raw_wait_slices(4106, 4608) + [
             STOP,
             ('raw_in', b'', 4608),
             ('in', raw_read_reply(4096, 0, end=False, error=1), 512),
@@ -1216,15 +1232,86 @@ class TestRawRead:
         assert info.value.code == 1 and info.value.partial == b''
         transport.assert_done()
         waits = [tm for kind, _, tm in transport.timeouts if kind == 'raw_in']
-        assert waits == [int((0.01 + 4096 / BUS_MIN_RATE_BPS) * 1000), int(RECOVERY_WAIT_S * 1000)]
+        assert waits == [1000, 1000, 1000, 1000, 106, int(RECOVERY_WAIT_S * 1000)]
+        assert sum(waits[:-1]) == int((0.01 + 4096 / BUS_MIN_RATE_BPS) * 1000)  # the whole host wait, in slices
+        looks = [tm for kind, length, tm in transport.timeouts[:-1] if kind == 'in' and length == 512]
+        assert looks == [int(RAW_REPLY_POLL_S * 1000)] * 4
         assert transport.timeouts[-1] == ('in', 512, int(RECOVERY_WAIT_S * 1000))
+
+    def test_an_error_reply_is_seen_within_a_slice_though_the_data_transfer_never_ends(self):
+        # §10.6.7 does not show whether the adapter completes the 0x88 transfer for read errors
+        # other than the timeout. If it does not, the reply is already waiting on the primary IN:
+        # it must not take the whole transfer wait (26 s here) to find, and an instruction that
+        # has reported its error gets no stop request.
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(20480, T3S)),
+            ('raw_in', TransportTimeout('nothing'), 20992),
+            ('in', raw_read_reply(20480, 0, end=False, error=3), 512),
+            ('raw_in', TransportTimeout('nothing to collect'), 20992),
+        ])
+        with pytest.raises(GpibError) as info:
+            controller.read_raw(20480, timeout_s=3.0)
+        assert info.value.code == 3
+        transport.assert_done()
+        assert [(kind, tm) for kind, _, tm in transport.timeouts[-3:]] == [
+            ('raw_in', 1000), ('in', int(RAW_REPLY_POLL_S * 1000)), ('raw_in', int(DRAIN_WAIT_S * 1000))]
+
+    def test_normal_data_arriving_in_a_later_slice(self):
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(20480, T3S)),
+            ('raw_in', TransportTimeout('still formatting'), 20992), ('in', TransportTimeout('no reply yet'), 512),
+            ('raw_in', TransportTimeout('still formatting'), 20992), ('in', TransportTimeout('no reply yet'), 512),
+            ('raw_in', IDN_2420, 20992),
+            ('in', raw_read_reply(20480, len(IDN_2420)), 512),
+        ])
+        assert controller.read_raw(20480, timeout_s=3.0) == (IDN_2420, True)
+        transport.assert_done()
+        assert transport.timeouts[-1] == ('in', 512, SHORT_MS)
+
+    def test_data_split_over_two_slices_is_joined(self):
+        first, second = bytes(range(256)) * 2, b'tail\n\x00'
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(20480, T3S)),
+            ('raw_in', TransportTimeout('mid-transfer', partial=first), 20992),
+            ('in', TransportTimeout('no reply yet'), 512),
+            ('raw_in', second, 20992 - 512),
+            ('in', raw_read_reply(20480, 517), 512),
+        ])
+        assert controller.read_raw(20480, timeout_s=3.0) == (first + b'tail\n', True)
+        transport.assert_done()
+
+    def test_a_reply_that_overtakes_the_end_of_the_data_still_collects_it(self):
+        # A transfer that ends at the edge of a slice is reported as a timeout with everything
+        # in ``partial``; the reply then says the read was good, and nothing is lost.
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(20480, T3S)),
+            ('raw_in', TransportTimeout('at the deadline', partial=IDN_2420), 20992),
+            ('in', raw_read_reply(20480, len(IDN_2420)), 512),
+            ('raw_in', TransportTimeout('nothing more'), 20992 - len(IDN_2420)),
+        ])
+        assert controller.read_raw(20480, timeout_s=3.0) == (IDN_2420, True)
+        transport.assert_done()
+
+    def test_a_device_timeout_ended_by_the_adapter_s_zero_length_packet_in_a_later_slice(self):
+        # §10.6.7: the adapter ends a timed-out 0x0b itself, with a zero-length transfer on 0x88.
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(20480, 0xFB)),
+            ('raw_in', TransportTimeout('nothing yet'), 20992), ('in', TransportTimeout('no reply yet'), 512),
+            ('raw_in', b'', 20992),
+            ('in', raw_read_reply(20480, 0, end=False, error=0x0A), 512),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.read_raw(20480, timeout_s=1.0)
+        assert info.value.code == 0x0A
+        transport.assert_done()
+        assert 0x20 not in [step[1][0] for step in transport.script if step[0] == 'ctrl'][3:]  # no stop request
 
     def test_partial_data_at_the_host_wait_is_kept_and_completed_after_the_stop(self):
         # The transport received 4 bytes when its wait expired (pyusb's partial count); after the
         # stop the device completes the transfer with 2 more and the reply counts 6.
         controller, transport = attached_ni([
             ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
-            ('raw_in', TransportTimeout('host wait', partial=b'PART'), 4608),
+        ] + raw_wait_slices(4106, 4608, partial=b'PART') + [
             STOP,
             ('raw_in', b'IA', 4604),
             ('in', raw_read_reply(4096, 6, end=False, error=1), 512),
@@ -1237,7 +1324,7 @@ class TestRawRead:
     def test_partial_data_with_nothing_more_after_the_stop(self):
         controller, transport = attached_ni([
             ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
-            ('raw_in', TransportTimeout('host wait', partial=b'PART'), 4608),
+        ] + raw_wait_slices(4106, 4608, partial=b'PART') + [
             STOP,
             ('raw_in', TransportTimeout('nothing more'), 4604),
             ('in', raw_read_reply(4096, 4, end=False, error=1), 512),
@@ -1250,7 +1337,7 @@ class TestRawRead:
     def test_stopped_read_whose_data_never_completes_is_fine_when_nothing_was_read(self):
         controller, transport = attached_ni([
             ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
-            ('raw_in', TransportTimeout('host wait'), 4608),
+        ] + raw_wait_slices(4106, 4608) + [
             STOP,
             ('raw_in', TransportTimeout('still nothing'), 4608),
             ('in', raw_read_reply(4096, 0, end=False, error=1), 512),
@@ -1262,7 +1349,7 @@ class TestRawRead:
     def test_stopped_read_whose_data_never_completes_but_was_read_is_a_fault(self):
         controller, transport = attached_ni([
             ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
-            ('raw_in', TransportTimeout('host wait'), 4608),
+        ] + raw_wait_slices(4106, 4608) + [
             STOP,
             ('raw_in', TransportTimeout('still nothing'), 4608),
             ('in', raw_read_reply(4096, 40, end=False, error=1), 512),
@@ -1529,15 +1616,19 @@ class TestHostWait:
 
     def test_the_raw_in_wait_is_never_shorter_than_the_reply_wait_of_a_framed_read(self):
         # §10.9: give the 0x88 read the same host wait as the reply rather than cancelling it
-        # early; ours adds the transfer allowance on top.
+        # early; ours adds the transfer allowance on top, and spends it in slices.
+        total_ms = WAIT_3S_MS + 20480
         controller, transport = attached_ni([
-            ('out', p.read_raw_message(20480, T3S)), ('raw_in', b'', 20992),
-            ('in', raw_read_reply(20480, 0, end=False, error=0x0A), 512),
+            ('out', p.read_raw_message(20480, T3S)),
+        ] + raw_wait_slices(total_ms, 20992) + [
+            STOP, ('raw_in', b'', 20992),
+            ('in', raw_read_reply(20480, 0, end=False, error=1), 512),
         ])
         with pytest.raises(GpibTimeout):
             controller.read_raw(20480, timeout_s=3.0)
-        kind, _, raw_in_ms = transport.timeouts[-2]
-        assert kind == 'raw_in' and raw_in_ms == WAIT_3S_MS + 20480 and raw_in_ms > 4196
+        transport.assert_done()
+        slices = [tm for kind, _, tm in transport.timeouts if kind == 'raw_in'][:-1]
+        assert sum(slices) == total_ms and total_ms > 4196 and max(slices) == int(RAW_READ_SLICE_S * 1000)
 
 
 # ---------------------------------------------------------------------------
