@@ -167,6 +167,22 @@ class TestClearance:
         with pytest.raises(ValueError, match="edge"):
             geo.rectangle_factor(10.0, 30.0, 1.0, centre=(0.0, 4.0), angle=math.pi / 2)
 
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_a_position_or_angle_that_is_not_finite_is_refused(self, bad):
+        # NaN compares false with everything, so `clearance <= 0` let it
+        # through and the factor came back NaN.
+        for centre, angle in (((bad, 0.0), 0.0), ((0.0, bad), 0.0), ((0.0, 0.0), bad)):
+            for call in (
+                lambda: geo.circle_factor(20.0, 1.0, centre, angle),
+                lambda: geo.rectangle_factor(10.0, 30.0, 1.0, centre, angle),
+                lambda: geo.circle_edge_clearance(20.0, 1.0, centre, angle),
+                lambda: geo.rectangle_edge_clearance(10.0, 30.0, 1.0, centre, angle),
+                lambda: geo.circle_position_effect(20.0, 1.0, centre, angle),
+                lambda: geo.rectangle_position_effect(10.0, 30.0, 1.0, centre, angle),
+            ):
+                with pytest.raises(ValueError, match="finite"):
+                    call()
+
     @pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])
     def test_nonsense_dimensions_are_refused(self, bad):
         with pytest.raises(ValueError):
