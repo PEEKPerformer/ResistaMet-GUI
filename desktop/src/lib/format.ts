@@ -42,7 +42,8 @@ export function engineering(value: number, unit = "", digits = 4): Engineering {
 }
 
 /** Axis tick labels: one prefix for the whole axis, and as many decimals as
- *  the tick spacing needs so neighbouring ticks never read the same. A
+ *  the ticks need so that none reads the same as its neighbour or as a value
+ *  it is not. A
  *  resistance trace lives in the last digits (10.075 … 10.080 Ω), which four
  *  significant figures cannot show. */
 export function axisLabels(ticks: number[], unit = ""): string[] {
@@ -51,7 +52,12 @@ export function axisLabels(ticks: number[], unit = ""): string[] {
   const scaled = ticks.map((v) => v / scale);
   let spacing = Number.POSITIVE_INFINITY;
   for (let i = 1; i < scaled.length; i++) spacing = Math.min(spacing, Math.abs(scaled[i]! - scaled[i - 1]!));
-  const decimals = Number.isFinite(spacing) && spacing > 0 ? Math.min(10, Math.max(0, Math.ceil(-Math.log10(spacing) - 1e-9))) : 0;
+  let decimals = Number.isFinite(spacing) && spacing > 0 ? Math.min(10, Math.max(0, Math.ceil(-Math.log10(spacing) - 1e-9))) : 0;
+  // The spacing's own decimals are not always enough: ticks step by 2.5 as
+  // well as 1, 2 and 5, and 2.5 at zero decimals reads "3". Add decimals
+  // until every label is its tick, to within floating-point noise.
+  const noise = Number.isFinite(spacing) ? spacing * 1e-6 : 0;
+  while (decimals < 10 && scaled.some((v) => Math.abs(Number(v.toFixed(decimals)) - v) > noise)) decimals += 1;
   const suffix = prefix + unit ? ` ${prefix}${unit}` : "";
   return scaled.map((v) => (Math.abs(v) < 0.5 * 10 ** -decimals ? (0).toFixed(decimals) : v.toFixed(decimals)) + suffix);
 }
