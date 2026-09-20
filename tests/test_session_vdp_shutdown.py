@@ -101,7 +101,19 @@ class TestEveryExitAfterTheFileIsOpen:
 
     def test_no_answer_at_a_geometry(self, fake_rm, tmp_path):
         driven = _Driven(tmp_path, prompt_timeout_s=0.05)
-        _check_closed_properly(driven.join(), fake_rm, 'prompt_timeout', rows=0)
+        sink = driven.join()
+        _check_closed_properly(sink, fake_rm, 'prompt_timeout', rows=0)
+        # Nobody aborted it: there was nobody there.
+        messages = [e.payload['message'] for e in sink.of_type('log')]
+        assert not any('by user' in message for message in messages), messages
+        assert any(e.payload['code'] == 'aborted' for e in sink.of_type('log'))
+
+    def test_a_stop_is_still_logged_as_the_user_s(self, fake_rm, tmp_path):
+        driven = _Driven(tmp_path)
+        driven.wait_for_prompt()
+        driven.run.stop_measurement()
+        messages = [e.payload['message'] for e in driven.join().of_type('log')]
+        assert "vdP measurement aborted by user" in messages
 
     def test_a_read_that_fails(self, fake_rm, tmp_path, monkeypatch):
         from resistamet_gui._simulator import FakeKeithley
