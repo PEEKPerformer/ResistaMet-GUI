@@ -93,6 +93,15 @@ def open_exporter(base_path, mode, settings, measurement_settings, username, sam
         on_compress=on_compress,
         on_large_file=on_large_file,
     )
-    primary_paths = exporter.output_paths
-    filename = str(primary_paths[0]) if primary_paths else str(base_path)
+    try:
+        primary_paths = exporter.output_paths
+        filename = str(primary_paths[0]) if primary_paths else str(base_path)
+    except Exception:
+        # The caller gets no exporter back, so nobody else can close the
+        # file that was just created.
+        try:
+            exporter.finalize()
+        except Exception:
+            pass
+        raise
     return exporter, filename
