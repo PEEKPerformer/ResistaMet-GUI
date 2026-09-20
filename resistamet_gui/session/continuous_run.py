@@ -16,7 +16,10 @@ from typing import Dict, Optional
 import numpy as np
 import pyvisa
 
-from ..constants import AUX_READY_TIMEOUT_S, MODE_DISPLAY_NAMES
+from ..constants import (
+    AUX_READY_TIMEOUT_S, MODE_DISPLAY_NAMES,
+    KEITHLEY_STAT_BIT_COMPLIANCE as _STAT_BIT_COMPLIANCE,
+)
 from ..data_export import AUX_LOG_MODES, splice_before_tail
 from ..formatting import format_power
 from ..instrument import Keithley2400, humanize_connection_error
@@ -37,10 +40,6 @@ from .samples import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Keithley 2400 series STATUS word bit masks (24-bit)
-# Bit 3: Compliance — source is in real compliance
-_STAT_BIT_COMPLIANCE = 1 << 3
 
 
 def _aux_connection_message(exc: BaseException, address: str) -> str:

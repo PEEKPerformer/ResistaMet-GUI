@@ -208,6 +208,10 @@ MODE_DISPLAY_NAMES = {
     'vdp': 'Van der Pauw',
 }
 
+# Keithley 2400 series STATUS word (the FORM:ELEM STAT element, 24-bit).
+# Bit 3: Compliance -- the source is in real compliance.
+KEITHLEY_STAT_BIT_COMPLIANCE = 1 << 3
+
 # Keithley compliance heuristics
 KEITHLEY_COMPLIANCE_MAGIC_NUMBER = 9.9e37
 COMPLIANCE_THRESHOLD_FACTOR = 1.0
