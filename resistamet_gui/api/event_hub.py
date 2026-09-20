@@ -12,7 +12,9 @@ Two rules shape this:
   still going when the instrument has been off for ten minutes.
 
 A client whose queue cannot even take a non-droppable event is disconnected
-rather than fed a stream with holes in it; it reconnects and resumes.
+rather than fed a stream with holes in it; it reconnects and resumes. The hub
+stops feeding it and sets ``ClientStream.overflow``; the WebSocket handler
+waits on that and closes the socket with :data:`OVERFLOW_CLOSE_CODE`.
 """
 import asyncio
 import logging
@@ -29,6 +31,10 @@ DROPPABLE_TYPES = frozenset({'sample', 'log'})
 #: so the remaining room is reserved for events that must not be lost.
 QUEUE_CAPACITY = 2000
 DROPPABLE_HIGH_WATER = 1900
+
+#: WebSocket close code for "you fell too far behind; reconnect and resume".
+#: In the application range (4000-4999), after HTTP 408.
+OVERFLOW_CLOSE_CODE = 4408
 
 #: Progress logs are cosmetic; a few per second is plenty for any UI.
 PROGRESS_INTERVAL_S = 0.5
@@ -49,6 +55,8 @@ class ClientStream:
         self._high_water = high_water
         self.dropped = 0
         self.overflowed = False
+        #: Set, on the loop, when the hub gives up on this client.
+        self.overflow = asyncio.Event()
 
     def offer(self, event) -> bool:
         """Queue an event. False means this client has to go."""
@@ -65,6 +73,7 @@ class ClientStream:
             # No room even in the reserve: a stream with holes in it is worse
             # than an honest disconnect.
             self.overflowed = True
+            self.overflow.set()
             return False
         return True
 
@@ -75,10 +84,13 @@ class ClientStream:
 class EventHub:
     """Fan-out from the run thread to any number of WebSocket clients."""
 
-    def __init__(self, clock=None):
+    def __init__(self, clock=None, capacity: int = QUEUE_CAPACITY,
+                 high_water: int = DROPPABLE_HIGH_WATER):
         import time as _time
 
         self._clock = clock or _time.monotonic
+        self._capacity = capacity
+        self._high_water = high_water
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._clients: Set[ClientStream] = set()
         self._last_compliance: Dict[str, Optional[str]] = {}
@@ -92,7 +104,7 @@ class EventHub:
         self._loop = loop
 
     def add_client(self) -> ClientStream:
-        stream = ClientStream()
+        stream = ClientStream(self._capacity, self._high_water)
         self._clients.add(stream)
         return stream
 

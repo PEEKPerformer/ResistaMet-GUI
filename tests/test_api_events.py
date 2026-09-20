@@ -147,6 +147,39 @@ class TestWebSocket:
                 assert message['run_id'] == 'run-1'
 
 
+class TestOverflowedClientIsDisconnected:
+    """A client the hub gave up on must find out: its socket is closed."""
+
+    def test_the_socket_is_closed_with_an_application_code(self):
+        from starlette.websockets import WebSocketDisconnect
+
+        session = MeasurementSession(ListSink())
+        hub = EventHub(capacity=3, high_water=3)
+        app = create_app(session, token=TOKEN, profile_provider=lambda u: {}, hub=hub)
+        burst = [_event('run_ended', seq=100 + i, reason='completed') for i in range(10)]
+        try:
+            with TestClient(app) as client:
+                with client.websocket_connect(f'/session/events/ws?token={TOKEN}') as ws:
+                    # One callback, so the handler cannot drain in between:
+                    # what a stalled client looks like from the hub's side.
+                    hub._loop.call_soon_threadsafe(
+                        lambda: [hub._deliver(event) for event in burst])
+
+                    received = []
+                    with pytest.raises(WebSocketDisconnect) as closed:
+                        for _ in range(len(burst) + 1):
+                            received.append(ws.receive_json()['seq'])
+
+                assert closed.value.code == 4408
+                # Whatever arrived is the unbroken head of the burst: the
+                # client resumes from the last seq it saw.
+                assert len(received) <= 3
+                assert received == [100, 101, 102][:len(received)]
+                assert hub._clients == set()
+        finally:
+            session.close(timeout=5.0)
+
+
 class TestHistory:
     """A dropped connection must be resumable, or say it is not."""
 
