@@ -96,6 +96,21 @@ class RunControl:
         with self._lock:
             return self._finish_reason
 
+    def begin(self) -> bool:
+        """Arm the run, unless it was stopped before it began. False = stopped.
+
+        One step under the lock, so a stop that lands while the run thread is
+        starting is either seen here or arrives after and is seen by the next
+        ``stopped()`` check. Setting ``running = True`` unconditionally on
+        entry overwrote it.
+        """
+        with self._lock:
+            if self._finish_reason is not None:
+                return False
+            self._running = True
+            self._paused = False
+            return True
+
     def finish(self, reason: str) -> None:
         """End the run, recording why. First writer wins.
 

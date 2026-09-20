@@ -156,9 +156,9 @@ class VdpRun:
         return False
 
     def execute(self) -> None:
-        self.running = True
-        # True when the run is turned away before it reaches the instrument:
-        # reported as not ok whatever the reason, a stop included.
+        began = self._control.begin()
+        # True when the run is turned away, or stopped, before it reaches the
+        # instrument: reported as not ok whatever the reason.
         refused = False
         # Everything from run_started on is inside this try, so a fault in
         # any step still ends in the finally below: the lock released and a
@@ -175,6 +175,10 @@ class VdpRun:
                 'settings': self.settings,
                 'started_at': time.time(),
             })
+            if not began:
+                # Stopped before it began: nothing is opened, nothing re-armed.
+                refused = True
+                return
             address = self.settings.get('measurement', {}).get('gpib_address', '')
             try:
                 if self._instrument_lock is None:
@@ -184,11 +188,18 @@ class VdpRun:
                 self._control.finish('instrument_busy')
                 self._events.error('instrument_busy', 'smu', str(exc))
                 return
+            if self._control.stopped():
+                # The wait for the lock can take seconds.
+                refused = True
+                return
 
             if self._safety_prompt_declined():
                 refused = True
                 # finish() keeps the first reason, so a timeout reports as one.
                 self._control.finish('cancelled')
+                return
+            if self._control.stopped():
+                refused = True
                 return
 
             self._connect_and_configure()
@@ -297,6 +308,11 @@ class VdpRun:
             self.keithley.write(":SENS:AVER ON")
 
         self._i_mag = i_mag
+
+        # A stop during the connect and configure: no file for a run that
+        # measured nothing. The output has not been on.
+        if self._control.stopped():
+            raise _VdpAborted()
 
         # Output data file via the configured exporter.
         base_path = create_base_path(
