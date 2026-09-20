@@ -510,7 +510,7 @@ class TestInstrumentSession:
         # Compare off: m 00 and e 00 (the bench-proven form under our AUXRA 0x81 init; NI
         # sends e 0a under its 0x99 init, §10.1.6), 10 s code, -20480.
         assert read[:8] == h('0b 00 00 fd 00 b0 ff ff')
-        assert adapter.raw_in_timeouts[-1] == 18778 + 20480  # 0xfd expiry + 2 s, + 20480 B at 1000 B/s
+        assert adapter.raw_in_timeouts[-1] == 1000  # the first slice of the 0x88 wait; the data was there
         inst.close()
 
     def test_read_termination_selects_eos_and_is_stripped(self, rm, adapter, ni_instructions):

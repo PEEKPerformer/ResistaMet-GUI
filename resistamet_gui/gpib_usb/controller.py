@@ -123,6 +123,14 @@ RAW_WRITE_MIN_BYTES = 2049
 #: ``close`` is noticed between them; the only cost is one extra interrupt
 #: read per slice while nothing is pending.
 SRQ_WAIT_SLICE_S = 1.0
+#: The alternate-IN read of a 0x0b is issued in slices of this length, with a
+#: look at the primary IN between two slices (``RAW_REPLY_POLL_S``): a reply
+#: that is already there means the instruction is over, whatever the data
+#: transfer is doing. §10.6.7 leaves open whether the adapter completes that
+#: transfer for read errors other than the timeout; if it does not, one long
+#: read would sit out the whole transfer wait with the error reply queued.
+RAW_READ_SLICE_S = 1.0
+RAW_REPLY_POLL_S = 0.01
 #: The device timeout code bounds a handshake interval, not the whole
 #: instruction (§10.1.8: 20480-byte chunks took 4.0 s each under the 3 s code
 #: and completed with error 0), so the host wait for a transfer must also
@@ -674,28 +682,59 @@ class Controller:
         them. The device holds its data in the endpoint until the host reads,
         so the microseconds between the OUT and the first IN cost nothing,
         and the reply cannot arrive before the data on the wire.
+
+        The data read is issued in slices of ``RAW_READ_SLICE_S`` that add
+        up to ``wait_s``, with a short look at the primary IN between two
+        of them, so a reply that comes without the data transfer ending is
+        seen within a slice instead of after the whole wait.
         """
         self._host_stopped = False
         self._transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
-        try:
-            data = self._transport.bulk_in_raw(data_buffer, int(wait_s * 1000))
-            reply_wait = SHORT_WAIT_S  # the reply follows the data within a millisecond
-        except TransportTimeout as expired:
-            # §5.11: the device still owes both transfers; make it finish now.
-            # What the transport had received before its wait ran out (the
-            # transport reports a partial transfer this way) stays.
-            self._host_stopped = True
-            self._control(t.STOP_REQUEST)
-            reply_wait = RECOVERY_WAIT_S
+        data = b''
+        remaining_ms = max(1, int(wait_s * 1000))
+        slice_limit_ms = max(1, int(RAW_READ_SLICE_S * 1000))
+        while remaining_ms > 0:
+            slice_ms = min(slice_limit_ms, remaining_ms)
             try:
-                data = expired.partial + self._transport.bulk_in_raw(data_buffer - len(expired.partial),
-                                                                     int(RECOVERY_WAIT_S * 1000))
-            except TransportTimeout as still:
-                # Whether a stopped 0x0b completes its data transfer is not
-                # established (a timed-out one does, with zero bytes). The
-                # reply's count decides whether anything was lost.
-                data = expired.partial + still.partial
-        return data, self._reply_or_stop(p.SMALL_REPLY_BUFFER, reply_wait)
+                data += self._transport.bulk_in_raw(data_buffer - len(data), slice_ms)
+            except TransportTimeout as expired:
+                # What the transport had received before the slice ran out (it
+                # reports a partial transfer this way) stays; the next read
+                # continues the same transfer.
+                data += expired.partial
+            else:
+                # The transfer ended by itself; the reply follows within a millisecond.
+                return data, self._reply_or_stop(p.SMALL_REPLY_BUFFER, SHORT_WAIT_S)
+            remaining_ms -= slice_ms
+            if remaining_ms <= 0:
+                break
+            try:
+                reply = self._transport.bulk_in(p.SMALL_REPLY_BUFFER, max(1, int(RAW_REPLY_POLL_S * 1000)))
+            except TransportTimeout:
+                continue
+            # The instruction is over though its data transfer has not ended:
+            # an error the adapter reports on the primary IN alone, or a
+            # transfer that ended at the very edge of a slice, which the
+            # transport cannot tell from a timeout. No stop request: nothing
+            # is in flight. One short read collects what the alternate IN
+            # still holds, so it is not left for the next 0x0b; the reply's
+            # count then decides whether anything is missing.
+            try:
+                data += self._transport.bulk_in_raw(data_buffer - len(data), int(DRAIN_WAIT_S * 1000))
+            except TransportTimeout as nothing_more:
+                data += nothing_more.partial
+            return data, reply
+        # §5.11: the host wait is over and the device still owes both transfers; make it finish now.
+        self._host_stopped = True
+        self._control(t.STOP_REQUEST)
+        try:
+            data += self._transport.bulk_in_raw(data_buffer - len(data), int(RECOVERY_WAIT_S * 1000))
+        except TransportTimeout as still:
+            # Whether a stopped 0x0b completes its data transfer is not
+            # established (a timed-out one does, with zero bytes). The
+            # reply's count decides whether anything was lost.
+            data += still.partial
+        return data, self._reply_or_stop(p.SMALL_REPLY_BUFFER, RECOVERY_WAIT_S)
 
     def command(self, command_bytes: bytes,
                 timeout_s: Optional[float] = DEFAULT_TIMEOUT_S) -> int:
