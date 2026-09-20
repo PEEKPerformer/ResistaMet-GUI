@@ -60,6 +60,7 @@ class VdpRun:
         self._start_time = 0.0
         self._i_mag = 0.0
         self.filename = ""
+        self._shut_down_started = False   # _shut_down runs once per run
 
     @property
     def running(self) -> bool:
@@ -217,6 +218,12 @@ class VdpRun:
             self._events.error('worker_error', 'run', f"vdP error: {e}")
         finally:
             self.running = False
+            # A no-op after a run that completed: it shut down with its
+            # result. Every other way out comes through here.
+            try:
+                self._shut_down()
+            except Exception as e:
+                logger.warning(f"vdP shutdown failed: {e}")
             samples = self.exporter.row_count if self.exporter else 0
             self._cleanup()
             reason = self._control.finish_reason or 'completed'
@@ -496,6 +503,8 @@ class VdpRun:
             'sheet_resistance_uncertainty': u_rs,
             'rho_avg_uncertainty': u_rho,
         }
+        # The file first: a result that cannot be announced is still recorded.
+        self._shut_down(result_dict)
         self._events.emit('vdp_result', result_dict)
         self._events.log('completed', 
             f"vdP done: Rs={result.sheet_resistance:.4g} Ω/sq, "
@@ -503,10 +512,42 @@ class VdpRun:
             f"asym={result.asymmetry_pct:.2f}% "
             f"({'homogeneous' if result.homogeneous else 'NON-homogeneous'})"
         )
+
+    def _shut_down(self, result_dict=None) -> None:
+        """The end of a run that got as far as its instrument: output off,
+        then the file's footer.
+
+        ``_cleanup`` runs after this on every exit and would also turn the
+        output off and close the file, but silently and with no footer, so a
+        stopped or failed run read afterwards like one that completed. The
+        footer says why the run ended, and carries the result when there is
+        one. Runs once, as in ContinuousRun.
+        """
+        if self._shut_down_started:
+            return
+        self._shut_down_started = True
+        if self.keithley:
+            try:
+                self.keithley.write(":OUTP OFF")
+                self._events.log('output_off', "Output turned OFF.")
+            except Exception as e:
+                self._events.warn('output_off_failed', f"Warning: Could not turn off output - {str(e)}")
+        if not self.exporter:
+            return
         try:
-            self.exporter.finalize({'vdp_result': result_dict})
-        except Exception:
-            logger.warning("vdP: finalize with result failed", exc_info=True)
+            end_metadata = {
+                'ended_at': datetime.now().isoformat(),
+                'total_samples': self.exporter.row_count,
+                'duration_s': time.time() - self._start_time,
+                'end_reason': self._control.finish_reason or 'completed',
+            }
+            if result_dict is not None:
+                end_metadata['vdp_result'] = result_dict
+            self.exporter.finalize(end_metadata)
+            self._events.emit('file_finalized', {
+                'path': self.filename, 'end_metadata': end_metadata})
+        except Exception as e:
+            self._events.warn('finalize_failed', f"Warning: Error finalizing export - {str(e)}")
 
     def _release_instrument_lock(self) -> None:
         held = getattr(self, '_instrument_lock', None)
