@@ -1,6 +1,6 @@
 """One van der Pauw run, ASTM F76-08 Method A.
 
-Moved out of ``workers.py`` unchanged. Four physical cabling configurations,
+Began as part of ``workers.py``. Four physical cabling configurations,
 rewired by hand between geometries, so the procedure waits on the control's
 proceed gate; current reversal at each geometry is automated, giving the eight
 voltage readings F76 averages. Reports through an outputs facade, no Qt.

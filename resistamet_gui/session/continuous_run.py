@@ -1,6 +1,6 @@
 """One continuous-mode or sweep run, start to finalize.
 
-Moved out of ``workers.py`` unchanged. The procedure owns the instrument
+Began as the body of ``workers.py``. The procedure owns the instrument
 session, the exporter and the acquisition loop; it reports through an outputs
 facade and reads stop/pause from a :class:`~resistamet_gui.session.control.RunControl`,
 so the QThread adapter in ``workers.py`` and the headless session drive the same

@@ -1,6 +1,6 @@
 """Turning one instrument reading into a data dict and a CSV row.
 
-Split out of ``workers.py`` unchanged. Called once per sample by the
+Began as part of ``workers.py``. Called once per sample by the
 acquisition loop: parse the reading for this mode, then build the row in the
 column order ``data_export.get_column_config`` declares.
 """
