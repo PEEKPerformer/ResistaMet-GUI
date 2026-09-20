@@ -22,6 +22,7 @@ from pathlib import Path as FilePath
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
 from ..schema.spots import MAP_ID_PATTERN, MapImageRegistration
@@ -121,9 +122,18 @@ async def store_image(request: Request, response: Response,
                             detail=f"Content-Type must be one of {', '.join(IMAGE_EXTENSIONS)}")
     data = await _body_up_to(request, MAX_IMAGE_BYTES)
     directory = _operator_directory(request, user)
+
+    def store():
+        # Off the event loop: the write is flushed to disk and the summary
+        # re-reads the map's run files, and the same loop carries a run's
+        # events to the UI.
+        stored = store_map_image(directory, map_id, data, content_type, replace=replace)
+        if stored[1]:
+            _refresh_summary(directory, map_id)
+        return stored
+
     try:
-        image, written, set_aside = store_map_image(directory, map_id, data, content_type,
-                                                    replace=replace)
+        image, written, set_aside = await run_in_threadpool(store)
     except UnsupportedImage as exc:
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc))
     except ImageTooLarge as exc:
@@ -131,7 +141,6 @@ async def store_image(request: Request, response: Response,
     except MapImageConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if written:
-        _refresh_summary(directory, map_id)
         response.status_code = status.HTTP_201_CREATED
     return {"file": image.file, "sha256": image.sha256, "bytes": image.bytes,
             "replaced": set_aside}
@@ -146,7 +155,10 @@ def read_image(request: Request, map_id: str = Path(pattern=MAP_ID_PATTERN),
     if path is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail=f"map '{map_id}' of '{user}' has no image")
-    return FileResponse(path, media_type=map_image_media_type(path))
+    # The same address serves another picture after a replace, so a cached
+    # copy is checked against the file (FileResponse sends an ETag) each time.
+    return FileResponse(path, media_type=map_image_media_type(path),
+                        headers={'Cache-Control': 'no-cache'})
 
 
 @router.put("/{map_id}/registration")
