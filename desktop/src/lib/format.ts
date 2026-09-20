@@ -94,25 +94,6 @@ export function formatPercent(fraction: number): string {
   return `${(fraction * 100).toFixed(1)} %`;
 }
 
-/** Parse what an operator typed into a numeric field: accepts engineering
- *  suffixes ("100m", "1.5k", "10u", "3 µA") and plain numbers. */
-export function parseEngineering(text: string): number | null {
-  const cleaned = text.trim().replace(/\s+/g, "");
-  if (cleaned === "") return null;
-  const match = /^([-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)([TGMkmuµnpf]?)/i.exec(cleaned);
-  if (!match) return null;
-  const base = Number(match[1]);
-  if (!Number.isFinite(base)) return null;
-  const suffix = match[2] ?? "";
-  const factor: Record<string, number> = {
-    T: 1e12, G: 1e9, M: 1e6, k: 1e3, m: 1e-3, u: 1e-6, "µ": 1e-6, n: 1e-9, p: 1e-12, f: 1e-15,
-  };
-  if (suffix === "") return base;
-  // "M" and "m" differ; every other suffix is case-insensitive in practice.
-  const key = suffix === "M" || suffix === "m" ? suffix : suffix.toLowerCase() === "k" ? "k" : suffix;
-  return base * (factor[key] ?? 1);
-}
-
 /** A mean with its uncertainty under one prefix, the mean carried to the
  *  uncertainty's second significant figure: "5.6512 ± 0.0036 Ω/sq". Without
  *  a usable uncertainty it is the plain value. */
