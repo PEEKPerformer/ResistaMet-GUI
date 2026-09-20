@@ -147,6 +147,7 @@ def create_app(session: MeasurementSession, token: Optional[str] = None,
     from .routes_results import router as results_router
     from .routes_session import router as session_router
     from .routes_settings import router as settings_router
+    from .routes_spots import router as spots_router
 
     app = FastAPI(title="ResistaMet", version="2.0-dev",
                    default_response_class=NullNanJSONResponse)
@@ -166,6 +167,7 @@ def create_app(session: MeasurementSession, token: Optional[str] = None,
     app.include_router(settings_router)
     app.include_router(results_router)
     app.include_router(maps_router)
+    app.include_router(spots_router)
     app.include_router(events_router)
 
     @app.exception_handler(RequestValidationError)

@@ -15,7 +15,8 @@ No Qt, no pyvisa: importable from anywhere.
 import math
 from typing import Annotated, Any, Dict, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (AliasChoices, BaseModel, ConfigDict, Field, StringConstraints,
+                      model_validator)
 
 #: A map id becomes part of a file name (``<map_id>_map.json``) and of a URL,
 #: so it is a plain token: no separators, no dots, nothing a path could be
@@ -143,6 +144,55 @@ class MapImageRegistration(BaseModel):
     rotation_deg: float = Field(ge=-360.0, le=360.0, allow_inf_nan=False)
     calibrated: bool = False
     calibration: Optional[TwoPointCalibration] = None
+
+
+class SpotPreflightRequest(BaseModel):
+    """A four-point run request without the run: whose profile, which
+    overrides, and -- optionally -- which spot. ``user`` is accepted for
+    ``username``, the name the map routes use."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    username: str = Field(min_length=1, validation_alias=AliasChoices('username', 'user'))
+    overrides: Dict[str, Any] = Field(default_factory=dict)
+    spot: Optional[SpotRequest] = None
+
+
+class SpotPreflight(BaseModel):
+    """What a four-point run with these settings would record about a spot.
+
+    ``geometry_factor`` is the closed-form lateral factor with the probe at
+    the centre of ``sample``, pointing along ``angle_deg``: pi / ln 2 for an
+    unbounded sheet, absent when the probe does not fit on the sample.
+    ``factor_rows`` is the lateral factor the run's rows would apply (the
+    table look-up or K*alpha, thickness term divided out), absent when the
+    rows have no finite Rs.
+
+    The rest describes the spot's position and is absent -- ``checked`` false
+    -- when no spot was given, the spot has no position or the sample no
+    edges. The values are the ones the file header's ``spot`` block and the
+    ``geometry_warning`` event carry; the errors are fractions.
+    """
+
+    model_config = ConfigDict(extra='forbid', ser_json_inf_nan='null')
+
+    sample: SampleGeometry
+    spacing_mm: float
+    angle_deg: float
+    edge_warn_pct: float
+    geometry_factor: Optional[float] = None
+    factor_rows: Optional[float] = None
+    checked: bool = False
+    off_sample: bool = False
+    near_edge: bool = False
+    edge_clearance_s: Optional[float] = None
+    factor_here: Optional[float] = None
+    factor_centre: Optional[float] = None
+    relative_error: Optional[float] = None
+    relative_error_rows: Optional[float] = None
+    compared_with: Optional[Literal['rows', 'centre']] = None
+    #: What the run would say: the refusal, or the near-edge warning.
+    message: Optional[str] = None
 
 
 def check_spot_mode(mode: str) -> None:
