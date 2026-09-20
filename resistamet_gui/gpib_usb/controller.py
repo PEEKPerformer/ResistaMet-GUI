@@ -789,19 +789,27 @@ class Controller:
         return parsed.status_byte
 
     def _interrupt_read_in_slices(self, transport: Transport, timeout_s: Optional[float]) -> bytes:
-        """The next interrupt push, waited for in slices; called with the lock released."""
-        remaining = self._infinite_wait_s if timeout_s is None else timeout_s
+        """The next interrupt push, waited for in slices; called with the lock released.
+
+        Counted in whole milliseconds, the unit the transport takes, and no
+        slice is ever 0 ms: libusb reads that as no timeout at all, the read
+        would never return, and ``close`` would give up waiting for it and
+        release the transport under it. A remainder under a millisecond ends
+        the wait instead.
+        """
+        total_s = self._infinite_wait_s if timeout_s is None else timeout_s
+        remaining_ms = max(1, int(round(total_s * 1000)))
+        slice_limit_ms = max(1, int(round(SRQ_WAIT_SLICE_S * 1000)))
         while True:
             if self._closed:
                 raise AdapterNotReady('controller is closed')
-            slice_s = min(SRQ_WAIT_SLICE_S, remaining)
+            slice_ms = min(slice_limit_ms, remaining_ms)
             try:
-                return transport.interrupt_in(t.INTERRUPT_READ_LENGTH, int(slice_s * 1000))
+                return transport.interrupt_in(t.INTERRUPT_READ_LENGTH, slice_ms)
             except TransportTimeout as exc:
-                remaining -= slice_s
-                if remaining <= 0:
-                    raise GpibTimeout('no service request within %.3g s'
-                                      % (self._infinite_wait_s if timeout_s is None else timeout_s)) from exc
+                remaining_ms -= slice_ms
+                if remaining_ms <= 0:
+                    raise GpibTimeout('no service request within %.3g s' % total_s) from exc
             except TransportError:
                 with self._lock:
                     self._resync_pending = True
