@@ -56,6 +56,10 @@ export function VdpView() {
   const geometryPrompt = prompt && prompt.kind === "vdp_geometry" ? prompt : null;
   const geometry = geometryPrompt ? (geometryPrompt.detail as unknown as GeometryDetail) : null;
 
+  // Said before Start, as the other modes do: the compliance voltage reaches
+  // contacts the operator rewires by hand.
+  const hazard = resolved?.hazard?.hazardous ? resolved.hazard : null;
+
   const fieldKeys = useMemo(() => [...Object.keys(FIELD_META.VdpSettings ?? {}), ...MODE_TIMING.vdp], []);
   useEffect(() => {
     if (!ui.username) return;
@@ -138,6 +142,12 @@ export function VdpView() {
         {error ? <Notice tone="danger">{error}</Notice> : null}
         {running && !thisRunning ? <Notice tone="info">Another run is in progress.</Notice> : null}
         {ui.sampleName.trim() === "" && !running ? <Notice tone="info">{NAME_THE_SAMPLE}</Notice> : null}
+        {hazard && !running ? (
+          <Notice tone="warn">
+            {hazard.reason} = {hazard.voltage_v} V is at or above the {hazard.threshold_v} V touch-safety threshold. You will be asked to
+            acknowledge before the output turns on.
+          </Notice>
+        ) : null}
 
         <div className={own.body}>
           <Panel className={own.wizard} bodyClassName={own.wizardBody} title={<Stepper done={done} active={geometry?.index ?? null} running={thisRunning} />}>
