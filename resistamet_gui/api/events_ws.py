@@ -14,6 +14,7 @@ it last heard about.
 """
 import asyncio
 import logging
+import secrets
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
@@ -36,7 +37,10 @@ async def _forward_events(websocket: WebSocket, stream) -> None:
 async def _watch_for_disconnect(websocket: WebSocket) -> None:
     """Consume whatever the client sends; returns when it goes away."""
     while True:
-        await websocket.receive()
+        message = await websocket.receive()
+        if message.get('type') == 'websocket.disconnect':
+            # Asking again would raise a RuntimeError that nobody retrieves.
+            return
 
 
 @router.websocket("/session/events/ws")
@@ -44,7 +48,7 @@ async def stream_events(websocket: WebSocket, token: str = Query(default=""),
                          run_id: str = Query(default=""),
                          since_seq: int = Query(default=0)):
     state = websocket.app.state.api
-    if token != state.token:
+    if not secrets.compare_digest(token.encode(), state.token.encode()):
         await websocket.close(code=4401)  # application-level "unauthorized"
         return
 
