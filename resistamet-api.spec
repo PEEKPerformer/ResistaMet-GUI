@@ -18,6 +18,7 @@ a tenth the size and out of any Qt-plugin path trouble on Windows.
     pyinstaller resistamet-api.spec --noconfirm --clean
     dist/resistamet-api/resistamet-api --port 0 --simulate --config /tmp/c.json
 """
+import re
 import shutil
 import sys
 import tempfile
@@ -46,53 +47,94 @@ block_cipher = None
 ROOT = Path(SPECPATH)
 
 
-def _libusb_files():
-    """The libusb shared library and its licence, when the build machine has one.
+#: A libusb shared library by its file name in the bundle, whoever put it
+#: there: libusb-1.0.0.dylib, libusb-1.0.so.0, libusb-1.0.dll, libusb0.dll,
+#: cygusb-1.0-0.dll. Not libusbmuxd.
+_LIBUSB_BINARY = re.compile(
+    r"^(?:lib|cyg)?usb(?:-?[0-9.]+)*\.(?:dylib|dll|so(?:\.[0-9]+)*)$", re.IGNORECASE)
+_LIBUSB_LICENCE = "libusb-COPYING"
+
+
+def _libusb_binaries():
+    """The libusb shared library this spec bundles itself: macOS only.
 
     pyusb loads the library at runtime by name; a frozen app has no Homebrew
-    or apt path to find it on, so it ships beside the executable and
-    ``gpib_usb.transport.libusb_backend`` looks there first. Only done on
-    macOS and Linux: on Windows the NI adapter belongs to NI's own driver
-    and the app goes through NI-VISA.
+    path to find it on, so it ships beside the executable and
+    ``gpib_usb.transport.libusb_backend`` looks there first.
 
-    libusb is LGPL-2.1. Loading the unmodified shared library dynamically
-    from an MIT program is permitted; the licence asks that its text
-    accompany the library, so ``COPYING`` ships next to it as
-    ``libusb-COPYING`` when the build machine has it.
+    What ends up in the bundle, per platform:
 
-    Returns ``(binaries, datas)`` in PyInstaller's tuple form.
+    * macOS: the Homebrew library found here, under its real file name
+      (``libusb-1.0.0.dylib``). pyinstaller-hooks-contrib's ``hook-usb``
+      adds the library pyusb loaded on the build machine as well, the same
+      file under the name it was loaded by (``libusb-1.0.dylib``).
+    * Linux: nothing from here. ``find_library`` answers with a soname
+      (``libusb-1.0.so.0``), not a path, so there is no file to name.
+      ``hook-usb`` resolves the soname and bundles the system library.
+    * Windows: nothing from here; the NI adapter belongs to NI's own driver
+      and the app goes through NI-VISA. ``hook-usb`` bundles a libusb DLL
+      only if the build machine has one, which the CI runner does not.
+
+    Whichever of these put a libusb in the bundle, its licence goes with it
+    or the build fails: see :func:`_require_libusb_licence`.
+
+    Returns ``binaries`` in PyInstaller's tuple form.
     """
-    if sys.platform.startswith("win"):
-        return [], []
+    if sys.platform != "darwin":
+        return []
     import ctypes.util
 
     found = ctypes.util.find_library("usb-1.0")
     candidates = [found] if found else []
-    if sys.platform == "darwin":
-        candidates += [
-            "/opt/homebrew/lib/libusb-1.0.0.dylib",
-            "/usr/local/lib/libusb-1.0.0.dylib",
-        ]
+    candidates += [
+        "/opt/homebrew/lib/libusb-1.0.0.dylib",
+        "/usr/local/lib/libusb-1.0.0.dylib",
+    ]
     for candidate in candidates:
         path = Path(candidate).resolve()
-        if not path.is_file():
-            continue
-        datas = []
-        for licence in (path.parent.parent / "COPYING",
-                        Path("/opt/homebrew/opt/libusb/COPYING"),
-                        Path("/usr/share/doc/libusb-1.0-0/copyright")):
-            if licence.is_file():
-                # datas keeps the source file name; stage a copy under the
-                # name it should have in the bundle.
-                staged = Path(tempfile.mkdtemp(prefix="resistamet-libusb-")) / "libusb-COPYING"
-                shutil.copyfile(licence, staged)
-                datas.append((str(staged), "."))
-                break
-        return [(str(path), ".")], datas
-    return [], []
+        if path.is_file():
+            return [(str(path), ".")]
+    return []
 
 
-_LIBUSB_BINARIES, _LIBUSB_DATAS = _libusb_files()
+def _libusb_licence_source(library):
+    """The licence text that came with ``library`` on this build machine, or None."""
+    for licence in (Path(library).resolve().parent.parent / "COPYING",  # a Homebrew keg
+                    Path("/opt/homebrew/opt/libusb/COPYING"),
+                    Path("/usr/local/opt/libusb/COPYING"),
+                    Path("/usr/share/doc/libusb-1.0-0/copyright")):
+        if licence.is_file():
+            return licence
+    return None
+
+
+def _require_libusb_licence(analysis):
+    """Ship ``libusb-COPYING`` with any bundled libusb, or stop the build.
+
+    libusb is LGPL-2.1. Loading the unmodified shared library dynamically
+    from an MIT program is permitted; the licence asks that its text
+    accompany the library. Checked on what the analysis collected, not on
+    what this spec asked for, because ``hook-usb`` bundles a libusb of its
+    own accord on every platform. A bundle with the library and without
+    the text is not one to publish, so that is an error, not a warning.
+    """
+    bundled = [(dest, source) for dest, source, _kind in analysis.binaries
+               if _LIBUSB_BINARY.match(Path(dest).name)]
+    if not bundled:
+        return
+    licence = _libusb_licence_source(bundled[0][1])
+    if licence is None:
+        raise SystemExit(
+            "resistamet-api.spec: %s would be bundled without the libusb licence. libusb is "
+            "LGPL-2.1 and its COPYING must ship beside it as %s; none was found on this "
+            "build machine (looked beside the library's Homebrew keg and in "
+            "/usr/share/doc/libusb-1.0-0)."
+            % (", ".join(sorted(dest for dest, _ in bundled)), _LIBUSB_LICENCE))
+    # datas keeps the source file's name; stage a copy under the name it
+    # should have in the bundle.
+    staged = Path(tempfile.mkdtemp(prefix="resistamet-libusb-")) / _LIBUSB_LICENCE
+    shutil.copyfile(licence, staged)
+    analysis.datas.append((_LIBUSB_LICENCE, str(staged), "DATA"))
 
 
 a = Analysis(
@@ -100,8 +142,8 @@ a = Analysis(
     # script, where the package-relative imports in api/__main__.py would fail.
     [str(ROOT / "resistamet-api.py")],
     pathex=[str(ROOT)],
-    binaries=_LIBUSB_BINARIES,
-    datas=_LIBUSB_DATAS + _version_metadata(),
+    binaries=_libusb_binaries(),
+    datas=_version_metadata(),
     hiddenimports=[
         # pyvisa backends are chosen by name at runtime; static analysis does
         # not see them.
@@ -170,6 +212,8 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+_require_libusb_licence(a)
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
