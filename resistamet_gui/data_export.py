@@ -518,8 +518,15 @@ class CsvExporter(_BaseExporter):
         # ended_at: ...
         # total_samples: ...
 
-    Crash safety: rows are written and fsync'd as they arrive; the partial
-    CSV is itself the recovery artifact, so no checkpoint sidecar is needed.
+    Crash safety: each row is flushed and fsync'd as it is written, so a
+    process that is killed outright loses at most the row it was in the
+    middle of; the partial CSV is itself the recovery artifact, and no
+    checkpoint sidecar is needed. (fsync hands the row to the operating
+    system and the drive. A drive that acknowledges before its own cache is
+    on the medium -- macOS without F_FULLFSYNC, some consumer SSDs -- can
+    still lose the last moments to a power cut, and nothing here can help
+    that.) This holds while the run is going, whatever ``compression`` says:
+    the file is plain CSV until finalize.
 
     Compression: if ``compression == 'always'`` the file is gzipped on
     finalize. ``auto`` only gzips if the file is larger than
@@ -586,6 +593,10 @@ class CsvExporter(_BaseExporter):
             ]
             self._csv_writer.writerow(formatted)
             self._row_count += 1
+            # Per row, not per auto-save interval: Python holds up to 8 kB of
+            # rows in its own buffer, which is minutes of a slow run, and a
+            # killed process takes that buffer with it.
+            self.flush()
 
     def flush(self, checkpoint: bool = True) -> None:
         if self._csv_file:
@@ -673,6 +684,12 @@ class Hdf5Exporter(_BaseExporter):
     All columns are stored as variable-length UTF-8 strings in a compound
     dtype, so mixed-type modes (vdP labels, compliance flags) work without
     a separate schema per mode. Numeric callers can re-cast on read.
+
+    Crash safety is weaker than the CSV's, and that is the format: rows reach
+    the file when ``flush()`` is called -- the run loop does that every
+    ``auto_save_interval`` seconds -- and HDF5 makes no promise that a file
+    whose writer was killed between flushes can be opened at all. A run that
+    must survive a hard kill row by row should be written as CSV.
     """
 
     DATASET_NAME = "data"
@@ -785,6 +802,10 @@ class LegacyDualExporter(_BaseExporter):
 
     Identical behavior to the original ``DualExporter`` so anyone with pipelines
     parsing the ``.json`` file keeps working through one or two more releases.
+
+    Crash safety, as it always was for this format: rows are flushed to the
+    CSV and checkpointed when ``flush()`` is called, which the run loop does
+    every ``auto_save_interval`` seconds, not per row.
     """
 
     FORMAT_VERSION = LEGACY_FORMAT_VERSION
