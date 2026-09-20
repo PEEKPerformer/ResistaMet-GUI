@@ -270,18 +270,22 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
           bodyClassName={styles.plotBody}
           title="Live"
           actions={
-            <div className={styles.windowPicker} role="group" aria-label="Time window">
-              {WINDOWS.map((w) => (
-                <button
-                  key={w.seconds}
-                  type="button"
-                  data-active={w.seconds === windowS}
-                  onClick={() => setWindowS(w.seconds)}
-                >
-                  {w.label}
-                </button>
-              ))}
-            </div>
+            <>
+              {/* The stream lost part of this run; the backend's file did not. */}
+              {session.gap && status?.mode === mode ? <Badge tone="warn">Plot partial — file is complete</Badge> : null}
+              <div className={styles.windowPicker} role="group" aria-label="Time window">
+                {WINDOWS.map((w) => (
+                  <button
+                    key={w.seconds}
+                    type="button"
+                    data-active={w.seconds === windowS}
+                    onClick={() => setWindowS(w.seconds)}
+                  >
+                    {w.label}
+                  </button>
+                ))}
+              </div>
+            </>
           }
         >
           <LivePlot traces={TRACES[mode]} mode={mode} windowS={windowS} />
@@ -343,7 +347,7 @@ function numberSetting(settings: Record<string, unknown>, key: string, fallback:
 }
 
 function RunState({ mode }: { mode: Mode }) {
-  const { status, lastRunEnded } = useSession();
+  const { status, lastRunEnded, gap } = useSession();
   const sample = useLatestSample();
   const latest = sample && sample.mode === mode ? sample : null;
   if (status && status.state !== "idle" && status.mode === mode) {
@@ -353,7 +357,8 @@ function RunState({ mode }: { mode: Mode }) {
         <Badge tone={tone}>{STATE_LABEL[status.state] ?? status.state}</Badge>
         {latest ? (
           <span className={`${styles.runMeta} num`}>
-            {formatElapsed(latest.elapsedS)} · {latest.count} samples
+            {/* With a gap the local count is only what reached this screen. */}
+            {formatElapsed(latest.elapsedS)} · {gap ? "≥ " : ""}{latest.count} samples
           </span>
         ) : null}
       </span>
