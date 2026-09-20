@@ -43,15 +43,26 @@ def test_the_escaped_form_is_what_reads_back(tmp_path):
     assert meta['total_samples'] == 1
 
 
-@pytest.mark.parametrize('breaker', ['\r', '\r\n', '\x0b', '\x0c', '\x1c', '\x85',
-                                     '\u2028', '\u2029'])
-def test_every_character_a_reader_splits_lines_on_is_covered(tmp_path, breaker):
+@pytest.mark.parametrize('breaker', ['\r', '\r\n'])
+def test_carriage_returns_are_line_breaks_too(tmp_path, breaker):
     path = _write(tmp_path, {'sample': f'a{breaker}# mode: fake'})
 
     meta = parse_metadata(path, text_keys=('sample',))
 
     assert 'mode' not in meta
     assert meta['sample'] == r'a\n# mode: fake'
+
+
+@pytest.mark.parametrize('other', ['\x0b', '\x0c', '\x1c', '\x1d', '\x1e', '\x85',
+                                   '\u2028', '\u2029'])
+def test_what_only_splitlines_breaks_on_stays_inside_the_value(tmp_path, other):
+    """The reader must not split where the writer saw no line break."""
+    path = _write(tmp_path, {'sample': f'a{other}# mode: fake'})
+
+    meta = parse_metadata(path, text_keys=('sample',))
+
+    assert 'mode' not in meta
+    assert meta['sample'] == f'a{other}# mode: fake'
 
 
 def test_keys_and_end_metadata_are_covered_too(tmp_path):
