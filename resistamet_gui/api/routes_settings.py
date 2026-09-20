@@ -77,10 +77,13 @@ def _bus_overrides(request: Request, visa_library: Optional[str],
                    gpib_interface: Optional[str]):
     """The VISA backend and GPIB interface one bus request will use.
 
-    None means this machine's stored setting. A request may try another
-    backend before saving it, but only one of the named ones: a path would be
-    loaded into this process. The stored value itself is always allowed, so a
-    client can send back what the profile gave it.
+    None means this machine's stored setting. A request may try something
+    else before saving it, within limits: the library is one of the named
+    backends -- a path would be loaded into this process -- and the interface
+    is a Prologix ``INTFC`` name, because it is opened and held, and any other
+    resource (an aux sensor's serial port, say) is not the request's to take.
+    The stored value itself is always allowed, so a client can send back what
+    the profile gave it.
     """
     config = _config(request)
     stored_library, stored_interface = config.get_visa_library(), config.get_gpib_interface()
@@ -93,6 +96,12 @@ def _bus_overrides(request: Request, visa_library: Optional[str],
                    "in this machine's settings")
     if gpib_interface is None:
         gpib_interface = stored_interface
+    elif gpib_interface != stored_interface:
+        try:
+            gpib_interface = InstrumentSettings(gpib_interface=gpib_interface).gpib_interface
+        except ValidationError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                 detail=f"gpib_interface: {exc.errors()[0]['msg']}")
     return visa_library, gpib_interface
 
 
