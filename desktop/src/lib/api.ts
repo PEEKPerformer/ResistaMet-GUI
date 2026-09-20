@@ -1,6 +1,7 @@
 // The HTTP side of the backend, one method per route.
 //
-// Thin on purpose: no caching, no retries, no state. Each method builds a
+// Thin on purpose: no caching, no retries, and no state beyond the order the
+// session requests went out in. Each method builds a
 // request, sends the bearer token, and turns a non-2xx response into an
 // ApiError carrying the backend's `detail` so the UI can show the reason the
 // backend gave rather than one it made up.
@@ -11,6 +12,7 @@ import type { EventEnvelope } from "../generated/events";
 import type { InstrumentInfo, SessionStatus } from "../generated/session";
 import type { SpotMap } from "../generated/maps";
 import { version as packageVersion } from "../../package.json";
+import { ReplyOrder } from "./replyOrder";
 
 /** Written into the header of every file a run started from here produces,
  *  so desktop output can be told from the PySide6 app's. */
@@ -97,45 +99,78 @@ export class ApiError extends Error {
   }
 }
 
+/** Where the client reports what the session routes tell it, so the run
+ *  state on screen follows a command's reply rather than the next poll. */
+export interface ApiHooks {
+  /** The status GET /session and every session command answer with. */
+  onStatus?: (status: SessionStatus) => void;
+  /** The backend accepted an answer to this prompt. */
+  onPromptAnswered?: (promptId: string) => void;
+  /** The run the UI believes this prompt belongs to, sent with the answer so
+   *  the backend can refuse one meant for another run. */
+  promptRunId?: (promptId: string) => string | null;
+}
+
 export class ApiClient {
-  constructor(readonly backend: BackendInfo) {}
+  private readonly statusOrder = new ReplyOrder();
+
+  constructor(
+    readonly backend: BackendInfo,
+    private readonly hooks: ApiHooks = {},
+  ) {}
 
   // --- session -----------------------------------------------------------
 
   status(): Promise<SessionStatus> {
-    return this.request("GET", "/session");
+    return this.sessionRequest("GET", "/session");
   }
 
-  start(request: StartRequest): Promise<{ run_id: string }> {
-    return this.request("POST", "/session/start", { ...request, client: CLIENT });
+  async start(request: StartRequest): Promise<{ run_id: string }> {
+    const reply = await this.request<{ run_id: string }>("POST", "/session/start", { ...request, client: CLIENT });
+    // Start answers with the run id only. Read the status before returning,
+    // so the caller's "busy" does not end on a screen that still says idle.
+    await this.status().catch(() => undefined);
+    return reply;
   }
 
   stop(): Promise<SessionStatus> {
-    return this.request("POST", "/session/stop");
+    return this.sessionRequest("POST", "/session/stop");
   }
 
   abort(): Promise<SessionStatus> {
-    return this.request("POST", "/session/abort");
+    return this.sessionRequest("POST", "/session/abort");
   }
 
   pause(): Promise<SessionStatus> {
-    return this.request("POST", "/session/pause");
+    return this.sessionRequest("POST", "/session/pause");
   }
 
   resume(): Promise<SessionStatus> {
-    return this.request("POST", "/session/resume");
+    return this.sessionRequest("POST", "/session/resume");
   }
 
   mark(label = "MARK"): Promise<SessionStatus> {
-    return this.request("POST", "/session/mark", { label });
+    return this.sessionRequest("POST", "/session/mark", { label });
   }
 
-  answerPrompt(
+  async answerPrompt(
     promptId: string,
     choice: string,
     fields: Record<string, unknown> = {},
   ): Promise<SessionStatus> {
-    return this.request("POST", "/session/prompt", { prompt_id: promptId, choice, fields });
+    const body: { prompt_id: string; choice: string; fields: Record<string, unknown>; run_id?: string } = {
+      prompt_id: promptId,
+      choice,
+      fields,
+    };
+    const runId = this.hooks.promptRunId?.(promptId) ?? null;
+    if (runId !== null) body.run_id = runId;
+    const ticket = this.statusOrder.sent();
+    const status = await this.request<SessionStatus>("POST", "/session/prompt", body);
+    // Before the status: the reply may still name the prompt it answered.
+    this.hooks.onPromptAnswered?.(promptId);
+    if (this.statusOrder.accepts(ticket)) this.hooks.onStatus?.(status);
+    return status;
   }
 
   events(sinceSeq = 0, runId?: string, limit = 500): Promise<EventPage> {
@@ -247,6 +282,15 @@ export class ApiClient {
   }
 
   // --- transport ---------------------------------------------------------
+
+  /** A route that answers with the session's status: report it, unless a
+   *  request sent after this one has already been answered. */
+  private async sessionRequest(method: string, path: string, body?: unknown): Promise<SessionStatus> {
+    const ticket = this.statusOrder.sent();
+    const status = await this.request<SessionStatus>(method, path, body);
+    if (this.statusOrder.accepts(ticket)) this.hooks.onStatus?.(status);
+    return status;
+  }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = { Authorization: `Bearer ${this.backend.token}` };

@@ -81,7 +81,34 @@ export function useSession(): SessionSnapshot {
   );
 }
 
-export function setStatus(status: SessionStatus): void {
+/** Prompts that have had their answer, by id. A status that still names one
+ *  was read before the answer landed; showing it again would offer the
+ *  operator a button that either does nothing or, a moment later, belongs to
+ *  the next prompt. Ids carry the run id, so they do not repeat. */
+const answeredPrompts = new Set<string>();
+
+function withoutAnsweredPrompt(status: SessionStatus): SessionStatus {
+  const pending = status.pending_prompt;
+  if (pending === null || !answeredPrompts.has(pending.prompt_id)) return status;
+  return { ...status, pending_prompt: null };
+}
+
+/** The prompt has its answer, from here or from another client. */
+export function markPromptAnswered(promptId: string): void {
+  answeredPrompts.add(promptId);
+  if (snapshot.status?.pending_prompt?.prompt_id === promptId) {
+    publish({ ...snapshot, status: withoutAnsweredPrompt(snapshot.status) });
+  }
+}
+
+/** The run the pending prompt belongs to, for an answer to name. */
+export function promptRunId(promptId: string): string | null {
+  const status = snapshot.status;
+  return status?.pending_prompt?.prompt_id === promptId ? status.run_id : null;
+}
+
+export function setStatus(incoming: SessionStatus): void {
+  const status = withoutAnsweredPrompt(incoming);
   // After a reload the events that named the instrument are gone; the backend
   // remembers the last one it saw. Only fills a gap: a live event or an
   // Identify is newer than any status that was in flight.
@@ -184,6 +211,9 @@ export function applyEvent(event: AnyEvent): void {
           samples: event.payload.samples ?? null,
         },
       });
+      return;
+    case "prompt_resolved":
+      markPromptAnswered(event.payload.prompt_id);
       return;
     default:
       return;
