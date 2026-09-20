@@ -953,8 +953,11 @@ class ContinuousRun:
                                     f"warn threshold {format_power(warn_w)}"
                                 )
 
-                    # Atomically get and clear event marker (thread-safe)
-                    event_marker = self.get_and_clear_event_marker()
+                    # Read the pending marks without taking them: they come
+                    # off the queue only once the row that carries them is
+                    # in the file.
+                    pending_marks = self._control.pending_marks()
+                    event_marker = "; ".join(pending_marks)
                     if event_marker:
                         self._events.log('event_marked', f"Event marked at {elapsed_time:.3f}s: {event_marker}")
 
@@ -973,6 +976,7 @@ class ContinuousRun:
                     try:
                         self.exporter.write_row(row_data)
                         self._csv_error_count = 0  # Reset error count on success
+                        self._control.consume_marks(len(pending_marks))
                     except Exception as e:
                         self._csv_error_count += 1
                         error_msg = f"Error writing data ({self._csv_error_count}/{self._max_csv_errors}): {str(e)}"
@@ -1119,6 +1123,11 @@ class ContinuousRun:
                     'total_samples': self.exporter.row_count,
                     'duration_s': time.time() - self.start_time
                 }
+                # Marks made after the last row, or whose rows never reached
+                # the file: the footer is the only place left for them.
+                leftover_marks = self._control.pending_marks()
+                if leftover_marks:
+                    end_metadata['marks_unwritten'] = "; ".join(leftover_marks)
                 spot_stats = self._spot_statistics(nplc)
                 if spot_stats is not None:
                     end_metadata['spot_stats'] = spot_stats
