@@ -23,6 +23,8 @@ import json
 import math
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -165,6 +167,15 @@ def create_app(session: MeasurementSession, token: Optional[str] = None,
     app.include_router(results_router)
     app.include_router(maps_router)
     app.include_router(events_router)
+
+    @app.exception_handler(RequestValidationError)
+    async def _unprocessable(request: Request, exc: RequestValidationError):
+        # FastAPI's own 422 body, rendered the way every other reply here is.
+        # The errors echo the offending input, and an input of Infinity or NaN
+        # -- refused for being exactly that -- cannot be written as JSON: the
+        # stock handler raised while reporting it and the client got a 500.
+        return NullNanJSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                   content={"detail": jsonable_encoder(exc.errors())})
 
     @app.exception_handler(ConfigSaveError)
     async def _settings_not_saved(request: Request, exc: ConfigSaveError):

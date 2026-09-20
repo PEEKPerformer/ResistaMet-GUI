@@ -9,13 +9,13 @@ edited without the model is a test failure rather than a silent divergence.
 Defaults are :data:`~resistamet_gui.constants.DEFAULT_SETTINGS` by reference.
 See ``docs/design/tauri_backend_split.md`` section 4.2.
 """
-from typing import Any, Dict, Literal, Optional
+from typing import Annotated, Any, Dict, Literal, Optional
 
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 from ..constants import DEFAULT_SETTINGS
 from .settings_common import SettingsModel
-from .spots import SpotRequest, check_spot_mode
+from .spots import LABEL_PATTERN, SpotRequest, check_spot_mode
 
 _M = DEFAULT_SETTINGS['measurement']
 
@@ -239,6 +239,26 @@ class ClientInfo(SettingsModel):
     version: str = Field(pattern=CLIENT_TEXT_PATTERN)
 
 
+#: Text a client sends that ends up on a ``# key: value`` line of the data
+#: file: it has to stay on that line, so no control characters (the rule a
+#: spot label already follows), and it is stripped because the header reader
+#: strips. The PySide6 app gets the same from a single-line edit and
+#: ``.strip()``. The sample name also becomes part of the file name, where a
+#: component is 255 bytes at most; the user name matches what the profile
+#: route accepts.
+SAMPLE_NAME_MAX_LENGTH = 120
+USERNAME_MAX_LENGTH = 64
+SampleName = Annotated[str, StringConstraints(
+    strip_whitespace=True, min_length=1, max_length=SAMPLE_NAME_MAX_LENGTH,
+    pattern=LABEL_PATTERN)]
+Username = Annotated[str, StringConstraints(
+    strip_whitespace=True, min_length=1, max_length=USERNAME_MAX_LENGTH,
+    pattern=LABEL_PATTERN)]
+
+#: The longest a session run may sit on an unanswered prompt: a day.
+PROMPT_TIMEOUT_MAX_S = 86_400.0
+
+
 class RunRequest(SettingsModel):
     """What a client asks for. Never persisted.
 
@@ -255,12 +275,14 @@ class RunRequest(SettingsModel):
     model_config = ConfigDict(extra='forbid')
 
     mode: Literal['resistance', 'source_v', 'source_i', 'four_point', 'sweep', 'vdp']
-    username: str = Field(min_length=1)
-    sample_name: str = Field(min_length=1)
+    username: Username
+    sample_name: SampleName
     overrides: Dict[str, Any] = Field(default_factory=dict)
     # Session runs only: how long a prompt may sit unanswered before the run
-    # aborts with the output off. The PySide6 path never times out.
-    prompt_timeout_s: float = Field(default=900.0, gt=0.0)
+    # aborts with the output off. The PySide6 path never times out. Finite
+    # and bounded: "Infinity" would be a timeout that is not one.
+    prompt_timeout_s: float = Field(default=900.0, gt=0.0, le=PROMPT_TIMEOUT_MAX_S,
+                                    allow_inf_nan=False)
     # Which placement of the probe this run is (``spots.SPOT_MODES`` only).
     spot: Optional[SpotRequest] = None
     # Who is asking; absent, the file header says nothing about a client.

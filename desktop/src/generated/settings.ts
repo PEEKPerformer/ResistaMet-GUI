@@ -677,6 +677,7 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
     "prompt_timeout_s": {
       "type": "number",
       "exclusiveMin": 0,
+      "max": 86400,
       "default": 900
     },
     "sample_name": {
