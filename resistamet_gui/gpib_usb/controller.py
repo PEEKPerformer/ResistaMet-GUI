@@ -626,8 +626,9 @@ class Controller:
         a tail under the threshold, a change of instruction in the middle
         of one instrument message that NI's rule never produces. The price
         is a last 0x0b with a count below 1025, which NI was not captured
-        sending; the count field is a plain 32-bit count either way
-        (§10.1.2).
+        sending. Whether the count field is 32 bits wide, or 16 followed by
+        ``ff ff``, §10.1.2 leaves open; one instruction is capped at 0xffff
+        bytes, below which the two readings are the same bytes.
         """
         chunks: List[bytes] = []
         remaining = max_bytes
