@@ -89,3 +89,60 @@ class TestReading:
         body = client.get('/results/directory').json()
         assert body['root'] == str(data_dir.resolve())
         assert body['exists'] is True
+
+
+class TestTheOperatorsOwnDirectory:
+    """Runs are written under the operator's profile directory, as /maps reads them."""
+
+    @pytest.fixture
+    def custom(self, tmp_path, data_dir):
+        """Anna Lee keeps her data somewhere else; her folder is ``Anna_Lee``."""
+        config = ConfigManager(config_file=str(tmp_path / 'config.json'))
+        config.add_user('Anna Lee')
+        config.add_user('alice')
+        elsewhere = tmp_path / 'annas_data'
+        (elsewhere / 'Anna_Lee').mkdir(parents=True)
+        (elsewhere / 'Anna_Lee' / '300_chip_R_1.csv').write_text("elapsed_s,R_ohm\n0.1,5\n")
+        config.update_user_settings('Anna Lee', {'file': {'data_directory': str(elsewhere)}})
+        session = MeasurementSession(ListSink())
+        app = create_app(session, token=TOKEN, config=config)
+        with TestClient(app) as test_client:
+            test_client.headers.update({'Authorization': f'Bearer {TOKEN}'})
+            yield test_client, elsewhere
+        session.close(timeout=2.0)
+
+    def test_only_mine_works_for_a_name_with_a_space(self, custom):
+        client, elsewhere = custom
+        body = client.get('/results', params={'user': 'Anna Lee'}).json()
+
+        assert [f['name'] for f in body['files']] == ['300_chip_R_1.csv']
+        assert body['files'][0]['user'] == 'Anna_Lee'
+        assert body['root'] == str(elsewhere.resolve())
+
+    def test_a_file_in_a_custom_directory_can_be_read(self, custom):
+        client, _ = custom
+        listed = client.get('/results', params={'user': 'Anna Lee'}).json()['files'][0]
+
+        response = client.get('/results/file', params={'path': listed['path']})
+
+        assert response.status_code == 200
+        assert 'elapsed_s,R_ohm' in response.text
+
+    def test_everyone_lists_every_operators_directory(self, custom):
+        client, _ = custom
+        names = sorted(f['name'] for f in client.get('/results').json()['files'])
+        assert names == ['100_wafer_R_1.csv', '200_film_4PP_1.csv', '300_chip_R_1.csv']
+
+    def test_another_users_filter_does_not_show_her_files(self, custom):
+        client, _ = custom
+        files = client.get('/results', params={'user': 'alice'}).json()['files']
+        assert [f['name'] for f in files] == ['100_wafer_R_1.csv']
+
+    def test_the_directory_is_the_operators(self, custom):
+        client, elsewhere = custom
+        body = client.get('/results/directory', params={'user': 'Anna Lee'}).json()
+        assert body['root'] == str(elsewhere.resolve())
+
+    def test_escaping_every_directory_is_still_refused(self, custom):
+        client, _ = custom
+        assert client.get('/results/file', params={'path': '../config.json'}).status_code == 400
