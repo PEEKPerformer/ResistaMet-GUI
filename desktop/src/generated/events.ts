@@ -6,6 +6,7 @@
  * One thing that happened during a run.
  */
 export interface EventEnvelope {
+  cursor?: number | null;
   payload?: {
     [k: string]: unknown | undefined;
   };
