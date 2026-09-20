@@ -980,8 +980,7 @@ class LegacyDualExporter(_BaseExporter):
             "data": self._data_rows
         }
         try:
-            with open(self.json_path, 'x', encoding='utf-8') as f:
-                json.dump(json_data, f, indent=2, ensure_ascii=False)
+            self._write_json(json_data)
             checkpoint_path = _with_extension(self.base_path, '.json.tmp')
             if checkpoint_path.exists():
                 try:
@@ -992,6 +991,40 @@ class LegacyDualExporter(_BaseExporter):
             logger.error(f"Failed to write JSON: {e}")
             raise
         self._finalized = True
+
+    def _write_json(self, json_data: Dict[str, Any]) -> None:
+        """Write the JSON whole, or not at all, and never over another file.
+
+        The document is written to ``<name>.json.part`` first (the base name
+        is this exporter's: it created the CSV exclusively) and only a
+        complete file is given the final name. A finalize that fails part-way
+        therefore leaves no truncated ``.json`` behind, and calling
+        ``finalize()`` again can still succeed. The final name is taken with
+        a hard link, which fails if the name exists; where the file system
+        has no hard links, with an exclusive create whose partial result is
+        removed on failure.
+        """
+        part_path = _with_extension(self.base_path, '.json.part')
+        try:
+            with open(part_path, 'w', encoding='utf-8') as f:
+                json.dump(json_data, f, indent=2, ensure_ascii=False)
+            try:
+                os.link(part_path, self.json_path)
+            except FileExistsError:
+                raise
+            except OSError:
+                with open(part_path, 'rb') as src, open(self.json_path, 'xb') as dst:
+                    try:
+                        shutil.copyfileobj(src, dst)
+                    except BaseException:
+                        dst.close()
+                        self.json_path.unlink()
+                        raise
+        finally:
+            try:
+                part_path.unlink()
+            except OSError:
+                pass
 
     @property
     def output_paths(self) -> List[Path]:
