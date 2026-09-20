@@ -144,6 +144,31 @@ class TestStart:
     def test_unknown_mode_is_unprocessable(self, client, fake_rm):
         assert _start(client, mode='hall').status_code == 422
 
+    @pytest.mark.parametrize("field, value", [
+        ('sample_name', "wafer\n# total_samples: 999\n0.0,1,1,1,1,OK,"),
+        ('sample_name', 'x' * 121),
+        ('username', "alice\nroot"),
+        ('username', 'x' * 65),
+        ('prompt_timeout_s', 1e9),
+    ])
+    def test_text_that_could_forge_a_header_line_is_unprocessable(self, client, fake_rm, sink,
+                                                                  field, value):
+        response = _start(client, **{field: value})
+        assert response.status_code == 422
+        assert [error['loc'] for error in response.json()['detail']] == [['body', field]]
+        assert sink.events == []
+        assert fake_rm.opened == []
+
+    def test_an_infinite_prompt_timeout_is_unprocessable(self, client, fake_rm, sink):
+        """json.dumps writes Infinity and the server's parser reads it."""
+        response = client.post('/session/start', content=(
+            '{"mode": "four_point", "sample_name": "w", "username": "alice", '
+            '"prompt_timeout_s": Infinity}'), headers={'Content-Type': 'application/json'})
+        assert response.status_code == 422, "not a 500 from failing to echo the input"
+        assert [error['loc'] for error in response.json()['detail']] == [
+            ['body', 'prompt_timeout_s']]
+        assert sink.events == []
+
     def test_the_body_is_the_exported_contract(self, client):
         """The desktop's types are generated from RunRequest; a second model
         here could drift from it without anything failing."""
@@ -182,6 +207,15 @@ class TestCommands:
         assert client.post('/session/mark', json={'label': 'PROBE'}).status_code == 200
         assert _wait_for(lambda: any(e.payload['event_marker'] == 'PROBE'
                                       for e in sink.of_type('sample')))
+        client.post('/session/stop')
+
+    @pytest.mark.parametrize("label", ['x' * 200_000, 'x' * 81, "two\nlines", "", "  "])
+    def test_a_mark_label_is_one_short_line(self, client, fake_rm, sink, label):
+        _start(client)
+        assert _wait_for(lambda: sink.of_type('sample'))
+        response = client.post('/session/mark', json={'label': label})
+        assert response.status_code == 422
+        assert [error['loc'] for error in response.json()['detail']] == [['body', 'label']]
         client.post('/session/stop')
 
     def test_commands_without_a_run_are_conflicts(self, client):

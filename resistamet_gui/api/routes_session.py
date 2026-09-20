@@ -5,12 +5,13 @@ calls the session, and maps the two failure modes: ``SessionBusy`` is 409
 (the instrument is doing something else) and a rejected run request is 422
 (the settings could not be resolved).
 """
-from typing import Any, Dict
+from typing import Annotated, Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 from ..schema.settings_modes import RunRequest
+from ..schema.spots import LABEL_PATTERN
 from ..session.instrument_lock import InstrumentBusy
 from ..session.manager import MeasurementSession, SessionBusy
 from .app import UI_ROLE, busy_as_conflict, get_session, require_token
@@ -25,7 +26,10 @@ class AnswerRequest(BaseModel):
 
 
 class MarkRequest(BaseModel):
-    label: str = 'MARK'
+    # Written into a row of the data file: one line, and short, like the
+    # label of a spot.
+    label: Annotated[str, StringConstraints(
+        strip_whitespace=True, min_length=1, max_length=80, pattern=LABEL_PATTERN)] = 'MARK'
 
 
 @router.get("")
