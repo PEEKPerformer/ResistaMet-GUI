@@ -96,6 +96,16 @@ class TestStoringAnImage:
         assert served.headers['content-type'] == 'image/png'
         assert served.content == PNG
 
+    def test_a_cached_copy_is_revalidated(self, client):
+        """The address stays the same when the image is replaced."""
+        _put(client)
+        first = client.get('/maps/wafer7/image?user=alice')
+        assert first.headers['cache-control'] == 'no-cache'
+        _put(client, OTHER_PNG, replace='true')
+        second = client.get('/maps/wafer7/image?user=alice')
+        assert second.content == OTHER_PNG
+        assert second.headers['etag'] != first.headers['etag']
+
     @pytest.mark.parametrize('data, content_type, name', [
         (JPEG, 'image/jpeg', 'wafer7_sample.jpg'),
         (WEBP, 'image/webp', 'wafer7_sample.webp'),
