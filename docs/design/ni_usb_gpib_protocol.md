@@ -1292,9 +1292,9 @@ Waiting for SRQ:
 **[bench] [captured]** Register read (3.4) of bank 1 addr 0x1f (BSR).
 Reply `34 vv 00 00 35 01 00 00 04 00 00 00` (3.5). Bits of `vv`
 (**[inherited]** names; REN and NDAC seen on the bench, REN, NRFD, NDAC
-and ATN in the captures, §10.3.2): 0x01 REN, 0x02 IFC, 0x04 SRQ, 0x08 EOI, 0x10 NRFD,
-0x20 NDAC, 0x40 DAV, 0x80 ATN (1 = line asserted). Only 0x1f is needed
-for line status.
+and ATN in the captures, §10.3.2): 0x01 REN, 0x02 IFC, 0x04 SRQ, 0x08
+EOI, 0x10 NRFD, 0x20 NDAC, 0x40 DAV, 0x80 ATN (1 = line asserted). Only
+0x1f is needed for line status.
 
 ### 5.14 Change the adapter's own address
 
@@ -1454,8 +1454,12 @@ trailing note. "if ibsta lacks CIC, pulse IFC (5.5) or take control
 
 ### 7.1 Device timeout code byte
 
-Present in 0x0a, 0x0c, 0x0d (and 0x07). The code for a requested timeout
-T (in microseconds) is the smallest row with T <= limit:
+Present in the framed instructions 0x0a, 0x0c, 0x0d **[bench]
+[captured]**, in the raw-path instructions 0x0b, 0x0e and the serial poll
+0x10 **[captured]**, and in the parallel poll 0x07 **[inherited]**. NI
+also writes the session's code to bank-2 register 0x07 (§10.2.4). The
+code for a requested timeout T (in microseconds) is the smallest row with
+T <= limit:
 
 | Limit | Code | Limit | Code |
 |-------|------|-------|------|
@@ -1471,50 +1475,57 @@ T (in microseconds) is the smallest row with T <= limit:
 |        |      | 1000 s  | 0x02 |
 
 For codes 0xf1..0xff the code equals 0xf0 + the NI-488.2 T-code
-(T10us = 1 ... T100s = 15). The 0x02 code for 1000 s has been
-bench-confirmed on a USB-B; NI's own driver is reported to send 0xff
-there. Requests above 1000 s fall back to 0xf0.
+(T10us = 1 ... T100s = 15). Requests above 1000 s fall back to 0xf0
+**[inherited]**.
 
-Observed 2026-09-19 (§10.1.9): NI-VISA 22.5 maps VI_ATTR_TMO_VALUE 100 ms
--> 0xf9, 300 -> 0xfa, 1000 -> 0xfb, 2000 and 3000 -> 0xfc, 10 s -> 0xfd,
-20 s and 30 s -> 0xfe, 100 s -> 0xff, 300 s -> 0x01, 1000 s -> 0x02,
-infinite -> 0xf0, exactly the table above; the report of 0xff for 1000 s
-is wrong. The code the driver programs at session open, before the
-application sets a timeout, is 0xfb. The limits in the table are
-nominal: what the GPIB-USB-HS actually waits under each code was measured
-and is tabulated in 7.3; one code (0xfa) expires before its nominal
-value. The code does not bound a whole instruction: 20480-byte
-chunks that took 4.0 s each completed with error 0 under code 0xfc.
+Evidence for the table: the rows 0xf9 to 0xff, 0x01, 0x02 and 0xf0
+**[captured]** (§10.1.9): NI-VISA 22.5 maps VI_ATTR_TMO_VALUE 100 ms ->
+0xf9, 300 -> 0xfa, 1000 -> 0xfb, 2000 and 3000 -> 0xfc, 10 s -> 0xfd, 20
+s and 30 s -> 0xfe, 100 s -> 0xff, 300 s -> 0x01, 1000 s -> 0x02,
+infinite -> 0xf0. The rows 0xf1 to 0xf8 **[inherited]**. The 0x02 code
+for 1000 s has also been bench-confirmed on a USB-B according to the
+sources **[inherited]**. The code NI programs at session open, before the
+application sets a timeout, is 0xfb.
+
+The limits in the table are **nominal**. What the GPIB-USB-HS actually
+waits under each code was measured and is tabulated in 7.3
+**[captured]**; one code (0xfa) expires before its nominal value.
+
+What the code bounds -- the whole instruction, or an interval within it
+-- is **not established**. 20480-byte chunks that took 3.93 to 4.00 s
+each completed with error 0 under code 0xfc (readtimeout_long.pcap), in a
+session whose VISA timeout was 2000 ms: longer than what the application
+asked for and than the nominal 3 s, but shorter than the 4.194 s the
+adapter really waits under 0xfc (7.3). So the captures show that a
+transfer may outlast the nominal value; they do not show one outlasting
+the measured expiry, and cannot tell a per-instruction bound from a
+per-byte one.
+
+**Superseded (7.1).** "Present in 0x0a, 0x0c, 0x0d (and 0x07)" -- 0x0b,
+0x0e and 0x10 carry it too. "NI's own driver is reported to send 0xff
+[for 1000 s]" [inherited] -- wrong; NI sends 0x02 (timeouts.pcap
+10.7994). "The code does not bound a whole instruction: 20480-byte chunks
+that took 4.0 s each completed with error 0 under code 0xfc" -- written
+before 7.3 was measured, when 0xfc was taken to mean 3 s; 4.0 s is inside
+the measured 4.194 s, so the conclusion does not follow.
 
 ### 7.2 Host-side USB wait
 
-The device answers a 0x0a, 0x0c or 0x0d only after the operation
-completes or its own timeout expires, so the host's wait on the bulk IN
-transfer must exceed the device timeout by a margin. Recommended, with
-T the nominal limit of the code sent (7.1):
+The device answers an instruction that carries a timeout code only after
+the operation completes or the adapter's own wait expires, so the host's
+wait on the bulk IN transfer must exceed that wait by a margin. The
+adapter's wait is not the nominal limit T of 7.1 but the measured expiry
+E of 7.3 **[captured]**.
 
-| Transfer | Host wait |
-|----------|-----------|
-| bulk IN after 0x0a, 0x0c, 0x0d with device timeout T > 0 | T + max(2 s, 0.5 × T) -- **too short for code 0xfd; use the rule below the table** |
-| bulk IN after 0x0a, 0x0c, 0x0d with T = 0 (code 0xf0) | a long finite wait chosen by the application; on expiry send the stop request (5.11) and read the reply |
-| bulk OUT of any instruction; bulk IN after 0x01, 0x06, 0x07, 0x08, 0x09, 0x0f | 1 s minimum |
-| control requests | 1 s (100 ms per readiness-query attempt) |
+| Transfer | Host wait | Evidence |
+|----------|-----------|----------|
+| bulk IN on 0x84 after 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x10 with a finite code; and the 0x88 transfer of a 0x0b | longer than E of the code sent; recommended E + 2 s, summed over the timed blocks of the message (rules below) | [captured] (7.3) |
+| the same with code 0xf0 (no timeout) | a long finite wait chosen by the application; on expiry send the stop request (5.11) and read the reply | [inherited] |
+| bulk OUT of a message carrying write data (0x0d), and the 0x06 transfer of a 0x0e | follows the device timeout like the reply: OUT transfers are paced by the bus (below) | [captured] (§10.5.2) |
+| bulk OUT of any other message; bulk IN after 0x01, 0x06, 0x07, 0x08, 0x09, 0x0f | 1 s minimum | [inherited] |
+| control requests | 1 s (100 ms per readiness-query attempt) | [inherited] |
 
-Reads that may legitimately wait on a slow instrument should use the
-upper end of the margin (T + 50 %) so that a device-side timeout is
-reported through the status block rather than as a USB error.
-
-Observed 2026-09-19 (7.3, §10.1.8): the first row does not hold for
-every code. The adapter's wait is not the nominal T but the expiry E of
-7.3, and for code 0xfd E = 16.78 s while T + max(2 s, 0.5 × T) = 15 s:
-a host using that row gives up 1.78 s before the adapter would have
-ended the instruction itself with a normal reply and error 0x0a, and is
-then left with an instruction still pending in the adapter, for which
-the only documented recourse is the stop request (5.11).
-For the other five measured codes the row happens to exceed E (2.1 s
-against 0.132, 2.3 against 0.264, 3 against 1.05, 5 against 4.20, 45
-against 33.56). The requirement is therefore stated against the
-measurement, not the nominal value:
+Rules for the first row **[captured]** (7.3, §10.1.8):
 
 - The host wait for the reply to any instruction that carries a timeout
   code -- and for the 0x88 transfer of a 0x0b -- **must be longer than
@@ -1535,14 +1546,34 @@ measurement, not the nominal value:
 - For a code not measured in 7.3, take E as the larger candidate of
   7.3's inference column (the smallest power of two in microseconds not
   below the nominal limit), which no measured code exceeded.
+- E + 2 s covers an instruction during which nothing moves. Whether an
+  instruction during which data keeps moving can run past E is the open
+  question of 7.1; until it is settled a host that expects long
+  transfers under a short code has no captured figure to size its wait
+  by.
 
-The 0x88 data transfer of a 0x0b read completes 0.4-0.5 ms
-before its 0x84 reply, and for a zero-byte result completes with zero
-bytes, so both transfers must be waited for. OUT transfers are paced by
-the bus as well: the 2049 data bytes of a 0x0e took 368 ms to complete on
-0x06 and the tail of a 2080-byte 0x0d message 103 ms on 0x02 (§10.5.2),
-so the 1 s row above is too short for a long write to a slow listener;
-let the OUT wait follow the device timeout.
+The 0x88 data transfer of a 0x0b read completes 0.4-0.5 ms before its
+0x84 reply, and for a zero-byte result completes with zero bytes, so both
+transfers must be waited for **[captured]** (§10.1.3). OUT transfers are
+paced by the bus as well: the 2049 data bytes of a 0x0e took 368 ms to
+complete on 0x06 and the tail of a 2080-byte 0x0d message 103 ms on 0x02
+**[captured]** (§10.5.2), so a fixed 1 s is too short for a long write to
+a slow listener.
+
+**Superseded (7.2).** [inherited] First row "bulk IN after 0x0a, 0x0c,
+0x0d with device timeout T > 0: T + max(2 s, 0.5 × T)", and "Reads that
+may legitimately wait on a slow instrument should use the upper end of
+the margin (T + 50 %) so that a device-side timeout is reported through
+the status block rather than as a USB error." Replaced by E + 2 s: for
+code 0xfd E = 16.78 s while T + max(2 s, 0.5 × T) = 15 s, so a host using
+the old row gives up 1.78 s before the adapter would have ended the
+instruction itself with error 0x0a, and is left with an instruction
+still pending, for which the only documented recourse is the stop
+request (5.11). For the other five measured codes the old row happens to
+exceed E (2.1 s against 0.132, 2.3 against 0.264, 3 against 1.05, 5
+against 4.20, 45 against 33.56). Also superseded: "bulk OUT of any
+instruction ... 1 s minimum" for messages that carry write data
+(§10.5.2).
 
 ### 7.3 Measured expiry per code (GPIB-USB-HS, observed 2026-09-19)
 
@@ -1550,7 +1581,9 @@ How long the adapter waits before it ends an instruction by itself with
 error 0x0a. Timed on the wire from the submission of the OUT message
 that carries the instruction to the completion of its reply on 0x84,
 with NI-488.2 driving GPIB-USB-HS 013CC9DF and either nothing to read
-or nobody at the address. Packets in §10.1.8.
+or nobody at the address. Packets in §10.1.8. **[captured]** throughout;
+the second table of predictions at the end is inference and is labelled
+so.
 
 | VISA timeout asked | Code sent | Nominal (7.1) | Measured expiry (s) | Instruction | Capture |
 |--------------------|-----------|---------------|---------------------|-------------|---------|
@@ -1606,8 +1639,8 @@ millisecond:
   to measure); the expiry of a 0x0c, 0x0d or 0x0e under any code -- no
   write or command instruction timed out in any capture; any adapter
   other than this GPIB-USB-HS; whether the expiry restarts with each byte
-  handshaken (7.1's 4.0 s chunks under 0xfc say it does not bound the
-  instruction, nothing more).
+  handshaken, i.e. what the code bounds (7.1: the 4.0 s chunks under
+  0xfc ended inside that code's 4.194 s, so they settle nothing).
 
 Inference, not measurement -- what a power of two in microseconds would
 be for the unmeasured codes, under the two rules that each fit five of
@@ -1639,31 +1672,40 @@ numbering, follow the pattern at all is unknown.
 
 1. **Padding and termination.** Every instruction block must be
    zero-padded to a 4-byte boundary and every message must end with
-   `04 00 00 00`. A message without the termination block gets no reply.
-2. **One message, one reply.** Never queue a second bulk OUT before the
-   reply to the first has been read. On a reply size mismatch (e.g. 12
+   `04 00 00 00` **[bench] [captured]**. A message without the
+   termination block gets no reply **[inherited]**.
+2. **One message, one reply.** Never queue a second message before the
+   reply to the first has been read **[inherited]**; NI never does
+   **[captured]** (3.1). The data of a 0x0e on 0x06 and the IN transfer on
+   0x88 for a 0x0b are part of the same exchange and are started before
+   the reply is read (§10.6.7). On a reply size mismatch (e.g. 12
    expected, other received) dump the bytes; the pipes are then out of
    step and the safest recovery is the stop request (5.11), a drain read,
-   and a fresh register initialisation.
-3. **EOS bytes on reads.** Nonzero EOS mode or character with REOS clear
-   -> error 4 on every read. When the session disables read termination,
-   send `00 00`. Observed 2026-09-19 (§10.1.6): NI sends mode 0x00 with a
-   nonzero character on every unterminated read and never gets error 4
-   (adapter initialised with AUXRA 0x99); sending `00 00` remains safe.
+   and a fresh register initialisation **[inherited]** -- a recovery NI
+   was never seen to need or use (§10.6.7).
+3. **EOS bytes on reads.** When the session disables read termination,
+   sending `00 00` is safe **[bench]**. The [inherited] warning "nonzero
+   EOS mode or character with REOS clear -> error 4 on every read" was
+   not reproduced: NI sends mode 0x00 with a nonzero character on every
+   unterminated read and never gets error 4 **[captured]** (§10.1.6;
+   adapter initialised with AUXRA 0x99). Whether it holds under AUXRA
+   0x81 is not established (4.3).
 4. **16-byte command chunks.** A 0x0c instruction carrying 17 or more
    command bytes fails on the USB-B (error 4); keep the chunk limit on
-   all models.
+   all models **[inherited]**.
 5. **Count encodings are negative.** Instruction counts are -(length);
    reply counts are (transferred - requested). Getting the sign wrong
    yields a 65535-byte transfer request.
 6. **Read reply buffer.** Size the receive buffer from the wire layout:
-   ceil(N/30) 32-byte blocks (or ceil(N/15) 16-byte blocks) plus the
-   28-byte trailer, the larger of the two rounded up to the endpoint's
-   max packet size; a smaller request is truncated by libusb with an
-   overflow error. Observed 2026-09-19 (§10.1.5): when the 0x0a is
-   batched behind other blocks, add their replies plus 16 bytes of `11 00
-   00 00` padding; a 0x0b read needs a buffer of N on 0x88 and 56 bytes on
-   0x84 for NI's five-block message.
+   ceil(N/30) 32-byte blocks (or ceil(N/15) 16-byte blocks) plus 28 bytes
+   for what follows the data -- 16 were seen on the bench, 28 in the
+   captures, so size for the longer and parse both (5.2) -- the larger of
+   the two rounded up to the endpoint's max packet size; a smaller
+   request is truncated by libusb with an overflow error. **[captured]**
+   (§10.1.5): when the 0x0a is batched behind other blocks, add their
+   replies plus 16 bytes of `11 00 00 00` padding; a 0x0b read needs a
+   buffer of N rounded up to an even number on 0x88 (§10.1.3) and 56
+   bytes on 0x84 for NI's five-block message.
 7. **ibsta is big-endian, counts are little-endian** inside the same
    8-byte status block.
 8. **Readiness poll.** Byte 0 of every control response must echo
@@ -1676,42 +1718,48 @@ numbering, follow the pattern at all is unknown.
     the serial number comes from bank-3 register reads, not a control
     request; interrupt IN is 0x84.
 11. **Interrupt endpoint.** Optional. Operation without it has been
-    observed to be reliable; if it is used, arm it with the monitor mask
-    (2.5) and read at least wMaxPacketSize per transfer.
+    observed to be reliable **[inherited]**; if it is used, read at least
+    wMaxPacketSize per transfer (NI arms 64 bytes **[captured]**). Arming
+    it with the monitor mask (2.5) is the [inherited] procedure; NI's
+    pushes came with no mask request in any capture, but whether a fresh
+    adapter pushes without one is not established (2.5).
 12. **Take control on an empty bus** can return error 5; treat as
     harmless at initialisation.
 13. **Error 2 on read** means ATN is still asserted; send 0x06 first.
     Error 3 means the addressing command bytes were not sent (or were
-    rejected); resend them. Observed 2026-09-19 (§10.1.5): a 0x0a or 0x0b
-    placed directly after the addressing 0x0c in the same message did not
-    return error 2 (83 cases); error 7 means the adapter is not CIC
-    (§10.6.4).
+    rejected); resend them. Both **[inherited]**: neither code has been
+    seen by this project, and a 0x0a or 0x0b placed directly after the
+    addressing 0x0c in the same message did not return error 2 in any of
+    103 cases **[captured]** (section 5, ATN rule). Error 7 means the
+    adapter is not CIC **[captured]** (§10.6.4).
 14. **Register-write reply** is exactly 16 bytes and byte 8 must equal the
     number of writes sent; a smaller value means the device stopped at a
     bad (bank, addr) pair.
 15. **Unknown registers.** Bank 3 addr 0x10, bank 2 addrs 0x00-0x02 and
     bank 1 addr 0x0f are written with fixed values at init because NI's
-    driver does; their meaning is unknown. Do not omit them. Observed
-    2026-09-19 (§10.2.4): bank 2 addrs 0x03-0x07 are written per session
-    (0x03 := 1 constantly, 0x04 := 1/0 open/close, 0x05 := PAD, 0x06 :=
-    SAD byte, 0x07 := timeout code); the instructions carry the same
-    information themselves, and whether any of these writes is required
-    for the instructions to work is not established.
+    driver does **[bench] [captured]**; their meaning is unknown. Do not
+    omit them. **[captured]** (§10.2.4): bank 2 addrs 0x03-0x07 are
+    written per session (0x03 := 1 constantly, 0x04 := 1/0 open/close,
+    0x05 := PAD, 0x06 := SAD byte, 0x07 := timeout code); the instructions
+    carry the same information themselves, and whether any of these writes
+    is required for the instructions to work is not established; the
+    framed paths ran on the bench without them (2.8).
 16. Absence of serial/parallel poll or SRQ handling in a known working
     implementation is not evidence those instructions fail.
-17. **A hung adapter.** Observed on GPIB-USB-HS 01CEE482, 2026-09-18: the
-    adapter answered every control request normally (serial number,
-    readiness, status and stop), accepted bulk OUT messages on 0x02 until
-    about 4 KB had been queued (and about 1 KB on 0x06), then NAKed, and
-    never sent a byte on 0x84, 0x88 or 0x81. Nothing on the USB side
-    cleared it: not the stop request, the monitor mask, clear-halt,
-    SET_CONFIGURATION 0/1, nor a USB bus reset (which empties the
-    endpoint FIFOs but does not restart the firmware). Unplugging and
-    replugging the adapter fixed it at once. A driver should treat "the
-    initialisation message was accepted but no reply arrived within 2 s,
-    nor after a stop request" as this condition and tell the user to
-    power-cycle the adapter.
-18. **Settle after IFC / REN before the first addressed command.** Observed
+17. **A hung adapter** **[bench]**. Observed on GPIB-USB-HS 01CEE482,
+    2026-09-18: the adapter answered every control request normally
+    (serial number, readiness, status and stop), accepted bulk OUT
+    messages on 0x02 until about 4 KB had been queued (and about 1 KB on
+    0x06), then NAKed, and never sent a byte on 0x84, 0x88 or 0x81.
+    Nothing on the USB side cleared it: not the stop request, the monitor
+    mask, clear-halt, SET_CONFIGURATION 0/1, nor a USB bus reset (which
+    empties the endpoint FIFOs but does not restart the firmware).
+    Unplugging and replugging the adapter fixed it at once. A driver
+    should treat "the initialisation message was accepted but no reply
+    arrived within 2 s, nor after a stop request" as this condition and
+    tell the user to power-cycle the adapter.
+18. **Settle after IFC / REN before the first addressed command**
+    **[bench]**. Observed
     on GPIB-USB-HS 01CEE482 with a Keithley 2400 at PAD 3, 2026-09-18: with
     the sequence attach -> presence probe (5.16, which addresses the
     instrument and puts it in remote) -> shutdown (2.9; the chip reset drops
@@ -1731,6 +1779,11 @@ numbering, follow the pattern at all is unknown.
     in place the sequence ran 10 x (attach, probe, close, attach, `*IDN?`,
     50 x `:OUTP?`, close) with no gap and 5 more cycles through pyvisa
     without incident.
+
+**Superseded (8).** Item 3 as a flat rule ("-> error 4 on every read");
+item 6 "plus the 28-byte trailer" with no word that 16 bytes is what the
+bench saw; item 11 "arm it with the monitor mask" as a requirement; item
+13's count of 83 cases (first batch; 103 in all 28 captures).
 
 ---
 
