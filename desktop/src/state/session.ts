@@ -101,6 +101,13 @@ export function markPromptAnswered(promptId: string): void {
   }
 }
 
+/** The backend is a new process. Its run and prompt ids start again, so
+ *  what was remembered about the old one's would be held against them. */
+export function backendRestarted(): void {
+  answeredPrompts.clear();
+  publish({ ...snapshot, lastRunEnded: null, gap: false });
+}
+
 /** The run the pending prompt belongs to, for an answer to name. */
 export function promptRunId(promptId: string): string | null {
   const status = snapshot.status;
