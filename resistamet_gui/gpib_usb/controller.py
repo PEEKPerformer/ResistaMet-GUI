@@ -10,10 +10,15 @@ there are no background threads. Sequences built from these primitives
 (device clear, trigger, the presence probe) live in ``device_ops``.
 
 Faults: a malformed reply or a USB error means the bulk pipes may be out of
-step (§8.2). The offending operation raises, the adapter is sent a stop
-request and its pipe drained, and the next operation resets the bulk pipes
-and re-runs the attach sequence before doing anything else (the first
-attach resets nothing). The adapter's own ways of ending an
+step (§8.2). The offending operation raises, and the next operation resets
+the bulk pipes and re-runs the attach sequence before doing anything else
+(the first attach resets nothing). In between, the adapter is sent a stop
+request and its pipe drained, once per fault: at once after a malformed
+reply, and after a USB error -- a timeout of the stop request or of a
+message the adapter did not take included -- behind the pipe resets of the
+re-attach, since a halted pipe could not be drained before them. Without
+the drain the reply the failed operation never read would be taken for the
+reply to the next message. The adapter's own ways of ending an
 instruction are not faults (§10.6.5-10.6.7): a STALL on the alternate OUT
 for a 0x0e that cannot start, a zero-length transfer on the alternate IN
 for a 0x0b that got nothing, a 0x10 reply without its result block. Each
@@ -829,12 +834,17 @@ class Controller:
                 self._addressed = None
                 if isinstance(exc, ProtocolError):
                     self._resync()
-                elif isinstance(exc, TransportError) and not isinstance(exc, TransportTimeout):
+                elif isinstance(exc, TransportError):
+                    # A USB timeout that gets this far was not a reply the host
+                    # gave up on (that becomes ``NoReply``): the stop request
+                    # itself failed, or the adapter did not take a message.
+                    # Either way a reply may be queued that nobody will read;
+                    # the re-attach drains it (``_ensure_attached``).
                     self._resync_pending = True
                 raise
 
     def _resync(self) -> None:
-        """§8.2: stop whatever is in flight, drain one stale reply, re-attach later."""
+        """§8.2: stop whatever is in flight, drain one stale reply, re-attach later. Never raises."""
         self._resync_pending = True
         if self._drained:
             return  # nested guards report the same fault; one drain per fault
@@ -869,6 +879,12 @@ class Controller:
             logger.warning('%s: re-running the attach sequence after a fault', self._model.name)
             self._attached = False
             self._clear_halts_after_fault()
+            if not self._drained:
+                # A USB fault drained nothing when it happened. The reply the
+                # failed operation did not read would answer the first message
+                # of the attach, and the next operation -- in a run, the one
+                # that switches the output off -- would fail in its place.
+                self._resync()
             self.attach(self._system_controller)
         if not self._attached:
             raise AdapterNotReady('adapter is not attached')
