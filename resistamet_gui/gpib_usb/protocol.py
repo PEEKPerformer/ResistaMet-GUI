@@ -490,8 +490,9 @@ def parse_register_read_reply(reply: bytes, count: int) -> List[int]:
             values.extend(reply[offset + 1:offset + 4])
         elif block_id == BLOCK_REGISTER_END:
             # Observed on the GPIB-USB-HS: a termination block follows 0x35
-            # (12 bytes for one register). spec gap: the meaning of the 0x35
-            # count byte is still unsettled; it is not used.
+            # (12 bytes for one register). The 0x35 count byte is the number
+            # of registers read, for up to three reads (§3.5, §10.8); above
+            # three it is not established, and it is not used here.
             break
         else:
             raise ProtocolError('unexpected block 0x%02x in register-read reply: %s'
@@ -532,7 +533,14 @@ def read_status_offset(reply: bytes) -> int:
 
 
 def parse_read_reply(reply: bytes, requested: int) -> ReadReply:
-    """Data blocks, then the fixed 28-byte trailer (§5.2 reply layout)."""
+    """Data blocks, then the trailer (§5.2 reply layout).
+
+    The trailer is 16 bytes as the bench adapter sends it for this driver's
+    message (0x38 status, ADR1, last-block count, two pad bytes,
+    termination) and 28 when a 0x09 status for the embedded register write
+    sits before the termination block, the form the specification first
+    derived; both parse.
+    """
     payloads: List[bytes] = []
     offset = 0
     while offset < len(reply) and reply[offset] in _READ_LEADING_BLOCKS:
