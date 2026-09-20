@@ -100,13 +100,15 @@ function primToSvg(p: Prim): string {
         `${escapeXml(p.text)}</text>`
       );
     }
-    case "image":
-      return (
+    case "image": {
+      // A clip on the image itself would be read in the image's own,
+      // transformed coordinates; on a group around it, it is the figure's.
+      const image =
         `<image href="${escapeXml(p.href)}" width="${n(p.width)}" height="${n(p.height)}" ` +
         `transform="${escapeXml(p.transform)}" preserveAspectRatio="none"` +
-        `${p.opacity !== undefined ? ` opacity="${n(p.opacity)}"` : ""}` +
-        `${p.clip ? ` clip-path="url(#${escapeXml(p.clip)})"` : ""}/>`
-      );
+        `${p.opacity !== undefined ? ` opacity="${n(p.opacity)}"` : ""}/>`;
+      return p.clip ? `<g clip-path="url(#${escapeXml(p.clip)})">${image}</g>` : image;
+    }
   }
 }
 
