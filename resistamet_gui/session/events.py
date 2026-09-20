@@ -347,6 +347,12 @@ class Event(EventModel):
     seq: int = Field(ge=0)
     t: float
     payload: Dict[str, Any] = Field(default_factory=dict)
+    #: Position in the stream the API hub delivers, counted across runs for
+    #: the life of the backend process. ``seq`` restarts with every run, so
+    #: it cannot say where a client is once a second run exists; this can.
+    #: Stamped by the hub (``api/event_hub.py``); None on an event that has
+    #: not been through one.
+    cursor: Optional[int] = Field(default=None, ge=1)
 
 
 #: Event type -> payload model, for validation and contract export.

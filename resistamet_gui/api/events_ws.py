@@ -15,6 +15,7 @@ it last heard about.
 import asyncio
 import logging
 import secrets
+from typing import Optional
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
@@ -46,7 +47,8 @@ async def _watch_for_disconnect(websocket: WebSocket) -> None:
 @router.websocket("/session/events/ws")
 async def stream_events(websocket: WebSocket, token: str = Query(default=""),
                          run_id: str = Query(default=""),
-                         since_seq: int = Query(default=0)):
+                         since_seq: int = Query(default=0, ge=0),
+                         since_cursor: Optional[int] = Query(default=None, ge=0)):
     state = websocket.app.state.api
     if not secrets.compare_digest(token.encode(), state.token.encode()):
         await websocket.close(code=4401)  # application-level "unauthorized"
@@ -56,16 +58,19 @@ async def stream_events(websocket: WebSocket, token: str = Query(default=""),
     hub = state.hub
     stream = hub.add_client()
     try:
-        if since_seq:
-            # Resume where the client left off. Subscribing before replaying
-            # means a live event during the replay is queued rather than lost;
-            # the client dedupes on seq, which is what seq is for.
-            missed, gap = hub.history(run_id or None, since_seq)
+        if since_cursor is not None or since_seq:
+            # Resume where the client left off: by the hub's cursor if it has
+            # one, else from (run_id, since_seq), which also replays any run
+            # that started since. Subscribed first, and nothing is awaited
+            # between subscribing and reading the history, so an event is
+            # either in the replay or in the queue, never both or neither.
+            missed, gap = hub.history(run_id or None, since_seq, since_cursor=since_cursor)
             if gap:
                 await websocket.send_json({
                     'type': 'gap',
-                    'detail': 'history no longer covers since_seq; refetch the file',
+                    'detail': 'history no longer covers the resume point; refetch the file',
                     'since_seq': since_seq,
+                    'since_cursor': since_cursor,
                 })
             for event in missed:
                 await websocket.send_text(event.model_dump_json())
