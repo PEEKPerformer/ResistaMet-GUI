@@ -247,6 +247,8 @@ class ContinuousRun:
                 planned = f"{self._mode_state.points} points"
             self._events.log('sweep_started', f"Running I-V sweep ({planned})...")
             try:
+                if self._control.stopped():
+                    raise RunStopped()
                 self.keithley.write(":OUTP ON")
                 # Increase timeout for long sweeps
                 if self.keithley.dev:
@@ -295,6 +297,9 @@ class ContinuousRun:
                         stop_q = self.keithley.query(":SOUR:CURR:STOP?").strip()
                         self.keithley.write(f":SOUR:CURR:START {stop_q}")
                         self.keithley.write(f":SOUR:CURR:STOP {start_q}")
+                    if self._control.stopped():
+                        # The forward leg is in the file; the reverse is not run.
+                        raise RunStopped()
                     self.keithley.write(":OUTP ON")
                     response2 = self.keithley.query(":READ?").strip()
                     self.keithley.write(":OUTP OFF")
@@ -332,6 +337,9 @@ class ContinuousRun:
                         'currents': currents, 'compliance': comp_list})
 
                 self._events.log('sweep_finished', f"Sweep complete: {points_summary}")
+            except RunStopped:
+                # Not a sweep error: execute() shuts the run down.
+                raise
             except Exception as e:
                 self._events.error('sweep_error', 'smu', f"Sweep error: {str(e)}")
             # Sweep is done — skip to finalization
@@ -478,12 +486,11 @@ class ContinuousRun:
         return False
 
     def execute(self):
-        self.running = True
-        self.paused = False
+        began = self._control.begin()
         instrument_ready = False
         file_ready = False
-        # True when the run is turned away before it reaches the instrument:
-        # reported as not ok whatever the reason, a stop included.
+        # True when the run ends before its output was ever on -- turned away,
+        # or stopped on the way there: reported as not ok whatever the reason.
         refused = False
 
         # Everything from run_started on is inside this try. The steps before
@@ -498,6 +505,10 @@ class ContinuousRun:
                 'settings': self.settings,
                 'started_at': time.time(),
             })
+            if not began:
+                # Stopped before it began: nothing is opened, nothing re-armed.
+                refused = True
+                return
             address = self.settings.get('measurement', {}).get('gpib_address', '')
             try:
                 self._instrument_lock = self._enter_instrument_lock(address)
@@ -505,6 +516,10 @@ class ContinuousRun:
                 refused = True
                 self._control.finish('instrument_busy')
                 self._events.error('instrument_busy', 'smu', str(exc))
+                return
+            if self._control.stopped():
+                # The wait for the lock can take seconds.
+                refused = True
                 return
 
             if self._spot_refused():
@@ -516,6 +531,10 @@ class ContinuousRun:
                 refused = True
                 # finish() keeps the first reason, so a timeout reports as one.
                 self._control.finish('cancelled')
+                return
+            if self._control.stopped():
+                # Acknowledged and stopped at once: the stop wins.
+                refused = True
                 return
 
             measurement_settings = self.settings['measurement']
@@ -636,9 +655,20 @@ class ContinuousRun:
                 self._control.finish('configure_failed')
                 return
 
+            # Connecting and configuring take seconds on a real bus. A stop
+            # that landed meanwhile ends the run here, with the output never
+            # on and no file for a run that measured nothing; _cleanup closes
+            # the instrument.
+            if self._control.stopped():
+                refused = True
+                return
+
             if not self._open_aux_sensor(measurement_settings):
                 return
 
+            if self._control.stopped():
+                refused = True
+                return
             if not self._open_output_file(measurement_settings, source_value_str):
                 return
             file_ready = True
@@ -655,6 +685,8 @@ class ContinuousRun:
                 # Continuous measurement modes: turn on output and enter polling loop
                 self._events.log('starting', "Starting measurement...")
                 try:
+                    if self._control.stopped():
+                        raise RunStopped()
                     self.keithley.write(":OUTP ON")
                     self._events.log('settling', f"Waiting for settling time ({settling_time}s)...")
                     self._control.sleep(settling_time)
