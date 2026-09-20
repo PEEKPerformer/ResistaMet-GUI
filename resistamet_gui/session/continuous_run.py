@@ -600,7 +600,9 @@ class ContinuousRun:
 
             try:
                 if self.mode == 'resistance':
-                    configured = configure_resistance(self.keithley, self._events, measurement_settings, nplc)
+                    configured = configure_resistance(
+                        self.keithley, self._events, measurement_settings, nplc,
+                        max_source_v=self._model_spec.max_source_v if self._model_spec else None)
                 elif self.mode == 'source_v':
                     configured = configure_source_v(self.keithley, self._events, measurement_settings, nplc)
                 elif self.mode == 'source_i':
