@@ -128,3 +128,78 @@ export interface QuantityStats {
   u_stat?: number | null;
   u_total?: number | null;
 }
+
+/**
+ * What a four-point run with these settings would record about a spot.
+ *
+ * ``geometry_factor`` is the closed-form lateral factor with the probe at
+ * the centre of ``sample``, pointing along ``angle_deg``: pi / ln 2 for an
+ * unbounded sheet, absent when the probe does not fit on the sample.
+ * ``factor_rows`` is the lateral factor the run's rows would apply (the
+ * table look-up or K*alpha, thickness term divided out), absent when the
+ * rows have no finite Rs.
+ *
+ * The rest describes the spot's position and is absent -- ``checked`` false
+ * -- when no spot was given, the spot has no position or the sample no
+ * edges. The values are the ones the file header's ``spot`` block and the
+ * ``geometry_warning`` event carry; the errors are fractions.
+ */
+export interface SpotPreflight {
+  angle_deg: number;
+  checked?: boolean;
+  compared_with?: ("rows" | "centre") | null;
+  edge_clearance_s?: number | null;
+  edge_warn_pct: number;
+  factor_centre?: number | null;
+  factor_here?: number | null;
+  factor_rows?: number | null;
+  geometry_factor?: number | null;
+  message?: string | null;
+  near_edge?: boolean;
+  off_sample?: boolean;
+  relative_error?: number | null;
+  relative_error_rows?: number | null;
+  sample: SampleGeometry;
+  spacing_mm: number;
+}
+/**
+ * The lateral outline of a thin sample with insulating edges.
+ *
+ * ``unbounded`` means a sheet large enough that its edges do not matter,
+ * which is what the software assumed before it knew about outlines.
+ */
+export interface SampleGeometry {
+  diameter_mm?: number | null;
+  length_mm?: number | null;
+  shape?: "unbounded" | "circle" | "rectangle";
+  width_mm?: number | null;
+}
+
+/**
+ * A four-point run request without the run: whose profile, which
+ * overrides, and -- optionally -- which spot. ``user`` is accepted for
+ * ``username``, the name the map routes use.
+ */
+export interface SpotPreflightRequest {
+  overrides?: {
+    [k: string]: unknown | undefined;
+  };
+  spot?: SpotRequest | null;
+  username: string;
+}
+/**
+ * One placement of the probe, as the client describes it.
+ *
+ * The position is optional -- a spot can be a label and nothing more -- but
+ * ``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the
+ * direction of the probe array, anticlockwise from +x; absent, the run uses
+ * the ``fpp_array_angle_deg`` setting.
+ */
+export interface SpotRequest {
+  angle_deg?: number | null;
+  index: number;
+  label: string;
+  map_id: string;
+  x_mm?: number | null;
+  y_mm?: number | null;
+}
