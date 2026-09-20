@@ -1,6 +1,7 @@
 """Tests for the v2.0 export pipeline (CsvExporter, Hdf5Exporter, parse_metadata, factory)."""
 
 import gzip
+import json
 from pathlib import Path
 
 import pytest
@@ -666,6 +667,49 @@ class TestExistingFilesAreNeverOpenedForWriting:
         assert [p.name for p in exp.output_paths] == ['run_001-2.csv', 'run_001-2.json']
         assert taken.read_bytes() == b"someone else's data\n"
         assert not base_path.with_name('run_001.json').exists()
+
+    def test_a_legacy_finalize_that_failed_part_way_can_be_repeated(
+            self, base_path, basic_meta):
+        # The run's finalize fails while the JSON is being written; the
+        # cleanup backstop then calls finalize() again.
+        exp = LegacyDualExporter(base_path, basic_meta, self.COLUMNS)
+        exp.write_row([0.0, 2.10])
+        with pytest.raises(TypeError):
+            exp.finalize({'fine': 1, 'not_json': object()})
+        json_path = base_path.with_name('run_001.json')
+        assert not json_path.exists()  # no truncated file under the final name
+
+        exp.finalize()
+        loaded = json.loads(json_path.read_text(encoding='utf-8'))
+        assert loaded['data'] == [[0.0, 2.10]]
+        assert sorted(p.name for p in base_path.parent.iterdir()) == [
+            'run_001.csv', 'run_001.json']
+
+    def test_a_legacy_finalize_never_replaces_a_json(self, base_path, basic_meta):
+        exp = LegacyDualExporter(base_path, basic_meta, self.COLUMNS)
+        exp.write_row([0.0, 2.10])
+        taken = base_path.with_name('run_001.json')
+        taken.write_bytes(b'{"someone": "else"}')
+        with pytest.raises(FileExistsError):
+            exp.finalize()
+        assert taken.read_bytes() == b'{"someone": "else"}'
+        assert sorted(p.name for p in base_path.parent.iterdir()) == [
+            'run_001.csv', 'run_001.json']
+
+    def test_a_legacy_json_is_written_where_hard_links_are_not_supported(
+            self, base_path, basic_meta, monkeypatch):
+        import resistamet_gui.data_export as data_export
+
+        def no_links(src, dst):
+            raise OSError(95, 'Operation not supported')
+        monkeypatch.setattr(data_export.os, 'link', no_links)
+        exp = LegacyDualExporter(base_path, basic_meta, self.COLUMNS)
+        exp.write_row([0.0, 2.10])
+        exp.finalize()
+        loaded = json.loads(base_path.with_name('run_001.json').read_text(encoding='utf-8'))
+        assert loaded['row_count'] == 1
+        assert sorted(p.name for p in base_path.parent.iterdir()) == [
+            'run_001.csv', 'run_001.json']
 
     def test_the_search_for_a_name_is_bounded(self, base_path, basic_meta, monkeypatch):
         import resistamet_gui.data_export as data_export
