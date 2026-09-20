@@ -14,7 +14,7 @@ def _settings(tmp_path, **measurement):
             "gpib_address": "GPIB0::24::INSTR", "stop_on_compliance": False,
             "auto_zero": "on", "filter_enabled": False,
             "sweep_source": "voltage", "sweep_start": 0.0, "sweep_stop": 1.0,
-            "sweep_points": 6, "sweep_compliance": 0.1, "sweep_direction": "up",
+            "sweep_step": 0.2, "sweep_compliance": 0.1, "sweep_direction": "up",
             "sweep_delay": 0.0,
         },
         "display": {"enable_plot": False, "plot_update_interval": 100, "buffer_size": 100},
@@ -78,3 +78,35 @@ class TestASweepWhoseReadFails:
 
     def test_a_sweep_that_works_still_completes(self, fake_rm, tmp_path):
         assert _ended(_sweep(tmp_path)) == ('completed', True)
+
+
+class TestASweepRowThatCannotBeWritten:
+    def test_one_lost_row_is_named_and_the_run_goes_on(self, fake_rm, tmp_path, failing_rows):
+        failing_rows.add(2)
+        sink = _sweep(tmp_path)
+
+        warnings = [e.payload['message'] for e in sink.of_type('log')
+                    if e.payload['code'] == 'write_failed']
+        assert len(warnings) == 1 and 'row 2' in warnings[0]
+        assert _ended(sink) == ('completed', True)
+        assert sink.of_type('run_ended')[0].payload['samples'] == 5
+        assert len(sink.of_type('sweep_segment')[0].payload['voltages']) == 6
+
+    def test_three_in_a_row_is_an_error_as_in_the_sampling_loop(self, fake_rm, tmp_path,
+                                                                 failing_rows):
+        failing_rows.update({1, 2, 3, 4, 5})
+        sink = _sweep(tmp_path)
+
+        assert _ended(sink) == ('write_error', False)
+        errors = [e.payload for e in sink.of_type('error')]
+        assert [e['code'] for e in errors] == ['write_failed']
+        assert 'row 3' in errors[0]['message']
+        # The points were measured: a client still gets them.
+        assert len(sink.of_type('sweep_segment')[0].payload['voltages']) == 6
+
+    def test_the_reverse_leg_counts_its_rows_on(self, fake_rm, tmp_path, failing_rows):
+        failing_rows.add(8)
+        sink = _sweep(tmp_path, sweep_direction='up_down')
+        warnings = [e.payload['message'] for e in sink.of_type('log')
+                    if e.payload['code'] == 'write_failed']
+        assert len(warnings) == 1 and 'row 8' in warnings[0]

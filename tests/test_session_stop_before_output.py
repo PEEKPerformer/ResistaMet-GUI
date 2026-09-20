@@ -29,7 +29,7 @@ def _settings(tmp_path, **measurement):
             "fpp_delta_mode": False, "fpp_power_warn_w": 1.0, "fpp_power_stop_w": 2.0,
             "fpp_stop_on_overpower": True,
             "sweep_source": "voltage", "sweep_start": 0.0, "sweep_stop": 1.0,
-            "sweep_points": 5, "sweep_compliance": 0.1, "sweep_direction": "up_down",
+            "sweep_step": 0.25, "sweep_compliance": 0.1, "sweep_direction": "up_down",
             "sweep_delay": 0.0,
             "vdp_current": 1e-3, "vdp_voltage_compliance": 5.0, "vdp_thickness_cm": 0.05,
             "vdp_settling_s": 0.0,
