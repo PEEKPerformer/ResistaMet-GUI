@@ -1,0 +1,31 @@
+{
+  "mode": "resistance",
+  "measurement": {
+    "res_test_current": 0.001,
+    "res_voltage_compliance": 5.0,
+    "res_measurement_type": "4-wire",
+    "res_auto_range": true,
+    "res_offset_comp": false,
+    "res_cable_null": 0.0
+  },
+  "writes": [
+    "*RST",
+    "*CLS",
+    ":SYST:AZER:STAT ON",
+    ":SENS:FUNC:CONC OFF",
+    ":OUTP:SMOD HIMP",
+    ":SYST:RSEN ON",
+    ":SENS:FUNC 'RES'",
+    ":SENS:RES:MODE MAN",
+    ":SOUR:FUNC CURR",
+    ":SOUR:CURR:RANG 0.001",
+    ":SOUR:CURR 0.001",
+    ":SENS:VOLT:PROT 5.0",
+    ":SENS:RES:NPLC 1.0",
+    ":SENS:RES:MODE AUTO",
+    ":FORM:ELEM VOLT,CURR,RES,STAT",
+    ":TRIG:DEL 0",
+    ":SOUR:DEL:AUTO ON",
+    ":OUTP ON"
+  ]
+}

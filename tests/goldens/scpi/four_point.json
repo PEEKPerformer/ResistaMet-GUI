@@ -1,0 +1,38 @@
+{
+  "mode": "four_point",
+  "measurement": {
+    "fpp_current": 0.001,
+    "fpp_voltage_compliance": 5.0,
+    "fpp_voltage_range_auto": true,
+    "fpp_spacing_cm": 0.1016,
+    "fpp_thickness_um": 0.0,
+    "fpp_alpha": 1.0,
+    "fpp_k_factor": 4.532,
+    "fpp_samples": 3,
+    "fpp_model": "thin_film",
+    "fpp_delta_mode": false,
+    "fpp_delta_settling": 0.01,
+    "fpp_power_warn_w": 0.01,
+    "fpp_power_stop_w": 0.1,
+    "fpp_stop_on_overpower": true
+  },
+  "writes": [
+    "*RST",
+    "*CLS",
+    ":SYST:AZER:STAT ON",
+    ":SENS:FUNC:CONC OFF",
+    ":OUTP:SMOD HIMP",
+    ":SYST:RSEN ON",
+    ":SENS:FUNC 'VOLT:DC'",
+    ":SOUR:FUNC CURR",
+    ":SOUR:CURR:RANG 0.001",
+    ":SOUR:CURR 0.001",
+    ":SENS:VOLT:PROT 5.0",
+    ":SENS:VOLT:RANG:AUTO ON",
+    ":SENS:VOLT:NPLC 1.0",
+    ":FORM:ELEM VOLT,CURR,STAT",
+    ":TRIG:DEL 0",
+    ":SOUR:DEL:AUTO ON",
+    ":OUTP ON"
+  ]
+}
