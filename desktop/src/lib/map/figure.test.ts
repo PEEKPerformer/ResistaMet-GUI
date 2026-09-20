@@ -103,6 +103,13 @@ test("the exported SVG is a document with a scale bar and the title escaped", ()
   assert.equal(escapeXml("a\u0001b"), "ab");
 });
 
+test("a photograph is clipped in the figure's coordinates, not its own", () => {
+  const photo = { href: "data:image/png;base64,AAAA", naturalWidth: 400, naturalHeight: 300, registration: { mmPerPx: 0.1, centreXmm: 0, centreYmm: 0, rotationDeg: 10 }, calibrated: true };
+  const svg = sceneToSvg(layoutFigure(model([spot(1, 0, 0, 5)], { photo })).scene);
+  assert.match(svg, /<g clip-path="url\(#map-box\)"><image [^>]*transform="translate\([^"]*rotate\(-10\)[^"]*"[^>]*\/><\/g>/);
+  assert.doesNotMatch(svg, /<image[^>]*clip-path/);
+});
+
 test("the CSV has one row per spot, the backend's numbers, and quoted labels", () => {
   const spots = [spot(1, 0, 0, 5.5), { ...spot(2, 7, -2.5, 6), label: 'edge, "left"', relative_error_rows: 0.053, edge_clearance_s: 1.5 }];
   const map: SpotMap = {

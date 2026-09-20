@@ -229,7 +229,8 @@ export function layoutFigure(model: FigureModel): FigureLayout {
 
   if (half) {
     if (overPhoto) prims.push(...outlinePrims(outline, view, { stroke: palette.halo, strokeWidth: 3.5, opacity: 0.7 }));
-    prims.push(...outlinePrims(outline, view, { stroke: palette.outline, strokeWidth: 1.25 }));
+    // Over a photograph the outline has to win against whatever is under it.
+    prims.push(...outlinePrims(outline, view, { stroke: overPhoto ? palette.text : palette.outline, strokeWidth: overPhoto ? 1.75 : 1.25 }));
   }
 
   for (const { spot, at } of placed) {
