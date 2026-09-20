@@ -127,6 +127,11 @@ SRQ_WAIT_SLICE_S = 1.0
 #: (2049 bytes in 368 ms, §10.5.2). This is a driver choice, not a
 #: specification value.
 BUS_MIN_RATE_BPS = 1000
+#: What the adapter buffers of a framed 0x0d message: the hung adapter of
+#: §8.17 took about 4 KB on the primary OUT before it stopped accepting. The
+#: OUT of a framed write completes once the adapter holds the message, so up
+#: to this much has still to reach the instrument before the reply can come.
+ADAPTER_OUT_BUFFER_BYTES = 4096
 
 _LISTEN = 'listen'
 _TALK = 'talk'
@@ -406,9 +411,10 @@ class Controller:
                 # tail of NI's 2080-byte message needed 103 ms (§10.5.2, §7.2).
                 # So the OUT follows the device timeout and the byte count, not
                 # the short wait. Once it completes all but the adapter's own
-                # buffer is on the bus, and the reply keeps the §7.2 wait.
+                # buffer is on the bus, and the reply waits for that remainder.
+                buffered = min(len(chunk), ADAPTER_OUT_BUFFER_BYTES)
                 status, _ = self._exchange(p.write_message(chunk, code, eoi), p.STATUS_REPLY_LENGTH,
-                                           self._reply_wait_s(code), 'write',
+                                           self._transfer_wait_s(code, buffered), 'write',
                                            out_wait_s=self._transfer_wait_s(code, len(chunk)))
                 written += status.transferred(len(chunk))
         return written
@@ -429,8 +435,10 @@ class Controller:
 
         The reply wait for ``code``, plus the time the bytes themselves take
         at ``BUS_MIN_RATE_BPS``: the code bounds a handshake, not the
-        transfer (§10.1.8). Used for the raw IN of a 0x0b, the raw OUT of a
-        0x0e and its reply, and the OUT of a 0x0d message.
+        transfer (§10.1.8). Used for the reply to a framed 0x0a, which comes
+        only when the whole read is over; the OUT of a 0x0d message, and its
+        reply for the part the adapter buffers; the raw IN of a 0x0b; the
+        raw OUT of a 0x0e and its reply.
         """
         return self._reply_wait_s(code) + byte_count / BUS_MIN_RATE_BPS
 
@@ -608,8 +616,8 @@ class Controller:
                 if raw:
                     data, end = self._raw_read_instruction(count, code, eos, eos_8bit, termchar, operation)
                 else:
-                    data, end = self._read_instruction(count, code, self._reply_wait_s(code), eos, eos_8bit,
-                                                       termchar, operation)
+                    data, end = self._read_instruction(count, code, self._transfer_wait_s(code, count), eos,
+                                                       eos_8bit, termchar, operation)
             except GpibTimeout as exc:
                 exc.partial = b''.join(chunks) + exc.partial
                 raise
