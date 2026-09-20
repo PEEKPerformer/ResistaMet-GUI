@@ -139,6 +139,7 @@ For example `PRLGX-ASRL::/dev/cu.usbserial-PX12345::INTFC` with the instrument a
 - It needs the **pyvisa-py** backend. Under a vendor library the setting is ignored and a warning is logged, because NI-VISA has no such resource class.
 - If the interface cannot be opened, the error names it (`Could not open GPIB interface PRLGX-ASRL…`) instead of a later "instrument not found". A scan or identify through the API answers 503 with that text.
 - It is not opened under `--simulate`.
+- Clearing the setting releases the adapter's port; the interface is otherwise held for as long as the program runs.
 
 ### Current limitation: a run does not connect through it yet
 
