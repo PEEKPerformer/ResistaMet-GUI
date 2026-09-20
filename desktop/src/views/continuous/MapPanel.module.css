@@ -159,3 +159,10 @@
   width: 140px;
   accent-color: var(--accent);
 }
+
+.exportTools {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-left: auto;
+}
