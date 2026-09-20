@@ -136,8 +136,10 @@ specification in several places — reads over 1 KB and long writes use two
 instructions the GPL-derived spec did not know, with the data raw on the
 adapter's second bulk endpoint pair; serial poll is its own instruction;
 the timeout table was right. The implementer built those paths from §10
-alone, with the framed paths kept and a one-flag switch back to them
-(`RESISTAMET_GPIB_RAW_TRANSFERS=0`); the `GPIB0::INTFC` board resource
+alone. After a whole-package review they were made opt-in
+(`RESISTAMET_GPIB_NI_INSTRUCTIONS=1`): the framed paths and the serial-poll
+sequence that ran on the bench stay the default until the new instructions
+have met the adapter; the `GPIB0::INTFC` board resource
 landed the same day. None of it has met the adapter yet — that is Monday's
 first job (`ni_usb_gpib_clean_room.md`, "What it has not had").
 
