@@ -46,7 +46,7 @@ Also here: `trace.bat` + `etw_urbs.py`, the earlier header-only method
 | `sad_poll` | through `GPIB0::24::1::INSTR`: `viReadSTB`, `viClear`, `viAssertTrigger`, `*CLS` — the secondary-address forms |
 | `ren_device` | on the instrument session: `viGpibControlREN` with `asrt_address`, `asrt_llo`, `asrt_address_llo`, `address_gtl`, `deassert_gtl`, `asrt`, then `*IDN?` |
 | `longwrite` | a 2048-byte write (`*CLS;` repeated), then `*IDN?` |
-| `readtimeout_long` | `:TRAC:DATA?` (61 768 bytes, ~12 s) with `VI_ATTR_TMO_VALUE` = 2000 ms — completed anyway; the timeout is not a total-transfer limit |
+| `readtimeout_long` | `:TRAC:DATA?` (61 768 bytes, ~12 s in chunks of at most 4.0 s) with `VI_ATTR_TMO_VALUE` = 2000 ms — completed. This does not show what the timeout bounds: 2000 ms goes out as the code whose measured expiry is 4.19 s (`timeout_expiry`), and no chunk ran longer than that |
 | `terminate` | `viTerminate` from another thread 1.5 s into the same read — no effect on the synchronous read, which completed |
 
 Only `srq` and `srq_poll` change instrument state (`*ESE`, `*SRE`); both
