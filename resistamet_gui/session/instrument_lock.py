@@ -43,9 +43,36 @@ def _lock_dir(lock_dir: Optional[str] = None) -> Path:
     return directory
 
 
+_GPIB_INSTR = re.compile(r'^GPIB(\d*)::(\d+)(?:::(\d+))?(?:::INSTR)?$')
+
+
+def canonical_address(address: str) -> str:
+    """One spelling per instrument, so every spelling finds the same lock.
+
+    VISA reads ``GPIB::24``, ``GPIB0::24``, ``gpib0::24::instr`` and
+    ``GPIB0::24::INSTR`` as the same instrument: the board defaults to 0,
+    the resource class to INSTR, and names are not case-sensitive. Two
+    processes that spelt it differently each took a lock of their own and
+    both opened the bus.
+
+    GPIB instrument addresses are written out in full. Anything else is only
+    upper-cased and stripped of whitespace: its defaults are not ours to
+    guess, and folding case can at worst make two resources share a lock.
+    """
+    text = re.sub(r'\s+', '', address).upper()
+    match = _GPIB_INSTR.match(text)
+    if not match:
+        return text
+    board, primary, secondary = match.groups()
+    parts = [f"GPIB{int(board or 0)}", str(int(primary))]
+    if secondary is not None:
+        parts.append(str(int(secondary)))
+    return '::'.join(parts + ['INSTR'])
+
+
 def lock_path(address: str, lock_dir: Optional[str] = None) -> Path:
     """Where the lock file for ``address`` lives."""
-    safe = re.sub(r'[^A-Za-z0-9_.-]', '_', address) or 'unnamed'
+    safe = re.sub(r'[^A-Za-z0-9_.-]', '_', canonical_address(address)) or 'unnamed'
     return _lock_dir(lock_dir) / f"{safe}.lock"
 
 

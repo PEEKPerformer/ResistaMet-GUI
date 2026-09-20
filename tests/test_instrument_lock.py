@@ -30,6 +30,45 @@ def test_lock_file_name_is_path_safe(tmp_path):
     assert path.name == 'GPIB0__24__INSTR.lock'
 
 
+@pytest.mark.parametrize('spelling', [
+    'GPIB0::24::INSTR', 'GPIB0::24', 'GPIB::24::INSTR', 'GPIB::24',
+    'gpib0::24::instr', 'Gpib::24', ' GPIB0::24::INSTR ', 'GPIB0::024::INSTR',
+])
+def test_every_spelling_of_one_gpib_instrument_is_one_lock(tmp_path, spelling):
+    assert lock_path(spelling, str(tmp_path)).name == 'GPIB0__24__INSTR.lock'
+
+
+def test_other_boards_addresses_and_secondaries_stay_apart(tmp_path):
+    names = {lock_path(a, str(tmp_path)).name for a in (
+        'GPIB0::24::INSTR', 'GPIB1::24::INSTR', 'GPIB0::25::INSTR',
+        'GPIB0::24::1::INSTR', 'GPIB0::INTFC')}
+    assert len(names) == 5
+    assert lock_path('GPIB0::24::1', str(tmp_path)).name == 'GPIB0__24__1__INSTR.lock'
+
+
+def test_other_resource_strings_only_lose_case_and_whitespace(tmp_path):
+    assert lock_path(' asrl6::instr ', str(tmp_path)).name == 'ASRL6__INSTR.lock'
+    assert lock_path('ASRL6::INSTR', str(tmp_path)).name == 'ASRL6__INSTR.lock'
+    # No INSTR is added where the default class is not ours to know.
+    assert lock_path('TCPIP0::10.0.0.5::5025::SOCKET', str(tmp_path)).name == (
+        'TCPIP0__10.0.0.5__5025__SOCKET.lock')
+    assert lock_path('ASRL6', str(tmp_path)).name == 'ASRL6.lock'
+
+
+def test_two_spellings_exclude_each_other(tmp_path):
+    script = HOLDER.format(address='gpib::24', lock_dir=str(tmp_path))
+    holder = subprocess.Popen([sys.executable, '-c', textwrap.dedent(script), '5'],
+                               stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == 'held'
+        with pytest.raises(InstrumentBusy):
+            with hold_instrument('GPIB0::24::INSTR', str(tmp_path), wait_s=0.2):
+                pass
+    finally:
+        holder.kill()
+        holder.wait(timeout=5)
+
+
 def test_lock_is_released_after_the_block(tmp_path):
     with hold_instrument('GPIB0::24::INSTR', str(tmp_path)):
         pass
