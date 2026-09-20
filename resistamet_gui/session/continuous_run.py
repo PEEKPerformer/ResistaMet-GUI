@@ -272,11 +272,7 @@ class ContinuousRun:
                     comp_list.append(comp_status)
 
                     # Write each point to export
-                    row_data = [i // 3, v, c, comp_status]
-                    try:
-                        self.exporter.write_row(row_data)
-                    except Exception:
-                        pass
+                    self._write_sweep_row([i // 3, v, c, comp_status])
 
                 # What the closing log line reports: every point in the file,
                 # both legs of an up-then-down sweep. It used to give the
@@ -317,11 +313,7 @@ class ContinuousRun:
                         rev_i.append(c)
                         comp_status = 'COMP' if (stat & _STAT_BIT_COMPLIANCE) else 'OK'
                         rev_comp.append(comp_status)
-                        row_data = [len(voltages) + i // 3, v, c, comp_status]
-                        try:
-                            self.exporter.write_row(row_data)
-                        except Exception:
-                            pass
+                        self._write_sweep_row([len(voltages) + i // 3, v, c, comp_status])
                     points_summary = (f"{len(voltages) + len(rev_v)} points acquired "
                                       f"({len(voltages)} forward, {len(rev_v)} reverse)")
                     # Report both directions
@@ -348,6 +340,30 @@ class ContinuousRun:
             self._control.finish('completed')
             # Fall through to cleanup below
 
+
+    def _write_sweep_row(self, row_data) -> None:
+        """Write one sweep point; a row that cannot be written is reported.
+
+        The same policy as the sampling loop: each failure is a warning that
+        names the row, and three in a row is an error that ends the run as
+        'write_error'. The points are already measured by then, so the rest
+        are still attempted and the sweep_segment events still carry them
+        all; only the file is short, and the run says so.
+        """
+        try:
+            self.exporter.write_row(row_data)
+            self._csv_error_count = 0
+        except Exception as e:
+            self._csv_error_count += 1
+            self._events.warn('write_failed',
+                f"Warning: Error writing sweep row {row_data[0]} "
+                f"({self._csv_error_count}/{self._max_csv_errors}): {str(e)}")
+            if self._csv_error_count == self._max_csv_errors:
+                self._events.error('write_failed', 'file',
+                    f"CRITICAL: {self._csv_error_count} consecutive write failures at sweep "
+                    f"row {row_data[0]}. Possible disk full or write permission issue. "
+                    f"The data file is incomplete.")
+                self._control.finish('write_error')
 
     def _enter_instrument_lock(self, address):
         """Hold the address for this run; released in _cleanup.
