@@ -7,9 +7,17 @@ import subprocess
 import sys
 
 CHECK = """
+import importlib
+import pkgutil
 import sys
 import resistamet_gui.session
 import resistamet_gui.api
+# Every submodule by name: what the package's __init__ happens to import is
+# not the contract, and a run module that imported Qt would otherwise pass.
+for found in pkgutil.walk_packages(resistamet_gui.session.__path__, 'resistamet_gui.session.'):
+    importlib.import_module(found.name)
+assert 'resistamet_gui.session.continuous_run' in sys.modules
+assert 'resistamet_gui.session.vdp_run' in sys.modules
 leaked = sorted(m for m in sys.modules if m.split('.')[0] in ('PySide6', 'shiboken6'))
 print(','.join(leaked))
 """
