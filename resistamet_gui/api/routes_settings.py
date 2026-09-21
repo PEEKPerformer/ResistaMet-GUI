@@ -130,7 +130,17 @@ def add_user(body: NewUser, request: Request, role: str = Depends(require_token)
 
 @router.get("/profiles/{username}")
 def read_profile(username: str, request: Request, role: str = Depends(require_token)):
-    return _config(request).get_user_settings(username)
+    """The profile's sections, and nothing else.
+
+    ``get_user_settings`` starts from the whole defaults dict, which also
+    carries the config-level ``users`` list and ``last_user``; a client that
+    walks the reply section by section would trip over a ``None`` there.
+    """
+    return _profile_sections(_config(request).get_user_settings(username))
+
+
+def _profile_sections(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return {section: settings[section] for section in SECTION_MODELS if section in settings}
 
 
 def _section_issues(section: str, values: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -219,8 +229,8 @@ def patch_profile(username: str, body: ProfilePatch, request: Request,
         # one on the bus.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                              detail="cannot change the instrument address during a run")
-    return config.merge_user_settings(username, sections,
-                                       check=_refuse_a_worse_profile(sections, role))
+    return _profile_sections(config.merge_user_settings(
+        username, sections, check=_refuse_a_worse_profile(sections, role)))
 
 
 @router.get("/schema/settings")
