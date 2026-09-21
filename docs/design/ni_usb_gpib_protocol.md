@@ -3133,7 +3133,14 @@ what to send, the last is curiosity.
   wire. Not established: whether the trigger is the count above 1024,
   the answer outrunning the count, or the timeout expiring mid-transfer.
   The same 20480-byte framed read of a short answer (`*IDN?`, 82 bytes)
-  works on every attempt.
+  works on every attempt. Bracketed after a replug with `:TRAC:DATA?`
+  answers under code 0xfc: 700, 980, 1050, 1400, 2100 and 4200 bytes all
+  arrived, each in one reply (4200 bytes = 140 0x37 blocks, 4496-byte
+  reply, 0.757 s); a 7000-byte answer wedged the adapter the same way,
+  with nothing at all on 0x84. So the trigger is not the count above
+  1024 and not the answer outrunning the count (every answer was shorter
+  than 20480); the framed reply has a ceiling between 4496 and about
+  7500 bytes, and an answer above it is fatal rather than truncated.
 
 ### 11.3 Bytes whose meaning is unknown but which can be copied
 
