@@ -311,6 +311,8 @@ class MeasurementSession:
             emitter.emit('run_ended', {
                 'reason': 'worker_error', 'ok': False, 'samples': 0,
                 'duration_s': 0.0, 'path': getattr(run, 'filename', '') or None,
+                # Set by the cleanup _execute ran for the dead run.
+                'output_verified': getattr(run, '_output_verified', True),
             })
         except Exception:
             logger.exception("could not report the end of a run that died")

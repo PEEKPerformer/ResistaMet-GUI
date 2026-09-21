@@ -220,7 +220,7 @@ log:cleanup, run_ended
 | `paused`, `resumed`, `stopping` | `reason` | As observed by the acquisition thread. |
 | `file_finalized` | `path`, `end_metadata` | File closed with its footer. |
 | `acquisition_finished` | `mode` | The loop ended; cleanup follows. |
-| `run_ended` | `reason`, `ok`, `samples`, `duration_s`, `path` | Always last. |
+| `run_ended` | `reason`, `ok`, `samples`, `duration_s`, `path`, `output_verified` | Always last. `output_verified` is false when the cleanup could not confirm the instrument output is off (its `:OUTP OFF` raised, or `:OUTP?` did not read back 0); a `log` with code `output_unverified` precedes it, and the source may still be on. |
 
 `run_ended.reason` values: `completed`, `target_samples`, `duration`, `user_stop` (these four are `ok: true`); `aborted`, `cancelled`, `prompt_timeout`, `spot_refused`, `instrument_busy`, `compliance_stop`, `overpower`, `power_envelope`, `connect_failed`, `configure_failed`, `output_on_failed`, `aux_connect_failed`, `file_create_failed`, `read_error`, `write_error`, `worker_error`.
 
