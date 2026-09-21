@@ -349,15 +349,19 @@ class TestTimeouts:
     def test_effective_timeout_reports_the_nominal_limit_of_the_code(self, seconds, code, limit):
         assert p.effective_timeout(seconds) == (code, limit)
 
-    def test_host_wait_is_the_measured_expiry_of_the_code_plus_two_seconds(self):
-        # §7.2, §7.3: not the nominal limit. The figures are the specification's.
-        assert p.host_wait_s(0xFB, 600) == pytest.approx(1.049837 + 2.0)
-        assert p.host_wait_s(0xFC, 600) == pytest.approx(4.196156 + 2.0)
-        assert p.host_wait_s(0xFE, 600) == pytest.approx(33.555345 + 2.0)
+    def test_host_wait_is_the_larger_expiry_of_the_two_units_plus_two_seconds(self):
+        # §7.2, §7.3: not the nominal limit, and not one unit's figure. 013CC9DF under NI's
+        # driver against 01CEE482 under this one (bench 2026-09-21); the larger, plus 2 s.
+        assert p.host_wait_s(0xF9, 600) == pytest.approx(0.132272 + 2.0)  # 0.132 against 0.127
+        assert p.host_wait_s(0xFA, 600) == pytest.approx(0.375 + 2.0)     # 0.264 against 0.375
+        assert p.host_wait_s(0xFB, 600) == pytest.approx(1.250 + 2.0)     # 1.050 against 1.250
+        assert p.host_wait_s(0xFC, 600) == pytest.approx(4.196156 + 2.0)  # 4.196 against 3.750
+        assert p.host_wait_s(0xFE, 600) == pytest.approx(41.250 + 2.0)    # 33.555 against 41.250
         assert p.host_wait_s(0xF0, 600) == 600
-        # A 5 s request goes out as 0xfd, which the adapter runs for 16.78 s: the host
-        # waits 18.78 s, not the 15 s of nominal + 50 %, and not 7.
-        assert p.host_wait_s(p.timeout_code(5.0), 600) == pytest.approx(16.778423 + 2.0)
+        # A 5 s request goes out as 0xfd, which one unit runs for 16.78 s and the other for
+        # 20.0 s: the host waits 22 s, not the 18.78 s of the first unit alone and not the
+        # 15 s of nominal + 50 %.
+        assert p.host_wait_s(p.timeout_code(5.0), 600) == pytest.approx(20.0 + 2.0)
 
     def test_timeout_max(self):
         assert t.TIMEOUT_MAX_S == 1000.0

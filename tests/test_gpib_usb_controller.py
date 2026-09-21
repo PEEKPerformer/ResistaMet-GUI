@@ -204,10 +204,11 @@ RAW_DRAIN = ('raw_in', TransportTimeout('nothing on the alternate endpoint'), RA
 
 T3S = 0xFC  # 3 s, the timeout the worked examples use
 SHORT_MS = int(SHORT_WAIT_S * 1000)
-#: §7.2, §7.3: the measured expiry of the code sent plus 2 s, in whole milliseconds.
-WAIT_3S_MS = 6196    # 0xfc: 4.196156 s + 2 s
-WAIT_10S_MS = 18778  # 0xfd: 16.778423 s + 2 s
-WAIT_30S_MS = 35555  # 0xfe: 33.555345 s + 2 s
+#: §7.2, §7.3: the larger expiry of the two timed units under the code sent plus 2 s, in
+#: whole milliseconds (GPIB-USB-HS 013CC9DF under NI's driver; 01CEE482 under this one).
+WAIT_3S_MS = 6196    # 0xfc: 4.196156 s (013CC9DF; 01CEE482 ends at 3.750) + 2 s
+WAIT_10S_MS = 22000  # 0xfd: 20.000 s (01CEE482; 013CC9DF ends at 16.778) + 2 s
+WAIT_30S_MS = 43250  # 0xfe: 41.250 s (01CEE482; 013CC9DF ends at 33.555) + 2 s
 
 
 def attach_script(take_control_error: int = 5) -> List[Tuple[Any, ...]]:
@@ -1511,8 +1512,9 @@ class TestHostWait:
             ('out', p.read_message(8, 0xFD)), ('in', read_reply(b'x', 8), 512),
         ])
         controller.read(22, max_bytes=8, timeout_s=5.0)
-        # 5 s goes out as 0xfd, which the adapter runs for 16.78 s (§7.3); the
-        # 15 s that nominal + 50 % gives would stop it 1.78 s early.
+        # 5 s goes out as 0xfd, which one adapter runs for 16.78 s and the other for 20.0 s
+        # (§7.3); the 15 s of nominal + 50 % would stop them 1.78 s and 5 s early, and the
+        # 18.78 s of the first unit alone stopped the second 1.2 s early on the bench.
         assert transport.in_timeouts_after(0x0C) == [WAIT_10S_MS]
         assert transport.in_timeouts_after(0x06) == [SHORT_MS]
         assert transport.in_timeouts_after(0x0A) == [WAIT_10S_MS + 8]  # and 1 ms per byte asked for
@@ -1525,7 +1527,7 @@ class TestHostWait:
         assert transport.in_timeouts_after(0x0C) == [WAIT_3S_MS]
         assert transport.in_timeouts_after(0x0D) == [WAIT_3S_MS + 1]  # and 1 ms for the byte
 
-    @pytest.mark.parametrize('timeout_s, code, base_ms', [(1.0, 0xFB, 3049), (3.0, T3S, WAIT_3S_MS)])
+    @pytest.mark.parametrize('timeout_s, code, base_ms', [(1.0, 0xFB, 3250), (3.0, T3S, WAIT_3S_MS)])
     def test_the_reply_to_a_framed_read_allows_for_the_bytes_it_carries(self, timeout_s, code, base_ms):
         # The code bounds a handshake, not the transfer (§10.1.8): a 2420 took 4.0 s over a
         # 20480-byte chunk and finished with error 0. pyvisa asks for 20480 bytes every time,
@@ -1564,7 +1566,7 @@ class TestHostWait:
         assert {tm for opcode, tm in outs if opcode != 0x0D} == {SHORT_MS}
         assert [tm for opcode, tm in outs if opcode == 0x0D] == [raw_wait_ms(1)]
 
-    @pytest.mark.parametrize('timeout_s, base_ms', [(3.0, WAIT_3S_MS), (20.0, WAIT_30S_MS), (0.3, 2263)])
+    @pytest.mark.parametrize('timeout_s, base_ms', [(3.0, WAIT_3S_MS), (20.0, WAIT_30S_MS), (0.3, 2375)])
     def test_the_out_of_a_framed_write_follows_the_device_timeout_and_the_length(self, timeout_s, base_ms):
         # §7.2, §10.5.2: the tail of NI's 2080-byte 0x0d message took 103 ms on 0x02 with a
         # fast listener; the 1 s of the §7.2 table is too short for a slow one.
@@ -1606,45 +1608,93 @@ class TestHostWait:
         assert transport.timeouts[-2:] == [('out', 0x0D, 43000), ('in', 12, 43000)]
 
     #: §7.3 as the specification prints it, (code, measured expiry in seconds), every timed
-    #: case: written out here so the test does not read the figures it checks from the code.
+    #: case on GPIB-USB-HS 013CC9DF under NI's driver: written out here so the test does not
+    #: read the figures it checks from the code.
     MEASURED = [(0xF9, 0.132272), (0xFA, 0.263541), (0xFB, 1.049837),
                 (0xFC, 4.195609), (0xFC, 4.195640), (0xFC, 4.195316), (0xFC, 4.196156),
                 (0xFC, 4.195943), (0xFC, 4.195767),
                 (0xFD, 16.778423), (0xFE, 33.555345), (0xFE, 33.555258)]
+    #: §7.3, "A second unit expires at other times": GPIB-USB-HS 01CEE482 under this driver's
+    #: messages (bench 2026-09-21), (code, expiry in seconds): 1.25 times 0.1, 0.3, 1, 3, 16
+    #: and 33 s.
+    BENCH = [(0xF9, 0.127), (0xFA, 0.375), (0xFB, 1.250), (0xFC, 3.750), (0xFD, 20.000), (0xFE, 41.250)]
     #: §7.3's inference column, the larger candidate: (code, power of two in microseconds).
     INFERRED = [(0xF1, 4), (0xF2, 5), (0xF3, 7), (0xF4, 9), (0xF5, 10), (0xF6, 12), (0xF7, 14),
                 (0xF8, 15), (0xFF, 27), (0x01, 29), (0x02, 30)]
+    #: The same column for the six timed codes, to back-test the rule for the untimed ones.
+    INFERRED_FOR_TIMED = [(0xF9, 17), (0xFA, 19), (0xFB, 20), (0xFC, 22), (0xFD, 24), (0xFE, 25)]
 
-    @pytest.mark.parametrize('code, measured_s', MEASURED)
-    def test_the_host_outlasts_every_measured_expiry(self, code, measured_s):
+    @pytest.mark.parametrize('code, measured_s', MEASURED + BENCH)
+    def test_the_host_outlasts_every_measured_expiry_of_either_unit(self, code, measured_s):
         # §7.2: the reply trailed the power of two by at most 1.9 ms; the wait must clear the
-        # measured expiry by more than that, and the recommendation is 2 s.
+        # measured expiry by more than that, and the recommendation is 2 s. §7.3: until the
+        # cause of the two units' difference is established the wait outlasts both tables.
         wait = p.host_wait_s(code, 600.0)
         assert wait > measured_s + 1.9e-3
         assert wait >= measured_s + 2.0
         assert t.TIMEOUT_EXPIRY_JITTER_S == 1.9e-3
 
+    def test_the_waits_the_bench_needed(self):
+        # On the bench under 0xfd the host, waiting 18.78 s, sent the stop request 1.2 s before
+        # the adapter's own error 0x0a reply at 20.0 s, and a timeout was reported as an I/O
+        # error (§7.3). The second unit's figure plus 2 s, or the first's where it is longer.
+        assert p.host_wait_s(0xFD, 600.0) >= 22.0
+        assert p.host_wait_s(0xFE, 600.0) >= 43.25
+        assert p.host_wait_s(0xFB, 600.0) >= 3.25
+        assert p.host_wait_s(0xFC, 600.0) >= 6.196
+        assert p.host_wait_s(0xFA, 600.0) >= 2.375
+        assert p.host_wait_s(0xF9, 600.0) >= 2.132
+
+    def test_no_code_waits_less_than_it_did_from_the_first_unit_alone(self):
+        # The wait before the second unit was timed: the first unit's figure, or the bare
+        # power of two for a code nobody timed, plus 2 s. No code's wait may have got shorter.
+        first_unit = dict(self.MEASURED)
+        first_unit.update((code, 2 ** exponent / 1e6) for code, exponent in self.INFERRED)
+        for _, code in t.TIMEOUT_TABLE:
+            assert p.host_wait_s(code, 600.0) >= first_unit[code] + 2.0 - 1e-9, hex(code)
+
     @pytest.mark.parametrize('code, exponent', INFERRED)
-    def test_an_unmeasured_code_waits_the_larger_inferred_expiry(self, code, exponent):
-        expiry = 2 ** exponent / 1e6
+    def test_an_untimed_code_waits_1_25_times_the_larger_of_nominal_and_the_power_of_two(self, code, exponent):
+        nominal = dict((c, limit) for limit, c in t.TIMEOUT_TABLE)[code]
+        expiry = 1.25 * max(nominal, 2 ** exponent / 1e6)
         assert t.timeout_expiry_s(code) == pytest.approx(expiry, rel=1e-12)
         assert p.host_wait_s(code, 600.0) == pytest.approx(expiry + 2.0, rel=1e-12)
+
+    def test_the_untimed_code_rule_undershoots_neither_unit_on_any_timed_code(self):
+        # Why that rule (§7.3): the second unit's round figure is the nominal limit up to 0xfc
+        # and the first unit's power of two for 0xfd and 0xfe. The bare power of two, the rule
+        # before, gives 16.78 s for 0xfd against a measured 20.0; 1.25 x nominal gives 12.5.
+        nominal = dict((c, limit) for limit, c in t.TIMEOUT_TABLE)
+        longest = {}
+        for code, seconds in self.MEASURED + self.BENCH:
+            longest[code] = max(longest.get(code, 0.0), seconds)
+        for code, exponent in self.INFERRED_FOR_TIMED:
+            power_of_two = 2 ** exponent / 1e6
+            assert 1.25 * max(nominal[code], power_of_two) >= longest[code], hex(code)
+        assert 2 ** 24 / 1e6 < longest[0xFD] and 1.25 * nominal[0xFD] < longest[0xFD]
 
     def test_every_row_of_the_timeout_table_has_an_expiry_the_host_outlasts(self):
         nominal = dict((code, limit) for limit, code in t.TIMEOUT_TABLE)
         assert set(nominal) == set(t.TIMEOUT_EXPIRY_MEASURED_S) | set(t.TIMEOUT_EXPIRY_INFERRED_S)
         assert not set(t.TIMEOUT_EXPIRY_MEASURED_S) & set(t.TIMEOUT_EXPIRY_INFERRED_S)
+        assert set(t.TIMEOUT_EXPIRY_BENCH_S) == set(t.TIMEOUT_EXPIRY_MEASURED_S)
+        assert t.TIMEOUT_EXPIRY_BENCH_S == dict(self.BENCH)
         for code, limit in nominal.items():
             expiry = t.timeout_expiry_s(code)
             assert p.host_wait_s(code, 600.0) > expiry + 1.9e-3
-            # 0xfa is the one code that expires before its nominal value (§7.3).
-            assert (expiry < limit) == (code == 0xFA), hex(code)
+            assert expiry >= t.TIMEOUT_EXPIRY_MEASURED_S.get(code, 0.0), hex(code)
+            assert expiry >= t.TIMEOUT_EXPIRY_BENCH_S.get(code, 0.0), hex(code)
+            # The larger of the two units' figures is never below nominal (§7.3): 0xfa is the
+            # one code the first unit ends early, 0.264 s for 300 ms, and the second runs 0.375.
+            assert expiry >= limit, hex(code)
+        assert t.TIMEOUT_EXPIRY_MEASURED_S[0xFA] < nominal[0xFA] < t.TIMEOUT_EXPIRY_BENCH_S[0xFA]
 
-    def test_the_ten_second_code_is_waited_past_its_16_78_s_expiry(self):
-        # The code the application's 5 s and 10 s timeouts go out as. Nominal + 50 % is 15 s.
+    def test_the_ten_second_code_is_waited_past_both_units_expiries(self):
+        # The code the application's 5 s and 10 s timeouts go out as. Nominal + 50 % is 15 s;
+        # the first unit runs it 16.78 s and the second 20.0 s.
         for asked in (5.0, 10.0):
             assert p.timeout_code(asked) == 0xFD
-        assert p.host_wait_s(0xFD, 600.0) >= 18.7
+        assert p.host_wait_s(0xFD, 600.0) >= 22.0
 
     def test_the_disabled_code_has_no_expiry_and_an_unknown_code_is_refused(self):
         assert t.timeout_expiry_s(0xF0) is None
