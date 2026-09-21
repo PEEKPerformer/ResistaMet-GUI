@@ -820,21 +820,27 @@ def timeout_code(seconds: Optional[float]) -> int:
 
 
 #: §7.2: what the host waits beyond the adapter's own expiry. Nothing observed
-#: scales with the timeout -- the reply trailed the expiry by at most 1.9 ms
-#: at 0.13 s and at 33.6 s alike -- so the margin is fixed.
+#: scales with the timeout -- on one unit the reply trailed the power of two
+#: by at most 1.9 ms at 0.13 s and at 33.6 s alike, on the other it was exact
+#: to the millisecond across repeats (§7.3) -- so the margin is fixed.
 HOST_WAIT_MARGIN_S = 2.0
 
 
 def host_wait_s(code: int, infinite_wait_s: float) -> float:
     """How long the host waits for the reply to an instruction sent with ``code`` (§7.2).
 
-    The expiry of §7.3 plus ``HOST_WAIT_MARGIN_S``, so the adapter always
-    ends the instruction first and says so in its reply. The code on the
-    wire decides, not the timeout asked for, and not the code's nominal
-    limit: a wait of nominal + max(2 s, 50 %) is 15 s for 0xfd, which the
-    adapter runs for 16.78 s. For a code nobody timed the expiry is the
-    larger inferred candidate. ``infinite_wait_s`` is returned for the
-    disabled code 0xf0, where only the host can end the wait.
+    The longest expiry either timed adapter showed under the code
+    (``tables.timeout_expiry_s``, §7.3) plus ``HOST_WAIT_MARGIN_S``, so the
+    adapter always ends the instruction first and says so in its reply.
+    The code on the wire decides, not the timeout asked for, and not the
+    code's nominal limit: a wait of nominal + max(2 s, 50 %) is 15 s for
+    0xfd, which one unit runs for 16.78 s and the other for 20.0 s. A wait
+    sized by the first unit alone, 18.78 s, reached the stop request on
+    the second 1.2 s before its own error 0x0a reply, and a timeout was
+    reported as an I/O error. For a code nobody timed the expiry is 1.25
+    times the larger of the nominal limit and the inferred power of two.
+    ``infinite_wait_s`` is returned for the disabled code 0xf0, where only
+    the host can end the wait.
 
     This is the wait for one timed instruction. A message with two would
     need the sum of their expiries (§7.2: NI's read messages carry a 0x0c

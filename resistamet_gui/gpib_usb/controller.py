@@ -435,11 +435,11 @@ class Controller:
     def _reply_wait_s(self, code: int) -> float:
         """The host wait for the reply to one instruction sent with timeout ``code`` (§7.2).
 
-        The adapter's measured expiry under that code plus two seconds
-        (``protocol.host_wait_s``), so the adapter always gives up first and
-        says so in its reply; this controller's infinite wait for the
-        disabled code. Every message sent here carries one timed instruction,
-        so no expiries are summed.
+        The longest expiry either timed adapter showed under that code plus
+        two seconds (``protocol.host_wait_s``, §7.3), so the adapter always
+        gives up first and says so in its reply; this controller's infinite
+        wait for the disabled code. Every message sent here carries one
+        timed instruction, so no expiries are summed.
         """
         return p.host_wait_s(code, self._infinite_wait_s)
 

@@ -663,9 +663,10 @@ class TestInstrumentSession:
         assert inst.timeout == 1_000_000
         inst.write('*IDN?')
         assert adapter.instructions(p.OP_WRITE)[-1][3] == 0x02
-        # The host waited the expiry inferred for the 1000 s code, 2^30 us, plus 2 s (§7.3),
+        # The host waited 1.25 times the expiry inferred for the 1000 s code, 2^30 us (§7.3:
+        # the second unit's factor over the larger of nominal and the power of two), plus 2 s,
         # plus 1 ms for each of the 7 bytes of the write.
-        assert adapter.bulk_in_timeouts[-1] == 1_075_741 + 7
+        assert adapter.bulk_in_timeouts[-1] == 1_344_177 + 7
         inst.close()
 
     def test_an_immediate_timeout_goes_out_as_the_shortest_code_seen_on_the_wire(self, rm, adapter):
@@ -684,7 +685,8 @@ class TestInstrumentSession:
         inst.timeout = 5000
         inst.write('*IDN?')
         assert adapter.instructions(p.OP_WRITE)[-1][3] == 0xFD
-        assert adapter.bulk_in_timeouts[-1] == 18778 + 7  # 16.778 s measured for 0xfd (§7.3) + 2 s, + 7 bytes
+        # 20.0 s measured for 0xfd on the bench unit (§7.3; 16.778 s on the captured one) + 2 s, + 7 bytes
+        assert adapter.bulk_in_timeouts[-1] == 22000 + 7
         inst.close()
 
     def test_no_response_is_a_visa_timeout(self, rm, adapter):
