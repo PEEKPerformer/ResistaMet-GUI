@@ -78,9 +78,11 @@ def pull_the_cable_after_the_first_reading(monkeypatch):
 
     The instrument is still on and still sourcing; only the adapter is gone,
     so every write and query after that raises the I/O error the bus gives.
-    Returns the state, whose ``pulled`` flag says whether it has happened.
+    Returns the state: ``pulled`` says whether it has happened, and a test
+    that plugs the cable back in clears it and disarms ``armed`` so the
+    next run keeps its link.
     """
-    state = {'pulled': False}
+    state = {'pulled': False, 'armed': True}
     write, query = FakeKeithley.write, FakeKeithley.query
 
     def patched_write(fake, cmd):
@@ -92,7 +94,7 @@ def pull_the_cable_after_the_first_reading(monkeypatch):
         if state['pulled']:
             raise _link_lost()
         reply = query(fake, cmd)
-        if cmd.strip().upper() == ':READ?':
+        if state['armed'] and cmd.strip().upper() == ':READ?':
             state['pulled'] = True
         return reply
 
@@ -211,3 +213,156 @@ class TestARunWithItsLinkIntact:
         ended = _ended(sink)
         assert (ended['reason'], ended['output_verified']) == ('connect_failed', True)
         assert 'output_unverified' not in _warnings(sink)
+
+
+RECOVERED = "Output turned OFF after the previous run lost its link."
+
+
+def _lose_the_link_for_one_run(session, sink, profile, monkeypatch, mode='resistance'):
+    """A run at ADDRESS ends with its output in doubt; the link is then back."""
+    state = pull_the_cable_after_the_first_reading(monkeypatch)
+    session.start(profile, mode, 'wafer1', 'alice')
+    assert _wait_for(lambda: session.state == 'idle', timeout=30.0)
+    assert _ended(sink)['output_verified'] is False
+    state['pulled'], state['armed'] = False, False
+    sink.events.clear()
+
+
+def _commands(fake):
+    return [(op, cmd.upper()) for op, cmd in fake.command_log]
+
+
+def _codes(sink):
+    return [e.payload['code'] for e in sink.of_type('log')]
+
+
+class TestTheSessionRemembers:
+    def test_the_flag_is_set_after_a_lost_link_run(self, session, sink, fake_rm, profile,
+                                                    monkeypatch):
+        _lose_the_link_for_one_run(session, sink, profile, monkeypatch)
+        assert session.output_unknown_at == ADDRESS
+
+    def test_a_clean_run_does_not_set_it(self, session, sink, fake_rm, profile):
+        session.start(profile, 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+        assert _ended(sink)['output_verified'] is True
+        assert session.output_unknown_at is None
+
+    def test_a_run_that_died_sets_it_too(self, session, sink, fake_rm, profile, monkeypatch):
+        from resistamet_gui.instrument import Keithley2400
+        state = pull_the_cable_after_the_first_reading(monkeypatch)
+
+        def dies_as_the_cable_goes(run):
+            run.keithley = Keithley2400(ADDRESS).connect()
+            run.keithley.write(":OUTP ON")
+            state['pulled'] = True
+            raise RuntimeError("boom")
+        monkeypatch.setattr(ContinuousRun, 'execute', dies_as_the_cable_goes)
+
+        session.start(profile, 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+        session._thread.join(5.0)
+        assert session.output_unknown_at == ADDRESS
+
+
+class TestIdentifyTurnsTheOutputOff:
+    def test_output_off_is_the_first_command_after_idn(self, session, sink, fake_rm, profile,
+                                                        monkeypatch):
+        _lose_the_link_for_one_run(session, sink, profile, monkeypatch)
+
+        found = session.identify(ADDRESS)
+
+        assert found['model']
+        fake = fake_rm.opened[-1]
+        assert _commands(fake)[:3] == [('query', '*IDN?'), ('write', ':OUTP OFF'),
+                                       ('query', ':OUTP?')]
+        assert fake.state['outp'] is False
+        assert session.output_unknown_at is None
+        (said,) = sink.of_type('log')
+        assert said.run_id is None
+        assert (said.payload['code'], said.payload['message']) == ('output_off_recovered', RECOVERED)
+        assert said.payload['level'] == 'info'
+
+    def test_a_clean_session_identifies_without_writing(self, session, sink, fake_rm):
+        session.identify(ADDRESS)
+        assert [op for op, _ in fake_rm.opened[-1].command_log] == ['query', 'query']
+        assert sink.events == []
+
+    def test_a_read_back_of_1_leaves_the_doubt(self, session, sink, fake_rm, profile,
+                                                monkeypatch):
+        _lose_the_link_for_one_run(session, sink, profile, monkeypatch)
+        dispatch = FakeKeithley._dispatch_write
+
+        def ignores_output_off(fake, cmd):
+            if cmd.upper().startswith(':OUTP OFF'):
+                return None
+            return dispatch(fake, cmd)
+        monkeypatch.setattr(FakeKeithley, '_dispatch_write', ignores_output_off)
+        # The fake starts with its output off; this identify must not be
+        # fooled by that, only by the instrument's answer to :OUTP OFF.
+        query = FakeKeithley.query
+        monkeypatch.setattr(FakeKeithley, 'query',
+                            lambda fake, cmd: '1' if cmd.strip().upper() == ':OUTP?'
+                            else query(fake, cmd))
+
+        session.identify(ADDRESS)
+
+        assert session.output_unknown_at == ADDRESS
+        assert _warnings(sink) == ['output_unverified']
+        assert 'output_off_recovered' not in _codes(sink)
+
+    def test_the_second_identify_sends_nothing_more(self, session, sink, fake_rm, profile,
+                                                     monkeypatch):
+        _lose_the_link_for_one_run(session, sink, profile, monkeypatch)
+        session.identify(ADDRESS)
+        session.identify(ADDRESS)
+        assert [op for op, _ in fake_rm.opened[-1].command_log] == ['query', 'query']
+
+
+class TestTheNextRunTurnsTheOutputOff:
+    """The run's *RST does it; no second command, but the record says so."""
+
+    @pytest.mark.parametrize('mode', ['four_point', 'vdp'])
+    def test_rst_is_the_first_write_and_the_run_says_so(self, session, sink, fake_rm,
+                                                          profile, monkeypatch, mode):
+        _lose_the_link_for_one_run(session, sink, profile, monkeypatch)
+
+        session.start(profile, mode, 'wafer1', 'alice')
+        assert _wait_for(lambda: session.output_unknown_at is None)
+        if mode == 'vdp':
+            # The output is off before the first geometry is asked for.
+            assert _wait_for(lambda: session.status()['pending_prompt'] is not None)
+            session.stop()
+        assert _wait_for(lambda: session.state == 'idle')
+
+        fake = fake_rm.opened[-1]
+        writes = [cmd for op, cmd in _commands(fake) if op == 'write']
+        assert writes[0] == '*RST', "nothing is configured before the reset"
+        assert ':OUTP OFF' not in writes[:writes.index(':OUTP:SMOD HIMP')], \
+            "no second output-off before the configuration"
+        assert fake.state['outp'] is False
+        (said,) = [e for e in sink.of_type('log') if e.payload['code'] == 'output_off_recovered']
+        assert said.payload['message'] == RECOVERED
+        assert said.run_id == 'run-2'
+        # Before the configuration: the file opens once configure is done.
+        assert said.seq < sink.of_type('file_opened')[0].seq
+        assert _ended(sink)['output_verified'] is True
+
+    def test_a_clean_run_does_not_claim_a_recovery(self, session, sink, fake_rm, profile):
+        session.start(profile, 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+        assert 'output_off_recovered' not in _codes(sink)
+
+    def test_a_connect_that_fails_keeps_the_doubt(self, session, sink, fake_rm, profile,
+                                                   monkeypatch):
+        _lose_the_link_for_one_run(session, sink, profile, monkeypatch)
+        from resistamet_gui.session import continuous_run as module
+
+        def refuse(address, **kwargs):
+            raise OSError(f"no instrument at {address}")
+        monkeypatch.setattr(module, 'Keithley2400', refuse)
+
+        session.start(profile, 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+        assert _ended(sink)['reason'] == 'connect_failed'
+        assert session.output_unknown_at == ADDRESS

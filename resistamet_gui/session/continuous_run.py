@@ -74,10 +74,15 @@ class ContinuousRun:
     """
 
     def __init__(self, mode, sample_name, username, settings, control, events,
-                  safety_ack='skip', prompt_timeout_s=None, instrument_lock=None):
+                  safety_ack='skip', prompt_timeout_s=None, instrument_lock=None,
+                  recover_output=False):
         if mode not in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             raise ValueError(f"Invalid measurement mode: {mode}")
         self.mode = mode
+        #: True when the last run at this address could not confirm its
+        #: output off. The *RST at connect turns it off before anything is
+        #: configured; this makes the run say so (log output_off_recovered).
+        self._recover_output = recover_output
         #: The mode as log messages name it; self.mode stays the internal key.
         self._mode_name = MODE_DISPLAY_NAMES[mode]
         self.sample_name = sample_name
@@ -638,6 +643,13 @@ class ContinuousRun:
                     self._events.emit('line_frequency', {'hz': line_freq, 'assumed': True})
                     self._events.warn('lfr_assumed', "Warning: Could not query line frequency. Assuming 50Hz.")
                 self.keithley.write("*RST"); time.sleep(0.5)
+                if self._recover_output:
+                    # *RST is the first write of the run and leaves the
+                    # output off on this family, so the source the last run
+                    # could not turn off is off here, before anything is
+                    # configured. Said out loud so the record has it.
+                    self._events.log('output_off_recovered',
+                        "Output turned OFF after the previous run lost its link.")
                 self.keithley.write("*CLS")
                 # Auto zero: ON (accurate), ONCE (fast), OFF (fastest)
                 azer = str(measurement_settings.get('auto_zero', 'on')).upper()

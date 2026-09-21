@@ -38,7 +38,11 @@ class VdpRun:
     MODE = 'vdp'
 
     def __init__(self, sample_name, username, settings, control, events,
-                  safety_ack='skip', prompt_timeout_s=None, instrument_lock=None):
+                  safety_ack='skip', prompt_timeout_s=None, instrument_lock=None,
+                  recover_output=False):
+        #: See ContinuousRun: the *RST at connect settles an output the last
+        #: run left in doubt, and this makes the run say so.
+        self._recover_output = recover_output
         self.sample_name = sample_name
         self.username = username
         self.settings = settings
@@ -279,6 +283,11 @@ class VdpRun:
             raise ValueError("vdp_voltage_compliance must be > 0 V")
 
         self.keithley.write("*RST"); time.sleep(0.5)
+        if self._recover_output:
+            # The first write of the run; *RST leaves the output off, so
+            # the source the last run could not turn off is off here.
+            self._events.log('output_off_recovered',
+                "Output turned OFF after the previous run lost its link.")
         self.keithley.write("*CLS")
         azer = str(measurement.get('auto_zero', 'on')).upper()
         if azer == 'ONCE':
