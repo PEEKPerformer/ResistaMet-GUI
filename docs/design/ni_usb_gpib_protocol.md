@@ -1092,10 +1092,12 @@ NI's message **[captured]** (§10.1.5), 32 bytes, no AUXMR block:
   count field says there are some. A parser that derives the byte count
   from item 5 and then checks it against the count field rejects every
   timed-out 0x36-sized read on this unit.
-- Bytes actually read = (blocks - 1) × block_size + last_block_count, or
-  0 if no data block (the last-block-count byte is then meaningless).
-  Cross-check: it must equal requested - (bytes not transferred from the
-  0x38 count field) **[bench] [captured]**.
+- Bytes actually read = requested - (bytes not transferred, from the
+  0x38 count field) **[bench] [captured]**. When that is not zero it
+  equals (blocks - 1) × block_size + last_block_count **[bench]
+  [captured]**; when it is zero the last-block-count byte is meaningless
+  (0 in the captures, min(requested, block size) on unit 01CEE482, the
+  bullet above) and the data block, if any, holds filler only.
 - Host receive buffer for a requested N: ceil(N/30) 32-byte blocks (or
   ceil(N/15) 16-byte blocks) plus 28 bytes for what follows them (the
   longer of the two forms above); request the larger of the two, rounded
@@ -1545,11 +1547,12 @@ Rules for the first row **[captured]** (7.3, §10.1.8):
 
 - The host wait for the reply to any instruction that carries a timeout
   code -- and for the 0x88 transfer of a 0x0b -- **must be longer than
-  the measured expiry E of that code in 7.3**: more than 0.133 s for
-  0xf9, 0.264 s for 0xfa, 1.050 s for 0xfb, 4.197 s for 0xfc, 16.779 s
-  for 0xfd, 33.556 s for 0xfe. The code that counts is the one put on
-  the wire, not the timeout the application asked for (2000 ms goes out
-  as 0xfc and runs 4.196 s).
+  the measured expiry E of that code in 7.3, on every unit timed**: the
+  larger of the two tables there -- more than 0.133 s for 0xf9, 0.375 s
+  for 0xfa, 1.250 s for 0xfb, 4.197 s for 0xfc, 20.0 s for 0xfd, 41.25 s
+  for 0xfe. The code that counts is the one put on the wire, not the
+  timeout the application asked for (2000 ms goes out as 0xfc and runs
+  4.196 s on one unit, 3.750 s on the other).
 - Recommended: E + 2 s. The reply was never more than 1.9 ms later than
   the power of two of 7.3 in twelve timed-out instructions, so a fixed
   margin is enough; nothing observed scales with T.
@@ -1561,7 +1564,8 @@ Rules for the first row **[captured]** (7.3, §10.1.8):
   blocks of one message both expiring, or a 0x0c expiring at all.
 - For a code not measured in 7.3, take E as the larger candidate of
   7.3's inference column (the smallest power of two in microseconds not
-  below the nominal limit), which no measured code exceeded.
+  below the nominal limit), which no measured code on unit 013CC9DF
+  exceeded, and allow for unit 01CEE482's 1.25 factor on top (7.3).
 - E + 2 s covers an instruction during which nothing moves. Whether an
   instruction during which data keeps moving can run past E is the open
   question of 7.1; until it is settled a host that expects long
@@ -3119,6 +3123,31 @@ what to send, the last is curiosity.
   captured (§10.7.4).
 - [ ] **Why the board-level read of board_io.pcap timed out** with the
   instrument addressed to talk (§10.7.2).
+- [ ] **A 0x0b on unit 01CEE482 ends after 20.0 s whatever its code**
+  **[bench, 2026-09-21]**: `0b 14 0a <code> 00 b0 ff ff | 09 01 00 01 0a
+  55 00 00 | 04 00 00 00`, sent as its own message after a `0c` (own
+  code) and a `06`, with nothing pending at the instrument, ended with a
+  zero-length transfer on 0x88 at 20.0 s under 0xf9, 0xfb and 0xfc
+  alike, and the session reported a timeout. On unit 013CC9DF NI's 0x0b
+  under 0xfc ended at 4.196 s (7.3). NI's message differs: `03 00 00 00`
+  first, then `0c fd 00 fd <addressing>`, then `0b 00 0a fc 00 b0 ff ff`
+  (`m` = 0x00), then two register writes `09 01 00 01 0a 55` and `09 01
+  00 02 03 01`, all in one message (§10.1.9); NI had also written its
+  bank-2 session configuration (§10.2.4). Which of these makes the code
+  count is not established. Reads that do return data are unaffected:
+  1050, 4200, 7000 and 35 000-byte answers arrived complete by 0x0b on
+  this unit (the 35 000 in 6.2 s), including one whose 1 s host slice
+  ended after 5632 bytes and resumed without loss.
+- [ ] **The 0x10 serial poll works on unit 01CEE482 without the bank-2
+  configuration** **[bench, 2026-09-21]**: `10 01 00 00 03 00 fd 00 | 04
+  00 00 00` to PAD 3 drew `3a 03 00 04 | 39 00 74 00 07 00 ff ff | 04 00
+  00 00` in 2 ms; the byte at offset 3 of the 0x3a block (0x04 here, 0x00
+  before the error was queued) agreed with `*STB?` both times. At an
+  empty address under 0xfb the reply after 1.252 s was the 12 bytes `39
+  00 74 05 08 b0 ff ff 04 00 00 00`: error 5, no 0x3a block -- not the
+  timeout error 0x0a NI's timed-out poll returned (§10.6.6). Not
+  established: whether NI's driver would also see error 5 for an absent
+  device, or whether the difference is again the unit.
 - [ ] **Why unit 01CEE482 expires at 1.25 x {0.1, 0.3, 1, 3, 16, 33} s
   and unit 013CC9DF at powers of two in microseconds** (7.3): the unit,
   or this driver's message? Send NI's exact 0x0a bytes from this driver
