@@ -172,6 +172,13 @@ KEITH_REPLY_5 = h('36 4b 45 49 54 48 ff ff 04 00 00 00 04 00 00 00'
                   '38 00 20 00 00 00 01 00 60 05 00 00 04 00 00 00')
 #: Read of up to 64 bytes with nothing to read: device-side timeout, no data blocks.
 TIMEOUT_REPLY_64 = h('38 00 20 0a c0 ff ff ff e0 5e 00 00 04 00 00 00')
+#: Timed-out reads of 1 and 10 bytes as the same unit sent them on 2026-09-21 (§5.2):
+#: one 0x36 block of stale bytes, and min(requested, 15) in the last-block count
+#: while the count field says nothing was read.
+TIMEOUT_REPLY_1_STALE_BLOCK = h('36 00 20 00 aa 55 ff ff 04 00 00 00 4e 53 54 52'
+                                '38 00 20 0a ff ff ff ff e0 01 00 00 04 00 00 00')
+TIMEOUT_REPLY_10_STALE_BLOCK = h('36 00 20 00 aa 55 ff ff 04 00 00 00 04 00 00 00'
+                                 '38 00 20 0a f6 ff ff ff e0 0a 00 00 04 00 00 00')
 
 
 class TestObservedReplies:
@@ -186,6 +193,7 @@ class TestObservedReplies:
         assert parsed.status.error == 0
         assert parsed.status.count == 0xFF52 and parsed.status.transferred(256) == 82
         assert parsed.adr1 == 0xE0  # EOI seen
+        assert parsed.last_block_count == 0x16  # 82 - 60: reported, and here it agrees
         assert parsed.embedded_status is None
         assert p.read_status_offset(IDN_REPLY_256) == 96
 
@@ -205,6 +213,22 @@ class TestObservedReplies:
         assert parsed.status.error == t.ERR_TIMEOUT
         assert parsed.status.transferred(64) == 0
         assert p.read_status_offset(TIMEOUT_REPLY_64) == 0
+
+    @pytest.mark.parametrize('reply, requested, stale_count', [
+        (TIMEOUT_REPLY_1_STALE_BLOCK, 1, 0x01), (TIMEOUT_REPLY_10_STALE_BLOCK, 10, 0x0A),
+    ])
+    def test_timeout_reply_with_a_stale_block_and_last_block_count(self, reply, requested, stale_count):
+        # §5.2: the count field is the authority. Sizing the data by the last-block count and
+        # then checking it against the field made each of these a ProtocolError, and the
+        # timeout the adapter reported became an I/O error behind a resync.
+        parsed = p.parse_read_reply(reply, requested)
+        assert parsed.data == b''
+        assert parsed.status.error == t.ERR_TIMEOUT
+        assert parsed.status.transferred(requested) == 0
+        assert parsed.last_block_count == stale_count
+        assert parsed.adr1 == 0xE0 and parsed.end is False
+        assert p.read_status_offset(reply) == 16
+        assert isinstance(p.error_for_code(parsed.status.error, 'read'), p.GpibTimeout)
 
     def test_trailer_must_end_in_a_termination_block(self):
         broken = bytearray(TIMEOUT_REPLY_64)
@@ -468,11 +492,26 @@ class TestReadReplyReassembly:
         parsed = p.parse_read_reply(read_reply(b'ABC', 256, end=False, error=t.ERR_TIMEOUT), 256)
         assert parsed.data == b'ABC'
 
-    def test_count_field_must_agree_with_blocks(self):
+    def test_count_field_wins_over_the_last_block_count(self):
+        # §5.2: the field is the authority; the last-block byte is reported and not used.
         reply = bytearray(read_reply(b'ABCDE', 256))
-        reply[16 + 4:16 + 6] = (0x0004 - 256 & 0xFFFF).to_bytes(2, 'little')  # says 4, blocks say 5
+        reply[16 + 4:16 + 6] = ((4 - 256) & 0xFFFF).to_bytes(2, 'little')  # says 4, the block byte says 5
+        parsed = p.parse_read_reply(bytes(reply), 256)
+        assert parsed.data == b'ABCD' and parsed.last_block_count == 5
+
+    def test_count_field_claiming_more_than_the_blocks_hold_raises(self):
+        reply = bytearray(read_reply(b'ABCDE', 256))                        # one 15-byte block
+        reply[16 + 4:16 + 6] = ((16 - 256) & 0xFFFF).to_bytes(2, 'little')  # says 16
         with pytest.raises(p.ProtocolError):
             p.parse_read_reply(bytes(reply), 256)
+        no_blocks = bytearray(read_reply(b'', 256, end=False, error=t.ERR_TIMEOUT))
+        no_blocks[4:6] = ((3 - 256) & 0xFFFF).to_bytes(2, 'little')         # says 3 with no block
+        with pytest.raises(p.ProtocolError):
+            p.parse_read_reply(bytes(no_blocks), 256)
+        garbage = bytearray(read_reply(b'ABCDE', 256))
+        garbage[16 + 4:16 + 6] = b'\x00\x80'                                # 32768 short of 256
+        with pytest.raises(p.ProtocolError):
+            p.parse_read_reply(bytes(garbage), 256)
 
     def test_missing_trailer_raises(self):
         with pytest.raises(p.ProtocolError):
