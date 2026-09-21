@@ -1074,8 +1074,24 @@ NI's message **[captured]** (§10.1.5), 32 bytes, no AUXMR block:
 - Filler after the valid bytes of the last block is unspecified: stale
   bytes in 0x36 and 0x37 blocks **[bench]**; zeros in 0x36 blocks and
   stale bytes in 0x37 blocks **[captured]** (§10.1.5). A timed-out
-  0x36-sized read still carries one zero-filled 0x36 block
-  **[captured]**. Never read past the valid count.
+  0x36-sized read still carries one 0x36 block: zero-filled
+  **[captured]**, or holding stale bytes **[bench, unit 01CEE482,
+  2026-09-21]** -- `36 00 20 00 aa 55 ff ff 04 00 00 00 4e 53 54 52` (the
+  tail of an earlier status block and of "INSTR"). Never read past the
+  valid count.
+- **The last-block-count byte (item 5) is not zero when nothing was
+  read** **[bench, 01CEE482]**: on three timed-out reads it held
+  min(requested, block size) -- 0x01 for count 1, 0x0a for count 10,
+  0x1e for count 20480 -- while the 0x38 count field said 0 bytes were
+  transferred (error 0x0a). Replies, count 1 and count 10:
+  `36 00 20 00 aa 55 ff ff 04 00 00 00 4e 53 54 52 | 38 00 20 0a ff ff ff
+  ff e0 01 00 00 04 00 00 00` and `36 00 20 00 aa 55 ff ff 04 00 00 00 04
+  00 00 00 | 38 00 20 0a f6 ff ff ff e0 0a 00 00 04 00 00 00`. The 0x38
+  count field is the authority for how many bytes were read; the byte in
+  item 5 only says where the valid bytes of the last block end when the
+  count field says there are some. A parser that derives the byte count
+  from item 5 and then checks it against the count field rejects every
+  timed-out 0x36-sized read on this unit.
 - Bytes actually read = (blocks - 1) × block_size + last_block_count, or
   0 if no data block (the last-block-count byte is then meaningless).
   Cross-check: it must equal requested - (bytes not transferred from the
@@ -1641,6 +1657,41 @@ millisecond:
   other than this GPIB-USB-HS; whether the expiry restarts with each byte
   handshaken, i.e. what the code bounds (7.1: the 4.0 s chunks under
   0xfc ended inside that code's 4.194 s, so they settle nothing).
+
+**A second unit expires at other times [bench].** GPIB-USB-HS 01CEE482
+(bcdDevice byte 0x65 like the captured unit), driven by this project's
+messages (a 0x0c with the same code, then a 0x0a `0a 14 0a <code> <count>
+00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00`), on a Mac over
+libusb, nothing pending at the Keithley 2400 (2026-09-21). Timed from the
+submission of the 0x0a to the completion of its reply; wire logs in
+`docs/notes/bench/log_tmo*_hex.txt` (not tracked):
+
+| Code | Count | 01CEE482 expiry (s) | 013CC9DF expiry (s), table above | Ratio |
+|------|-------|---------------------|----------------------------------|-------|
+| 0xf9 | 20480 | 0.127 (session total; the wire was not logged) | 0.132 | 0.96 |
+| 0xfa | 20480 | 0.375 | 0.264 | 1.42 |
+| 0xfb | 20480 | 1.250 | 1.050 | 1.19 |
+| 0xfb | 1 | 1.250 | | |
+| 0xfc | 20480 | 3.750 | 4.196 | 0.89 |
+| 0xfd | 20480 | 20.000 | 16.778 | 1.19 |
+| 0xfd | 10 | about 20.0 (the host gave up at 18.79 s; the reply, error 0x0a, was collected 1.01 s after the stop request, 20.0 s after the 0x0a) | | |
+| 0xfe | 20480 | 41.250 | 33.555 | 1.23 |
+
+- The figures are exact to the millisecond across repeats (0.375, 1.250,
+  3.750, 20.000, 41.250 s) and do not depend on the count (1, 10 and
+  20480 agree under 0xfb and 0xfd). They are not powers of two in
+  microseconds. Every one is 1.25 times a round figure: 0.1, 0.3, 1, 3,
+  16 and 33 s.
+- Not established: whether the difference is the unit, its firmware, or
+  the message (this driver's 0x0a differs from NI's in the bytes behind
+  the code and in the block that follows it; the same message was not
+  sent to 013CC9DF). Until it is, **a host wait must outlast both
+  tables**: the wait derived from the 013CC9DF figures plus 2 s (18.78 s
+  for 0xfd, 35.56 s for 0xfe) is shorter than 01CEE482's own expiry
+  (20.0 s, 41.25 s). On the bench the host reached its wait first under
+  0xfd, sent the stop request 0x20, and the adapter's own error-0x0a
+  reply arrived 1.0 s later, at its usual 20.0 s; the read was reported
+  as an I/O error instead of a timeout.
 
 Inference, not measurement -- what a power of two in microseconds would
 be for the unmeasured codes, under the two rules that each fit five of
@@ -3068,6 +3119,21 @@ what to send, the last is curiosity.
   captured (§10.7.4).
 - [ ] **Why the board-level read of board_io.pcap timed out** with the
   instrument addressed to talk (§10.7.2).
+- [ ] **Why unit 01CEE482 expires at 1.25 x {0.1, 0.3, 1, 3, 16, 33} s
+  and unit 013CC9DF at powers of two in microseconds** (7.3): the unit,
+  or this driver's message? Send NI's exact 0x0a bytes from this driver
+  to 01CEE482, or this driver's bytes to 013CC9DF.
+- [ ] **A framed 0x0a with count 20480 whose answer was longer than the
+  count wedged unit 01CEE482** **[bench, 2026-09-21]**: `:TRAC:DATA?` of
+  500 x 5 elements (about 35 000 bytes) under code 0xfb drew no reply in
+  23.8 s, the stop request 0x20 then timed out on EP0, every later
+  control request timed out (`no langid`), and only unplugging cleared
+  it. NI never sends a framed read above 1024 bytes (§10.1.8: 1025 and
+  above go by 0x0b), so the framed path above 1024 is unobserved on the
+  wire. Not established: whether the trigger is the count above 1024,
+  the answer outrunning the count, or the timeout expiring mid-transfer.
+  The same 20480-byte framed read of a short answer (`*IDN?`, 82 bytes)
+  works on every attempt.
 
 ### 11.3 Bytes whose meaning is unknown but which can be copied
 
