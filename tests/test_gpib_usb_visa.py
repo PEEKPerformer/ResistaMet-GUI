@@ -103,6 +103,9 @@ class SimulatedAdapter:
         #: of stale bytes and min(requested, 15) in the last-block count, nothing read. Off,
         #: the form NI's captures show: no data block and a stale last-block byte.
         self.stale_timeout_block = False
+        #: The talker's message ends without EOI on its last byte: the read that drains it
+        #: reports no END, and the next read finds nothing and times out.
+        self.withhold_eoi = False
 
     def control_in(self, request, value, index, length, timeout_ms, request_type=0xC0) -> bytes:
         if self.fail_next_control is not None:
@@ -243,7 +246,8 @@ class SimulatedAdapter:
             cut = len(source)
         cut = min(cut, requested)
         out, instrument.pending = source[:cut], source[cut:]
-        end = not instrument.pending or bool(eos_mode & 0x04 and out.endswith(bytes((eos_char,))))
+        end = ((not instrument.pending and not self.withhold_eoi)
+               or bool(eos_mode & 0x04 and out.endswith(bytes((eos_char,)))))
         return out, end
 
     def _read_raw(self, data: bytes) -> bytes:
@@ -333,6 +337,11 @@ class SimulatedAdapter:
 
     def instructions(self, opcode: int) -> List[bytes]:
         return [m for m in self.messages if m[0] == opcode]
+
+
+def framed_counts(adapter: SimulatedAdapter) -> List[int]:
+    """The requested count of every framed 0x0a the adapter has seen, in order."""
+    return [0x10000 - int.from_bytes(m[4:6], 'little') for m in adapter.instructions(p.OP_READ)]
 
 
 def fake_adapter_info(serial: Optional[str] = '01234567', bus: int = 20, address: int = 5) -> AdapterInfo:
@@ -496,11 +505,14 @@ class TestInstrumentSession:
         write = adapter.instructions(p.OP_WRITE)[-1]
         assert write == p.write_message(b'*IDN?\r\n', 0xFD, send_eoi=True)
         # pyvisa reads in 20480-byte chunks. Unless the raw paths are switched on, that is the
-        # framed 0x0a the bench has run, not the 0x0b NI's driver would send (§10.1.1).
+        # framed 0x0a the bench has run, not the 0x0b NI's driver would send (§10.1.1), asking
+        # for 1024 at a time, the most a framed read ever asks for (§11.2); the 82-byte answer
+        # ends the first piece with END.
         assert adapter.instructions(p.OP_READ_RAW) == []
+        assert len(adapter.instructions(p.OP_READ)) == 1
         read = adapter.instructions(p.OP_READ)[-1]
-        # Compare off: m 00 and e 00, 10 s code, -20480, then the embedded two-write block.
-        assert read == h('0a 00 00 fd 00 b0 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')
+        # Compare off: m 00 and e 00, 10 s code, -1024, then the embedded two-write block.
+        assert read == h('0a 00 00 fd 00 fc 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')
         # Addressing: controller talks / instrument listens, then instrument talks.
         commands = adapter.instructions(p.OP_COMMAND)[-2:]
         assert commands[0][4:7] == bytes((0x3F, 0x40, 0x38))
@@ -599,7 +611,7 @@ class TestInstrumentSession:
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         inst.write('*CLS;' * 500)
         assert adapter.instructions(p.OP_READ_RAW) == [] and adapter.instructions(p.OP_WRITE_RAW) == []
-        assert adapter.instructions(p.OP_READ)[-1][4:6] == h('00 b0')     # the 20480-byte chunk, framed
+        assert adapter.instructions(p.OP_READ)[-1][4:6] == h('00 fc')     # pyvisa's 20480-byte chunk, framed: 1024 per 0x0a
         assert len(adapter.instructions(p.OP_WRITE)[-1]) == 8 + 2502 + 2 + 4
         inst.close()
 
@@ -641,6 +653,48 @@ class TestInstrumentSession:
         assert adapter.instructions(p.OP_READ_RAW) == []
         read = adapter.instructions(p.OP_READ)[-1]
         assert read[1:6] == h('00 00 fc 00 ff')  # compare off: 00 00; 3 s default timeout, -256
+        inst.close()
+
+    def test_a_3000_byte_answer_through_pyvisa_s_chunk_is_three_framed_pieces(self, rm, adapter):
+        # §11.2: a 20480-byte 0x0a whose answer ran long wedged the bench adapter. The framed
+        # path asks for 1024 per instruction (§10.1.1) and loops inside the controller, so
+        # pyvisa's one 20480-byte chunk is three 0x0a after one addressing, and pyvisa sees
+        # one read ending on END.
+        answer = bytes(range(256)) * 11 + b'\n' * 184
+        adapter.instruments[24].pending = answer
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        commands = len(adapter.instructions(p.OP_COMMAND))
+        assert inst.read_raw() == answer
+        assert framed_counts(adapter) == [1024, 1024, 1024]
+        assert adapter.instructions(p.OP_READ_RAW) == []
+        assert len(adapter.instructions(p.OP_COMMAND)) == commands + 1   # addressed to talk once, not per piece
+        inst.close()
+
+    def test_read_bytes_of_3000_asks_for_1024_1024_and_952(self, rm, adapter):
+        answer = bytes(range(256)) * 11 + bytes(range(184))
+        adapter.instruments[24].pending = answer
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        assert inst.read_bytes(3000) == answer
+        assert framed_counts(adapter) == [1024, 1024, 952]
+        # Compare off, 3 s default code, -952 = 0xfc48, the embedded two-write block.
+        assert adapter.instructions(p.OP_READ)[-1] == h('0a 00 00 fc 48 fc 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')
+        inst.close()
+
+    def test_a_timeout_on_the_second_piece_is_error_timeout_with_the_first_piece_at_the_session(self, rm, adapter):
+        first = bytes(range(256)) * 4
+        adapter.instruments[24].pending = first
+        adapter.withhold_eoi = True   # exactly one piece, and no EOI with its last byte
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 100
+        session = inst.visalib.sessions[inst.session]
+        assert session.read(3000) == (first, StatusCode.error_timeout)
+        assert framed_counts(adapter) == [1024, 1024]
+        # Through pyvisa the same read is VI_ERROR_TMO, as any timed-out read is.
+        adapter.instruments[24].pending = first
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            inst.read_bytes(3000)
+        assert info.value.error_code == StatusCode.error_timeout
+        assert framed_counts(adapter) == [1024, 1024] * 2
         inst.close()
 
     def test_timeout_attribute_reaches_the_instruction(self, rm, adapter):

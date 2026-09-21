@@ -39,8 +39,16 @@ the note at the top of its section.
 Transfers of every size take the framed 0x0a / 0x0d instructions unless the
 controller is built with ``ni_instructions=True``: those are the paths that
 have run on our bench, and the application's every read is a large one
-(pyvisa asks for 20480 bytes at a time). Switched on, large transfers take
-the instructions NI's own driver uses (§10): a read of
+(pyvisa asks for 20480 bytes at a time). A framed read asks for at most
+``FRAMED_READ_MAX_BYTES`` (1024) in one 0x0a: a larger request is a sequence
+of 0x0a instructions of that count or less, after one addressing, until END,
+the count or an error. NI's driver sends no framed read above 1024 -- from
+1025 up it uses 0x0b (§10.1.1, §10.1.8) -- so a bigger 0x0a is unobserved on
+the wire, and on bench unit 01CEE482 a 20480-byte 0x0a was fatal once the
+answer outgrew a ceiling: answers up to 4200 bytes came back whole in one
+reply, a 7000-byte answer drew no reply at all and left the adapter
+answering nothing until it was unplugged (§11.2). Switched on, large
+transfers take the instructions NI's own driver uses (§10): a read of
 ``RAW_READ_MIN_BYTES`` or more is a 0x0b whose bytes arrive unframed on the
 alternate bulk IN endpoint, and a write of ``RAW_WRITE_MIN_BYTES`` or more
 is a 0x0e whose bytes go out unframed on the alternate bulk OUT; smaller
@@ -114,6 +122,16 @@ DEFAULT_INFINITE_WAIT_S = 600.0
 #: the requested count decides, not how much the instrument then sends, and
 #: nothing changes at 2048 or 4096.
 RAW_READ_MIN_BYTES = 1025
+#: A framed 0x0a never asks for more than this many bytes; a larger framed
+#: read is a sequence of 0x0a instructions of at most this count (see
+#: ``Controller._read_bytes``). 1024 is the last count NI sends as 0x0a
+#: (``RAW_READ_MIN_BYTES`` - 1, §10.1.1), so a framed read above it is
+#: unobserved on the wire (§10.1.8), and on bench unit 01CEE482 it was fatal
+#: past a ceiling: under a 20480-byte 0x0a, answers of up to 4200 bytes (a
+#: 4496-byte reply) came back whole and a 7000-byte answer drew no reply at
+#: all and wedged the adapter until it was unplugged (§11.2). A full piece of
+#: 1024 is a 1136-byte reply, a quarter of the largest that arrived.
+FRAMED_READ_MAX_BYTES = 1024
 #: Writes of at least this many bytes use the 0x0e instruction with the data
 #: on the alternate bulk OUT. NI's rule (§10.5.2, write_thresholds.pcap):
 #: every length up to 2048 goes as one framed 0x0d, 2049 and more as 0x0e.
@@ -448,8 +466,8 @@ class Controller:
 
         The reply wait for ``code``, plus the time the bytes themselves take
         at ``BUS_MIN_RATE_BPS``: the code bounds a handshake, not the
-        transfer (§10.1.8). Used for the reply to a framed 0x0a, which comes
-        only when the whole read is over; the OUT of a 0x0d message, and its
+        transfer (§10.1.8). Used for the reply to one framed 0x0a, which comes
+        only when that instruction is over; the OUT of a 0x0d message, and its
         reply for the part the adapter buffers; the raw IN of a 0x0b; the
         raw OUT of a 0x0e and its reply.
         """
@@ -583,6 +601,9 @@ class Controller:
         Returns the data and whether END (EOI, or the EOS character when
         ``eos`` is given) ended it. False means the count was reached. A
         device-side timeout raises ``GpibTimeout`` carrying the partial data.
+        On the framed path no single 0x0a asks for more than
+        ``FRAMED_READ_MAX_BYTES``; a larger request is read in pieces after
+        the one addressing (``_read_bytes``).
         Without ``eos`` the instruction's ``m e`` bytes are the bench-proven
         ``00 00``. NI puts the session's termination character into ``e``
         even then (§10.1.6), under its own AUXRA value; the codec can build
@@ -615,10 +636,20 @@ class Controller:
                     eos_8bit: bool, operation: str) -> Tuple[bytes, bool]:
         """Read instructions until END, the count, or a short result; framed or raw by size.
 
-        One instruction carries at most 0xffff bytes on either path, so a
-        larger request loops; the instrument stays addressed between chunks
-        (§10.1.7 shows re-addressing is harmless, and none is needed). A
-        timeout mid-loop raises with everything read so far as its partial.
+        One instruction carries at most ``FRAMED_READ_MAX_BYTES`` on the
+        framed path and 0xffff on the raw one, so a larger request loops.
+        The instrument stays addressed between pieces: addressing changes
+        only by command bytes (§6), the 0x0a reply reports ATN still false
+        (§10.1.5), and an instrument that gave up fewer bytes than it holds
+        keeps the rest for the next read (§10.1.7, where NI's second
+        ``viRead`` re-addressed first and that was harmless, not needed).
+        So the 0x0c and the 0x06 go once per call and each piece costs one
+        round trip. Every piece is a whole instruction with its own device
+        timeout code and its own host wait (``_transfer_wait_s`` of one
+        piece, never of the request), so a long answer under a short code
+        completes as long as each piece keeps moving. A timeout mid-loop
+        raises with everything read so far as its partial (§5.2: the
+        partial data of a timed-out read is valid).
 
         The requested count decides the instruction, once, as it does for NI
         (§10.1.1): a request that starts as 0x0b stays 0x0b to its last
@@ -633,8 +664,9 @@ class Controller:
         chunks: List[bytes] = []
         remaining = max_bytes
         raw = self._raw and max_bytes >= RAW_READ_MIN_BYTES
+        step = p.MAX_TRANSFER_BYTES if raw else FRAMED_READ_MAX_BYTES
         while remaining > 0:
-            count = min(remaining, p.MAX_TRANSFER_BYTES)
+            count = min(remaining, step)
             try:
                 if raw:
                     data, end = self._raw_read_instruction(count, code, eos, eos_8bit, operation)
