@@ -3173,8 +3173,18 @@ what to send, the last is curiosity.
   reply, 0.757 s); a 7000-byte answer wedged the adapter the same way,
   with nothing at all on 0x84. So the trigger is not the count above
   1024 and not the answer outrunning the count (every answer was shorter
-  than 20480); the framed reply has a ceiling between 4496 and about
-  7500 bytes, and an answer above it is fatal rather than truncated.
+  than 20480); the framed reply has a ceiling somewhere between a
+  4200-byte answer (4496-byte reply, arrives) and a 7000-byte answer
+  (no reply), and an answer above it is fatal rather than truncated.
+  **Working practice [bench, 2026-09-21]:** never put a count above
+  1024 in a 0x0a. Long answers read as consecutive 0x0a instructions of
+  at most 1024 each behind ONE 0x0c + 0x06 -- no re-addressing between
+  the pieces -- arrived complete: 2100 bytes as 3 pieces, 7000 as 7 and
+  35 000 as 35 (6.26 s, the same time the 0x0b path took), the
+  instrument holding the bytes beyond each count for the next piece, as
+  the `partial` capture showed for NI's two reads (§10.1.7). Consecutive
+  0x0a with no 0x0c between them are unobserved in the captures; this is
+  the bench observation that fills that gap.
 
 ### 11.3 Bytes whose meaning is unknown but which can be copied
 
