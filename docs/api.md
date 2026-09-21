@@ -224,6 +224,8 @@ log:cleanup, run_ended
 
 `run_ended.reason` values: `completed`, `target_samples`, `duration`, `user_stop` (these four are `ok: true`); `aborted`, `cancelled`, `prompt_timeout`, `spot_refused`, `instrument_busy`, `compliance_stop`, `overpower`, `power_envelope`, `connect_failed`, `configure_failed`, `output_on_failed`, `aux_connect_failed`, `file_create_failed`, `read_error`, `write_error`, `worker_error`.
 
+After a run ended with `output_verified: false`, the session's first connection back to that address turns the output off before anything else (the run's `*RST`, or `:OUTP OFF` right after `*IDN?` in `identify`) and logs `output_off_recovered`; that `log` has no `run_id` when it comes from `identify`.
+
 ## Prompts
 
 A prompt is a decision the run cannot make. The run emits `prompt`, the session state becomes `awaiting_prompt`, and `GET /session` shows it under `pending_prompt`, so a client that connects late still sees the question. Answer with `POST /session/prompt`, quoting the prompt's `prompt_id` (for example `run-2:safety_voltage_ack-1`; the run id is part of it, so an answer left over from an earlier run cannot be taken by the next) and one of its `options`. The first valid answer wins. Anything else is a 409 and the prompt stays pending.
