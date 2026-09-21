@@ -14,6 +14,8 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 export function profilePatch(loaded: Sections, draft: Sections): Sections {
   const patch: Sections = {};
   for (const [section, values] of Object.entries(draft)) {
+    // A reply may carry non-section keys (a null, a list); only objects hold settings.
+    if (values === null || typeof values !== "object" || Array.isArray(values)) continue;
     const before = loaded[section] ?? {};
     const changed: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(values)) {

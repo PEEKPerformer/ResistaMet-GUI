@@ -49,3 +49,13 @@ test("after Identify the draft takes the stored address and keeps its edits", ()
   assert.equal(next.measurement?.nplc, 5);
   assert.deepEqual(profilePatch(stored, next), { measurement: { nplc: 5 } });
 });
+
+test("a reply's non-section keys are skipped rather than walked", () => {
+  // GET /profiles once carried the config-level `users` list and a null
+  // `last_user` beside the sections; Object.entries(null) threw and took the
+  // Settings dialog down with it.
+  const loaded = { ...structuredClone(LOADED), users: [] as unknown as Record<string, unknown>, last_user: null as unknown as Record<string, unknown> };
+  const draft = structuredClone(loaded);
+  draft.measurement.nplc = 5;
+  assert.deepEqual(profilePatch(loaded, draft), { measurement: { nplc: 5 } });
+});
