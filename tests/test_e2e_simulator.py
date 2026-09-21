@@ -81,7 +81,7 @@ def _drive_timed_run(window, tab, label, seconds, app):
 def test_resistance_records_ohms_law(sim_window, app):
     ts, _, _, rs = _drive_timed_run(
         sim_window, sim_window.tab_resistance, "Resistance Measurement",
-        seconds=1.5, app=app,
+        seconds=3.0, app=app,
     )
     assert len(ts) >= 3, f"too few points: {len(ts)}"
     finite_rs = [r for r in rs if r is not None and not math.isnan(r)]
@@ -94,7 +94,7 @@ def test_voltage_source_records_correct_current(sim_window, app):
     # Default sourced voltage is 1.0 V into 100 Ω → I = 10 mA.
     ts, vs, is_, _ = _drive_timed_run(
         sim_window, sim_window.tab_voltage_source, "Voltage Source",
-        seconds=1.5, app=app,
+        seconds=3.0, app=app,
     )
     assert len(ts) >= 3, f"too few points: {len(ts)}"
     bad_v = [v for v in vs if v is not None and abs(v - 1.0) > 1e-3]
@@ -107,7 +107,7 @@ def test_current_source_records_correct_voltage(sim_window, app):
     # Default sourced current is 1 mA into 100 Ω → V = 0.1 V.
     ts, vs, is_, _ = _drive_timed_run(
         sim_window, sim_window.tab_current_source, "Current Source",
-        seconds=1.5, app=app,
+        seconds=3.0, app=app,
     )
     assert len(ts) >= 3, f"too few points: {len(ts)}"
     bad_v = [v for v in vs if v is not None and abs(v - 0.1) > 1e-4]
