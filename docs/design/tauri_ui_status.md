@@ -1,6 +1,6 @@
 # Tauri Desktop UI — Status (steps 2 and 3)
 
-**Status:** On `phase0/reviewable-baseline`, pushed, CI green; backend bench-checked on the lab 2420 and on a 2400 over the NI USB driver; the UI bench's three blockers and five majors fixed; the UI has driven the 2400 on a Mac through the driver (2026-09-21)
+**Status:** On `phase0/reviewable-baseline`, pushed, CI green; backend bench-checked on the lab 2420 and on a 2400 over the NI USB driver; the UI bench's three blockers and five majors fixed; the CI-built macOS bundle has driven the 2400 on a Mac through the driver (2026-09-21)
 **Date:** 2026-09-17
 **Depends on:** step 1 (`tauri_backend_split.md`, `tauri_backend_split_status.md`)
 
@@ -224,10 +224,22 @@ read-back frozen at configure (2.1 V, recorded in the header as
 `effective.voltage_compliance_V_at_configure`) is not the limit the
 instrument enforces once it has ranged up.
 
+Then the CI-built macOS bundle itself, opened from its dmg on the Mac
+with the adapter attached: the shell launched the frozen backend, which
+found the adapter through the bundled libusb; a profile was created,
+pyvisa-py chosen and the address identified from Settings; a resistance
+run (99.58 Ω, 63 samples) and a 21-point sweep (fit 99.57 Ω, R² = 1.000)
+ran from the window, their files landing in the app's own data folder
+and the address in this machine's `machine.json`. Headless, the same
+frozen backend also ran voltage source, current source and four-point on
+the 2400. vdP has not run on the Mac: its prompts want a person at the
+bench.
+
 ## Not yet
 
-- **The UI fixes on the lab PC itself** — everything above was verified
-  against the simulator.
+- **The UI fixes on the lab PC itself** — verified against the simulator
+  and, since 2026-09-21, in the macOS bundle against the 2400; the
+  installed Windows build has not been re-run.
 - **SRQ wait and the INTFC session on a real adapter** — never run. The
   raw read/write paths and the 0x10 poll ran on 2026-09-21 (above); the
   raw path stays opt-in until its timeout question is settled.
