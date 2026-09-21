@@ -58,6 +58,9 @@ class VdpRun:
         self._i_mag = 0.0
         self.filename = ""
         self._shut_down_started = False   # _shut_down runs once per run
+        #: False once the cleanup could not confirm the output is off; see
+        #: ContinuousRun. Reported on run_ended.
+        self._output_verified = True
 
     @property
     def running(self) -> bool:
@@ -231,6 +234,7 @@ class VdpRun:
                 'samples': samples,
                 'duration_s': time.time() - self._start_time if self._start_time else 0.0,
                 'path': self.filename or None,
+                'output_verified': self._output_verified,
             })
 
     def _connect_and_configure(self) -> None:
@@ -572,12 +576,28 @@ class VdpRun:
             except Exception:
                 logger.warning("failed to release the instrument lock", exc_info=True)
 
+    def _output_off_confirmed(self) -> bool:
+        """``:OUTP OFF``, then ``:OUTP?`` read back as 0; see ContinuousRun."""
+        self.keithley.write(":OUTP OFF")
+        return int(float(self.keithley.query(":OUTP?"))) == 0
+
     def _cleanup(self) -> None:
         try:
             self._sleep_inhibitor.uninhibit()
             if self.keithley:
+                # The output first, and confirmed, as in ContinuousRun: a
+                # lost link must be said out loud, not left as a cleanup
+                # warning while the source goes on driving the sample.
                 try:
-                    self.keithley.write(":OUTP OFF")
+                    verified = self._output_off_confirmed()
+                except Exception as e:
+                    verified = False
+                    self._events.warn('cleanup', f"Warning: cleanup error: {e}")
+                if not verified:
+                    self._output_verified = False
+                    self._events.warn('output_unverified',
+                        "Instrument output may still be ON — check the front panel.")
+                try:
                     self.keithley.close()
                     self._events.log('cleanup', "Instrument disconnected.")
                 except Exception as e:
