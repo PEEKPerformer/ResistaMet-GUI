@@ -199,6 +199,7 @@ export interface PromptResolvedPayload {
 export interface RunEndedPayload {
   duration_s?: number;
   ok?: boolean;
+  output_verified?: boolean;
   path?: string | null;
   reason: string;
   samples?: number;
