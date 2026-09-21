@@ -3153,6 +3153,20 @@ what to send, the last is curiosity.
   timeout error 0x0a NI's timed-out poll returned (§10.6.6). Not
   established: whether NI's driver would also see error 5 for an absent
   device, or whether the difference is again the unit.
+- [ ] **Hot-unplug mid-run** **[bench, 2026-09-21]**: with a read in
+  flight the cable was pulled at the adapter. libusb reported errno 19
+  (no such device) and the controller ran its fault path four times
+  within 10 ms -- clear halts on 0x06, 0x02, 0x84, 0x88 (each errno 19),
+  stop request, drain, re-attach -- before the board closed. The run
+  ended with a read error and its file was finalised; the `:OUTP OFF` of
+  the cleanup could not reach the instrument, whose output therefore
+  stayed ON until the next session addressed it. After the replug the
+  adapter enumerated as a new device and the next open, attach and run
+  succeeded with no process restart. Wanted: a rule that errno 19 (and
+  its Windows/libusb equivalents) ends the fault path at once with a
+  "device gone" error instead of retrying halts and attaches on a handle
+  that no longer exists (§8.2 recovery is for a present adapter), and a
+  way for the run layer to say the output could not be turned off.
 - [ ] **Why unit 01CEE482 expires at 1.25 x {0.1, 0.3, 1, 3, 16, 33} s
   and unit 013CC9DF at powers of two in microseconds** (7.3): the unit,
   or this driver's message? Send NI's exact 0x0a bytes from this driver
