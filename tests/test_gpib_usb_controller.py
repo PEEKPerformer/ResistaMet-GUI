@@ -10,14 +10,16 @@ rule of §7.2 is checked, not assumed.
 from typing import Any, List, Optional, Tuple
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from resistamet_gui.gpib_usb import device_ops as ops
 from resistamet_gui.gpib_usb import protocol as p
 from resistamet_gui.gpib_usb import tables as t
-from resistamet_gui.gpib_usb.controller import (DRAIN_WAIT_S, IFC_SETTLE_S, RAW_READ_MIN_BYTES,
-                                                 BUS_MIN_RATE_BPS, RAW_WRITE_MIN_BYTES, RECOVERY_WAIT_S,
-                                                 RAW_READ_SLICE_S, RAW_REPLY_POLL_S, SHORT_WAIT_S,
-                                                 SRQ_WAIT_SLICE_S, Controller)
+from resistamet_gui.gpib_usb.controller import (DEFAULT_INFINITE_WAIT_S, DRAIN_WAIT_S, FRAMED_READ_MAX_BYTES,
+                                                 IFC_SETTLE_S, RAW_READ_MIN_BYTES, BUS_MIN_RATE_BPS,
+                                                 RAW_WRITE_MIN_BYTES, RECOVERY_WAIT_S, RAW_READ_SLICE_S,
+                                                 RAW_REPLY_POLL_S, SHORT_WAIT_S, SRQ_WAIT_SLICE_S, Controller)
 from resistamet_gui.gpib_usb.protocol import AdapterNotReady, GpibError, GpibTimeout, NoListener, ProtocolError
 from resistamet_gui.gpib_usb.transport import TransportError, TransportStall, TransportTimeout
 
@@ -1065,6 +1067,214 @@ class TestRead:
         assert not [step for step in transport.script if step[0] == 'clear_halt']
 
 
+class TalkingTransport:
+    """An adapter with one talker holding ``message``, for reads whose shape is not scripted.
+
+    Answers the attach and the addressing with plain successes, and every
+    0x0a with the next ``count`` bytes of the message -- END with the last
+    of them, a device timeout (error 0x0a, nothing read) once it is empty.
+    Records the count of every 0x0a and the host wait of every bulk IN.
+    """
+
+    max_packet_size = 512
+    max_packet_size_raw = 512
+
+    def __init__(self, message: bytes) -> None:
+        self.pending = message
+        self.reply = b''
+        self.sent: List[bytes] = []
+        self.read_counts: List[int] = []
+        self.in_timeouts: List[int] = []
+
+    def control_in(self, request, value, index, length, timeout_ms, request_type=0xC0) -> bytes:
+        return SERIAL_REPLY if request == 0x41 else READY
+
+    def bulk_out(self, data: bytes, timeout_ms: int) -> None:
+        self.sent.append(data)
+        opcode = data[0]
+        if opcode == p.OP_REGISTER_WRITE:
+            self.reply = regwrite_reply(data[1])
+        elif opcode == p.OP_READ:
+            count = 0x10000 - int.from_bytes(data[4:6], 'little')
+            self.read_counts.append(count)
+            if not self.pending:
+                self.reply = read_reply(b'', count, end=False, error=t.ERR_TIMEOUT)
+            else:
+                out, self.pending = self.pending[:count], self.pending[count:]
+                self.reply = read_reply(out, count, end=not self.pending)
+        else:
+            self.reply = status_reply(opcode)
+
+    def bulk_in(self, length: int, timeout_ms: int) -> bytes:
+        self.in_timeouts.append(timeout_ms)
+        assert len(self.reply) <= length, 'reply of %d bytes would overflow the %d-byte buffer' % (len(self.reply), length)
+        reply, self.reply = self.reply, b''
+        return reply
+
+    def close(self) -> None:
+        pass
+
+
+def talking(message: bytes) -> Tuple[Controller, TalkingTransport]:
+    transport = TalkingTransport(message)
+    controller = Controller(transport, t.PID_HS, sleep=lambda s: None)
+    controller.attach()
+    return controller, transport
+
+
+def framed_counts(messages: List[bytes]) -> List[int]:
+    """The requested count of every 0x0a among ``messages``."""
+    return [0x10000 - int.from_bytes(m[4:6], 'little') for m in messages if m[0] == p.OP_READ]
+
+
+class TestFramedReadCap:
+    """A framed 0x0a never asks for more than 1024 bytes (§10.1.1, §10.1.8, §11.2).
+
+    On bench unit 01CEE482 a 20480-byte framed read whose answer ran to
+    7000 bytes drew no reply and left the adapter unusable until it was
+    unplugged, while NI's driver never sends a framed read above 1024. So a
+    larger request is a sequence of 0x0a instructions of at most 1024 after
+    one addressing, each with its own host wait, and a timeout on a later
+    piece returns the earlier ones as the partial data.
+    """
+
+    #: The read instruction of the three pieces of a 3000-byte read: ``0a m e t cl ch 00 00``
+    #: with -1024 = 0xfc00 and -952 = 0xfc48, then the embedded two-write block (§5.2).
+    PIECE_1024 = h('0a 00 00 fc 00 fc 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')
+    PIECE_952 = h('0a 00 00 fc 48 fc 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')
+    #: Host receive buffer for either count: 35 x 32 + 28 = 1148 and 32 x 32 + 28 = 1052, both rounded to 1536.
+    BUFFER = 1536
+
+    def test_the_cap_is_the_last_count_ni_sends_framed(self):
+        assert FRAMED_READ_MAX_BYTES == 1024 == RAW_READ_MIN_BYTES - 1
+        assert p.read_message(1024, T3S) == self.PIECE_1024
+        assert p.read_message(952, T3S) == self.PIECE_952
+
+    def test_a_3000_byte_request_is_three_pieces_of_1024_1024_952_after_one_addressing(self):
+        data = bytes(range(256)) * 11 + bytes(range(184))
+        assert len(data) == 3000
+        controller, transport = attached(address_talker() + [
+            ('out', self.PIECE_1024), ('in', read_reply(data[:1024], 1024, end=False), self.BUFFER),
+            ('out', self.PIECE_1024), ('in', read_reply(data[1024:2048], 1024, end=False), self.BUFFER),
+            ('out', self.PIECE_952), ('in', read_reply(data[2048:], 952, end=True), self.BUFFER),
+        ])
+        assert controller.read(22, max_bytes=3000, timeout_s=3.0) == (data, True)
+        transport.assert_done()
+        # One 0x0c and one 0x06, then the three reads: nothing re-addresses between pieces.
+        assert [m[0] for m in transport.sent[-5:]] == [p.OP_COMMAND, p.OP_GO_TO_STANDBY, p.OP_READ, p.OP_READ, p.OP_READ]
+
+    def test_pyvisa_s_chunk_reads_a_3000_byte_answer_as_1024_1024_and_a_short_third(self):
+        data = bytes(range(256)) * 11 + bytes(range(184))
+        controller, transport = attached(address_talker() + [
+            ('out', self.PIECE_1024), ('in', read_reply(data[:1024], 1024, end=False), self.BUFFER),
+            ('out', self.PIECE_1024), ('in', read_reply(data[1024:2048], 1024, end=False), self.BUFFER),
+            ('out', self.PIECE_1024), ('in', read_reply(data[2048:], 1024, end=True), self.BUFFER),
+        ])
+        assert controller.read(22, max_bytes=20480, timeout_s=3.0) == (data, True)
+        transport.assert_done()
+
+    def test_an_answer_shorter_than_the_count_ends_on_end_after_one_piece(self):
+        controller, transport = attached(address_talker() + [
+            ('out', self.PIECE_1024), ('in', read_reply(TestRead.IDN_TEXT, 1024), self.BUFFER),
+        ])
+        assert controller.read(22, max_bytes=20480, timeout_s=3.0) == (TestRead.IDN_TEXT, True)
+        transport.assert_done()   # the script holds no second 0x0a
+
+    def test_read_raw_is_capped_the_same_way(self):
+        # The board-level read (INTFC session) reaches the loop without addressing.
+        controller, transport = attached([
+            ('out', self.PIECE_1024), ('in', read_reply(bytes(1024), 1024, end=False), self.BUFFER),
+            ('out', self.PIECE_1024), ('in', read_reply(b'end', 1024), self.BUFFER),
+        ])
+        assert controller.read_raw(20480, timeout_s=3.0) == (bytes(1024) + b'end', True)
+        transport.assert_done()
+
+    def test_a_timeout_on_the_second_piece_returns_the_first_piece_as_the_partial(self):
+        first = bytes(range(256)) * 4
+        controller, transport = attached(address_talker() + [
+            ('out', self.PIECE_1024), ('in', read_reply(first, 1024, end=False), self.BUFFER),
+            ('out', self.PIECE_1024), ('in', read_reply(b'', 1024, end=False, error=0x0A), self.BUFFER),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.read(22, max_bytes=3000, timeout_s=3.0)
+        assert info.value.partial == first and info.value.code == 0x0A
+        transport.assert_done()
+
+    def test_the_partial_data_of_the_piece_that_timed_out_is_kept_as_well(self):
+        first = bytes(range(256)) * 4
+        controller, transport = attached(address_talker() + [
+            ('out', self.PIECE_1024), ('in', read_reply(first, 1024, end=False), self.BUFFER),
+            ('out', self.PIECE_1024), ('in', read_reply(b'tail', 1024, end=False, error=0x0A), self.BUFFER),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.read(22, max_bytes=3000, timeout_s=3.0)
+        assert info.value.partial == first + b'tail'
+        transport.assert_done()
+
+    def test_a_timed_out_piece_is_no_fault_and_the_next_operation_is_ordinary(self):
+        controller, transport = attached(address_talker() + [
+            ('out', self.PIECE_1024), ('in', read_reply(bytes(1024), 1024, end=False), self.BUFFER),
+            ('out', self.PIECE_1024), ('in', read_reply(b'', 1024, end=False, error=0x0A), self.BUFFER),
+        ] + address_listener() + [
+            ('out', p.write_message(b'*IDN?\n', T3S, True)), ('in', status_reply(0x0D)),
+        ])
+        with pytest.raises(GpibTimeout):
+            controller.read(22, max_bytes=3000, timeout_s=3.0)
+        assert controller.write(22, b'*IDN?\n', timeout_s=3.0) == 6
+        transport.assert_done()
+
+    def test_each_piece_gets_the_host_wait_of_one_instruction_not_of_the_request(self):
+        # The code bounds an instruction (§7.1, §10.1.8); the wait for a piece is the reply wait
+        # of the code plus the piece's own bytes at BUS_MIN_RATE_BPS, the same for a request of
+        # 1024 and of 35000. Summed over the request it would be 34 s longer for the second.
+        code = 0xFB
+        controller, transport = attached(address_talker(code=code) + [
+            ('out', p.read_message(1024, code)), ('in', read_reply(TestRead.IDN_TEXT, 1024), self.BUFFER),
+        ] + address_talker(code=code) + [
+            ('out', p.read_message(1024, code)), ('in', read_reply(TestRead.IDN_TEXT, 1024), self.BUFFER),
+        ])
+        controller.read(22, max_bytes=1024, timeout_s=1.0)
+        controller.read(22, max_bytes=35000, timeout_s=1.0)
+        one_piece = int((p.host_wait_s(code, DEFAULT_INFINITE_WAIT_S) + 1024 / BUS_MIN_RATE_BPS) * 1000)
+        assert transport.in_timeouts_after(0x0A) == [one_piece, one_piece]
+        transport.assert_done()
+
+    def test_a_35_kb_answer_under_the_one_second_code_is_35_pieces(self):
+        message = bytes(i & 0xFF for i in range(35000))
+        controller, transport = talking(message)
+        assert controller.read(22, max_bytes=35000, timeout_s=1.0) == (message, True)
+        assert transport.read_counts == [1024] * 34 + [184]
+        opcodes = [m[0] for m in transport.sent]
+        assert opcodes.count(p.OP_COMMAND) == 1 and opcodes.count(p.OP_GO_TO_STANDBY) == 1
+        assert p.OP_READ_RAW not in opcodes
+        # 35 round trips of one message each, every one waited for as one instruction.
+        one_piece = int((p.host_wait_s(0xFB, DEFAULT_INFINITE_WAIT_S) + 1024 / BUS_MIN_RATE_BPS) * 1000)
+        assert transport.in_timeouts[-35:-1] == [one_piece] * 34
+
+    @settings(max_examples=150, deadline=None, database=None, derandomize=True)
+    @given(max_bytes=st.integers(1, 70000), answer_length=st.integers(0, 70000))
+    def test_no_framed_0x0a_ever_carries_a_count_above_1024(self, max_bytes, answer_length):
+        message = bytes(i & 0xFF for i in range(answer_length))
+        controller, transport = talking(message)
+        if answer_length == 0:
+            with pytest.raises(GpibTimeout) as info:
+                controller.read(22, max_bytes=max_bytes, timeout_s=3.0)
+            assert info.value.partial == b''
+        else:
+            assert controller.read(22, max_bytes=max_bytes, timeout_s=3.0) == (message[:max_bytes],
+                                                                              answer_length <= max_bytes)
+        counts = transport.read_counts
+        assert counts == framed_counts(transport.sent)
+        assert max(counts) <= FRAMED_READ_MAX_BYTES
+        # Full pieces up to the one that ends on END, the count or the timeout; each piece
+        # asks for what is left of the request, capped.
+        pieces = -(-min(max_bytes, max(answer_length, 1)) // FRAMED_READ_MAX_BYTES)
+        assert counts == [min(FRAMED_READ_MAX_BYTES, max_bytes - FRAMED_READ_MAX_BYTES * i) for i in range(pieces)]
+        opcodes = [m[0] for m in transport.sent]
+        assert opcodes.count(p.OP_COMMAND) == 1 and opcodes.count(p.OP_GO_TO_STANDBY) == 1
+        assert p.OP_READ_RAW not in opcodes
+
+
 def raw_read_reply(requested: int, transferred: int, *, end: bool = True, error: int = 0) -> bytes:
     """Our two-block 0x0b reply: the 0x0b status with its tail, the clear-END write's status, termination."""
     count = (transferred - requested).to_bytes(4, 'little', signed=True)
@@ -1440,8 +1650,8 @@ class TestRawRead:
             ('out', p.register_read_message(t.USB_B_SERIAL_REGISTERS)),
             ('in', regread_reply([0x78, 0x56, 0x34, 0x12]), 32),
         ] + attach_script()[2:] + [
-            ('out', p.read_message(20480, T3S)),
-            ('in', read_reply(b'x', 20480), p.read_reply_buffer_size(20480, 512)),
+            ('out', p.read_message(1024, T3S)),   # pyvisa's 20480, capped at FRAMED_READ_MAX_BYTES per 0x0a
+            ('in', read_reply(b'x', 1024), p.read_reply_buffer_size(1024, 512)),
         ]
         transport = ScriptedTransport(script)
         controller = Controller(transport, t.PID_USB_B, ni_instructions=True, sleep=lambda s: None)
@@ -1455,8 +1665,8 @@ class TestRawTransfersSwitch:
 
     def test_default_is_framed_even_on_a_model_with_the_pair(self):
         controller, transport = attached(address_talker() + [
-            ('out', p.read_message(20480, T3S)),
-            ('in', read_reply(b'x', 20480), p.read_reply_buffer_size(20480, 512)),
+            ('out', p.read_message(1024, T3S)),   # pyvisa's 20480, capped at FRAMED_READ_MAX_BYTES per 0x0a
+            ('in', read_reply(b'x', 1024), p.read_reply_buffer_size(1024, 512)),
         ] + address_listener() + [
             ('out', p.write_message(bytes(3000), T3S, True)), ('in', status_reply(0x0D)),
         ])
@@ -1472,8 +1682,8 @@ class TestRawTransfersSwitch:
 
     def test_switched_off_reads_and_writes_stay_framed(self):
         controller, transport = attached(address_talker() + [
-            ('out', p.read_message(20480, T3S)),
-            ('in', read_reply(b'x', 20480), p.read_reply_buffer_size(20480, 512)),
+            ('out', p.read_message(1024, T3S)),   # pyvisa's 20480, capped at FRAMED_READ_MAX_BYTES per 0x0a
+            ('in', read_reply(b'x', 1024), p.read_reply_buffer_size(1024, 512)),
         ] + address_listener() + [
             ('out', p.write_message(bytes(3000), T3S, True)), ('in', status_reply(0x0D)),
         ], ni_instructions=False)
@@ -1530,15 +1740,15 @@ class TestHostWait:
     @pytest.mark.parametrize('timeout_s, code, base_ms', [(1.0, 0xFB, 3250), (3.0, T3S, WAIT_3S_MS)])
     def test_the_reply_to_a_framed_read_allows_for_the_bytes_it_carries(self, timeout_s, code, base_ms):
         # The code bounds a handshake, not the transfer (§10.1.8): a 2420 took 4.0 s over a
-        # 20480-byte chunk and finished with error 0. pyvisa asks for 20480 bytes every time,
-        # so under a 1 s timeout a bare expiry + 2 s would stop a healthy read from the host.
+        # 20480-byte chunk and finished with error 0. pyvisa asks for 20480 bytes every time;
+        # the framed path asks the adapter for 1024 of them per 0x0a, and the wait for each
+        # piece allows for that piece's bytes at BUS_MIN_RATE_BPS on top of the expiry.
         controller, transport = attached([
-            ('out', p.read_message(20480, code)),
-            ('in', read_reply(b'x', 20480), p.read_reply_buffer_size(20480, 512)),
+            ('out', p.read_message(1024, code)),
+            ('in', read_reply(b'x', 1024), p.read_reply_buffer_size(1024, 512)),
         ])
         controller.read_raw(20480, timeout_s=timeout_s)
-        assert transport.in_timeouts_after(0x0A) == [base_ms + 20480]
-        assert base_ms + 20480 > 4000
+        assert transport.in_timeouts_after(0x0A) == [base_ms + 1024]
 
     def test_the_reply_to_a_framed_write_allows_for_what_the_adapter_still_holds(self):
         # The OUT completes once the adapter has the message; up to its buffer (about 4 KB,

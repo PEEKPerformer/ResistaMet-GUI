@@ -346,7 +346,7 @@ class TestData:
         opcodes = [m[0] for m in board.messages[-2:]]
         assert opcodes == [p.OP_GO_TO_STANDBY, p.OP_READ]  # pyvisa's 20480-byte chunk, framed by default
         read = board.instructions(p.OP_READ)[-1]
-        assert read[1:6] == h('00 00 fb 00 b0')  # compare off: the bench-proven 00 00
+        assert read[1:6] == h('00 00 fb 00 fc')  # compare off: the bench-proven 00 00; 1024 per 0x0a (§11.2)
 
     def test_read_with_ni_instructions_on_is_a_0x0b_after_standby(self, ni_instructions, intf, board):
         intf.send_command(bytes((UNL, MTA0, LAD24)))
