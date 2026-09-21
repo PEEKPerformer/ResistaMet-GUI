@@ -1,6 +1,6 @@
 # Tauri Desktop UI — Status (steps 2 and 3)
 
-**Status:** On `phase0/reviewable-baseline`, pushed, CI green; backend bench-checked on the lab 2420 and on a 2400 over the NI USB driver; the UI bench's three blockers and five majors fixed
+**Status:** On `phase0/reviewable-baseline`, pushed, CI green; backend bench-checked on the lab 2420 and on a 2400 over the NI USB driver; the UI bench's three blockers and five majors fixed; the UI has driven the 2400 on a Mac through the driver (2026-09-21)
 **Date:** 2026-09-17
 **Depends on:** step 1 (`tauri_backend_split.md`, `tauri_backend_split_status.md`)
 
@@ -184,12 +184,44 @@ Left for a decision or for bench data: the runtime power stop that
 validation makes unreachable, the predicted maximum rate, ρ shown as 0 when
 the thickness is unknown, and the 45 s watchdog grace after the window dies.
 
+## The driver's second bench day and the UI on a Mac, 2026-09-21
+
+The adapter back on the Mac, the checklist from the audit run against the
+2400. Three defects in the driver, all in the protocol specification and
+fixed the same day from it: this unit's timeout expiries are not the
+captured unit's (1.25 × {0.1, 0.3, 1, 3, 16, 33} s against powers of two
+in microseconds), so the host wait now outlasts both; a timed-out
+1–15-byte read carries a stale last-block count that the parser trusted
+over the 0x38 count field; and a framed read whose answer exceeded about
+4.5 kB left the adapter unusable until unplugged — NI never frames a read
+above 1024 bytes, and the driver now does not either, reading long answers
+as 1024-byte pieces behind one addressing (35 kB in 6.3 s). The opt-in raw
+0x0b path reads the same data correctly but times out after 20 s whatever
+code it is sent on this unit, an open question in the specification. The
+0x10 serial poll works; framed writes up to 2048 bytes need no zero-length
+packet at a 512 multiple.
+
+Then the dev UI, against the backend on `@py`: Identify & save, a
+resistance run with live plot, Stop, a 21-point I-V sweep with its fit
+(99.58 Ω on the 100 Ω reference), all through the driver. Opening Settings
+crashed the dialog on a fresh config — `GET /profiles` returned the
+config-level `users` and `last_user` beside the sections and the patch
+builder walked the null — fixed on both sides. Pulling the USB cable
+during a run ended the run with a read error and a finalised file, and
+the next run started after the replug with no restart; but the cleanup's
+`:OUTP OFF` had no link to travel, so the instrument's output stayed on
+until the next session addressed it. That wants a rule (a warning the
+operator cannot miss, or a retry when the adapter returns) and is
+recorded as an open question. Cosmetic at a 714-pixel viewport: the
+sample name and the R² tile clip.
+
 ## Not yet
 
 - **The UI fixes on the lab PC itself** — everything above was verified
   against the simulator.
-- **The new driver paths (raw reads/writes, serial poll, SRQ wait, INTFC) on
-  a real adapter** — written from captures on 2026-09-19, never run.
+- **SRQ wait and the INTFC session on a real adapter** — never run. The
+  raw read/write paths and the 0x10 poll ran on 2026-09-21 (above); the
+  raw path stays opt-in until its timeout question is settled.
 - **The map in the Tauri UI** (spots panel from `/maps`, the sample outline,
   the optional photo, the figure) — waits on the open questions in the spots
   design.
