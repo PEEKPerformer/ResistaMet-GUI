@@ -235,6 +235,12 @@ frozen backend also ran voltage source, current source and four-point on
 the 2400. vdP has not run on the Mac: its prompts want a person at the
 bench.
 
+A 45-minute soak followed, headless through the same frozen backend on the
+2400: 8551 samples at a steady 3.2 Hz, every one in the file, longest gap
+between readings 0.75 s, no warning in the driver or the run. A pulled
+cable earlier in the day is now reported as `output_unverified` with a
+banner, and the next connection turns the output off and says so.
+
 ## Not yet
 
 - **The UI fixes on the lab PC itself** — verified against the simulator
