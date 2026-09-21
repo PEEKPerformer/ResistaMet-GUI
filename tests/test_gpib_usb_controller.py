@@ -1037,6 +1037,32 @@ class TestRead:
         assert controller.read_raw(8, timeout_s=3.0) == (b'\x40', True)
         transport.assert_done()
 
+    #: Timed-out reads of 1 and 10 bytes as GPIB-USB-HS 01CEE482 sent them (2026-09-21, §5.2):
+    #: one stale 0x36 block, min(requested, 15) in the last-block count, nothing read.
+    STALE_TIMEOUT_REPLIES = [
+        (1, h('36 00 20 00 aa 55 ff ff 04 00 00 00 4e 53 54 52 38 00 20 0a ff ff ff ff e0 01 00 00 04 00 00 00')),
+        (10, h('36 00 20 00 aa 55 ff ff 04 00 00 00 04 00 00 00 38 00 20 0a f6 ff ff ff e0 0a 00 00 04 00 00 00')),
+    ]
+
+    @pytest.mark.parametrize('count, reply', STALE_TIMEOUT_REPLIES)
+    def test_a_timed_out_read_with_a_stale_last_block_count_is_a_timeout_not_a_fault(self, count, reply):
+        # The adapter ended the read itself and said so, so the next operation is ordinary: no
+        # stop request, no drain, no pipe reset, no re-attach. Sizing the data by the last-block
+        # byte made this reply a ProtocolError, and the timeout was reported as an I/O error
+        # after a resync.
+        controller, transport = attached(address_talker() + [
+            ('out', p.read_message(count, T3S)), ('in', reply, 512),
+        ] + address_listener() + [
+            ('out', p.write_message(b'*IDN?\n', T3S, True)), ('in', status_reply(0x0D)),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.read(22, max_bytes=count, timeout_s=3.0)
+        assert info.value.code == 0x0A and info.value.partial == b''
+        assert controller.write(22, b'*IDN?\n', timeout_s=3.0) == 6
+        transport.assert_done()
+        assert not [step for step in transport.script if step[0] == 'ctrl' and step[1][0] == 0x20]
+        assert not [step for step in transport.script if step[0] == 'clear_halt']
+
 
 def raw_read_reply(requested: int, transferred: int, *, end: bool = True, error: int = 0) -> bytes:
     """Our two-block 0x0b reply: the 0x0b status with its tail, the clear-END write's status, termination."""

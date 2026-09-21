@@ -235,21 +235,25 @@ def framed_read_replies(draw):
     parts = [bytes((p.BLOCK_PAD, 0, 0, 0))] * pads
     chunks = [data[k:k + payload] for k in range(0, len(data), payload)]
     if not chunks and not wide and draw(st.booleans()):
-        chunks = [b""]              # a timed-out 0x36 read still carries one block, 0 valid (§10.1.5)
+        chunks = [b""]              # a timed-out 0x36 read still carries one block, 0 valid (§5.2, §10.1.5)
     for chunk in chunks:
         body = chunk + bytes((filler,)) * (payload - len(chunk))      # stale bytes after the valid ones
         parts.append((bytes((p.BLOCK_DATA_30, 0)) if wide else bytes((p.BLOCK_DATA_15,))) + body)
     ibsta, error, adr1 = draw(word), draw(byte), draw(byte)
-    # With no data block at all the last-block count is stale (§10.1.5).
-    last = len(chunks[-1]) if chunks else draw(byte)
+    # The last-block-count byte is the device's to fill and the parser's to report, not to
+    # size the data by (§5.2): stale with no data block (§10.1.5), min(requested, 15) on the
+    # bench unit's timed-out 0x36 reads. So any byte at all is drawn beside the true count.
+    true_last = len(chunks[-1]) if chunks else 0
+    last = draw(st.one_of(st.just(true_last), byte))
     trailer = _status(p.BLOCK_READ_STATUS, ibsta, error, (len(data) - requested) & 0xFFFF, b"\xff\xff")
     trailer += bytes((adr1, last, 0, 0))
     embedded = draw(st.booleans())
     if embedded:
         trailer += _status(p.OP_REGISTER_WRITE, 0, 0, 0) + bytes((2, 0, 0, 0))
     reply = b"".join(parts) + trailer + p.TERMINATION_BLOCK
-    return reply, data, requested, dict(ibsta=ibsta, error=error, adr1=adr1, embedded=embedded,
-                                        status_offset=len(reply) - len(trailer) - 4, pad_bytes=4 * pads)
+    return reply, data, requested, dict(ibsta=ibsta, error=error, adr1=adr1, embedded=embedded, last=last,
+                                        status_offset=len(reply) - len(trailer) - 4, pad_bytes=4 * pads,
+                                        held=len(chunks) * payload)
 
 
 @st.composite
@@ -275,6 +279,7 @@ class TestRepliesRoundTrip:
         assert parsed.status.ibsta == fields["ibsta"] and parsed.status.error == fields["error"]
         assert parsed.status.transferred(requested) == len(data)
         assert parsed.adr1 == fields["adr1"]
+        assert parsed.last_block_count == fields["last"]
         assert (parsed.embedded_status is not None) == fields["embedded"]
         assert parsed.end == bool(fields["ibsta"] & t.IBSTA_END)
         assert p.read_status_offset(reply) == fields["status_offset"]
@@ -284,6 +289,23 @@ class TestRepliesRoundTrip:
         for packet in (64, 512):
             size = p.read_reply_buffer_size(requested, packet)
             assert size % packet == 0 and size >= len(reply) - fields["pad_bytes"]
+
+    @PROPERTY
+    @given(framed_read_replies(), st.integers(1, 0x7FFF))
+    def test_the_count_field_is_the_authority_and_cannot_exceed_the_blocks(self, case, excess):
+        # A count field of 0 says every requested byte was read (§3.3). Asked for exactly what
+        # the blocks hold, that returns the blocks whole, filler included; asked for more, the
+        # blocks cannot supply it and the reply is malformed -- whatever the last-block byte says.
+        reply, _, _, fields = case
+        offset, held = fields["status_offset"], fields["held"]
+        claimed_all = bytearray(reply)
+        claimed_all[offset + 4:offset + 6] = b"\x00\x00"
+        if held:
+            assert p.parse_read_reply(bytes(claimed_all), held).data == b"".join(
+                body[2:] if body[0] == p.BLOCK_DATA_30 else body[1:]
+                for _, body in p.split_reply_blocks(reply) if body[0] in (p.BLOCK_DATA_15, p.BLOCK_DATA_30))
+        with pytest.raises(p.ProtocolError):
+            p.parse_read_reply(bytes(claimed_all), held + excess)
 
     @PROPERTY
     @given(framed_read_replies(), st.data())

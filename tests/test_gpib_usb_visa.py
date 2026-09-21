@@ -99,6 +99,10 @@ class SimulatedAdapter:
         self.fail_next: Optional[Exception] = None
         #: Raised by the next control_in, once.
         self.fail_next_control: Optional[Exception] = None
+        #: Answer a read that times out as GPIB-USB-HS 01CEE482 does (§5.2): one 0x36 block
+        #: of stale bytes and min(requested, 15) in the last-block count, nothing read. Off,
+        #: the form NI's captures show: no data block and a stale last-block byte.
+        self.stale_timeout_block = False
 
     def control_in(self, request, value, index, length, timeout_ms, request_type=0xC0) -> bytes:
         if self.fail_next_control is not None:
@@ -266,8 +270,11 @@ class SimulatedAdapter:
             return self._status(0x38, error=2, count=-requested) + h('60 00 00 00') + trailer_tail
         result = self._talker_output(requested, eos_mode, eos_char)
         if result is None:
-            return (self._status(0x38, error=0x0A, count=-requested, ibsta=0x0020)
-                    + h('e0 5e 00 00') + trailer_tail)
+            status = self._status(0x38, error=0x0A, count=-requested, ibsta=0x0020)
+            if self.stale_timeout_block and requested <= 15:
+                return (h('36 00 20 00 aa 55 ff ff 04 00 00 00 04 00 00 00') + status
+                        + bytes((0xE0, requested, 0, 0)) + trailer_tail)
+            return status + h('e0 5e 00 00') + trailer_tail
         out, end = result
         blocks = b''
         for start in range(0, len(out), 15):
@@ -686,6 +693,21 @@ class TestInstrumentSession:
         with pytest.raises(pyvisa.errors.VisaIOError) as info:
             inst.read()
         assert info.value.error_code == StatusCode.error_timeout
+        inst.close()
+
+    def test_no_response_with_the_bench_units_stale_block_is_a_visa_timeout(self, rm, adapter):
+        # The 10-byte reply of §5.2 (GPIB-USB-HS 01CEE482), through pyvisa: VI_ERROR_TMO with no
+        # stop request and no re-attach, where sizing the data by the last-block byte gave
+        # VI_ERROR_IO after a resync.
+        adapter.stale_timeout_block = True
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 100
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            inst.read_bytes(10)
+        assert info.value.error_code == StatusCode.error_timeout
+        assert adapter.instructions(p.OP_READ)[-1][4:6] == h('f6 ff')   # the count the reply answers
+        assert 0x20 not in adapter.control_requests
+        assert len(adapter.instructions(p.OP_INTERFACE_CLEAR)) == 1   # the one attach; no re-attach
         inst.close()
 
     def test_read_stb_of_an_absent_device_is_a_timeout(self, rm, adapter):
