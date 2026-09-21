@@ -3107,8 +3107,13 @@ what to send, the last is curiosity.
   other than the timeout; whether the halt on 0x06 clears without the
   reset; why NI resets 0x02 as well (§10.6.5). How many bytes crossed
   before the STALL is not recorded (§10.6.5).
-- [ ] **Does a message whose length is a multiple of 512 need a
-  zero-length packet?** None was captured (§10.5.2). Likewise whether the
+- [x] **Does a message whose length is a multiple of 512 need a
+  zero-length packet?** None was captured (§10.5.2). **No, on unit
+  01CEE482 [bench, 2026-09-21]**: four 0x0d messages of exactly 512
+  bytes (497, 498, 499 and 500 data bytes, padded) were each sent as one
+  bulk OUT with no zero-length packet after it, each drew its normal
+  reply, and `:SYST:ERR?` and `*IDN?` answered normally after every one;
+  1036- and 2060-byte 0x0d messages likewise. Still open: whether the
   device ends a 20480-byte 0x88 transfer with one (§10.1.4).
 - [ ] **The stop request 0x20** and error code 1: [inherited] only; NI
   never sends it, not even after a failure (5.11, 4.3, 8.2, §10.6.7,
