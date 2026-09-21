@@ -506,9 +506,10 @@ class TestSafetyPrompt:
         session.start(profile, 'sweep', 'wafer1', 'alice', overrides={
             'sweep_source': 'current', 'sweep_start': 0.0, 'sweep_stop': 1e-3,
             'sweep_step': 1e-4, 'sweep_compliance': 60.0})
-        assert _wait_for(lambda: self._pending(session) is not None)
+        assert _wait_for(lambda: self._pending(session) is not None, timeout=15.0)
         session.answer_prompt(self._pending(session)['prompt_id'], 'acknowledge')
-        assert _wait_for(lambda: session.state == 'idle')
+        # A whole sweep and its cleanup on a loaded CI runner; 5 s was not enough.
+        assert _wait_for(lambda: session.state == 'idle', timeout=15.0)
         assert [e.payload['reason'] for e in sink.of_type('run_ended')] == ['completed']
         assert len(sink.of_type('sweep_segment')) == 1
 
