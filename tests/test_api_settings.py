@@ -523,3 +523,15 @@ class TestAddUser:
 
     def test_blank_name_is_rejected(self, client):
         assert client.post('/users', json={'username': '   '}).status_code == 422
+
+
+class TestProfileReplyShape:
+    def test_a_profile_is_its_sections_only(self, client):
+        """`users` and `last_user` live in the defaults dict the profile is built
+        from; a client walking the reply by section must not meet them."""
+        client.post('/users', json={'username': 'alice'})
+        body = client.get('/profiles/alice').json()
+        assert set(body) == {'measurement', 'display', 'file', 'output'}
+        assert all(isinstance(section, dict) for section in body.values())
+        patched = client.patch('/profiles/alice', json={'display': {'enable_plot': False}}).json()
+        assert set(patched) == set(body)
