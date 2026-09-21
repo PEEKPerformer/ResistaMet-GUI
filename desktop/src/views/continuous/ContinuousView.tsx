@@ -23,6 +23,7 @@ import { seedOverrides, setOverride, useOverrides } from "../../state/overrides"
 import { useSpots } from "../../state/spots";
 import { Badge, Button, Notice, Panel } from "../../components/ui";
 import { BackendNotice } from "../../components/BackendNotice";
+import { OutputNotice } from "../../components/OutputNotice";
 import { Icons } from "../../components/icons";
 import { LivePlot, type TraceSpec } from "../../components/plot/LivePlot";
 import { isMarkKey } from "../../lib/markKey";
@@ -246,6 +247,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
         </header>
 
         <BackendNotice />
+        <OutputNotice />
         {startError ? <Notice tone="danger">{startError}</Notice> : null}
         {spotOffSample && !locked ? (
           <Notice tone="warn">The spot is off the sample: {describeClearance(spotPreflight!)}. Move it or clear its position.</Notice>
