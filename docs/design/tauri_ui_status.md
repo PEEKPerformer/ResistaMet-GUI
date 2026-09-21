@@ -215,6 +215,15 @@ operator cannot miss, or a retry when the adapter returns) and is
 recorded as an open question. Cosmetic at a 714-pixel viewport: the
 sample name and the R² tile clip.
 
+The Auto-range compliance rule from the review was then checked on the
+2420 with a 1.05 MΩ part: auto-ohms sourced 10 µA on the 2 MΩ range,
+10.5 V across the part, `:SENS:VOLT:PROT?` 2.1 V with the output off and
+21 V with it on, no compliance bit in the status word. Every sample read
+`OK`; the rule this replaced would have flagged all of them, since the
+read-back frozen at configure (2.1 V, recorded in the header as
+`effective.voltage_compliance_V_at_configure`) is not the limit the
+instrument enforces once it has ranged up.
+
 ## Not yet
 
 - **The UI fixes on the lab PC itself** — everything above was verified
