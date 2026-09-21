@@ -16,7 +16,10 @@ specification in one place: a read reply ends in a 16-byte trailer (status,
 ADR1, last-block count, pad, termination) with no embedded 0x09 status
 block; ``parse_read_reply`` follows the device and tolerates the longer
 form. Small reads arrive in 0x36 blocks, a 256-byte read in 0x37 blocks,
-and the filler after the valid bytes is stale data.
+and the filler after the valid bytes is stale data. A read that times out
+with nothing read still carries one 0x36 block on this unit, and its
+last-block-count byte then holds min(requested, 15), not zero (2026-09-21,
+§5.2): the 0x38 count field alone says how many bytes were read.
 """
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
@@ -515,6 +518,10 @@ class ReadReply:
     #: embedded register writes) after the pad bytes; the GPIB-USB-HS does not
     #: send one. Kept when present, None otherwise.
     embedded_status: Optional[StatusBlock] = None
+    #: Item 5 of the §5.2 layout as the device sent it. Not what ``data`` is
+    #: cut to -- the count field is -- and stale when nothing was read: the
+    #: bench unit puts min(requested, block size) there on a timed-out read.
+    last_block_count: int = 0
 
     @property
     def end(self) -> bool:
@@ -540,6 +547,17 @@ def parse_read_reply(reply: bytes, requested: int) -> ReadReply:
     termination) and 28 when a 0x09 status for the embedded register write
     sits before the termination block, the form the specification first
     derived; both parse.
+
+    How many bytes were read is the 0x38 count field's to say (§5.2): the
+    data is the first that many bytes of the data blocks joined, and the
+    filler behind them is never returned. The last-block-count byte is
+    reported, not trusted: on a timed-out 0x36-sized read the bench unit
+    sends one stale block and min(requested, 15) in that byte while the
+    count field says nothing was read, and a parser that sized the data by
+    the byte and then checked the field rejected every such read as
+    malformed, with a stop request and a re-attach in place of the timeout
+    the adapter had reported. The one malformed case is a count field
+    claiming more bytes than the blocks hold.
     """
     payloads: List[bytes] = []
     offset = 0
@@ -573,17 +591,13 @@ def parse_read_reply(reply: bytes, requested: int) -> ReadReply:
     if len(reply) >= tail + 4 and reply[tail] != OP_TERMINATION:
         raise ProtocolError('read reply does not end in a termination block: %s' % reply.hex())
 
-    if payloads:
-        if any(len(p) < 15 for p in payloads[:-1]) or last_block_count > len(payloads[-1]):
-            raise ProtocolError('data block shorter than its header implies: %s' % reply.hex())
-        data = b''.join(payloads[:-1]) + payloads[-1][:last_block_count]
-    else:
-        data = b''
-    expected = status.transferred(requested)
-    if len(data) != expected:
-        raise ProtocolError('read reply carries %d data bytes but the count field says %d'
-                            % (len(data), expected))
-    return ReadReply(data=data, status=status, embedded_status=embedded, adr1=adr1)
+    joined = b''.join(payloads)
+    transferred = status.transferred(requested)
+    if not 0 <= transferred <= len(joined):
+        raise ProtocolError('read reply count field says %d of %d bytes were read but its data '
+                            'blocks hold %d: %s' % (transferred, requested, len(joined), reply.hex()))
+    return ReadReply(data=joined[:transferred], status=status, embedded_status=embedded, adr1=adr1,
+                     last_block_count=last_block_count)
 
 
 def read_reply_buffer_size(max_bytes: int, max_packet_size: int) -> int:
