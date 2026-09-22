@@ -94,12 +94,32 @@ def _self_test():
     print(f"ResistaMet GUI {__version__} self-test passed")
 
 
+def _start_logging():
+    """Write the window's log to ``~/.resistamet/logs/`` as well as the terminal.
+
+    A home directory that cannot take the file (read-only, full, or a
+    ``.resistamet`` that is a file) is not a reason to refuse to start: log
+    to the terminal alone and say why.
+    """
+    import logging
+    from resistamet_gui.logging_config import setup_logging
+
+    try:
+        setup_logging()
+    except OSError as e:
+        setup_logging(log_to_file=False)
+        logging.getLogger("resistamet_gui").warning(
+            "Not writing a log file: %s", e)
+
+
 def main():
     args = _parse_args(sys.argv[1:])
 
     if args.self_test:
         _self_test()
         return
+
+    _start_logging()
 
     if args.simulate:
         from resistamet_gui.simulator import enable_simulation

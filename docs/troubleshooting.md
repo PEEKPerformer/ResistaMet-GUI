@@ -237,7 +237,7 @@ By default the simulator returns perfect Ohm's-law readings (`--sim-noise-rsd 0.
 
 If the error message doesn't match anything here:
 
-1. Get the full traceback from the terminal. At this commit neither the PySide6 app nor the backend writes a log file (`~/.resistamet/logs/` is provided for in the code, but nothing turns file logging on). Start `resistamet-gui` from a terminal and read its stderr; the backend logs to its stderr as well (`python -m resistamet_gui.api … 2> backend.log`). An installed desktop app redirects its backend's stderr to a file per launch, `backend-<milliseconds since 1970>.log`, in the app's log directory (see [Desktop app → Where things are](desktop.md#where-things-are)), and keeps the newest ten; the **Log** panel at the bottom of the window holds the run's messages.
+1. Get the full traceback. The PySide6 app writes `~/.resistamet/logs/resistamet_<date>.log` and prints the same lines to the terminal it was started from, so `resistamet-gui` from a terminal shows them live. The backend logs to its stderr (`python -m resistamet_gui.api … 2> backend.log`). An installed desktop app redirects its backend's stderr to a file per launch, `backend-<milliseconds since 1970>.log`, in the app's log directory (see [Desktop app → Where things are](desktop.md#where-things-are)), and keeps the newest ten; the **Log** panel at the bottom of the window holds the run's messages.
 2. [Open an issue](https://github.com/PEEKPerformer/ResistaMet-GUI/issues/new/choose) with:
     - ResistaMet GUI version (`resistamet-gui --version`)
     - OS + Python version
