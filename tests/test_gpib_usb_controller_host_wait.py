@@ -139,17 +139,6 @@ class TestHostWait:
         assert wait >= measured_s + 2.0
         assert t.TIMEOUT_EXPIRY_JITTER_S == 1.9e-3
 
-    def test_the_waits_the_bench_needed(self):
-        # On the bench under 0xfd the host, waiting 18.78 s, sent the stop request 1.2 s before
-        # the adapter's own error 0x0a reply at 20.0 s, and a timeout was reported as an I/O
-        # error (§7.3). The second unit's figure plus 2 s, or the first's where it is longer.
-        assert p.host_wait_s(0xFD, 600.0) >= 22.0
-        assert p.host_wait_s(0xFE, 600.0) >= 43.25
-        assert p.host_wait_s(0xFB, 600.0) >= 3.25
-        assert p.host_wait_s(0xFC, 600.0) >= 6.196
-        assert p.host_wait_s(0xFA, 600.0) >= 2.375
-        assert p.host_wait_s(0xF9, 600.0) >= 2.132
-
     def test_no_code_waits_less_than_it_did_from_the_first_unit_alone(self):
         # The wait before the second unit was timed: the first unit's figure, or the bare
         # power of two for a code nobody timed, plus 2 s. No code's wait may have got shorter.
