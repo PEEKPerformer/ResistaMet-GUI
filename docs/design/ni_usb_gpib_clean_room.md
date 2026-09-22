@@ -102,21 +102,25 @@ Everything that speaks to the adapter is the Implementer's.
 `tables.py` (device ids, control requests, status bits, error codes, the
 register initialisation, IEEE-488 command bytes, the timeout table),
 `protocol.py` (message builders, reply parsers, exceptions),
-`transport.py` (pyusb), `controller.py` (sequencing over one adapter),
+`transport.py` (pyusb), `controller.py` (the operations over one adapter),
+which owns an `AdapterLink` from `link.py` (exchanges, faults, resync)
+and takes its transfer paths from `transfers.py`, its service-request
+wait from `srq.py` and its model-specific attach steps from `attach.py`;
 `device_ops.py` (device clear, trigger, serial poll, presence probe),
 `boards.py` (board registry), `visa_session.py` (pyvisa-py instrument
 session and dispatcher), `visa_intfc.py` (the board as `GPIB<n>::INTFC`).
-630 driver tests (2026-09-19) over scripted and fake transports; every
-worked hex example in the specification is asserted byte for byte in both
-directions, `test_gpib_usb_captures.py` replays the NI captures (below)
-through the codec, and `test_gpib_usb_protocol_properties.py` checks the
-codec's invariants with seeded random input.
+About 750 driver tests over scripted and fake transports (the fakes in
+`tests/fakes/gpib_usb.py`); every worked hex example in the specification
+is asserted byte for byte in both directions, `test_gpib_usb_captures.py`
+replays the NI captures (below) through the codec, and
+`test_property_gpib_usb_protocol.py` checks the codec's invariants with
+seeded random input.
 
-Size: the second round grew `controller.py` to about 1100 lines and
-`protocol.py` to about 830, well past the project's 400-line guideline
-(`visa_session.py` and `transport.py` are a little over it). The split
-is planned for after the bench session, as pure moves, so that what is
-moved is code that has run on hardware.
+Size: the split planned after the bench was done on 2026-09-22 as pure
+moves (one commit per module, the tests unchanged), then one commit that
+turned the moved mixin into an object the controller owns. `controller.py`
+is 480 lines and `protocol.py` 854; the other modules are under or near
+the project's 400-line guideline.
 
 ## The second round: NI's driver as the oracle (2026-09-19)
 
