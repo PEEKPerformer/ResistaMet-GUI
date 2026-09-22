@@ -234,7 +234,7 @@ class TestLines:
         assert intf.get_visa_attribute(constants.VI_ATTR_GPIB_REN_STATE) == constants.LineState.asserted
 
     def test_ren_assert_llo_sends_llo_to_the_bus_with_the_session_timeout(self, intf, board):
-        intf.timeout = 300
+        intf.timeout = 250
         intf.control_ren(REN.asrt_llo)
         writes = [m for m in board.messages if m[0] == p.OP_REGISTER_WRITE]
         assert writes[-1] == p.register_write_message([t.REN_ON_WRITE])
@@ -316,7 +316,7 @@ class TestData:
     def test_write_goes_to_whoever_listens_without_readdressing(self, intf, board):
         intf.send_command(bytes((UNL, MTA0, LAD24)))
         commands = len(board.instructions(p.OP_COMMAND))
-        intf.timeout = 300
+        intf.timeout = 250
         assert intf.write('*IDN?') == 7
         assert len(board.instructions(p.OP_COMMAND)) == commands
         assert board.instructions(p.OP_WRITE)[-1] == p.write_message(b'*IDN?\r\n', 0xFA, send_eoi=True)
@@ -410,7 +410,7 @@ class TestData:
         assert len(board.messages) == before
 
     def test_clear_is_a_universal_device_clear(self, intf, board):
-        intf.timeout = 300
+        intf.timeout = 250
         board.instruments[24].pending = b'stale'
         intf.clear()
         assert last_command(board) == bytes((t.CMD_DCL,))
@@ -424,9 +424,9 @@ class TestData:
             intf.read_stb()
         assert info.value.error_code == StatusCode.error_nonsupported_operation
 
-    def test_timeout_is_rounded_to_the_device_table(self, intf):
+    def test_the_timeout_reads_back_as_set_up_to_the_longest_the_table_offers(self, intf):
         intf.timeout = 5000
-        assert intf.timeout == 10000
+        assert intf.timeout == 5000
         intf.timeout = 2_000_000
         assert intf.timeout == 1_000_000
 

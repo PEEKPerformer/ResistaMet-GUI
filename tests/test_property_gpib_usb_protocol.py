@@ -196,17 +196,20 @@ class TestTimeoutCodes:
     @PROPERTY
     @given(st.floats(1e-7, 2000.0), st.floats(1e-7, 2000.0))
     def test_the_code_waits_at_least_as_long_as_asked_and_no_longer_than_needed(self, a, b):
-        code, limit = p.effective_timeout(a)
-        if limit is None:
+        code = p.timeout_code(a)
+        least = t.timeout_expiry_least_s(code)
+        if least is None:
             assert a > t.TIMEOUT_MAX_S and code == t.TIMEOUT_DISABLED_CODE
         else:
-            assert limit * 1.001 >= a
-            shorter = [row for row, _ in t.TIMEOUT_TABLE if row < limit]
-            assert all(row * 1.001 < a for row in shorter)
+            assert least >= a
+            codes = [row_code for _, row_code in t.TIMEOUT_TABLE]
+            shorter = codes[:codes.index(code)]
+            assert all(t.timeout_expiry_least_s(row_code) < a for row_code in shorter)
         # More time asked for is never less time given.
         low, high = sorted((a, b))
-        limit_low, limit_high = p.effective_timeout(low)[1], p.effective_timeout(high)[1]
-        assert limit_high is None or (limit_low is not None and limit_low <= limit_high)
+        least_low, least_high = (t.timeout_expiry_least_s(p.timeout_code(low)),
+                                 t.timeout_expiry_least_s(p.timeout_code(high)))
+        assert least_high is None or (least_low is not None and least_low <= least_high)
 
     def test_every_code_the_encoder_can_emit_has_a_host_wait_that_outlasts_it(self):
         for nominal, code in t.TIMEOUT_TABLE:
@@ -216,7 +219,7 @@ class TestTimeoutCodes:
             assert p.host_wait_s(code, 1e9) > expiry
         assert p.host_wait_s(t.TIMEOUT_DISABLED_CODE, 123.0) == 123.0
         for seconds in (None, 0, 0.0, -1.0):
-            assert p.effective_timeout(seconds) == (t.TIMEOUT_DISABLED_CODE, None)
+            assert p.timeout_code(seconds) == t.TIMEOUT_DISABLED_CODE
 
 
 # ---------------------------------------------------------------------------
@@ -733,17 +736,18 @@ class TestEosBytes:
 class TestTimeouts:
     def test_the_code_chosen_never_promises_less_than_was_asked(self):
         rng = random.Random(SEED + 6)
-        previous_limit = 0.0
+        previous_least = 0.0
         for seconds in sorted(10 ** rng.uniform(-6, 3) for _ in range(3000)):
-            code, limit = p.effective_timeout(seconds)
-            assert code != t.TIMEOUT_DISABLED_CODE and limit is not None, seconds
-            assert limit * 1.001 >= seconds, seconds
-            assert limit >= previous_limit, seconds      # monotonic in the request
-            previous_limit = limit
+            code = p.timeout_code(seconds)
+            least = t.timeout_expiry_least_s(code)
+            assert code != t.TIMEOUT_DISABLED_CODE and least is not None, seconds
+            assert least >= seconds, seconds
+            assert least >= previous_least, seconds      # monotonic in the request
+            previous_least = least
 
     def test_nothing_and_too_much_disable_the_timeout(self):
         for seconds in (None, 0, -1.0, t.TIMEOUT_MAX_S * 1.01, 1e9):
-            assert p.effective_timeout(seconds) == (t.TIMEOUT_DISABLED_CODE, None)
+            assert p.timeout_code(seconds) == t.TIMEOUT_DISABLED_CODE
 
     def test_limits_expiries_and_host_waits_rise_together(self):
         limits = [limit for limit, _ in t.TIMEOUT_TABLE]

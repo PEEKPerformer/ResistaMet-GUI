@@ -83,10 +83,10 @@ class TestDeviceOps:
             ('out', p.command_message(bytes((0x11,)), 0xFA)), ('in', status_reply(0x0C)),
             ('out', p.command_message(bytes((0x3F, 0x38, 0x11)), 0xFA)), ('in', status_reply(0x0C)),
         ])
-        ops.trigger(controller, 24, timeout_s=0.3)
-        ops.go_to_local(controller, 24, timeout_s=0.3)
-        ops.local_lockout(controller, timeout_s=0.3)
-        ops.local_lockout(controller, 24, timeout_s=0.3)
+        ops.trigger(controller, 24, timeout_s=0.25)
+        ops.go_to_local(controller, 24, timeout_s=0.25)
+        ops.local_lockout(controller, timeout_s=0.25)
+        ops.local_lockout(controller, 24, timeout_s=0.25)
         transport.assert_done()
 
     def test_serial_poll_sequence(self):
