@@ -136,3 +136,57 @@ class TestShutdown:
             assert '# --- run completed ---' in text or 'ended_at' in text
         finally:
             _stop(process)
+
+
+class TestCheckVisa:
+    """``--check-visa`` serves nothing; it reports and exits."""
+
+    def _check(self, tmp_path, *extra):
+        result = subprocess.run(
+            [sys.executable, '-m', 'resistamet_gui.api', '--check-visa',
+             '--config', str(tmp_path / 'config.json'), *extra],
+            capture_output=True, text=True, timeout=120,
+        )
+        return result, json.loads(result.stdout)
+
+    def test_it_reports_the_backend_and_exits_zero(self, tmp_path):
+        result, report = self._check(tmp_path)
+        assert result.returncode == 0
+        assert report['ok'] is True
+        assert report['backend']['kind'] in ('ivi', 'py')
+        # No bus traffic unless asked, so no resource list.
+        assert 'resources' not in report
+
+    def test_a_named_backend_is_used_and_named_back(self, tmp_path):
+        result, report = self._check(tmp_path, '--visa-library', '@py')
+        assert result.returncode == 0
+        assert report['requested'] == '@py'
+        assert report['backend']['kind'] == 'py'
+        assert report['backend']['library'] == 'pyvisa-py'
+
+    def test_the_ni_usb_driver_reports_itself(self, tmp_path):
+        _, report = self._check(tmp_path)
+        ni_usb = report['ni_usb']
+        assert isinstance(ni_usb['available'], bool)
+        assert isinstance(ni_usb['adapters'], list)
+        # A source checkout uses a system libusb; only a frozen app bundles one.
+        assert ni_usb.get('libusb') is None
+
+    def test_a_missing_visa_library_is_reported_not_raised(self, tmp_path):
+        result, report = self._check(tmp_path, '--visa-library',
+                                     str(tmp_path / 'no-such-libvisa.so'))
+        assert result.returncode == 1
+        assert report['ok'] is False
+        assert report['error']
+        # The NI USB view is independent of the vendor library and still there.
+        assert 'ni_usb' in report
+
+    def test_bus_mode_enumerates(self, tmp_path):
+        result = subprocess.run(
+            [sys.executable, '-m', 'resistamet_gui.api', '--check-visa', 'bus',
+             '--visa-library', '@py', '--config', str(tmp_path / 'config.json')],
+            capture_output=True, text=True, timeout=120,
+        )
+        report = json.loads(result.stdout)
+        assert result.returncode == 0
+        assert isinstance(report.get('resources', report.get('resources_error')), (list, str))

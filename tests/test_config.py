@@ -387,3 +387,47 @@ class TestConcurrentWrites:
         manager.add_user('bob')  # logged, not raised
 
         assert Path(temp_config_file).read_text() == before
+
+
+class TestMachineLocalVisaLibrary:
+    """The VISA backend is per-machine too: it describes this PC's driver stack."""
+
+    def test_default_is_pyvisas_choice(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        assert manager.get_visa_library() == ''
+
+    def test_set_writes_to_machine_slot(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        manager.set_machine_local('visa_library', '@py')
+
+        with open(temp_config_file) as f:
+            saved = json.load(f)
+        assert saved['machines']['HOST-A']['visa_library'] == '@py'
+        assert ConfigManager(config_file=temp_config_file, hostname='HOST-A').get_visa_library() == '@py'
+
+    def test_empty_means_back_to_automatic(self, temp_config_file):
+        """Unlike an address, an empty backend is a real value: pyvisa decides."""
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        manager.set_machine_local('visa_library', '@py')
+        manager.set_machine_local('visa_library', '')
+        assert manager.get_visa_library() == ''
+
+    def test_empty_address_is_still_ignored(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        manager.set_gpib_address('GPIB0::25::INSTR')
+        manager.set_gpib_address('')
+        assert manager.get_gpib_address() == 'GPIB0::25::INSTR'
+
+    def test_profile_carries_the_machine_backend_not_the_users(self, temp_config_file):
+        manager = ConfigManager(config_file=temp_config_file, hostname='HOST-A')
+        manager.update_user_settings('alice', {'measurement': {'visa_library': '@py',
+                                                                'sampling_rate': 50.0}})
+
+        with open(temp_config_file) as f:
+            saved = json.load(f)
+        assert 'visa_library' not in saved['user_settings']['alice']['measurement']
+        assert saved['machines']['HOST-A']['visa_library'] == '@py'
+        assert manager.get_user_settings('alice')['measurement']['visa_library'] == '@py'
+
+        other_host = ConfigManager(config_file=temp_config_file, hostname='HOST-B')
+        assert other_host.get_user_settings('alice')['measurement']['visa_library'] == ''

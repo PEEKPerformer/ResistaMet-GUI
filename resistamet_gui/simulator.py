@@ -15,6 +15,11 @@ from ._simulator import FakeResourceManager
 
 
 _active = False
+#: What ``pyvisa.ResourceManager`` was before the first enable, so it can be
+#: put back. The app never needs this — it simulates for its whole life — but
+#: a test process runs simulated and real code in turn, and a fake left bound
+#: process-wide silently changes what later tests are measuring.
+_original_resource_manager = None
 
 
 def enable_simulation(
@@ -38,9 +43,12 @@ def enable_simulation(
     single ``model``-flavored fake instrument at ``gpib_address``.
 
     Idempotent — safe to call more than once; later calls override earlier
-    DUT/model parameters.
+    DUT/model parameters. :func:`disable_simulation` undoes it.
     """
-    global _active
+    global _active, _original_resource_manager
+
+    if _original_resource_manager is None:
+        _original_resource_manager = pyvisa.ResourceManager
 
     def _factory(*_args, **_kwargs):
         return FakeResourceManager(
@@ -56,6 +64,16 @@ def enable_simulation(
 
     pyvisa.ResourceManager = _factory  # type: ignore[assignment]
     _active = True
+
+
+def disable_simulation() -> None:
+    """Put the real ``pyvisa.ResourceManager`` back. A no-op if never enabled."""
+    global _active, _original_resource_manager
+
+    if _original_resource_manager is not None:
+        pyvisa.ResourceManager = _original_resource_manager  # type: ignore[assignment]
+        _original_resource_manager = None
+    _active = False
 
 
 def is_simulating() -> bool:

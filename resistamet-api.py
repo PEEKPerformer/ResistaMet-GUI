@@ -7,7 +7,9 @@ imports the module as part of its package and calls its ``main``; it is the
 only thing ``resistamet-api.spec`` freezes directly. Running from source stays
 ``python -m resistamet_gui.api``.
 """
+import sys
+
 from resistamet_gui.api.__main__ import main
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

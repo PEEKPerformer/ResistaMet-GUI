@@ -6,6 +6,8 @@ from typing import Optional
 
 import pyvisa
 
+from . import visa_backend
+
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -152,14 +154,16 @@ def known_models() -> tuple[str, ...]:
 
 
 class VisaInstrument:
-    def __init__(self, resource: str, timeout_ms: int = 5000):
+    def __init__(self, resource: str, timeout_ms: int = 5000,
+                 visa_library: str = visa_backend.AUTO):
         self.resource_str = resource
         self.timeout = timeout_ms
+        self.visa_library = visa_library
         self.rm: Optional[pyvisa.ResourceManager] = None
         self.dev = None
 
     def connect(self):
-        self.rm = pyvisa.ResourceManager()
+        self.rm = visa_backend.resource_manager(self.visa_library)
         resources = self.rm.list_resources()
         if self.resource_str not in resources:
             raise RuntimeError(f"Instrument at '{self.resource_str}' not found. Available: {', '.join(resources)}")
