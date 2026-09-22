@@ -398,7 +398,12 @@ class _TransferMixin:
         0x0c with NI's code 0xfd and no 0x06 behind it, the 0x0b, the
         clear-END write and the bank-2 mark, all in one, after NI's bank-2
         session configuration (``_ni_session``). With the compare off, ``e``
-        is ``termchar``, the session's character, as NI sends it (§10.1.6).
+        is ``termchar``, the session's character, as NI sends it (§10.1.6):
+        ``m e`` = ``00 0a``. That form is an open combination here: NI sent
+        it under its own AUXRA 0x99 and never got error 4, but whether
+        AUXRA 0x81, this driver's, rejects it is not established (§8.3,
+        §11.1). It is left as NI sends it; the application reads with the
+        compare on (``14 0a``), NI's form either way.
         Every piece of a split read is that whole message, as NI's every
         ``viRead`` is (§10.1.4). The wait allows for both timed blocks
         (§7.2). Without ``address``, for a caller that addressed the bus

@@ -233,7 +233,7 @@ TIMEOUT_EXPIRY_MEASURED_SHORTEST_S: Dict[int, float] = {
 #: from the shorter of the two. The comment on each row is the ratio to the
 #: 013CC9DF figure above. The codes below 0xf9 were not timed on this unit.
 TIMEOUT_EXPIRY_BENCH_S: Dict[int, float] = {
-    0xF9: 0.127,       # nominal 100 ms; 0.96
+    0xF9: 0.127,       # nominal 100 ms; 0.96; a session total, the wire not logged
     0xFA: 0.375,       # nominal 300 ms; 1.42
     0xFB: 1.250,       # nominal 1 s; 1.19
     0xFC: 3.750,       # nominal 3 s; 0.89
