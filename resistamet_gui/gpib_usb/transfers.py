@@ -9,7 +9,7 @@ takes, and why the raw ones are off unless asked for, is in the
 it calls are in ``link``. The constants are re-exported by ``controller``.
 """
 import logging
-from typing import List, NoReturn, Optional, Tuple
+from typing import List, NoReturn, Optional, Sequence, Tuple
 
 from . import protocol as p
 from . import tables as t
@@ -54,6 +54,9 @@ RAW_REPLY_POLL_S = 0.01
 #: 0xf5, the shortest code captured (§7.1, §10.10.1). Below it are the codes
 #: 0xf1-0xf4, which no capture shows.
 PIECE_TIMEOUT_MIN_S = 1e-3
+#: A device address, (primary, secondary or None), for NI's messages that
+#: address the instrument themselves.
+Address = Tuple[int, Optional[int]]
 #: What the adapter buffers of a framed 0x0d message: the hung adapter of
 #: §8.17 took about 4 KB on the primary OUT before it stopped accepting. The
 #: OUT of a framed write completes once the adapter holds the message, so up
@@ -81,8 +84,52 @@ class _TransferMixin:
             raise GpibTimeout('%s: the timeout ran out after %d of %d bytes' % (operation, done, asked), partial)
         return p.timeout_code(max(left, PIECE_TIMEOUT_MIN_S))
 
+    def _ni_session(self, address: Address, code: int) -> None:
+        """NI's bank-2 session configuration before a raw instruction to ``address`` (§10.2.4).
+
+        NI writes it at a session's open -- 0x04 := 1, 0x05 := PAD, 0x06 :=
+        the secondary byte, 0x07 := the timeout code -- and again whenever
+        the code changes; every capture of 0x0b and 0x0e had it written
+        first, and bench unit 01CEE482, sent a 0x0b without it, ended the
+        instruction at 20.0 s whatever its code (§11.2). So the first raw
+        instruction to an address sends NI's 32-byte open form, a later one
+        with another code its 28-byte update, and one that repeats both
+        nothing. Whether any of it is needed is not established (§8.15).
+        """
+        pad, sad = address
+        current = self._ni_session_state
+        if current == (pad, sad, code):
+            return
+        if current is None or current[:2] != (pad, sad):
+            message, operation = p.ni_session_open_message(pad, sad, code), 'bank-2 session configuration'
+        else:
+            message, operation = p.ni_session_update_message(pad, sad, code), 'bank-2 timeout update'
+        reply = self._link.transact(message, p.SMALL_REPLY_BUFFER, SHORT_WAIT_S)
+        self._check_ni_reply(reply, operation, (1, 4), strict=True)
+        self._ni_session_state = (pad, sad, code)
+
+    def _check_ni_reply(self, reply: bytes, operation: str, writes: Sequence[int], strict: bool) -> None:
+        """The blocks of a reply to one of NI's messages besides the data instruction's own (§10.2.1).
+
+        An addressing 0x0c that failed raises its error; register writes
+        that did not all complete (§8.14) are a ``ProtocolError`` when
+        ``strict`` and a warning otherwise, since the data instruction of
+        the same message has already run and its result is kept.
+        """
+        blocks = p.split_reply_blocks(reply)
+        for block_id, block in blocks:
+            if block_id == p.OP_COMMAND:
+                self._link.raise_for_error(p.parse_status_block(block), operation)
+        done = tuple(block[8] for block_id, block in blocks if block_id == p.OP_REGISTER_WRITE)
+        if done != tuple(writes):
+            if strict:
+                raise ProtocolError('%s: register writes completed %r of %r: %s'
+                                    % (operation, done, tuple(writes), reply.hex()))
+            logger.warning('%s: %s: register writes completed %r of %r', self._link.model.name,
+                           operation, done, tuple(writes))
+
     def _write_bytes(self, data: bytes, code: int, send_eoi: bool, eos_char: Optional[int],
-                     deadline: Optional[float]) -> int:
+                     deadline: Optional[float], address: Optional[Address] = None) -> int:
         """Write instructions of at most 0xffff bytes each, EOI only with the last (§5.1).
 
         Framed or raw is decided per chunk, so a short tail after a raw
@@ -91,6 +138,9 @@ class _TransferMixin:
         first chunk carries ``code``; a later one the code for what is left
         of ``deadline``, and none starts once it has passed
         (``_code_for_the_rest``): the timeout bounds the write as a whole.
+        With ``address`` a raw chunk is NI's message, which addresses the
+        instrument itself (``_raw_write_instruction``); a framed tail after
+        it finds the instrument still addressed to listen.
         """
         # Both instructions carry at most 0xffff bytes, so one chunk size serves.
         step = min(p.MAX_TRANSFER_BYTES, p.MAX_RAW_TRANSFER_BYTES)
@@ -101,7 +151,7 @@ class _TransferMixin:
             chunk = data[start:start + step]
             eoi = send_eoi and start + len(chunk) == len(data)
             if self._link.raw and len(chunk) >= RAW_WRITE_MIN_BYTES:
-                written += self._raw_write_instruction(chunk, code, eoi, eos_char)
+                written += self._raw_write_instruction(chunk, code, eoi, eos_char, address)
             else:
                 # The data rides inside the message, and the adapter takes the
                 # message only as fast as the instrument takes the data: the
@@ -117,8 +167,17 @@ class _TransferMixin:
         return written
 
     def _raw_write_instruction(self, chunk: bytes, code: int, send_eoi: bool,
-                               eos_char: Optional[int]) -> int:
+                               eos_char: Optional[int], address: Optional[Address] = None) -> int:
         """One 0x0e (§10.5.2): the header on the primary OUT, the bytes raw on the alternate OUT.
+
+        With ``address`` (an instrument session) the header is the message
+        NI sends, byte for byte: the status snapshot, the addressing 0x0c
+        with NI's code 0xfd, the 0x0e, the bank-2 mark, after NI's bank-2
+        session configuration (``_ni_session``); ``e`` is the session's
+        termination character, which NI sends whether or not the compare is
+        on (§10.5.1, §10.5.2). The wait allows for both timed blocks (§7.2).
+        Without, for a caller that addressed the bus itself, it is the bare
+        0x0e, which no capture shows.
 
         The device consumes the raw transfer as it writes to the bus (NI's
         2050 bytes took 0.1 s to be accepted), so that transfer, not only the
@@ -137,8 +196,14 @@ class _TransferMixin:
         unrecognised error skipped this path the reply would stay queued
         and the alternate OUT halted for every later 0x0e.
         """
-        message = p.write_raw_message(len(chunk), code, send_eoi, eos_char)
-        wait_s = self._link.transfer_wait_s(code, len(chunk))
+        if address is None:
+            message = p.write_raw_message(len(chunk), code, send_eoi, eos_char)
+            wait_s = self._link.transfer_wait_s(code, len(chunk))
+        else:
+            self._ni_session(address, code)
+            message = p.ni_write_raw_message(self._own_address, address[0], address[1], len(chunk), code,
+                                             send_eoi, eos_char)
+            wait_s = self._link.transfer_wait_s(code, len(chunk), also=(t.NI_ADDRESSING_CODE,))
         self._link.host_stopped = False
         self._link.send(message)
         try:
@@ -172,6 +237,8 @@ class _TransferMixin:
         if stranded:
             self._abandon_raw_out()
         parsed = p.parse_raw_write_reply(reply)
+        if address is not None:
+            self._check_ni_reply(reply, 'address to listen', (1,), strict=False)
         self._link.raise_for_error(parsed.status, 'write')
         return parsed.transferred(len(chunk))
 
@@ -232,8 +299,13 @@ class _TransferMixin:
             self._link.raise_for_error(status, 'write')
         raise refusal
 
+    def _reads_raw(self, max_bytes: int) -> bool:
+        """Whether a read of ``max_bytes`` takes 0x0b: the requested count decides, once (§10.1.1)."""
+        return self._link.raw and max_bytes >= RAW_READ_MIN_BYTES
+
     def _read_bytes(self, max_bytes: int, code: int, eos: Optional[int],
-                    eos_8bit: bool, operation: str, deadline: Optional[float]) -> Tuple[bytes, bool]:
+                    eos_8bit: bool, operation: str, deadline: Optional[float],
+                    address: Optional[Address] = None, termchar: Optional[int] = None) -> Tuple[bytes, bool]:
         """Read instructions until END, the count, or a short result; framed or raw by size.
 
         One instruction carries at most ``FRAMED_READ_MAX_BYTES`` on the
@@ -272,7 +344,7 @@ class _TransferMixin:
         """
         chunks: List[bytes] = []
         remaining = max_bytes
-        raw = self._link.raw and max_bytes >= RAW_READ_MIN_BYTES
+        raw = self._reads_raw(max_bytes)
         step = p.MAX_TRANSFER_BYTES if raw else FRAMED_READ_MAX_BYTES
         while remaining > 0:
             if chunks:
@@ -281,7 +353,7 @@ class _TransferMixin:
             count = min(remaining, step)
             try:
                 if raw:
-                    data, end = self._raw_read_instruction(count, code, eos, eos_8bit, operation)
+                    data, end = self._raw_read_instruction(count, code, eos, eos_8bit, operation, address, termchar)
                 else:
                     data, end = self._read_instruction(count, code, self._link.transfer_wait_s(code, count), eos,
                                                        eos_8bit, operation)
@@ -304,13 +376,33 @@ class _TransferMixin:
         self._link.raise_for_error(parsed.status, operation, partial=parsed.data)
         return parsed.data, parsed.end
 
-    def _raw_read_instruction(self, count: int, code: int, eos: Optional[int],
-                              eos_8bit: bool, operation: str) -> Tuple[bytes, bool]:
-        """One 0x0b (§10.1.2-10.1.3): the data arrives raw on the alternate bulk IN, the status on the primary."""
-        message = p.read_raw_message(count, code, eos, eos_8bit)
+    def _raw_read_instruction(self, count: int, code: int, eos: Optional[int], eos_8bit: bool, operation: str,
+                              address: Optional[Address] = None, termchar: Optional[int] = None) -> Tuple[bytes, bool]:
+        """One 0x0b (§10.1.2-10.1.3): the data arrives raw on the alternate bulk IN, the status on the primary.
+
+        With ``address`` (an instrument session) the message is the one NI
+        sends, byte for byte (§10.1.2): the status snapshot, the addressing
+        0x0c with NI's code 0xfd and no 0x06 behind it, the 0x0b, the
+        clear-END write and the bank-2 mark, all in one, after NI's bank-2
+        session configuration (``_ni_session``). With the compare off, ``e``
+        is ``termchar``, the session's character, as NI sends it (§10.1.6).
+        Every piece of a split read is that whole message, as NI's every
+        ``viRead`` is (§10.1.4). The wait allows for both timed blocks
+        (§7.2). Without ``address``, for a caller that addressed the bus
+        itself, the message is the 0x0b and the clear-END write, as before.
+        """
+        if address is None:
+            message = p.read_raw_message(count, code, eos, eos_8bit)
+            wait_s = self._link.transfer_wait_s(code, count)
+        else:
+            self._ni_session(address, code)
+            message = p.ni_read_raw_message(self._own_address, address[0], address[1], count, code,
+                                            eos, eos_8bit, termchar)
+            wait_s = self._link.transfer_wait_s(code, count, also=(t.NI_ADDRESSING_CODE,))
         buffer = p.raw_read_buffer_size(count, self._link.transport.max_packet_size_raw)
-        wait_s = self._link.transfer_wait_s(code, count)
         data, reply = self._raw_read_transact(message, buffer, wait_s)
+        if address is not None:
+            self._check_ni_reply(reply, 'address to talk', (1, 1), strict=False)
         parsed = p.parse_raw_read_reply(reply, count, data)
         self._link.raise_for_error(parsed.status, operation, partial=parsed.data)
         return parsed.data, parsed.end

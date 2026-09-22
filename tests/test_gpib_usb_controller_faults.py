@@ -8,8 +8,8 @@ from resistamet_gui.gpib_usb.protocol import AdapterGone, AdapterNotReady, GpibE
 from resistamet_gui.gpib_usb.transport import TransportError, TransportGone, TransportTimeout
 from tests.fakes.gpib_usb import (CLEAR_HALTS, DRAIN, DRAIN_LENGTH, RAW_DRAIN, STOP, T3S, QueueingAdapter,
                                   ScriptedTransport, address_listener, address_talker, attach_script, attached,
-                                  attached_ni, h, reattach_after_usb_fault_script, reattach_script, regread_reply,
-                                  regwrite_reply, status_reply)
+                                  attached_ni, h, ni_session, ni_write, reattach_after_usb_fault_script,
+                                  reattach_script, regread_reply, regwrite_reply, status_reply)
 
 
 class TestFaults:
@@ -369,8 +369,8 @@ class TestAdapterGone:
         transport.assert_done()
 
     def test_a_raw_write_whose_data_finds_the_adapter_gone_reads_no_reply_and_resets_no_pipe(self):
-        controller, transport = attached_ni(address_listener(pad=24) + [
-            ('out', p.write_raw_message(2049, T3S, True)), ('raw_out', bytes(2049), unplugged()),
+        controller, transport = attached_ni(ni_session(pad=24) + [
+            ('out', ni_write(2049, pad=24)), ('raw_out', bytes(2049), unplugged()),
         ])
         with pytest.raises(AdapterGone):
             controller.write(24, bytes(2049), timeout_s=3.0)

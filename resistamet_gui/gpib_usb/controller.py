@@ -64,11 +64,16 @@ transfers take the instructions NI's own driver uses (§10): a read of
 alternate bulk IN endpoint, and a write of ``RAW_WRITE_MIN_BYTES`` or more
 is a 0x0e whose bytes go out unframed on the alternate bulk OUT; smaller
 transfers stay framed, as does everything on a model without the alternate
-pair. The raw paths were written from the captures alone, and what this
-driver sends around them (a 0x0c, a 0x06 and the 0x0b as three messages,
-under AUXRA 0x81, without NI's bank-2 session configuration) is a
-composition no capture shows. They stay off until they have run against
-an adapter of ours. The same switch selects the serial poll: off, it is the
+pair. The raw paths were written from the captures alone. On an
+instrument session they send NI's messages byte for byte -- the snapshot,
+the addressing 0x0c under 0xfd, the 0x0b or 0x0e, the register writes,
+all in one message, after NI's bank-2 session configuration (§10.1.2,
+§10.2.4, §10.5.2) -- so that the bench can tell whether this driver's
+earlier composition (a 0x0c, a 0x06 and the 0x0b as three messages, with
+no bank-2 configuration) is why unit 01CEE482 ended a 0x0b at 20.0 s
+whatever its code (§11.2). What still differs from NI is the
+initialisation (AUXRA 0x81 against NI's 0x99, §10.3.1). They stay off
+until they have run against an adapter of ours. The same switch selects the serial poll: off, it is the
 IEEE-488.1 command sequence of §5.9 (``device_ops.serial_poll``); on, NI's
 0x10 instruction (``serial_poll_instruction``).
 
@@ -172,6 +177,9 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         self.serial_number: Optional[int] = None
         #: The USB error that showed the adapter gone from the bus; set once, never cleared.
         self._gone: Optional[TransportGone] = None
+        #: (pad, sad, code) of NI's bank-2 session configuration last written (§10.2.4),
+        #: None when none has been since the attach. Only the raw paths write it.
+        self._ni_session_state: Optional[Tuple[int, Optional[int], int]] = None
 
     @property
     def model(self) -> t.Model:
@@ -221,6 +229,7 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
             self._system_controller = system_controller
             self._link.drained = False
             self._addressed = None
+            self._ni_session_state = None
             if self._link.model.readiness_poll:
                 self._readiness_poll()                              # step 2
             if self._link.model.hs_plus_extras:
@@ -268,6 +277,12 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         with self._lock:
             try:
                 if self._attached and not self._link.resync_pending and self._gone is None:
+                    if self._ni_session_state is not None:
+                        # NI's close of the last session on the address (§10.3.3).
+                        reply = self._link.transact(p.ni_session_close_message(), p.SMALL_REPLY_BUFFER,
+                                                    SHORT_WAIT_S)
+                        self._check_ni_reply(reply, 'bank-2 session close', (1, 1), strict=False)
+                        self._ni_session_state = None
                     self._link.register_write(t.SHUTDOWN_WRITES, 'shutdown')
             except (GpibError, TransportError) as exc:
                 logger.warning('shutdown register write failed: %s', exc)
@@ -323,9 +338,11 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         Writes of ``RAW_WRITE_MIN_BYTES`` and more go as 0x0e instructions
         with the bytes on the alternate bulk OUT; shorter ones as framed
         0x0d. ``eos_char`` fills the 0x0e header's ``e`` byte, which NI sets
-        to the session's termination character (§10.5.2); the framed 0x0d
-        keeps its bench-proven 0x00 there. ``timeout_s`` bounds the write
-        as a whole, from this call on (``_write_bytes``).
+        to the session's termination character whether or not the compare
+        is on (§10.5.1, §10.5.2); the framed 0x0d keeps its bench-proven
+        0x00 there. A raw write is NI's message, which addresses the
+        instrument itself (``_raw_write_instruction``). ``timeout_s`` bounds
+        the write as a whole, from this call on (``_write_bytes``).
         """
         with self._guard():
             deadline = self._deadline(timeout_s)
@@ -333,6 +350,9 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
             if not data:
                 return 0
             code = p.timeout_code(timeout_s)
+            if self._link.raw and len(data) >= RAW_WRITE_MIN_BYTES:
+                self._addressed = None
+                return self._write_bytes(data, code, send_eoi, eos_char, deadline, address=(pad, sad))
             self._address(_LISTEN, pad, sad, code, self._link.reply_wait_s(code), readdress)
             return self._write_bytes(data, code, send_eoi, eos_char, deadline)
 
@@ -352,7 +372,8 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
 
     def read(self, pad: int, *, sad: Optional[int] = None, max_bytes: int,
              timeout_s: Optional[float], eos: Optional[int] = None,
-             eos_8bit: bool = False, readdress: bool = True) -> Tuple[bytes, bool]:
+             eos_8bit: bool = False, readdress: bool = True,
+             termchar: Optional[int] = None) -> Tuple[bytes, bool]:
         """Address ``pad`` to talk, go to standby, then read up to ``max_bytes`` (§5.2, §10.1).
 
         Returns the data and whether END (EOI, or the EOS character when
@@ -362,10 +383,11 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         instruction (§7.1, §10.10.2). On the framed path no single 0x0a asks
         for more than ``FRAMED_READ_MAX_BYTES``; a larger request is read in
         pieces after the one addressing (``_read_bytes``).
-        Without ``eos`` the instruction's ``m e`` bytes are the bench-proven
+        Without ``eos`` a framed read's ``m e`` bytes are the bench-proven
         ``00 00``. NI puts the session's termination character into ``e``
-        even then (§10.1.6), under its own AUXRA value; the codec can build
-        that form, this controller does not send it.
+        even then (§10.1.6), under its own AUXRA value; a raw read, which is
+        NI's message (``_raw_read_instruction``), does so too, with
+        ``termchar``, and addresses the instrument itself.
         """
         with self._guard():
             deadline = self._deadline(timeout_s)
@@ -373,6 +395,10 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
             if max_bytes < 1:
                 return b'', False
             code = p.timeout_code(timeout_s)
+            if self._reads_raw(max_bytes):
+                self._addressed = None
+                return self._read_bytes(max_bytes, code, eos, eos_8bit, 'read', deadline,
+                                        address=(pad, sad), termchar=termchar)
             self._address(_TALK, pad, sad, code, self._link.reply_wait_s(code), readdress)
             # ATN rule (§5): a 0x06 between the addressing 0x0c and the read.
             self._go_to_standby()
