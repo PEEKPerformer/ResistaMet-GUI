@@ -13,9 +13,25 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ResistanceState:
-    """What the resistance configure step decided, read back by the loop."""
+    """What the resistance configure step decided, read back by the loop.
+
+    ``voltage_compliance_v`` is the limit the instrument reports after
+    configuration, not the one requested: with auto-range on, auto-ohms
+    sets its own. The loop detects compliance against this value, because
+    the ohms function never sets the compliance bit in the status word
+    (Keithley 2400 and 2420, bench 2026-09-18).
+    """
 
     cable_null: float = 0.0
+    voltage_compliance_v: float = float('inf')
+
+
+def _read_back_float(keithley, query: str, fallback: float) -> float:
+    """Ask the instrument what a setting became; the request if it will not say."""
+    try:
+        return float(keithley.query(query).strip())
+    except Exception:
+        return float(fallback)
 
 
 @dataclass(frozen=True)
@@ -69,9 +85,15 @@ def configure_resistance(keithley, events, measurement_settings, nplc):
     # Offset-compensated ohms: cancels thermoelectric EMF
     if measurement_settings.get('res_offset_comp', False):
         keithley.write(":SENS:RES:OCOM ON")
+    # The limit that will actually apply. Auto-ohms overrides the requested
+    # compliance (2.1 V seen on a 2420 that was asked for 0.5 V), and the
+    # status word does not report compliance in the ohms function, so the
+    # loop compares readings against this number.
+    effective_compliance = _read_back_float(keithley, ":SENS:VOLT:PROT?", voltage_compliance)
     # Cable null: software subtraction (2400 series lacks :SENS:RES:REL)
     state = ResistanceState(
-        cable_null=float(measurement_settings.get('res_cable_null', 0.0)))
+        cable_null=float(measurement_settings.get('res_cable_null', 0.0)),
+        voltage_compliance_v=effective_compliance)
     # Pull raw V and I alongside R so accuracy.py can propagate
     # the per-range V and I uncertainties into σ_R. The 2400's
     # ohms function senses V and I internally regardless of
@@ -84,6 +106,10 @@ def configure_resistance(keithley, events, measurement_settings, nplc):
         'Mode': 'Resistance Measurement',
         'Test Current (A)': test_current,
         'Voltage Compliance (V)': voltage_compliance,
+        # What the instrument will actually enforce. With auto range on this
+        # differs from the request, and auto-ohms also chooses the test
+        # current per range, so the Current column is the record of that.
+        'Effective Voltage Compliance (V)': effective_compliance,
         'Measurement Type': measurement_type,
         'Resistance Auto Range': 'ON' if auto_range else 'OFF',
     }

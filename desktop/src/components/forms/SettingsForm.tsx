@@ -30,17 +30,20 @@ export function SettingsForm({ mode, groups, values, onChange, issues = [], disa
       {groups.map((group) => (
         <div key={group.title}>
           <SectionTitle>{group.title}</SectionTitle>
-          {group.fields.map((spec) => (
-            <FieldRow
-              key={spec.key}
-              spec={spec}
-              meta={meta[spec.key] ?? {}}
-              value={values[spec.key]}
-              onChange={(v) => onChange(spec.key, v)}
-              issue={issueFor(spec.key)}
-              disabled={disabled}
-            />
-          ))}
+          {group.fields.map((spec) => {
+            const overridden = spec.overriddenBy !== undefined && values[spec.overriddenBy.key] === spec.overriddenBy.when;
+            return (
+              <FieldRow
+                key={spec.key}
+                spec={overridden ? { ...spec, hint: spec.overriddenBy!.hint } : spec}
+                meta={meta[spec.key] ?? {}}
+                value={values[spec.key]}
+                onChange={(v) => onChange(spec.key, v)}
+                issue={issueFor(spec.key)}
+                disabled={disabled || overridden}
+              />
+            );
+          })}
         </div>
       ))}
     </>
@@ -77,6 +80,22 @@ export function FieldRow({ spec, meta, value, onChange, issue, disabled }: RowPr
     return (
       <Field label={spec.label} hint={spec.hint} error={error}>
         <Toggle checked={Boolean(value ?? meta.default)} disabled={disabled} onChange={onChange} label={spec.label} />
+      </Field>
+    );
+  }
+
+  if (meta.type === "string") {
+    // Free text: an address, a driver name, a directory. Never the numeric
+    // input, whose formatter would throw on a string mid-render.
+    return (
+      <Field label={spec.label} hint={spec.hint} error={error} stacked>
+        <Input
+          className="mono"
+          value={typeof value === "string" ? value : String(meta.default ?? "")}
+          disabled={disabled}
+          invalid={issue !== undefined}
+          onChange={(e) => onChange(e.target.value)}
+        />
       </Field>
     );
   }

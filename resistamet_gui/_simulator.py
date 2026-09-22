@@ -674,7 +674,11 @@ class FakeKeithley:
         )
         v, i, r, comp = self._compute_one_point(source_value)
         baseline = _STAT_BASELINE.get(self._mode_tag(), _STAT_BASELINE["default"])
-        stat = baseline | (_STAT_BIT_COMPLIANCE if comp else 0)
+        # The ohms function leaves the compliance bit clear even with the
+        # source pinned at its voltage limit (2400 and 2420, bench
+        # 2026-09-18); the clamped VOLT element is the only sign.
+        flag_compliance = comp and self._sense_func_short() != "RES"
+        stat = baseline | (_STAT_BIT_COMPLIANCE if flag_compliance else 0)
         return self._format_elements(v, i, r, stat)
 
     def _compute_sweep_read(self) -> str:

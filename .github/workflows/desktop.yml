@@ -74,10 +74,11 @@ jobs:
         # bundle.resources picks it up.
         run: pyinstaller resistamet-api.spec --noconfirm --clean --distpath desktop/sidecar
 
-      - name: Smoke-test the frozen backend (handshake + /health)
+      - name: Smoke-test the frozen backend (handshake, /health, WebSocket upgrade)
         shell: python
         run: |
-          import json, subprocess, sys, time, urllib.request, os
+          import http.client, json, subprocess, sys, time, urllib.request, os
+          from urllib.parse import urlsplit
           exe = os.path.join("desktop", "sidecar", "resistamet-api",
                              "resistamet-api.exe" if os.name == "nt" else "resistamet-api")
           proc = subprocess.Popen([exe, "--port", "0", "--simulate", "--config", "ci-config.json"],
@@ -87,6 +88,18 @@ jobs:
           info = json.loads(line)
           with urllib.request.urlopen(info["url"] + "/health", timeout=10) as r:
               assert r.status == 200, r.status
+          # The desktop UI lives on this socket. uvicorn answers 404 here when
+          # its WebSocket implementation did not make it into the bundle.
+          parts = urlsplit(info["url"])
+          conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
+          conn.request("GET", "/session/events/ws?token=" + info["token"], headers={
+              "Connection": "Upgrade", "Upgrade": "websocket",
+              "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+          })
+          status = conn.getresponse().status
+          conn.close()
+          print("websocket upgrade:", status)
+          assert status == 101, f"WebSocket upgrade answered {status}, not 101"
           proc.stdin.close()
           proc.wait(timeout=60)
           print("backend exited", proc.returncode)

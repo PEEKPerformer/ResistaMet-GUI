@@ -126,7 +126,9 @@ class TestWorkedExamplesIn:
         assert status.transferred(6) == 6
         assert status.tacs
 
-    def test_read_reply_abcde(self):
+    def test_read_reply_as_the_specification_draws_it_is_tolerated(self):
+        # The device disagreed with this layout (see TestObservedReplies): the
+        # HS sends no embedded 0x09 block. The parser still accepts the longer form.
         reply = h('36 41 42 43 44 45 0a ee ee ee ee ee ee ee ee ee'
                   '38 20 00 00 06 ff 00 00'
                   'aa 06 00 00'
@@ -137,12 +139,10 @@ class TestWorkedExamplesIn:
         parsed = p.parse_read_reply(reply, 256)
         assert parsed.data == b'ABCDE\n'
         assert parsed.end is True
-        assert parsed.status.id == 0x38
         assert parsed.status.count == 0xFF06
-        assert parsed.status.bytes_not_transferred == 250
         assert parsed.status.transferred(256) == 6
         assert parsed.adr1 == 0xAA
-        assert parsed.embedded_status.id == 0x09
+        assert parsed.embedded_status is not None and parsed.embedded_status.id == 0x09
         assert p.read_status_offset(reply) == 16
 
     def test_register_read_bsr_reply(self):
@@ -152,6 +152,68 @@ class TestWorkedExamplesIn:
     def test_take_control_reply(self):
         status = p.parse_status_reply(h('01 00 30 00 00 00 00 00 04 00 00 00'), p.OP_TAKE_CONTROL)
         assert status.cic and status.atn
+
+
+#: Captured from GPIB-USB-HS 01CEE482 with a Keithley 2400 at PAD 3, 2026-09-18.
+IDN_TEXT = b'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1175680,C30   Mar 17 2006 09:29:29/A02  /K/J\n'
+IDN_REPLY_256 = h(
+    '37 00 4b 45 49 54 48 4c 45 59 20 49 4e 53 54 52 55 4d 45 4e 54 53 20 49 4e 43 2e 2c 4d 4f 44 45'
+    '37 00 4c 20 32 34 30 30 2c 31 31 37 35 36 38 30 2c 43 33 30 20 20 20 4d 61 72 20 31 37 20 32 30'
+    '37 00 30 36 20 30 39 3a 32 39 3a 32 39 2f 41 30 32 20 20 2f 4b 2f 4a 0a 00 00 00 00 00 00 00 00'
+    '38 20 20 00 52 ff ff ff e0 16 00 00 04 00 00 00')
+#: Serial-poll read of one byte (STB 0); the 0x36 filler is stale bus data.
+STB_REPLY_1 = h('36 00 20 00 aa 55 ff ff 04 00 00 00 04 00 00 00'
+                '38 00 20 00 00 00 01 00 60 01 00 00 04 00 00 00')
+#: Count-limited read of 5 bytes out of "KEITHLEY...": no END.
+KEITH_REPLY_5 = h('36 4b 45 49 54 48 ff ff 04 00 00 00 04 00 00 00'
+                  '38 00 20 00 00 00 01 00 60 05 00 00 04 00 00 00')
+#: Read of up to 64 bytes with nothing to read: device-side timeout, no data blocks.
+TIMEOUT_REPLY_64 = h('38 00 20 0a c0 ff ff ff e0 5e 00 00 04 00 00 00')
+
+
+class TestObservedReplies:
+    """Read replies exactly as the GPIB-USB-HS sent them (the spec derived a longer trailer)."""
+
+    def test_idn_in_three_extended_blocks(self):
+        assert len(IDN_REPLY_256) == 112
+        parsed = p.parse_read_reply(IDN_REPLY_256, 256)
+        assert parsed.data == IDN_TEXT and len(parsed.data) == 82
+        assert parsed.end is True
+        assert parsed.status.ibsta == 0x2020  # END | CIC
+        assert parsed.status.error == 0
+        assert parsed.status.count == 0xFF52 and parsed.status.transferred(256) == 82
+        assert parsed.adr1 == 0xE0  # EOI seen
+        assert parsed.embedded_status is None
+        assert p.read_status_offset(IDN_REPLY_256) == 96
+
+    def test_one_byte_serial_poll_reply(self):
+        parsed = p.parse_read_reply(STB_REPLY_1, 1)
+        assert parsed.data == b'\x00' and parsed.end is False
+        assert parsed.status.transferred(1) == 1
+
+    def test_count_limited_read(self):
+        parsed = p.parse_read_reply(KEITH_REPLY_5, 5)
+        assert parsed.data == b'KEITH' and parsed.end is False
+        assert parsed.adr1 == 0x60
+
+    def test_timeout_reply_has_no_data_blocks(self):
+        parsed = p.parse_read_reply(TIMEOUT_REPLY_64, 64)
+        assert parsed.data == b''
+        assert parsed.status.error == t.ERR_TIMEOUT
+        assert parsed.status.transferred(64) == 0
+        assert p.read_status_offset(TIMEOUT_REPLY_64) == 0
+
+    def test_trailer_must_end_in_a_termination_block(self):
+        broken = bytearray(TIMEOUT_REPLY_64)
+        broken[12] = 0x09
+        with pytest.raises(p.ProtocolError):
+            p.parse_read_reply(bytes(broken), 64)
+
+    def test_status_reply_must_end_in_a_termination_block(self):
+        with pytest.raises(p.ProtocolError):
+            p.parse_status_reply(h('0c 00 78 00 00 00 ff ff 00 00 00 00'), p.OP_COMMAND)
+        status = p.parse_status_reply(h('0c 00 78 00 00 00 ff ff 04 00 00 00'), p.OP_COMMAND)
+        assert status.ibsta == 0x0078  # observed after addressing: REM | CIC | ATN | TACS
 
 
 # ---------------------------------------------------------------------------
@@ -328,8 +390,12 @@ class TestStatusBlock:
 # ---------------------------------------------------------------------------
 
 def read_reply(data: bytes, requested: int, *, end: bool = True, error: int = 0,
-               block: int = 15) -> bytes:
-    """Build a 0x0a reply the way the device lays it out."""
+               block: int = 15, spec_layout: bool = False) -> bytes:
+    """Build a 0x0a reply the way the device lays it out (16-byte trailer).
+
+    ``spec_layout`` adds the embedded 0x09 status block the specification
+    describes and the GPIB-USB-HS does not send.
+    """
     payload = 15 if block == 15 else 30
     blocks = []
     for start in range(0, len(data), payload):
@@ -343,10 +409,11 @@ def read_reply(data: bytes, requested: int, *, end: bool = True, error: int = 0,
     ibsta = (t.IBSTA_END if end else 0) | (t.IBSTA_TIMO if error == t.ERR_TIMEOUT else 0)
     count = (len(data) - requested) & 0xFFFF
     trailer = (bytes((0x38,)) + ibsta.to_bytes(2, 'big') + bytes((error,))
-               + count.to_bytes(2, 'little') + b'\x00\x00'
-               + bytes((0x80 if end else 0x00, last_count, 0, 0))
-               + h('09 00 00 00 00 00 00 00') + h('02 00 00 00') + h('04 00 00 00'))
-    return b''.join(blocks) + trailer
+               + count.to_bytes(2, 'little') + b'\xff\xff'
+               + bytes((0xE0 if end else 0x60, last_count, 0, 0)))
+    if spec_layout:
+        trailer += h('09 00 00 00 00 00 00 00') + h('02 00 00 00')
+    return b''.join(blocks) + trailer + h('04 00 00 00')
 
 
 class TestReadReplyReassembly:
@@ -363,6 +430,12 @@ class TestReadReplyReassembly:
         assert p.parse_read_reply(reply, 100).data == data
         assert p.read_status_offset(reply) == 64
 
+    def test_specification_layout_still_parses(self):
+        data = bytes(range(20))
+        reply = read_reply(data, 64, spec_layout=True)
+        parsed = p.parse_read_reply(reply, 64)
+        assert parsed.data == data and parsed.embedded_status is not None
+
     def test_exactly_one_full_block(self):
         data = bytes(15)
         parsed = p.parse_read_reply(read_reply(data, 15, end=False), 15)
@@ -374,7 +447,7 @@ class TestReadReplyReassembly:
         assert parsed.data == b''
         assert parsed.status.error == t.ERR_TIMEOUT
         assert parsed.status.transferred(256) == 0
-        assert p.read_status_offset(parsed and read_reply(b'', 256, end=False)) == 0
+        assert p.read_status_offset(read_reply(b'', 256, end=False)) == 0
 
     def test_partial_data_on_timeout(self):
         parsed = p.parse_read_reply(read_reply(b'ABC', 256, end=False, error=t.ERR_TIMEOUT), 256)

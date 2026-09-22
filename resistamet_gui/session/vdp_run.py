@@ -15,7 +15,7 @@ from ..data_export import build_metadata, get_column_config, make_exporter
 from ..instrument import Keithley2400, humanize_connection_error
 from ..system_utils import SleepInhibitor
 from .control import RunStopped
-from .instrument_lock import InstrumentBusy, hold_instrument
+from .instrument_lock import HeldInstrument, InstrumentBusy
 from .run_files import create_base_path
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ class VdpRun:
     MODE = 'vdp'
 
     def __init__(self, sample_name, username, settings, control, events,
-                  safety_ack='skip', prompt_timeout_s=None):
+                  safety_ack='skip', prompt_timeout_s=None, instrument_lock=None):
         self.sample_name = sample_name
         self.username = username
         self.settings = settings
@@ -49,7 +49,8 @@ class VdpRun:
         self._safety_ack = safety_ack
         #: None = wait forever (the GUI has an operator at the bench).
         self._prompt_timeout_s = prompt_timeout_s
-        self._instrument_lock = None
+        #: A HeldInstrument the caller already took, or None to take it here.
+        self._instrument_lock = instrument_lock
         self._control = control
         self._voltages: Dict[str, float] = {}
         self.keithley = None
@@ -146,8 +147,8 @@ class VdpRun:
         self.running = True
         address = self.settings.get('measurement', {}).get('gpib_address', '')
         try:
-            self._instrument_lock = hold_instrument(address)
-            self._instrument_lock.__enter__()
+            if self._instrument_lock is None:
+                self._instrument_lock = HeldInstrument(address)
         except InstrumentBusy as exc:
             self._control.finish('instrument_busy')
             self._events.error('instrument_busy', 'smu', str(exc))
@@ -465,11 +466,11 @@ class VdpRun:
             logger.warning("vdP: finalize with result failed", exc_info=True)
 
     def _release_instrument_lock(self) -> None:
-        manager = getattr(self, '_instrument_lock', None)
-        if manager is not None:
+        held = getattr(self, '_instrument_lock', None)
+        if held is not None:
             self._instrument_lock = None
             try:
-                manager.__exit__(None, None, None)
+                held.release()
             except Exception:
                 logger.warning("failed to release the instrument lock", exc_info=True)
 

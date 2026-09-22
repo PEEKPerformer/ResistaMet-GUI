@@ -5,7 +5,7 @@
 import { useEffect, useRef } from "react";
 import uPlot, { type AlignedData, type Options } from "uplot";
 import "uplot/dist/uPlot.min.css";
-import { engineering } from "../../lib/format";
+import { axisLabels } from "../../lib/format";
 import styles from "./LivePlot.module.css";
 
 export interface XYSeries {
@@ -40,12 +40,7 @@ export function XYPlot({ series, xUnit, yUnit }: Props) {
     const gridLine = computed.getPropertyValue("--grid-line").trim() || "rgba(255,255,255,.08)";
     const font = "11px " + computed.getPropertyValue("--font-mono");
 
-    const axisValues = (unit: string) => (_u: uPlot, ticks: number[]) => {
-      const largest = ticks.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
-      const ref = engineering(largest || 1, unit);
-      const factor = largest ? Number(ref.mantissa) / largest : 1;
-      return ticks.map((v) => (v * factor).toPrecision(4).replace(/\.?0+$/, "") + (ref.unit ? ` ${ref.unit}` : ""));
-    };
+    const axisValues = (unit: string) => (_u: uPlot, ticks: number[]) => axisLabels(ticks, unit);
 
     // uPlot wants one shared x array. Series with different x sets are
     // merged onto the union of x values, with nulls where a series has none.

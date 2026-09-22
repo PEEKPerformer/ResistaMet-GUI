@@ -128,6 +128,14 @@ ready all three are 0x00. A single readiness query without the loop has
 been observed to succeed on an already-settled HS; the loop is the
 normative form (2.8).
 
+Observed on GPIB-USB-HS 01CEE482 (bcdDevice 0x101), 2026-09-18: the reply
+is `40 01 00 01 30 01 19 08 00 00 65` (11 bytes), i.e. byte 6 = 0x19,
+byte 7 = 0x08, byte 9 = 0x00, byte 10 = 0x65, immediately after a USB
+reset and unchanged afterwards. These bytes therefore vary between units
+or firmware versions (0x65 = 101 matches the 1.01 of bcdDevice); only
+"nonzero" carries meaning. The serial-number reply was `41 82 e4 ce 01`
+(5 bytes), decoding to 0x01CEE482 as described.
+
 ### 2.4 Model-specific extra initialisation
 
 - **HS+**: after the readiness poll, issue the three control requests
@@ -388,9 +396,10 @@ Register-read reply layouts:
 - 1 register: `34 v0 00 00 | 35 k 00 00 [| 04 00 00 00]`, k mod 3 = 1.
 - 4 registers (USB-B serial read): `34 v0 v1 v2 | 34 v3 pp pp | 35 k 00 00
   [| 04 00 00 00]`, where `pp` is padding of the partial final chunk
-  (value unverified; expect 0x00) and k mod 3 = 1. Uncertain: whether
-  the termination block follows the 0x35 block; request 32 bytes and
-  accept a shorter transfer.
+  (value unverified; expect 0x00) and k mod 3 = 1. Observed on the
+  GPIB-USB-HS (one register): the termination block does follow, the
+  reply is exactly `34 vv 00 00 35 01 00 00 04 00 00 00` (12 bytes).
+  Request 32 bytes and accept a shorter transfer.
 
 Reply sizes to expect:
 
@@ -400,12 +409,11 @@ Reply sizes to expect:
 | 0x09 register write | 16 | status block (8, id 0x09) + `k 00 00 00` (k = writes completed) + `04 00 00 00` |
 | 0x08 register read | up to 32 | 0x34 chunks + 0x35 block (+ termination, uncertain) |
 | 0x07 parallel poll | up to 32 | status block (8) + result byte + padding (+ termination, uncertain) |
-| 0x0a read | see 5.2 | data blocks + 28-byte trailer |
+| 0x0a read | see 5.2 | data blocks + 16-byte trailer (observed; the sources implied 28) |
 
 The 12- and 16-byte reply lengths are exact and can be asserted.
-Uncertain: whether the trailing 4 bytes of those replies are always
-`04 00 00 00`; the arithmetic (8 + 4, 8 + 4 + 4) strongly implies it,
-but the bytes have not been verified.
+Observed on the GPIB-USB-HS: the trailing 4 bytes of every such reply are
+`04 00 00 00`.
 
 ### 3.6 Worked hex examples
 
@@ -435,7 +443,8 @@ IN : 0d ss ss ee cc cc 00 00 04 00 00 00
 `fa ff` = -6 little-endian; byte 6 = 0x08 requests EOI; two pad bytes
 after the data.
 
-**Read up to 256 bytes, EOS disabled:**
+**Read up to 256 bytes, EOS disabled (OUT observed; IN as the sources
+implied it, NOT what the device sends -- see the next example):**
 ```
 OUT: 0a 00 00 fc 00 ff 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00
 IN : 36 41 42 43 44 45 0a xx xx xx xx xx xx xx xx xx
@@ -449,9 +458,36 @@ Instrument answered `ABCDE\n` (6 bytes) with EOI. One 0x36 block; the
 `xx` filler after the 6 valid bytes is unspecified. Status: id 0x38, error
 0, count `06 ff` = 0xff06 = 6 - 256 (250 bytes not transferred). `aa` =
 ADR1 register bits (ignored); `06` = valid bytes in the last data block;
-`00 00` pad; then the status of the embedded 2-register write (id 0x09,
-`02` = two writes completed, 3 pad bytes) and the termination block. Total
-44 bytes = one 16-byte data block + 28-byte trailer.
+`00 00` pad. The two blocks `09 ...` / `02 00 00 00` (status of the
+embedded 2-register write) were inferred from the sources and are **not
+sent** by the GPIB-USB-HS; a parser must accept their absence.
+
+**Read up to 256 bytes, EOS disabled -- observed on GPIB-USB-HS 01CEE482
+with a Keithley 2400 at PAD 3, 2026-09-18:**
+```
+OUT: 0a 00 00 fc 00 ff 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00
+IN : 37 00 4b 45 49 54 48 4c 45 59 20 49 4e 53 54 52 55 4d 45 4e 54 53 20 49 4e 43 2e 2c 4d 4f 44 45
+     37 00 4c 20 32 34 30 30 2c 31 31 37 35 36 38 30 2c 43 33 30 20 20 20 4d 61 72 20 31 37 20 32 30
+     37 00 30 36 20 30 39 3a 32 39 3a 32 39 2f 41 30 32 20 20 2f 4b 2f 4a 0a 00 00 00 00 00 00 00 00
+     38 20 20 00 52 ff ff ff
+     e0 16 00 00
+     04 00 00 00
+```
+112 bytes in one USB transfer (64 + 48). Payload: `KEITHLEY INSTRUMENTS
+INC.,MODEL 2400,1175680,C30   Mar 17 2006 09:29:29/A02  /K/J\n` (82
+bytes) in three 30-byte 0x37 blocks, the last holding 22 valid bytes
+(`16`) and then filler. Status: ibsta 0x2020 (END, CIC), error 0, count
+`52 ff` = 0xff52 = 82 - 256; bytes 6-7 `ff ff`. `e0` = ADR1 with bit 7 set
+(EOI seen); `00 00` pad; termination. Trailer = 16 bytes.
+
+Also observed (same setup): a 1-byte read (serial poll) and a 5-byte read
+arrive in 0x36 blocks (`36 00 20 00 aa 55 ff ff ... | 38 00 20 00 00 00 01
+00 60 01 00 00 04 00 00 00`), so the block size depends on the request;
+the filler after the valid bytes is stale data from earlier replies; ADR1
+is 0x60 without EOI. A read that times out with nothing to read returns
+the bare 16-byte trailer `38 00 20 0a c0 ff ff ff e0 5e 00 00 04 00 00 00`
+(error 0x0a, count 0xffc0 = 0 - 64); the last-block-count byte (`5e`) is
+meaningless when there is no data block.
 
 **Register read of BSR (bus lines):**
 ```
@@ -477,8 +513,8 @@ IN : 01 ss ss ee 00 00 00 00 04 00 00 00
 | 0 | 1 | id | echoes the instruction opcode; 0x38 for the read-data status |
 | 1 | 2 | ibsta | **big-endian** (byte 1 = high byte) |
 | 3 | 1 | error code | see 4.3; 0 = success |
-| 4 | 2 | count | **little-endian**, two's complement: (transferred - requested). Bytes not transferred = (0x10000 - count) & 0xffff; bytes transferred = requested - that. 0 when everything was transferred. |
-| 6 | 2 | unused | observed 0x00 0x00 |
+| 4 | 2 | count | **little-endian**, two's complement: (transferred - requested). Bytes not transferred = (0x10000 - count) & 0xffff; bytes transferred = requested - that. 0 when everything was transferred. **Meaningful only in replies to 0x0a, 0x0c, 0x0d.** Observed on the GPIB-USB-HS: replies to 0x01 and 0x06 carry `aa 55` here, and replies to 0x09 and 0x0f carry the count left over from the last data operation (`ff ff` after a reset, `52 ff` after a read that transferred 82 of 256). |
+| 6 | 2 | unused | observed 0x00 0x00 (sources); on the GPIB-USB-HS `ff ff` in most replies, `01 00` in a read reply that filled the requested count, `00 00` after a successful 0x0d |
 
 The same 8-byte layout is returned by control requests 0x20 and 0x21 and
 pushed on the interrupt endpoint.
@@ -594,17 +630,24 @@ to work.
      may be ignored -- use ibsta END instead.
   4. 1 byte: number of valid data bytes in the LAST data block (0 if none).
   5. 2 bytes: 0x00 0x00.
-  6. 8-byte status block, id 0x09 (status of the embedded register write).
-  7. 1 byte: 0x02 (two writes completed), then 3 bytes 0x00.
-  8. `04 00 00 00`.
-  Items 2-8 form a fixed 28-byte trailer.
+  6. `04 00 00 00`.
+  Items 2-6 form a fixed 16-byte trailer (observed on the GPIB-USB-HS,
+  2026-09-18). The sources implied two further items before the
+  termination block -- an 8-byte status block with id 0x09 for the
+  embedded register write, then `02 00 00 00` -- making 28 bytes; the
+  device does not send them. A parser should accept both forms.
+- Block size: reads of 1 and 5 bytes arrived in 0x36 blocks, a read of up
+  to 256 bytes in 0x37 blocks (observed). The filler after the valid bytes
+  of the last block is stale data, not zeros.
 - Bytes actually read = (blocks - 1) × block_size + last_block_count, or
-  0 if no data block. Cross-check: it must equal requested - (bytes not
-  transferred from the 0x38 count field).
+  0 if no data block (the last-block-count byte is then meaningless).
+  Cross-check: it must equal requested - (bytes not transferred from the
+  0x38 count field).
 - Host receive buffer for a requested N: ceil(N/30) 32-byte blocks (or
-  ceil(N/15) 16-byte blocks) plus the 28-byte trailer; request the larger
-  of the two, rounded up to the endpoint's max packet size. The device
-  ends the reply with a short packet.
+  ceil(N/15) 16-byte blocks) plus the trailer (size for 28 bytes, the
+  longer form); request the larger of the two, rounded up to the
+  endpoint's max packet size. The device ends the reply with a short
+  packet.
 - End conditions: ibsta END (0x2000) set in the 0x38 block means the read
   ended on EOI or, when `m` has 0x04, on the EOS character (NI-488.2
   convention). END clear with error 0 means the count was reached. Error
@@ -740,8 +783,10 @@ Presence signals attested on this adapter:
   the instrument.
 
 Recommended non-intrusive probe for address N (IEEE-488.1 acceptor
-handshake sampled via 5.13; not bench-verified with this adapter --
-uncertain):
+handshake sampled via 5.13). Bench-verified on the GPIB-USB-HS with a
+Keithley 2400 at PAD 3, 2026-09-18: BSR read 0x01 (REN only) for empty
+addresses and had NDAC set for address 3; the probe over 1..30 returned
+exactly [3]:
 
 1. 0x0c `3f 20+N` (UNL, LAD N). Error 5 here means the bus is empty; stop.
 2. 0x06 (go to standby, ATN false).
@@ -908,6 +953,38 @@ reported through the status block rather than as a USB error.
     driver does; their meaning is unknown. Do not omit them.
 16. Absence of serial/parallel poll or SRQ handling in a known working
     implementation is not evidence those instructions fail.
+17. **A hung adapter.** Observed on GPIB-USB-HS 01CEE482, 2026-09-18: the
+    adapter answered every control request normally (serial number,
+    readiness, status and stop), accepted bulk OUT messages on 0x02 until
+    about 4 KB had been queued (and about 1 KB on 0x06), then NAKed, and
+    never sent a byte on 0x84, 0x88 or 0x81. Nothing on the USB side
+    cleared it: not the stop request, the monitor mask, clear-halt,
+    SET_CONFIGURATION 0/1, nor a USB bus reset (which empties the
+    endpoint FIFOs but does not restart the firmware). Unplugging and
+    replugging the adapter fixed it at once. A driver should treat "the
+    initialisation message was accepted but no reply arrived within 2 s,
+    nor after a stop request" as this condition and tell the user to
+    power-cycle the adapter.
+18. **Settle after IFC / REN before the first addressed command.** Observed
+    on GPIB-USB-HS 01CEE482 with a Keithley 2400 at PAD 3, 2026-09-18: with
+    the sequence attach -> presence probe (5.16, which addresses the
+    instrument and puts it in remote) -> shutdown (2.9; the chip reset drops
+    REN, the instrument returns to local) -> attach (IFC, REN, take control)
+    -> `3f 40 23`, `0d ... *IDN?` within about 1 ms, the write instruction
+    reported all 6 bytes transferred (the instrument's interface handshakes
+    in hardware) but the instrument never parsed them: the following read
+    timed out and the instrument logged `-420,"Query UNTERMINATED"`. It
+    reproduced within 1-4 iterations; without the probe (instrument never
+    in remote) it did not reproduce in 20. A pause of 20 ms after take
+    control, or after the shutdown, was already enough (10/10 each); the
+    driver waits 100 ms after the attach's take control and after a public
+    IFC pulse. The adapter also hung once (8.17) under the application at
+    exactly this point -- the first `0x0c` after such an attach never
+    answered even after the device timeout -- so a stalled handshake with an
+    instrument in this state may be what wedges the firmware; with the pause
+    in place the sequence ran 10 x (attach, probe, close, attach, `*IDN?`,
+    50 x `:OUTP?`, close) with no gap and 5 more cycles through pyvisa
+    without incident.
 
 ---
 
@@ -927,6 +1004,18 @@ formats are described from the device's point of view, not the programs'.
 | controller.py (ni-gpib-usb-hs user-space driver, GPL-2.0) | https://raw.githubusercontent.com/embeddedci-com/ni-gpib-usb-hs/main/ni_gpib_usb_hs/controller.py | 2af24c179860e277269c5e711a16538cc04bc31af080e27b414e036cfbb151b4 |
 | gpib_user.h (linux-gpib public API header; used only to confirm NI-488.2 ibsta bit numbers, EOS flag values and command bytes) | https://sourceforge.net/p/linux-gpib/code/HEAD/tree/trunk/linux-gpib-kernel/drivers/gpib/include/gpib_user.h?format=raw | 8680bb597a799f19ab6d96551100aa2705954eab6fd1f1e7645eb2b28def1dbc |
 | TNT4882 Programmer Reference Manual, NI part 370872A-01 (July 1995) | https://docs-be.ni.com/bundle/tnt4882-programmer-reference/raw/resource/enus/370872a.pdf | 11a790cc4050cb330c0a1654dca5e49ccb9d548ed5b12ab3363d9e161f79d9fb |
+
+Bench observations: statements marked "observed on GPIB-USB-HS 01CEE482"
+were recorded on 2026-09-18 from a GPIB-USB-HS (USB 3923:709b, bcdDevice
+0x101, serial 01CEE482) on macOS through pyusb/libusb, with a Keithley
+2400 at primary address 3 on the bus, using the clean-room driver in
+`resistamet_gui/gpib_usb/` and a byte-level trace of every USB transfer.
+They correct the sources in these places: the read-reply trailer is 16
+bytes (5.2, 3.5, 3.6); the count field is meaningful only after data
+operations and bytes 6-7 are not zero (4.1); the termination block follows
+the 0x35 block of a register-read reply (3.5); the readiness reply's
+informational bytes vary by unit (2.3); the 5.16 probe works; the hung
+state of 8.17 exists; and instruments need a pause after IFC/REN (8.18).
 
 Section-level attribution: sections 1-5, 7 and 8 -- linux-gpib
 ni_usb_gpib.c / ni_usb_gpib.h and ni-gpib-usb-hs controller.py; register
