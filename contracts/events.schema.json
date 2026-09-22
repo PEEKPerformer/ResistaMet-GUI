@@ -48,6 +48,73 @@
     "type": "object"
   },
   "payloads": {
+    "acquisition_finished": {
+      "additionalProperties": false,
+      "description": "The acquisition loop ended; cleanup and finalize still follow.",
+      "properties": {
+        "mode": {
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "AcquisitionFinishedPayload",
+      "type": "object"
+    },
+    "aux_connected": {
+      "additionalProperties": false,
+      "description": "The auxiliary sensor is open and has declared its channels.",
+      "properties": {
+        "address": {
+          "title": "Address",
+          "type": "string"
+        },
+        "channels": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Channels",
+          "type": "array"
+        },
+        "driver": {
+          "title": "Driver",
+          "type": "string"
+        }
+      },
+      "required": [
+        "driver",
+        "address"
+      ],
+      "title": "AuxConnectedPayload",
+      "type": "object"
+    },
+    "compliance": {
+      "additionalProperties": false,
+      "description": "The source is in compliance on this sample.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "Voltage",
+            "Current"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "stop_on_compliance": {
+          "default": false,
+          "title": "Stop On Compliance",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "CompliancePayload",
+      "type": "object"
+    },
     "error": {
       "additionalProperties": false,
       "description": "Something failed. ``source`` says which subsystem.\n\n``source`` replaces the substring matching the UI does today to decide\nwhether an error came from the instrument, the aux sensor or the file.\n``fatal`` marks the errors that end the run.",
@@ -84,6 +151,136 @@
       "title": "ErrorPayload",
       "type": "object"
     },
+    "file_finalized": {
+      "additionalProperties": false,
+      "description": "The run's file is closed, with its end metadata written.",
+      "properties": {
+        "end_metadata": {
+          "additionalProperties": true,
+          "title": "End Metadata",
+          "type": "object"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "FileFinalizedPayload",
+      "type": "object"
+    },
+    "file_opened": {
+      "additionalProperties": false,
+      "description": "The run's output file exists and its column schema is fixed.",
+      "properties": {
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "units": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Units",
+          "type": "array"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "FileOpenedPayload",
+      "type": "object"
+    },
+    "instrument_connected": {
+      "additionalProperties": false,
+      "description": "The SMU answered *IDN? and its limits are known.",
+      "properties": {
+        "address": {
+          "title": "Address",
+          "type": "string"
+        },
+        "idn": {
+          "title": "Idn",
+          "type": "string"
+        },
+        "max_power_w": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Power W"
+        },
+        "max_source_i": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Source I"
+        },
+        "max_source_v": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Source V"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        }
+      },
+      "required": [
+        "address",
+        "idn",
+        "model"
+      ],
+      "title": "InstrumentConnectedPayload",
+      "type": "object"
+    },
+    "line_frequency": {
+      "additionalProperties": false,
+      "description": "Mains frequency, queried or assumed. Continuous modes only.",
+      "properties": {
+        "assumed": {
+          "default": false,
+          "title": "Assumed",
+          "type": "boolean"
+        },
+        "hz": {
+          "title": "Hz",
+          "type": "number"
+        }
+      },
+      "required": [
+        "hz"
+      ],
+      "title": "LineFrequencyPayload",
+      "type": "object"
+    },
     "log": {
       "additionalProperties": false,
       "description": "Human-readable progress, one per current ``status_update`` site.\n\n``code`` is a short closed set so a client can act on an event without\nparsing prose; ``message`` stays the exact text the GUI shows today.",
@@ -112,6 +309,576 @@
         "message"
       ],
       "title": "LogPayload",
+      "type": "object"
+    },
+    "overpower_trip": {
+      "additionalProperties": false,
+      "description": "Measured V*I crossed the 4PP probe-safety hard stop.",
+      "properties": {
+        "measured_w": {
+          "title": "Measured W",
+          "type": "number"
+        },
+        "stop_w": {
+          "title": "Stop W",
+          "type": "number"
+        }
+      },
+      "required": [
+        "measured_w",
+        "stop_w"
+      ],
+      "title": "OverpowerPayload",
+      "type": "object"
+    },
+    "paused": {
+      "additionalProperties": false,
+      "description": "Paused, resumed or stopping, as observed by the acquisition thread.",
+      "properties": {
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "title": "RunStatePayload",
+      "type": "object"
+    },
+    "prompt": {
+      "additionalProperties": false,
+      "description": "The run is blocked until someone answers.",
+      "properties": {
+        "detail": {
+          "additionalProperties": true,
+          "title": "Detail",
+          "type": "object"
+        },
+        "kind": {
+          "enum": [
+            "vdp_geometry",
+            "safety_voltage_ack",
+            "cable_null_shorted"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "prompt_id": {
+          "title": "Prompt Id",
+          "type": "string"
+        },
+        "requires_human": {
+          "default": true,
+          "title": "Requires Human",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "prompt_id",
+        "kind"
+      ],
+      "title": "PromptPayload",
+      "type": "object"
+    },
+    "prompt_resolved": {
+      "additionalProperties": false,
+      "description": "How a prompt ended: answered, or released by a stop.",
+      "properties": {
+        "answered_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Answered By"
+        },
+        "choice": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Choice"
+        },
+        "prompt_id": {
+          "title": "Prompt Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prompt_id"
+      ],
+      "title": "PromptResolvedPayload",
+      "type": "object"
+    },
+    "resumed": {
+      "additionalProperties": false,
+      "description": "Paused, resumed or stopping, as observed by the acquisition thread.",
+      "properties": {
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "title": "RunStatePayload",
+      "type": "object"
+    },
+    "run_ended": {
+      "additionalProperties": false,
+      "description": "Always the last event of a run, whatever ended it.",
+      "properties": {
+        "duration_s": {
+          "default": 0.0,
+          "title": "Duration S",
+          "type": "number"
+        },
+        "ok": {
+          "default": true,
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "samples": {
+          "default": 0,
+          "title": "Samples",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "title": "RunEndedPayload",
+      "type": "object"
+    },
+    "run_started": {
+      "additionalProperties": false,
+      "description": "A run is beginning; the settings are exactly what it will use.",
+      "properties": {
+        "mode": {
+          "title": "Mode",
+          "type": "string"
+        },
+        "sample_name": {
+          "title": "Sample Name",
+          "type": "string"
+        },
+        "settings": {
+          "additionalProperties": true,
+          "title": "Settings",
+          "type": "object"
+        },
+        "started_at": {
+          "title": "Started At",
+          "type": "number"
+        },
+        "username": {
+          "title": "Username",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "sample_name",
+        "username",
+        "started_at"
+      ],
+      "title": "RunStartedPayload",
+      "type": "object"
+    },
+    "sample": {
+      "$defs": {
+        "DeltaPayload": {
+          "additionalProperties": false,
+          "description": "Per-polarity values from a current-reversal (delta) reading.",
+          "properties": {
+            "r_f": {
+              "title": "R F",
+              "type": "number"
+            },
+            "r_r": {
+              "title": "R R",
+              "type": "number"
+            },
+            "v_minus": {
+              "title": "V Minus",
+              "type": "number"
+            },
+            "v_plus": {
+              "title": "V Plus",
+              "type": "number"
+            }
+          },
+          "required": [
+            "v_plus",
+            "v_minus",
+            "r_f",
+            "r_r"
+          ],
+          "title": "DeltaPayload",
+          "type": "object"
+        },
+        "DerivedPayload": {
+          "additionalProperties": false,
+          "description": "The 4PP quantities computed for this sample, as written to the row.\n\n``method`` says which correction path produced them: the ASTM F84\ndecomposition or the legacy K*alpha form.",
+          "properties": {
+            "i_unc": {
+              "title": "I Unc",
+              "type": "number"
+            },
+            "method": {
+              "enum": [
+                "f84",
+                "legacy"
+              ],
+              "title": "Method",
+              "type": "string"
+            },
+            "ratio": {
+              "title": "Ratio",
+              "type": "number"
+            },
+            "rho": {
+              "title": "Rho",
+              "type": "number"
+            },
+            "rs": {
+              "title": "Rs",
+              "type": "number"
+            },
+            "sigma": {
+              "title": "Sigma",
+              "type": "number"
+            },
+            "v_unc": {
+              "title": "V Unc",
+              "type": "number"
+            }
+          },
+          "required": [
+            "ratio",
+            "rs",
+            "rho",
+            "sigma",
+            "v_unc",
+            "i_unc",
+            "method"
+          ],
+          "title": "DerivedPayload",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "One acquired point.\n\n``values`` is the mode's data dict exactly as the parse produced it, with\nno coercion \u2014 the aux-fault column is a string, and a client that wants\nnumbers must say which key it means.",
+      "properties": {
+        "compliance": {
+          "default": "OK",
+          "enum": [
+            "OK",
+            "V_COMP",
+            "I_COMP"
+          ],
+          "title": "Compliance",
+          "type": "string"
+        },
+        "delta": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DeltaPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "derived": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DerivedPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "elapsed_s": {
+          "title": "Elapsed S",
+          "type": "number"
+        },
+        "event_marker": {
+          "default": "",
+          "title": "Event Marker",
+          "type": "string"
+        },
+        "t_unix": {
+          "title": "T Unix",
+          "type": "number"
+        },
+        "values": {
+          "additionalProperties": true,
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "t_unix",
+        "elapsed_s"
+      ],
+      "title": "SamplePayload",
+      "type": "object"
+    },
+    "stopping": {
+      "additionalProperties": false,
+      "description": "Paused, resumed or stopping, as observed by the acquisition thread.",
+      "properties": {
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "title": "RunStatePayload",
+      "type": "object"
+    },
+    "sweep_segment": {
+      "additionalProperties": false,
+      "description": "One completed sweep direction, returned by the instrument in bulk.",
+      "properties": {
+        "compliance": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Compliance",
+          "type": "array"
+        },
+        "currents": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Currents",
+          "type": "array"
+        },
+        "direction": {
+          "default": "forward",
+          "enum": [
+            "forward",
+            "reverse"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "voltages": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Voltages",
+          "type": "array"
+        }
+      },
+      "title": "SweepSegmentPayload",
+      "type": "object"
+    },
+    "vdp_geometry_complete": {
+      "additionalProperties": false,
+      "description": "One F76 geometry measured: the +I and -I voltages at this wiring.",
+      "properties": {
+        "current_a": {
+          "title": "Current A",
+          "type": "number"
+        },
+        "group": {
+          "title": "Group",
+          "type": "string"
+        },
+        "index": {
+          "title": "Index",
+          "type": "integer"
+        },
+        "label_neg": {
+          "title": "Label Neg",
+          "type": "string"
+        },
+        "label_pos": {
+          "title": "Label Pos",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "v_neg": {
+          "title": "V Neg",
+          "type": "number"
+        },
+        "v_pos": {
+          "title": "V Pos",
+          "type": "number"
+        }
+      },
+      "required": [
+        "index",
+        "name",
+        "group",
+        "label_pos",
+        "v_pos",
+        "label_neg",
+        "v_neg",
+        "current_a"
+      ],
+      "title": "VdpGeometryCompletePayload",
+      "type": "object"
+    },
+    "vdp_result": {
+      "additionalProperties": false,
+      "description": "The finished van der Pauw result, ASTM F76.\n\nField for field what the GUI result panel has always received, including\nthe f(Q) homogeneity check and the combined uncertainties, so the panel\nreads the same numbers the CSV metadata carries.",
+      "properties": {
+        "asymmetry_pct": {
+          "title": "Asymmetry Pct",
+          "type": "number"
+        },
+        "current_a": {
+          "title": "Current A",
+          "type": "number"
+        },
+        "f_a": {
+          "title": "F A",
+          "type": "number"
+        },
+        "f_b": {
+          "title": "F B",
+          "type": "number"
+        },
+        "homogeneous": {
+          "title": "Homogeneous",
+          "type": "boolean"
+        },
+        "q_a": {
+          "title": "Q A",
+          "type": "number"
+        },
+        "q_b": {
+          "title": "Q B",
+          "type": "number"
+        },
+        "rho_a": {
+          "title": "Rho A",
+          "type": "number"
+        },
+        "rho_avg": {
+          "title": "Rho Avg",
+          "type": "number"
+        },
+        "rho_avg_uncertainty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rho Avg Uncertainty"
+        },
+        "rho_b": {
+          "title": "Rho B",
+          "type": "number"
+        },
+        "sheet_resistance": {
+          "title": "Sheet Resistance",
+          "type": "number"
+        },
+        "sheet_resistance_uncertainty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Resistance Uncertainty"
+        },
+        "thickness_cm": {
+          "title": "Thickness Cm",
+          "type": "number"
+        },
+        "voltages": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Voltages",
+          "type": "object"
+        }
+      },
+      "required": [
+        "rho_a",
+        "rho_b",
+        "rho_avg",
+        "sheet_resistance",
+        "q_a",
+        "q_b",
+        "f_a",
+        "f_b",
+        "homogeneous",
+        "asymmetry_pct",
+        "current_a",
+        "thickness_cm"
+      ],
+      "title": "VdpResultPayload",
       "type": "object"
     }
   },

@@ -77,6 +77,8 @@ class ResistanceMeterApp(QMainWindow):
         # uncertainty in 4PP / vdP results. Falls back to "2400" if no
         # measurement has run yet or the IDN didn't match a known model.
         self._active_model_name = "2400"
+        # Last derived 4PP values from the worker (see _on_sample_derived).
+        self._last_fpp_derived = None
         # Targets for the dynamic sampling-rate cap: each entry is the tab
         # widget that exposes a .sampling_rate spinbox. Refreshed whenever
         # user_settings changes (Settings dialog save, profile switch) and
@@ -2040,6 +2042,14 @@ class ResistanceMeterApp(QMainWindow):
             m_cfg['isource_run_continuous'] = widget.isource_run_continuous.isChecked()
         return m_cfg
 
+    def _on_sample_derived(self, timestamp: float, derived: dict):
+        """Cache the worker's derived 4PP values for the next update_data.
+
+        sample_derived is emitted from the same event as data_point and
+        immediately after it, so the pair always describes one sample.
+        """
+        self._last_fpp_derived = dict(derived)
+
     def _on_instrument_identified(self, model_name: str):
         """Cache the connected instrument's model for post-measurement
         uncertainty lookups (4PP / vdP combined stat ⊕ inst). Falls back
@@ -2212,7 +2222,9 @@ class ResistanceMeterApp(QMainWindow):
             self.tab_four_point.fpp_temp_readout.setText("Aux: —")
         self.measurement_worker = MeasurementWorker(mode=mode, sample_name=sample_name, username=self.current_user, settings=current_settings)
         self.measurement_worker.instrument_identified.connect(self._on_instrument_identified)
+        self._last_fpp_derived = None
         self.measurement_worker.data_point.connect(self.update_data)
+        self.measurement_worker.sample_derived.connect(self._on_sample_derived)
         self.measurement_worker.status_update.connect(self.log_status_from_worker)
         self.measurement_worker.measurement_complete.connect(self.on_measurement_complete)
         self.measurement_worker.error_occurred.connect(self.on_error)
@@ -2461,37 +2473,22 @@ class ResistanceMeterApp(QMainWindow):
             w = self.tab_four_point
             v = value.get('voltage', float('nan'))
             i = value.get('current', float('nan'))
-            from ..calculations import (
-                calculate_four_point_probe,
-                calculate_four_point_probe_bound,
-            )
-            fpp_kwargs = dict(
-                spacing_cm=w.fpp_spacing_cm.value(),
-                thickness_um=w.fpp_thickness_um.value(),
-                k_factor=w.fpp_k_factor.value() or 4.532,
-                alpha=w.fpp_alpha.value(),
-                model=w.fpp_model.currentText(),
-            )
-            if is_bd:
-                result = calculate_four_point_probe_bound(
-                    v_compliance=w.fpp_voltage_compliance.value(),
-                    measured_current=i,
-                    source_current=w.fpp_current.value(),
-                    **fpp_kwargs,
+            # The worker already computed these for the CSV row — including the
+            # ASTM F84 corrections, which this panel never applied — so we show
+            # its numbers instead of a second, different calculation.
+            derived = self._last_fpp_derived
+            if derived is not None:
+                ts, _, _ = buffer.get_data_for_plot('voltage')
+                elapsed = (timestamp - ts[0]) if ts else 0.0
+                row = (
+                    elapsed, v, i,
+                    derived['ratio'], derived['rs'],
+                    derived['rho'], derived['sigma'],
+                    compliance_status, event,
                 )
-            else:
-                result = calculate_four_point_probe(voltage=v, current=i, **fpp_kwargs)
-            ts, _, _ = buffer.get_data_for_plot('voltage')
-            elapsed = (timestamp - ts[0]) if ts else 0.0
-            row = (
-                elapsed, v, i,
-                result.ratio, result.sheet_resistance,
-                result.resistivity, result.conductivity,
-                compliance_status, event,
-            )
-            w._fpp_rows.append(row)
-            self._append_four_point_row(row)
-            self._update_four_point_stats()
+                w._fpp_rows.append(row)
+                self._append_four_point_row(row)
+                self._update_four_point_stats()
 
         # In-run aux readout — mode-agnostic: every continuous mode co-logs,
         # so the readout must render for all of them, not just 4PP (the label
