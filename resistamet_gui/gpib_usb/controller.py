@@ -122,7 +122,8 @@ VISA timeout means: the least time to wait before reporting one.
   never ends an instruction; the host waits ``infinite_wait_s`` (600 s by
   default), then stops the instruction and reports a timeout. The VISA
   session sends VI_TMO_INFINITE this way; VI_TMO_IMMEDIATE it sends as
-  100 ms, 0xf9, since no instruction completes under the shortest codes.
+  100 ms, 0xf9, a code timed on the wire: what NI sends for it was not
+  captured, and 0xf1-0xf4 were never observed at all (§7.1, §7.3).
 
 Bench notes (GPIB-USB-HS 01CEE482, Keithley 2400 at PAD 3, 2026-09-18): the
 attach sequence, addressing, the framed write and read and the presence

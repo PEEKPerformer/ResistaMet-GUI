@@ -36,8 +36,8 @@ by the value set: one that runs out returns the bytes read so far with
 VI_ERROR_TMO, as pyvisa-py's own sessions do. With NI's instructions
 switched on, a raw read on unit 01CEE482 used to end at 20.0 s whatever
 its code (§11.2).
-VI_TMO_IMMEDIATE is sent as 100 ms, code 0xf9 (0.127-0.132 s); what NI
-sends for it was not captured. VI_TMO_INFINITE is code 0xf0: the adapter
+VI_TMO_IMMEDIATE is sent as 100 ms, code 0xf9 (0.132 s on the captured
+unit); what NI sends for it was not captured. VI_TMO_INFINITE is code 0xf0: the adapter
 never ends the instruction, and the controller stops it after its own
 wait, 600 s, and reports a timeout. An adapter that leaves the USB bus is
 VI_ERROR_CONN_LOST on that operation and every later one.
@@ -221,10 +221,12 @@ class NiUsbGpibSession(Session):
         # VISA "immediate" (0) has no device analogue, and what NI sends for
         # it was not captured (§7.1). The table's shortest row (10 us, code
         # 0xf1) would go into every instruction of the operation, the
-        # addressing included, and no handshake completes in it: everything
-        # would time out. So immediate is sent as 100 ms, code 0xf9, which
-        # both timed units end at 0.127-0.132 s (§7.3). None stays infinite:
-        # code 0xf0, and the controller's own host wait.
+        # addressing included, and 0xf1-0xf4 were never observed on any wire
+        # (§7.3), so what they do to a handshake is not known. Immediate is
+        # sent as 100 ms, code 0xf9, which the captured unit ends at 0.132 s
+        # (§7.3; the bench unit's 0.127 s is a session total, its wire not
+        # logged). None stays infinite: code 0xf0, and the controller's own
+        # host wait.
         if self.timeout == 0:
             return IMMEDIATE_TIMEOUT_S
         return self.timeout
