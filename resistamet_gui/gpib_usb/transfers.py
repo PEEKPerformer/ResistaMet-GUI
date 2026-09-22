@@ -112,7 +112,7 @@ class _TransferMixin:
                 buffered = min(len(chunk), ADAPTER_OUT_BUFFER_BYTES)
                 status, _ = self._link.exchange(p.write_message(chunk, code, eoi), p.STATUS_REPLY_LENGTH,
                                                 self._link.transfer_wait_s(code, buffered), 'write',
-                                                out_wait_s=self._link.transfer_wait_s(code, len(chunk)))
+                                                paced_wait_s=self._link.transfer_wait_s(code, len(chunk)))
                 written += status.transferred(len(chunk))
         return written
 
@@ -140,7 +140,7 @@ class _TransferMixin:
         message = p.write_raw_message(len(chunk), code, send_eoi, eos_char)
         wait_s = self._link.transfer_wait_s(code, len(chunk))
         self._link.host_stopped = False
-        self._link.transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
+        self._link.send(message)
         try:
             accepted = self._link.transport.bulk_out_raw(chunk, int(wait_s * 1000))
         except TransportTimeout:
@@ -334,7 +334,7 @@ class _TransferMixin:
         seen within a slice instead of after the whole wait.
         """
         self._link.host_stopped = False
-        self._link.transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
+        self._link.send(message)
         data = b''
         remaining_ms = max(1, int(wait_s * 1000))
         slice_limit_ms = max(1, int(RAW_READ_SLICE_S * 1000))

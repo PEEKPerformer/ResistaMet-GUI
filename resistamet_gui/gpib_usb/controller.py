@@ -17,9 +17,12 @@ step (§8.2). The offending operation raises, and the next operation resets
 the bulk pipes and re-runs the attach sequence before doing anything else
 (the first attach resets nothing). In between, the adapter is sent a stop
 request and its pipe drained, once per fault: at once after a malformed
-reply, and after a USB error -- a timeout of the stop request or of a
-message the adapter did not take included -- behind the pipe resets of the
-re-attach, since a halted pipe could not be drained before them. Without
+reply, and after a USB error -- a timeout of the stop request, or of a
+write whose data the bus did not take, included -- behind the pipe resets
+of the re-attach, since a halted pipe could not be drained before them. A
+message with no data that the adapter does not take is the hung adapter
+of §8.17, reported as ``AdapterNotReady`` with the advice to replug it,
+and the next operation re-attaches the same way. Without
 the drain the reply the failed operation never read would be taken for the
 reply to the next message. The adapter's own ways of ending an
 instruction are not faults (§10.6.5-10.6.7): a STALL on the alternate OUT
@@ -231,12 +234,12 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
                     t.register_init_writes(self._own_address, system_controller, self._t1_ns),
                     'register initialisation')
             except NoReply as exc:
-                # Seen on the bench: a hung adapter answers every control request,
-                # swallows bulk messages until its FIFO fills and never replies. A
-                # USB reset does not clear it; only a power cycle does.
-                raise AdapterNotReady(
-                    '%s accepted the initialisation message but never replied: the '
-                    'adapter is hung. Unplug it and plug it back in.' % self._link.model.name) from exc
+                # Seen on the bench (§8.17): a hung adapter answers every control
+                # request, swallows bulk messages until its FIFO fills and never
+                # replies. A USB reset does not clear it; only a power cycle does.
+                # Once its FIFO is full the message is not taken at all, which
+                # ``AdapterLink.send`` reports the same way.
+                raise self._link.hung('accepted the initialisation message but never replied') from exc
             # Step 6 (monitor mask 0x10ff) skipped for the same reason.
             if system_controller:                                   # step 7
                 self._interface_clear()
