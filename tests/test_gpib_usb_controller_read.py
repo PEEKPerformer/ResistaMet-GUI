@@ -301,11 +301,11 @@ class TestReadDeadline:
     PIECE = 0.19   # 1024 bytes at the 2420's 5.3 kB/s (§10.10.2)
 
     def test_a_long_answer_stops_at_the_code_s_expiry_with_what_it_has(self):
-        # NI's 0x0b under 0xfb ended with 5543 bytes at 1.050 s (§10.10.2). 1.0 s goes out as
-        # 0xfb, whose shortest expiry is 1.0498 s: that is the deadline. 0.86, 0.67, 0.48 s left:
-        # 0xfb; 0.29 s: 0xfb (0xfa ends at 0.2634); 0.10 s: 0xf9. Then 1.14 s have passed.
+        # NI's 0x0b under 0xfb ended with 5543 bytes at 1.050 s (§10.10.2); the bench unit runs
+        # 0xfb for 1.250 s. 1.0 s goes out as 0xfb, and the longer, 1.25 s, is the deadline:
+        # seven pieces start before it, and after 1.33 s no eighth does.
         chunk = bytes(range(256)) * 4
-        pieces = [0xFB, 0xFB, 0xFB, 0xFB, 0xFB, 0xF9]
+        pieces = [0xFB, 0xFB, 0xFB, 0xFB, 0xFB, 0xFB, 0xF9]
         script = address_talker(pad=24, code=0xFB)
         for code in pieces:
             script += [('out', p.read_message(1024, code)),
@@ -313,9 +313,9 @@ class TestReadDeadline:
         controller, transport = attached(script)
         with pytest.raises(GpibTimeout) as info:
             controller.read(24, max_bytes=20480, timeout_s=1.0)
-        assert info.value.partial == chunk * 6 and info.value.code == t.ERR_TIMEOUT
-        assert 'timeout ran out after 6144 of 20480 bytes' in str(info.value)
-        transport.assert_done()   # the script holds no seventh read
+        assert info.value.partial == chunk * 7 and info.value.code == t.ERR_TIMEOUT
+        assert 'timeout ran out after 7168 of 20480 bytes' in str(info.value)
+        transport.assert_done()   # the script holds no eighth read
         # Each piece waits as one instruction of its own code, not of the session's.
         assert transport.in_timeouts_after(0x0A) == [piece_wait_ms(code) for code in pieces]
 
@@ -323,7 +323,7 @@ class TestReadDeadline:
         # The addressing belongs to the read: time it takes is time the pieces do not get.
         controller, transport = attached([
             ('out', p.command_message(t.address_talker_command(0, 22), 0xFB)),
-            ('in', status_reply(0x0C), None, 0.9),
+            ('in', status_reply(0x0C), None, 1.1),
             ('out', p.go_to_standby_message()), ('in', status_reply(0x06)),
             ('out', p.read_message(1024, 0xFB)),
             ('in', read_reply(bytes(1024), 1024, end=False), piece_wait_buffer(), 0.15),
@@ -336,7 +336,7 @@ class TestReadDeadline:
     def test_a_little_time_left_is_the_shortest_code_captured_not_one_below_it(self):
         controller, transport = attached(address_talker(code=0xFB) + [
             ('out', p.read_message(1024, 0xFB)),
-            ('in', read_reply(bytes(1024), 1024, end=False), piece_wait_buffer(), 1.0497),
+            ('in', read_reply(bytes(1024), 1024, end=False), piece_wait_buffer(), 1.2497),
             ('out', p.read_message(1024, 0xF5)), ('in', read_reply(b'end', 1024), piece_wait_buffer()),
         ])
         assert controller.read(22, max_bytes=2048, timeout_s=1.0) == (bytes(1024) + b'end', True)
@@ -363,23 +363,38 @@ class TestReadDeadline:
     def test_an_answer_whose_first_byte_comes_late_is_read_whole(self):
         # The application's 5 s goes out as 0xfd, under which the adapter waits up to 16.78 s
         # for the first byte. An instrument that answers after 8 s fills the first piece; NI's
-        # single 0x0b would go on to read the rest, and so do the later pieces here, with the
-        # 8.78 s left before 0xfd's expiry and the code for them (0xfd, then 0xfc).
+        # single 0x0b would go on to read the rest, and so do the later pieces here, before the
+        # longer of 0xfd's expiries, 20.0 s on the bench unit.
         answer = bytes(range(256)) * 8 + b'end\n'
         controller, transport = attached(address_talker(code=0xFD) + [
             ('out', p.read_message(1024, 0xFD)),
             ('in', read_reply(answer[:1024], 1024, end=False), piece_wait_buffer(), 8.0 + self.PIECE),
             ('out', p.read_message(1024, 0xFD)),
             ('in', read_reply(answer[1024:2048], 1024, end=False), piece_wait_buffer(), 5.0),
-            ('out', p.read_message(1024, 0xFC)), ('in', read_reply(answer[2048:], 1024), piece_wait_buffer()),
+            ('out', p.read_message(1024, 0xFD)), ('in', read_reply(answer[2048:], 1024), piece_wait_buffer()),
         ])
         assert controller.read(22, max_bytes=20480, timeout_s=5.0) == (answer, True)
+        transport.assert_done()
+
+    def test_a_read_at_the_pace_ni_read_under_0xfc_is_not_cut_off(self):
+        # readtimeout_long.pcap (§10.1.8): NI read 20480-byte chunks in 3.93-4.00 s under 0xfc
+        # with error 0, inside the captured unit's 4.196 s and past the bench unit's 3.750 s.
+        # Twenty pieces of 1024 at that pace start up to 3.78 s in: a deadline at the shorter
+        # expiry refused the last, at the longer one the whole chunk arrives.
+        chunk = bytes(range(256)) * 4
+        script = address_talker(code=T3S)
+        for index in range(20):
+            reply = read_reply(chunk, 1024, end=index == 19)
+            script += [('out', p.read_message(1024, 0xFC if index < 16 else 0xFB)),   # the code for the time left
+                       ('in', reply, piece_wait_buffer(), 0.199)]
+        controller, transport = attached(script)
+        assert controller.read(22, max_bytes=20480, timeout_s=3.0) == (chunk * 20, True)
         transport.assert_done()
 
     def test_read_raw_has_the_same_deadline(self):
         controller, transport = attached([
             ('out', p.read_message(1024, 0xFB)),
-            ('in', read_reply(bytes(1024), 1024, end=False), piece_wait_buffer(), 1.05),
+            ('in', read_reply(bytes(1024), 1024, end=False), piece_wait_buffer(), 1.25),
         ])
         with pytest.raises(GpibTimeout) as info:
             controller.read_raw(2048, timeout_s=1.0)

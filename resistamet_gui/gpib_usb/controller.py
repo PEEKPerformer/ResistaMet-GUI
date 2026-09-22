@@ -105,8 +105,9 @@ VISA timeout means: the least time to wait before reporting one.
   Only when that runs out is the stop request sent (§5.11).
 - A read is bounded as a whole, from the call on, as NI's one instruction
   is (§7.1, §10.10.2), and by what NI's is bounded by: not the timeout
-  asked but the expiry of the code it goes out as, the shortest any unit
-  was timed at (5 s: 0xfd, 16.78 s). A framed read in pieces of 1024 gives
+  asked but the expiry of the code it goes out as, the longer of the two
+  units' (5 s: 0xfd, 20.0 s), so that it is never cut off before NI's
+  single instruction would have ended on either. A framed read in pieces of 1024 gives
   each later piece the code for the time left before that and starts none
   after it, and a read that runs out raises ``GpibTimeout`` with the bytes
   read so far. A write split into several instructions likewise.
@@ -481,18 +482,22 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         Not ``timeout_s`` from now but the expiry of the code it goes out as:
         NI bounds its one instruction by the adapter's expiry under that code,
         not by the timeout asked for (§7.1, §10.10.2), and the expiry can be
-        several times the timeout (5 s -> 0xfd -> 16.78 s). The shortest
-        expiry any unit was timed at (``tables.timeout_expiry_least_s``;
-        for a code nobody timed, the lowest estimate) is never below the
-        timeout, so VISA's least wait holds, and a read in pieces ends no
-        sooner than NI's single instruction would. With the bound at the
-        timeout, an answer whose first byte came late filled one piece and
-        was cut off where NI's read would have taken all of it.
+        several times the timeout (5 s -> 0xfd -> 16.78 s). It is the
+        longest expiry either timed unit showed under the code
+        (``tables.timeout_expiry_s``, the figure the host wait is built
+        on; for a code not timed on both, the same estimate), so no piece
+        is refused before NI's single instruction would have ended on
+        either unit: under 0xfc NI read 20480-byte chunks in 3.93-4.00 s
+        with error 0 (§10.1.8), inside the captured unit's 4.196 s and past
+        the bench unit's 3.750 s. It is never below the timeout asked, so
+        VISA's least wait holds too. With the bound at the timeout, an
+        answer whose first byte came late filled one piece and was cut off
+        where NI's read would have taken all of it.
         """
         code = p.timeout_code(timeout_s)
         if code == t.TIMEOUT_DISABLED_CODE:
             return None
-        return self._clock() + t.timeout_expiry_least_s(code)
+        return self._clock() + t.timeout_expiry_s(code)
 
     def _address(self, direction: str, pad: int, sad: Optional[int], code: int, wait_s: float) -> None:
         """Address ``pad`` for a transfer, every time (§6).
