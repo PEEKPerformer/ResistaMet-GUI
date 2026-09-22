@@ -328,19 +328,26 @@ class TestMessageShape:
 class TestTimeouts:
     @pytest.mark.parametrize('seconds, code', [
         (None, 0xF0), (0, 0xF0), (-1.0, 0xF0),
-        # The codes nobody timed, by the lowest of nominal and §7.3's two powers of two.
-        (5e-6, 0xF1), (8e-6, 0xF1), (10e-6, 0xF2), (30e-6, 0xF2), (100e-6, 0xF3), (256e-6, 0xF4),
-        (300e-6, 0xF5),
-        # The timed codes, by the shortest expiry of every unit timed (§7.3).
-        (1e-3, 0xF5), (2e-3, 0xF5), (2.285e-3, 0xF5), (3e-3, 0xF6), (5e-3, 0xF6), (10e-3, 0xF7),
-        (17.7e-3, 0xF7), (20e-3, 0xF8), (30e-3, 0xF8), (35e-3, 0xF9), (0.1, 0xF9), (0.127, 0xF9),
-        (0.128, 0xFA), (0.25, 0xFA), (0.2634, 0xFA), (0.264, 0xFB), (0.3, 0xFB), (1.0, 0xFB),
-        (1.05, 0xFC), (3.0, 0xFC), (3.75, 0xFC), (3.751, 0xFD), (10.0, 0xFD), (16.778, 0xFD),
-        (16.779, 0xFE), (20.0, 0xFE), (30.0, 0xFE), (33.6, 0xFF), (100.0, 0xFF),
-        (150.0, 0x01), (268.0, 0x01), (300.0, 0x02), (1000.0, 0x02), (1000.001, 0xF0), (5000.0, 0xF0),
+        # NI's rule, the smallest nominal limit not below the timeout (§7.1), where no unit
+        # timed ends sooner: its slack is kept (3.001 s is 0xfd, not the 0xfc that 3.75 s covers).
+        (5e-6, 0xF1), (8e-6, 0xF1), (10.1e-6, 0xF2), (30e-6, 0xF2), (100e-6, 0xF3), (256e-6, 0xF4),
+        (1e-3, 0xF5), (2e-3, 0xF6), (3e-3, 0xF6), (5e-3, 0xF7), (10e-3, 0xF7), (20e-3, 0xF8),
+        (30e-3, 0xF8), (0.1, 0xF9), (0.25, 0xFA), (0.2634, 0xFA), (1.0, 0xFB), (3.0, 0xFC),
+        (3.001, 0xFD), (3.75, 0xFD), (10.0, 0xFD), (10.001, 0xFE), (16.0, 0xFE), (30.0, 0xFE),
+        (30.001, 0xFF), (100.0, 0xFF), (101.0, 0x01), (1000.0, 0x02),
+        # One longer where NI's code ends before the timeout on a unit, or may (§7.3).
+        (10e-6, 0xF2), (300e-6, 0xF5), (0.264, 0xFB), (0.3, 0xFB), (268.0, 0x01), (269.0, 0x02),
+        (300.0, 0x02),
+        (1000.001, 0xF0), (5000.0, 0xF0),
     ])
     def test_table_entries(self, seconds, code):
         assert p.timeout_code(seconds) == code
+
+    def test_the_application_s_timeouts(self):
+        # 5 s; sweeps of 10 to 16 points (a second a point); 101 s; the session's 1000 s cap.
+        assert p.timeout_code(5.0) == 0xFD
+        assert [p.timeout_code(float(points)) for points in range(10, 17)] == [0xFD] + [0xFE] * 6
+        assert p.timeout_code(101.0) == 0x01 and p.timeout_code(1000.0) == 0x02
 
     #: Every VISA value NI-VISA was captured sending, with the code it sent (§7.1, §10.1.9,
     #: §10.10.1): the smallest nominal limit not below the value.
@@ -355,15 +362,13 @@ class TestTimeouts:
         # VI_ATTR_TMO_VALUE is the least time to wait. NI's 0xfa for 300 ms ends at 0.2635 s on
         # the captured unit (§7.3), 36.5 ms early; ours is 0xfb. 300 s would be NI's 0x01,
         # which nobody timed and which §7.3's nearer power of two puts at 268 s; ours is 0x02.
-        # Every other value takes NI's code, or for 2 and 5 ms a smaller one that covers it.
+        # Every other value takes NI's code, never a shorter one.
         code = p.timeout_code(asked)
         assert t.timeout_expiry_least_s(code) >= asked
         codes = [row_code for _, row_code in t.TIMEOUT_TABLE]
         if asked in (0.300, 300.0):
             assert t.timeout_expiry_least_s(ni_code) < asked
             assert codes.index(code) == codes.index(ni_code) + 1
-        elif asked in (0.002, 0.005):
-            assert codes.index(code) == codes.index(ni_code) - 1
         else:
             assert code == ni_code
 
