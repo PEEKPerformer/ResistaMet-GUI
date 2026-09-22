@@ -73,10 +73,10 @@ specification derived (see ``protocol``). The count field of a status reply
 is only meaningful after 0x0a/0x0c/0x0d; other replies carry stale or marker
 bytes there, which is why nothing here reads it elsewhere.
 
-Layout: ``Controller`` inherits the exchange primitives and the fault
-recovery from ``link``, the transfer paths from ``transfers``, the wait for
-a service request from ``srq`` and the model-specific attach steps from
-``attach``.
+Layout: ``Controller`` owns an ``AdapterLink`` (``link``), which holds the
+exchange primitives, the fault recovery and the state they share, and
+inherits the transfer paths from ``transfers``, the wait for a service
+request from ``srq`` and the model-specific attach steps from ``attach``.
 """
 import logging
 import threading
@@ -89,7 +89,7 @@ from . import tables as t
 from .attach import _AttachMixin
 # The constants of the mixins are re-exported: callers import them from here.
 from .link import (BUS_MIN_RATE_BPS, DEFAULT_INFINITE_WAIT_S, DRAIN_WAIT_S,  # noqa: F401
-                   RECOVERY_WAIT_S, SHORT_WAIT_S, _ExchangeMixin)
+                   RECOVERY_WAIT_S, SHORT_WAIT_S, AdapterLink)
 from .protocol import AdapterNotReady, GpibError, NoReply, ProtocolError, StatusBlock
 from .srq import SRQ_WAIT_SLICE_S, _SrqMixin
 from .transfers import (ADAPTER_OUT_BUFFER_BYTES, FRAMED_READ_MAX_BYTES, RAW_READ_MIN_BYTES,  # noqa: F401
@@ -112,7 +112,7 @@ _LISTEN = 'listen'
 _TALK = 'talk'
 
 
-class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
+class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
     """Sequencing rules for one adapter over one ``Transport``."""
 
     def __init__(self, transport: Transport, product_id: int, *,
@@ -134,31 +134,22 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
                                   % model.name)
         if not 0 <= own_address <= 30:
             raise ValueError('own address %d outside 0..30' % own_address)
-        self._transport = transport
-        self._model = model
         self._ni_instructions = bool(ni_instructions)
-        #: Whether 0x0b / 0x0e are used: the caller must have switched them on and
-        #: the model must have the alternate pair.
-        self._raw = self._ni_instructions and model.raw_endpoints
+        #: The pipes to the adapter and the exchange state over them. 0x0b /
+        #: 0x0e are used only when the caller has switched them on and the
+        #: model has the alternate pair.
+        self._link = AdapterLink(transport, model, raw=self._ni_instructions and model.raw_endpoints,
+                                 infinite_wait_s=infinite_wait_s)
         self._own_address = own_address
         self._t1_ns = t1_ns
-        self._infinite_wait_s = infinite_wait_s
         self._sleep = sleep
         self._lock = threading.RLock()
         self._attached = False
         self._closed = False
         self._system_controller = True
-        #: Set after a fault; the next operation re-runs attach first. Cleared
-        #: only by an attach that succeeds, so a failed re-attach is retried.
-        self._resync_pending = False
-        #: The stop-and-drain of §8.2 has run since the last fault. Reset when
-        #: a re-attach starts, so a fault during it drains again, once.
-        self._drained = False
         #: (direction, pad, sad) of the last successful addressing command,
         #: so a caller that disables re-addressing can skip a repeat.
         self._addressed: Optional[Tuple[str, int, Optional[int]]] = None
-        #: Set by the last exchange when the host had to stop the device (§5.11).
-        self._host_stopped = False
         #: Clear while a ``wait_srq`` has an interrupt read in flight; ``close``
         #: waits for it so the transport is not released under a pending transfer.
         self._srq_idle = threading.Event()
@@ -168,7 +159,7 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
 
     @property
     def model(self) -> t.Model:
-        return self._model
+        return self._link.model
 
     @property
     def own_address(self) -> int:
@@ -182,7 +173,7 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
     @property
     def raw_transfers(self) -> bool:
         """Whether large transfers take the 0x0b / 0x0e instructions (§10)."""
-        return self._raw
+        return self._link.raw
 
     @property
     def system_controller(self) -> bool:
@@ -206,18 +197,18 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
             if self._attached:
                 return
             self._system_controller = system_controller
-            self._drained = False
+            self._link.drained = False
             self._addressed = None
-            if self._model.readiness_poll:
+            if self._link.model.readiness_poll:
                 self._readiness_poll()                              # step 2
-            if self._model.hs_plus_extras:
+            if self._link.model.hs_plus_extras:
                 self._hs_plus_extras()                              # step 3 (HS+)
-            if not self._model.readiness_poll:
+            if not self._link.model.readiness_poll:
                 self.serial_number = self._usb_b_serial()           # step 3 (USB-B)
             # Step 4 (monitor mask 0x0000) skipped: the interrupt endpoint is not used.
             # Own secondary addressing stays disabled (rows 20-22 of §2.6).
             try:
-                self._register_write(                               # step 5
+                self._link.register_write(                          # step 5
                     t.register_init_writes(self._own_address, system_controller, self._t1_ns),
                     'register initialisation')
             except NoReply as exc:
@@ -226,17 +217,17 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
                 # USB reset does not clear it; only a power cycle does.
                 raise AdapterNotReady(
                     '%s accepted the initialisation message but never replied: the '
-                    'adapter is hung. Unplug it and plug it back in.' % self._model.name) from exc
+                    'adapter is hung. Unplug it and plug it back in.' % self._link.model.name) from exc
             # Step 6 (monitor mask 0x10ff) skipped for the same reason.
             if system_controller:                                   # step 7
                 self._interface_clear()
                 self._remote_enable(True)
                 # Error 5 here just means nothing is on the bus yet (§8.12).
-                self._status_exchange(p.take_control_message(True), SHORT_WAIT_S,
-                                      'take control', tolerate=(t.ERR_NO_ACCEPTOR,))
+                self._link.status_exchange(p.take_control_message(True), SHORT_WAIT_S,
+                                           'take control', tolerate=(t.ERR_NO_ACCEPTOR,))
                 self._sleep(IFC_SETTLE_S)  # let the instruments finish reacting to IFC/REN
             self._attached = True
-            self._resync_pending = False
+            self._link.resync_pending = False
 
     def close(self) -> None:
         """§2.9: chip reset, the device-level register, release the interface.
@@ -251,16 +242,16 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
             self._closed = True
         if not self._srq_idle.wait(SRQ_WAIT_SLICE_S + SHORT_WAIT_S):
             logger.warning('%s: a wait for a service request did not end; releasing the adapter anyway',
-                           self._model.name)
+                           self._link.model.name)
         with self._lock:
             try:
-                if self._attached and not self._resync_pending:
-                    self._register_write(t.SHUTDOWN_WRITES, 'shutdown')
+                if self._attached and not self._link.resync_pending:
+                    self._link.register_write(t.SHUTDOWN_WRITES, 'shutdown')
             except (GpibError, TransportError) as exc:
                 logger.warning('shutdown register write failed: %s', exc)
             finally:
                 self._attached = False
-                self._transport.close()
+                self._link.transport.close()
 
     # ------------------------------------------------------------------
     # bus control
@@ -280,8 +271,8 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
     def take_control(self, synchronous: bool = True) -> StatusBlock:
         with self._guard():
             self._ensure_attached()
-            return self._status_exchange(p.take_control_message(synchronous), SHORT_WAIT_S,
-                                         'take control')
+            return self._link.status_exchange(p.take_control_message(synchronous), SHORT_WAIT_S,
+                                              'take control')
 
     def go_to_standby(self) -> StatusBlock:
         with self._guard():
@@ -290,13 +281,13 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
 
     def _interface_clear(self) -> None:
         self._addressed = None
-        self._status_exchange(p.interface_clear_message(), SHORT_WAIT_S, 'interface clear')
+        self._link.status_exchange(p.interface_clear_message(), SHORT_WAIT_S, 'interface clear')
 
     def _remote_enable(self, on: bool) -> None:
-        self._register_write((t.REN_ON_WRITE if on else t.REN_OFF_WRITE,), 'remote enable')
+        self._link.register_write((t.REN_ON_WRITE if on else t.REN_OFF_WRITE,), 'remote enable')
 
     def _go_to_standby(self) -> StatusBlock:
-        return self._status_exchange(p.go_to_standby_message(), SHORT_WAIT_S, 'go to standby')
+        return self._link.status_exchange(p.go_to_standby_message(), SHORT_WAIT_S, 'go to standby')
 
     # ------------------------------------------------------------------
     # data transfer
@@ -318,7 +309,7 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
             if not data:
                 return 0
             code = p.timeout_code(timeout_s)
-            self._address(_LISTEN, pad, sad, code, self._reply_wait_s(code), readdress)
+            self._address(_LISTEN, pad, sad, code, self._link.reply_wait_s(code), readdress)
             return self._write_bytes(data, code, send_eoi, eos_char)
 
     def write_raw(self, data: bytes, *, send_eoi: bool = True,
@@ -355,7 +346,7 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
             if max_bytes < 1:
                 return b'', False
             code = p.timeout_code(timeout_s)
-            self._address(_TALK, pad, sad, code, self._reply_wait_s(code), readdress)
+            self._address(_TALK, pad, sad, code, self._link.reply_wait_s(code), readdress)
             # ATN rule (§5): a 0x06 between the addressing 0x0c and the read.
             self._go_to_standby()
             return self._read_bytes(max_bytes, code, eos, eos_8bit, 'read')
@@ -381,11 +372,11 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
             # Arbitrary command bytes may change who is addressed.
             self._addressed = None
             code = p.timeout_code(timeout_s)
-            wait = self._reply_wait_s(code)
+            wait = self._link.reply_wait_s(code)
             accepted = 0
             for start in range(0, len(command_bytes), p.MAX_COMMAND_BYTES):
                 chunk = command_bytes[start:start + p.MAX_COMMAND_BYTES]
-                status = self._status_exchange(p.command_message(chunk, code), wait, 'command')
+                status = self._link.status_exchange(p.command_message(chunk, code), wait, 'command')
                 accepted += status.transferred(len(chunk))
             return accepted
 
@@ -399,7 +390,7 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
             command = t.address_listener_command(self._own_address, pad, sad)
         else:
             command = t.address_talker_command(self._own_address, pad, sad)
-        self._status_exchange(p.command_message(command, code), wait_s, 'address to %s' % direction)
+        self._link.status_exchange(p.command_message(command, code), wait_s, 'address to %s' % direction)
         self._addressed = target
 
     def serial_poll_instruction(self, pad: int, sad: Optional[int] = None,
@@ -418,11 +409,11 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
             self._ensure_attached()
             self._addressed = None
             code = p.timeout_code(timeout_s)
-            wait = self._reply_wait_s(code)
-            reply = self._transact(p.serial_poll_message(pad, code, sad), p.SMALL_REPLY_BUFFER, wait)
+            wait = self._link.reply_wait_s(code)
+            reply = self._link.transact(p.serial_poll_message(pad, code, sad), p.SMALL_REPLY_BUFFER, wait)
             parsed = p.parse_serial_poll_reply(reply)
             # A failed poll carries no 0x3a block to compare (§10.6.6): the error first.
-            self._raise_for_error(parsed.status, 'serial poll')
+            self._link.raise_for_error(parsed.status, 'serial poll')
             if parsed.pad != pad or parsed.status_byte is None:
                 raise ProtocolError('serial poll answered for address %r, asked %d: %s'
                                     % (parsed.pad, pad, reply.hex()))
@@ -436,13 +427,13 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
         """§5.11 stop request. Sequential recovery only: the lock serialises it."""
         with self._guard():
             self._refuse_when_closed()
-            return p.parse_status_block(self._control(t.STOP_REQUEST))
+            return p.parse_status_block(self._link.control(t.STOP_REQUEST))
 
     def status(self) -> StatusBlock:
         """§5.12 status query: current ibsta without touching the bus."""
         with self._guard():
             self._refuse_when_closed()
-            return p.parse_status_block(self._control(t.STATUS_QUERY))
+            return p.parse_status_block(self._link.control(t.STATUS_QUERY))
 
     def _refuse_when_closed(self) -> None:
         """For the control requests that need no attach: pyusb would reopen a released handle for them."""
@@ -453,10 +444,10 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
         """§5.13 BSR: REN, IFC, SRQ, EOI, NRFD, NDAC, DAV, ATN as bits."""
         with self._guard():
             self._ensure_attached()
-            return self._register_read((t.BSR_REGISTER,))[0]
+            return self._link.register_read((t.BSR_REGISTER,))[0]
 
     # ------------------------------------------------------------------
-    # the exchange primitives
+    # the fault rule
     # ------------------------------------------------------------------
 
     @contextmanager
@@ -468,30 +459,22 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
             except Exception as exc:
                 # Whatever was addressed cannot be trusted after a failure.
                 self._addressed = None
-                if isinstance(exc, ProtocolError):
-                    self._resync()
-                elif isinstance(exc, TransportError):
-                    # A USB timeout that gets this far was not a reply the host
-                    # gave up on (that becomes ``NoReply``): the stop request
-                    # itself failed, or the adapter did not take a message.
-                    # Either way a reply may be queued that nobody will read;
-                    # the re-attach drains it (``_ensure_attached``).
-                    self._resync_pending = True
+                self._link.note_fault(exc)
                 raise
 
     def _ensure_attached(self) -> None:
         if self._closed:
             raise AdapterNotReady('controller is closed')
-        if self._resync_pending:
-            logger.warning('%s: re-running the attach sequence after a fault', self._model.name)
+        if self._link.resync_pending:
+            logger.warning('%s: re-running the attach sequence after a fault', self._link.model.name)
             self._attached = False
-            self._clear_halts_after_fault()
-            if not self._drained:
+            self._link.clear_halts_after_fault()
+            if not self._link.drained:
                 # A USB fault drained nothing when it happened. The reply the
                 # failed operation did not read would answer the first message
                 # of the attach, and the next operation -- in a run, the one
                 # that switches the output off -- would fail in its place.
-                self._resync()
+                self._link.resync()
             self.attach(self._system_controller)
         if not self._attached:
             raise AdapterNotReady('adapter is not attached')

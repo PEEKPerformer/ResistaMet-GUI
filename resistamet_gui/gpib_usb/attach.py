@@ -20,14 +20,14 @@ class _AttachMixin:
     """Steps 2 and 3 of ``Controller.attach`` (see the module docstring)."""
 
     def _readiness_poll(self) -> None:
-        reply = self._control(t.SERIAL_NUMBER_QUERY)
+        reply = self._link.control(t.SERIAL_NUMBER_QUERY)
         try:
             self.serial_number = p.parse_serial_number(reply)
         except ProtocolError as exc:
             raise AdapterNotReady(str(exc)) from exc
         for attempt in range(t.READINESS_ATTEMPTS):
             try:
-                reply = self._control(t.READINESS_QUERY, timeout_ms=t.READINESS_USB_TIMEOUT_MS)
+                reply = self._link.control(t.READINESS_QUERY, timeout_ms=t.READINESS_USB_TIMEOUT_MS)
             except TransportTimeout:
                 reply = b''
             if reply and p.readiness_reported(reply):
@@ -35,11 +35,11 @@ class _AttachMixin:
             if attempt + 1 < t.READINESS_ATTEMPTS:
                 self._sleep(t.READINESS_INTERVAL_S)
         raise AdapterNotReady('%s did not report ready after %d polls'
-                              % (self._model.name, t.READINESS_ATTEMPTS))
+                              % (self._link.model.name, t.READINESS_ATTEMPTS))
 
     def _hs_plus_extras(self) -> None:
         for request, expected in t.HS_PLUS_INIT_REQUESTS:
-            reply = self._control(request)
+            reply = self._link.control(request)
             if reply != expected:
                 # spec gap: only the LED effect of these requests is known, so an
                 # unexpected reply is recorded rather than treated as fatal.
@@ -47,5 +47,5 @@ class _AttachMixin:
                                request.request, reply.hex(), expected.hex())
 
     def _usb_b_serial(self) -> int:
-        values = self._register_read(t.USB_B_SERIAL_REGISTERS)
+        values = self._link.register_read(t.USB_B_SERIAL_REGISTERS)
         return int.from_bytes(bytes(values), 'little')

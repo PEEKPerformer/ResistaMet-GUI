@@ -72,7 +72,7 @@ class _TransferMixin:
         for start in range(0, len(data), step):
             chunk = data[start:start + step]
             eoi = send_eoi and start + len(chunk) == len(data)
-            if self._raw and len(chunk) >= RAW_WRITE_MIN_BYTES:
+            if self._link.raw and len(chunk) >= RAW_WRITE_MIN_BYTES:
                 written += self._raw_write_instruction(chunk, code, eoi, eos_char)
             else:
                 # The data rides inside the message, and the adapter takes the
@@ -82,9 +82,9 @@ class _TransferMixin:
                 # the short wait. Once it completes all but the adapter's own
                 # buffer is on the bus, and the reply waits for that remainder.
                 buffered = min(len(chunk), ADAPTER_OUT_BUFFER_BYTES)
-                status, _ = self._exchange(p.write_message(chunk, code, eoi), p.STATUS_REPLY_LENGTH,
-                                           self._transfer_wait_s(code, buffered), 'write',
-                                           out_wait_s=self._transfer_wait_s(code, len(chunk)))
+                status, _ = self._link.exchange(p.write_message(chunk, code, eoi), p.STATUS_REPLY_LENGTH,
+                                                self._link.transfer_wait_s(code, buffered), 'write',
+                                                out_wait_s=self._link.transfer_wait_s(code, len(chunk)))
                 written += status.transferred(len(chunk))
         return written
 
@@ -110,11 +110,11 @@ class _TransferMixin:
         and the alternate OUT halted for every later 0x0e.
         """
         message = p.write_raw_message(len(chunk), code, send_eoi, eos_char)
-        wait_s = self._transfer_wait_s(code, len(chunk))
-        self._host_stopped = False
-        self._transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
+        wait_s = self._link.transfer_wait_s(code, len(chunk))
+        self._link.host_stopped = False
+        self._link.transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
         try:
-            accepted = self._transport.bulk_out_raw(chunk, int(wait_s * 1000))
+            accepted = self._link.transport.bulk_out_raw(chunk, int(wait_s * 1000))
         except TransportTimeout:
             accepted = 0
         except TransportError as refusal:
@@ -127,18 +127,17 @@ class _TransferMixin:
             # finish so the reply can say how much reached the bus. NI was not
             # observed using the stop request (§10.8); none of its captures
             # has a host wait expiring, which is the one case it is kept for.
-            self._host_stopped = True
-            self._control(t.STOP_REQUEST)
-            reply_wait = RECOVERY_WAIT_S
-        else:
-            reply_wait = wait_s
+            self._link.stop_device()
         try:
-            reply = self._reply_or_stop(p.SMALL_REPLY_BUFFER, reply_wait)
+            if stranded:
+                reply = self._link.reply_after_stop(p.SMALL_REPLY_BUFFER)
+            else:
+                reply = self._link.reply_or_stop(p.SMALL_REPLY_BUFFER, wait_s)
         finally:
             if stranded:
                 self._abandon_raw_out()
         parsed = p.parse_raw_write_reply(reply)
-        self._raise_for_error(parsed.status, 'write')
+        self._link.raise_for_error(parsed.status, 'write')
         return parsed.transferred(len(chunk))
 
     def _abandon_raw_out(self) -> None:
@@ -154,8 +153,8 @@ class _TransferMixin:
         is the one recovery NI was seen to use on them, and the state is
         treated as unknown: the next operation re-attaches first.
         """
-        self._reset_out_pipes()
-        self._resync_pending = True
+        self._link.reset_out_pipes()
+        self._link.resync_pending = True
 
     def _refused_raw_write(self, refusal: TransportError) -> NoReturn:
         """The raw OUT of a 0x0e failed: read the reply, reset the OUT pipes, raise (§10.6.5).
@@ -174,26 +173,26 @@ class _TransferMixin:
         """
         logger.warning('%s: the alternate OUT refused the data of a 0x0e: %s (cause %s, errno %r, '
                        'backend code %r): %s; reading the reply for the reason',
-                       self._model.name, type(refusal).__name__, type(refusal.__cause__).__name__,
+                       self._link.model.name, type(refusal).__name__, type(refusal.__cause__).__name__,
                        getattr(refusal, 'errno', None), getattr(refusal, 'backend_code', None), refusal)
         status: Optional[StatusBlock] = None
         try:
-            status = p.parse_raw_write_reply(self._reply_or_stop(p.SMALL_REPLY_BUFFER, SHORT_WAIT_S)).status
+            status = p.parse_raw_write_reply(self._link.reply_or_stop(p.SMALL_REPLY_BUFFER, SHORT_WAIT_S)).status
         except ProtocolError as exc:
-            logger.warning('%s: no usable reply after the refused data: %s', self._model.name, exc)
-            self._resync()
+            logger.warning('%s: no usable reply after the refused data: %s', self._link.model.name, exc)
+            self._link.resync()
         except TransportError as exc:
-            logger.warning('%s: reading the reply after the refused data failed: %s', self._model.name, exc)
-        self._reset_out_pipes()
+            logger.warning('%s: reading the reply after the refused data failed: %s', self._link.model.name, exc)
+        self._link.reset_out_pipes()
         if status is not None:
-            if self._host_stopped or status.error != t.ERR_NO_LISTENER:
+            if self._link.host_stopped or status.error != t.ERR_NO_LISTENER:
                 # Only the refusal NI's captures show -- error 8, ended by the
                 # adapter -- is known to leave the adapter ready for the next
                 # operation. Ended by our stop request, or for another reason,
                 # the alternate OUT may hold bytes that would lead the data of
                 # the next 0x0e, as after a stranded write.
-                self._resync_pending = True
-            self._raise_for_error(status, 'write')
+                self._link.resync_pending = True
+            self._link.raise_for_error(status, 'write')
         raise refusal
 
     def _read_bytes(self, max_bytes: int, code: int, eos: Optional[int],
@@ -209,7 +208,7 @@ class _TransferMixin:
         ``viRead`` re-addressed first and that was harmless, not needed).
         So the 0x0c and the 0x06 go once per call and each piece costs one
         round trip. Every piece is a whole instruction with its own device
-        timeout code and its own host wait (``_transfer_wait_s`` of one
+        timeout code and its own host wait (``transfer_wait_s`` of one
         piece, never of the request), so a long answer under a short code
         completes as long as each piece keeps moving. A timeout mid-loop
         raises with everything read so far as its partial (§5.2: the
@@ -227,7 +226,7 @@ class _TransferMixin:
         """
         chunks: List[bytes] = []
         remaining = max_bytes
-        raw = self._raw and max_bytes >= RAW_READ_MIN_BYTES
+        raw = self._link.raw and max_bytes >= RAW_READ_MIN_BYTES
         step = p.MAX_TRANSFER_BYTES if raw else FRAMED_READ_MAX_BYTES
         while remaining > 0:
             count = min(remaining, step)
@@ -235,7 +234,7 @@ class _TransferMixin:
                 if raw:
                     data, end = self._raw_read_instruction(count, code, eos, eos_8bit, operation)
                 else:
-                    data, end = self._read_instruction(count, code, self._transfer_wait_s(code, count), eos,
+                    data, end = self._read_instruction(count, code, self._link.transfer_wait_s(code, count), eos,
                                                        eos_8bit, operation)
             except GpibTimeout as exc:
                 exc.partial = b''.join(chunks) + exc.partial
@@ -249,22 +248,22 @@ class _TransferMixin:
     def _read_instruction(self, count: int, code: int, wait_s: float, eos: Optional[int],
                           eos_8bit: bool, operation: str) -> Tuple[bytes, bool]:
         """One framed 0x0a (§5.2): the data comes back in blocks on the primary bulk IN."""
-        buffer = p.read_reply_buffer_size(count, self._transport.max_packet_size)
-        _, reply = self._exchange(p.read_message(count, code, eos, eos_8bit), buffer, wait_s,
-                                  operation, tolerate=(t.ERR_TIMEOUT, t.ERR_STOPPED))
+        buffer = p.read_reply_buffer_size(count, self._link.transport.max_packet_size)
+        _, reply = self._link.exchange(p.read_message(count, code, eos, eos_8bit), buffer, wait_s,
+                                       operation, tolerate=(t.ERR_TIMEOUT, t.ERR_STOPPED))
         parsed = p.parse_read_reply(reply, count)
-        self._raise_for_error(parsed.status, operation, partial=parsed.data)
+        self._link.raise_for_error(parsed.status, operation, partial=parsed.data)
         return parsed.data, parsed.end
 
     def _raw_read_instruction(self, count: int, code: int, eos: Optional[int],
                               eos_8bit: bool, operation: str) -> Tuple[bytes, bool]:
         """One 0x0b (§10.1.2-10.1.3): the data arrives raw on the alternate bulk IN, the status on the primary."""
         message = p.read_raw_message(count, code, eos, eos_8bit)
-        buffer = p.raw_read_buffer_size(count, self._transport.max_packet_size_raw)
-        wait_s = self._transfer_wait_s(code, count)
+        buffer = p.raw_read_buffer_size(count, self._link.transport.max_packet_size_raw)
+        wait_s = self._link.transfer_wait_s(code, count)
         data, reply = self._raw_read_transact(message, buffer, wait_s)
         parsed = p.parse_raw_read_reply(reply, count, data)
-        self._raise_for_error(parsed.status, operation, partial=parsed.data)
+        self._link.raise_for_error(parsed.status, operation, partial=parsed.data)
         return parsed.data, parsed.end
 
     def _raw_read_transact(self, message: bytes, data_buffer: int, wait_s: float) -> Tuple[bytes, bytes]:
@@ -285,15 +284,15 @@ class _TransferMixin:
         of them, so a reply that comes without the data transfer ending is
         seen within a slice instead of after the whole wait.
         """
-        self._host_stopped = False
-        self._transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
+        self._link.host_stopped = False
+        self._link.transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
         data = b''
         remaining_ms = max(1, int(wait_s * 1000))
         slice_limit_ms = max(1, int(RAW_READ_SLICE_S * 1000))
         while remaining_ms > 0:
             slice_ms = min(slice_limit_ms, remaining_ms)
             try:
-                data += self._transport.bulk_in_raw(data_buffer - len(data), slice_ms)
+                data += self._link.transport.bulk_in_raw(data_buffer - len(data), slice_ms)
             except TransportTimeout as expired:
                 # What the transport had received before the slice ran out (it
                 # reports a partial transfer this way) stays; the next read
@@ -301,12 +300,12 @@ class _TransferMixin:
                 data += expired.partial
             else:
                 # The transfer ended by itself; the reply follows within a millisecond.
-                return data, self._reply_or_stop(p.SMALL_REPLY_BUFFER, SHORT_WAIT_S)
+                return data, self._link.reply_or_stop(p.SMALL_REPLY_BUFFER, SHORT_WAIT_S)
             remaining_ms -= slice_ms
             if remaining_ms <= 0:
                 break
             try:
-                reply = self._transport.bulk_in(p.SMALL_REPLY_BUFFER, max(1, int(RAW_REPLY_POLL_S * 1000)))
+                reply = self._link.transport.bulk_in(p.SMALL_REPLY_BUFFER, max(1, int(RAW_REPLY_POLL_S * 1000)))
             except TransportTimeout:
                 continue
             # The instruction is over though its data transfer has not ended:
@@ -317,18 +316,17 @@ class _TransferMixin:
             # still holds, so it is not left for the next 0x0b; the reply's
             # count then decides whether anything is missing.
             try:
-                data += self._transport.bulk_in_raw(data_buffer - len(data), int(DRAIN_WAIT_S * 1000))
+                data += self._link.transport.bulk_in_raw(data_buffer - len(data), int(DRAIN_WAIT_S * 1000))
             except TransportTimeout as nothing_more:
                 data += nothing_more.partial
             return data, reply
         # §5.11: the host wait is over and the device still owes both transfers; make it finish now.
-        self._host_stopped = True
-        self._control(t.STOP_REQUEST)
+        self._link.stop_device()
         try:
-            data += self._transport.bulk_in_raw(data_buffer - len(data), int(RECOVERY_WAIT_S * 1000))
+            data += self._link.transport.bulk_in_raw(data_buffer - len(data), int(RECOVERY_WAIT_S * 1000))
         except TransportTimeout as still:
             # Whether a stopped 0x0b completes its data transfer is not
             # established (a timed-out one does, with zero bytes). The
             # reply's count decides whether anything was lost.
             data += still.partial
-        return data, self._reply_or_stop(p.SMALL_REPLY_BUFFER, RECOVERY_WAIT_S)
+        return data, self._link.reply_after_stop(p.SMALL_REPLY_BUFFER)

@@ -76,7 +76,7 @@ class _SrqMixin:
             if not self._srq_idle.is_set():
                 raise GpibError('a wait for a service request is already in progress')
             self._srq_idle.clear()
-            transport = self._transport
+            transport = self._link.transport
         try:
             push = self._interrupt_read_in_slices(transport, timeout_s)
         finally:
@@ -99,7 +99,7 @@ class _SrqMixin:
         release the transport under it. A remainder under a millisecond ends
         the wait instead.
         """
-        total_s = self._infinite_wait_s if timeout_s is None else timeout_s
+        total_s = self._link.infinite_wait_s if timeout_s is None else timeout_s
         remaining_ms = max(1, int(round(total_s * 1000)))
         slice_limit_ms = max(1, int(round(SRQ_WAIT_SLICE_S * 1000)))
         while True:
@@ -114,5 +114,5 @@ class _SrqMixin:
                     raise GpibTimeout('no service request within %.3g s' % total_s) from exc
             except TransportError:
                 with self._lock:
-                    self._resync_pending = True
+                    self._link.resync_pending = True
                 raise
