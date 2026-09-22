@@ -1,0 +1,858 @@
+"""One continuous-mode or sweep run, start to finalize.
+
+Moved out of ``workers.py`` unchanged. The procedure owns the instrument
+session, the exporter and the acquisition loop; it reports through an outputs
+facade and reads stop/pause from a :class:`~resistamet_gui.session.control.RunControl`,
+so the QThread adapter in ``workers.py`` and the headless session drive the same
+code. No Qt here.
+"""
+import logging
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Optional
+
+import numpy as np
+import pyvisa
+
+from ..constants import AUX_READY_TIMEOUT_S
+from ..data_export import AUX_LOG_MODES, splice_before_tail
+from ..instrument import Keithley2400, humanize_connection_error
+from ..sensors import aux_column_names, make_sensor, reading_to_columns
+from ..system_utils import SleepInhibitor
+from .configure import (
+    configure_four_point, configure_resistance, configure_source_i,
+    configure_source_v, configure_sweep,
+)
+from .run_files import create_base_path, open_exporter
+from .samples import (
+    build_row, parse_four_point, parse_resistance, parse_source_i, parse_source_v,
+)
+
+logger = logging.getLogger(__name__)
+
+# Keithley 2400 series STATUS word bit masks (24-bit)
+# Bit 3: Compliance — source is in real compliance
+_STAT_BIT_COMPLIANCE = 1 << 3
+
+
+class ContinuousRun:
+    """One continuous-mode or sweep run, start to finalize.
+
+    Owns the instrument session, the exporter and the acquisition loop. It
+    reports through an outputs facade and reads stop/pause from a RunControl,
+    so the same procedure serves the QThread adapter below and the headless
+    session. No Qt here.
+    """
+
+    def __init__(self, mode, sample_name, username, settings, control, out):
+        if mode not in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
+            raise ValueError(f"Invalid measurement mode: {mode}")
+        self.mode = mode
+        self.sample_name = sample_name
+        self.username = username
+        self.settings = settings
+        self._out = out
+        # Set by the configure step: the frozen per-mode state the loop reads.
+        self._mode_state = None
+        # Set by each delta read: the per-polarity values the row builder logs.
+        self._last_delta = None
+
+        # Start/stop/pause state and the marker queue, shared with whoever is
+        # driving the run.
+        self._control = control
+        self._csv_error_count = 0  # Track consecutive CSV write failures
+        self._max_csv_errors = 3   # Max consecutive errors before escalation
+
+        self.keithley = None
+        self.exporter = None
+        self.start_time = 0
+        self.filename = ""
+        self._instrument_idn = ""
+
+        # Optional auxiliary sensor (co-logging). Stays None on every path
+        # that doesn't opt in, so the no-sensor path is unchanged.
+        self._aux_sensor = None
+        self._aux_channels = []
+        self._aux_columns = []      # aux_<key>... + aux_fault (column order)
+        self._aux_units = []
+        self._aux_row_values = []
+        self._aux_last_fault = None  # dedups per-point fault status messages
+
+        # System sleep prevention
+        self._sleep_inhibitor = SleepInhibitor()
+
+        # Instrument health monitoring
+        self._last_error_check = 0
+        self._error_check_interval = 30.0  # Check instrument errors every 30 seconds
+
+    @property
+    def running(self) -> bool:
+        return self._control.running
+
+    @running.setter
+    def running(self, value: bool) -> None:
+        self._control.running = value
+
+    @property
+    def paused(self) -> bool:
+        return self._control.paused
+
+    @paused.setter
+    def paused(self, value: bool) -> None:
+        self._control.paused = value
+
+    @property
+    def event_marker(self) -> str:
+        return self._control.event_marker
+
+    def get_and_clear_event_marker(self) -> str:
+        return self._control.get_and_clear_event_marker()
+
+    def _open_aux_sensor(self, measurement_settings):
+        """Open the auxiliary sensor, if this run co-logs one. False on failure."""
+        # Optional auxiliary sensor (co-logging on any continuous mode,
+        # anchored to the Keithley run). Opened here, before the exporter,
+        # so its declared channels() drive the CSV column schema. A failure
+        # to open aborts the run the same way an instrument-connect failure
+        # does — but the message is prefixed so the GUI never routes it to
+        # the SMU's GPIB-address remediation. wait_ready blocks (worker
+        # thread, safe) until the reader thread has the channel description
+        # and a first cached reading.
+        if (self.mode in AUX_LOG_MODES
+                and measurement_settings.get('aux_log_enabled')):
+            driver = measurement_settings.get('aux_driver', 'arduino_thermocouple')
+            aux_address = measurement_settings.get('aux_address', '')
+            try:
+                self._out.status_update(
+                    f"Connecting to auxiliary sensor ({driver}) at {aux_address}..."
+                )
+                self._aux_sensor = make_sensor(driver, aux_address).open()
+                if hasattr(self._aux_sensor, 'wait_ready'):
+                    self._aux_sensor.wait_ready(AUX_READY_TIMEOUT_S)
+                self._aux_channels = self._aux_sensor.channels()
+                self._aux_columns = aux_column_names(self._aux_sensor)
+                self._aux_units = [ch.unit for ch in self._aux_channels] + ['']
+                self._out.status_update(
+                    "Auxiliary sensor ready: "
+                    + ", ".join(f"{ch.label} ({ch.unit})" for ch in self._aux_channels)
+                )
+            except Exception as e:
+                self._out.error_occurred(
+                    "Auxiliary sensor: " + humanize_connection_error(e, aux_address)
+                )
+                return
+        return True
+
+    def _open_output_file(self, measurement_settings, source_value_str):
+        """Create the exporter for this run. False on failure."""
+        # File setup via the configured exporter (csv / hdf5 / csv+legacy_json).
+        self.start_time = time.time()
+        try:
+            base_path = create_base_path(
+                self.settings['file']['data_directory'], self.username,
+                self.sample_name, self.mode, source_value_str,
+            )
+            self.exporter, self.filename = open_exporter(
+                base_path=base_path,
+                mode=self.mode,
+                settings=self.settings,
+                measurement_settings=measurement_settings,
+                username=self.username,
+                sample_name=self.sample_name,
+                instrument_idn=self._instrument_idn,
+                start_time=self.start_time,
+                aux_columns=self._aux_columns,
+                aux_units=self._aux_units,
+                on_compress=self._emit_compress_status,
+                on_large_file=self._emit_large_file_status,
+            )
+            names = ", ".join(p.name for p in self.exporter.output_paths)
+            self._out.status_update(f"Data file: {names}")
+        except Exception as e:
+            self._out.error_occurred(f"Error creating output files: {str(e)}")
+            return
+        return True
+
+    def _run_sweep(self):
+        """Run the instrument's own sweep engine, write the points, report them."""
+        # Sweep mode: single atomic operation, then done
+        if self.mode == 'sweep':
+            self._out.status_update(f"Running I-V sweep ({self._mode_state.points} points)...")
+            try:
+                self.keithley.write(":OUTP ON")
+                # Increase timeout for long sweeps
+                if self.keithley.dev:
+                    self.keithley.dev.timeout = max(10000, self._mode_state.points * 1000)
+                response = self.keithley.query(":READ?").strip()
+                self.keithley.write(":OUTP OFF")
+
+                # Parse bulk response: every 3 values = (V, I, STAT)
+                parts = [p.strip() for p in response.split(',') if p.strip()]
+                voltages, currents, comp_list = [], [], []
+                for i in range(0, len(parts), 3):
+                    try:
+                        v = float(parts[i])
+                        c = float(parts[i + 1]) if i + 1 < len(parts) else float('nan')
+                        stat = int(float(parts[i + 2])) if i + 2 < len(parts) else 0
+                    except (ValueError, IndexError):
+                        v, c, stat = float('nan'), float('nan'), 0
+                    voltages.append(v)
+                    currents.append(c)
+                    comp_status = 'COMP' if (stat & _STAT_BIT_COMPLIANCE) else 'OK'
+                    comp_list.append(comp_status)
+
+                    # Write each point to export
+                    row_data = [i // 3, v, c, comp_status]
+                    try:
+                        self.exporter.write_row(row_data)
+                    except Exception:
+                        pass
+
+                # For up_down: run reverse sweep
+                if self._mode_state.up_down:
+                    self._out.status_update("Running reverse sweep...")
+                    # Swap start/stop for reverse
+                    if self._mode_state.source == 'VOLT':
+                        start_q = self.keithley.query(":SOUR:VOLT:START?").strip()
+                        stop_q = self.keithley.query(":SOUR:VOLT:STOP?").strip()
+                        self.keithley.write(f":SOUR:VOLT:START {stop_q}")
+                        self.keithley.write(f":SOUR:VOLT:STOP {start_q}")
+                    else:
+                        start_q = self.keithley.query(":SOUR:CURR:START?").strip()
+                        stop_q = self.keithley.query(":SOUR:CURR:STOP?").strip()
+                        self.keithley.write(f":SOUR:CURR:START {stop_q}")
+                        self.keithley.write(f":SOUR:CURR:STOP {start_q}")
+                    self.keithley.write(":OUTP ON")
+                    response2 = self.keithley.query(":READ?").strip()
+                    self.keithley.write(":OUTP OFF")
+
+                    parts2 = [p.strip() for p in response2.split(',') if p.strip()]
+                    rev_v, rev_i, rev_comp = [], [], []
+                    for i in range(0, len(parts2), 3):
+                        try:
+                            v = float(parts2[i])
+                            c = float(parts2[i + 1]) if i + 1 < len(parts2) else float('nan')
+                            stat = int(float(parts2[i + 2])) if i + 2 < len(parts2) else 0
+                        except (ValueError, IndexError):
+                            v, c, stat = float('nan'), float('nan'), 0
+                        rev_v.append(v)
+                        rev_i.append(c)
+                        comp_status = 'COMP' if (stat & _STAT_BIT_COMPLIANCE) else 'OK'
+                        rev_comp.append(comp_status)
+                        row_data = [len(voltages) + i // 3, v, c, comp_status]
+                        try:
+                            self.exporter.write_row(row_data)
+                        except Exception:
+                            pass
+                    # Emit both sweeps
+                    self._out.sweep_complete(voltages, currents, comp_list)
+                    self._out.sweep_complete(rev_v, rev_i, rev_comp)
+                else:
+                    self._out.sweep_complete(voltages, currents, comp_list)
+
+                self._out.status_update(f"Sweep complete: {len(voltages)} points acquired")
+            except Exception as e:
+                self._out.error_occurred(f"Sweep error: {str(e)}")
+            # Sweep is done — skip to finalization
+            self.running = False
+            # Fall through to cleanup below
+
+    def execute(self):
+        self.running = True
+        self.paused = False
+        instrument_ready = False
+        file_ready = False
+
+        try:
+            measurement_settings = self.settings['measurement']
+            file_settings = self.settings['file']
+
+            sampling_rate = measurement_settings['sampling_rate']
+            nplc = measurement_settings['nplc']
+            settling_time = measurement_settings['settling_time']
+            gpib_address = measurement_settings['gpib_address']
+            auto_save_interval = file_settings['auto_save_interval']
+
+            sample_interval = 1.0 / sampling_rate if sampling_rate > 0 else 0.1
+
+            # Connect instrument
+            try:
+                self._out.status_update(f"Connecting to instrument at {gpib_address}...")
+                self.keithley = Keithley2400(gpib_address).connect()
+                self._instrument_idn = self.keithley.query("*IDN?").strip()
+                self._out.status_update(f"Connected to: {self._instrument_idn}")
+                # Identify model and surface its limits — informational only;
+                # the instrument enforces its own ranges via SCPI errors.
+                self._model_spec = self.keithley.detect_model()
+                # Short model string ("2400", "2410", ...) for accuracy.py
+                # lookups. Falls back to "2400" if IDN parsing failed; that's
+                # the most conservative baseline.
+                self._model_name = self._model_spec.model if self._model_spec else "2400"
+                try:
+                    self._out.instrument_identified(self._model_name)
+                except Exception:
+                    pass
+                if self._model_spec is not None:
+                    spec = self._model_spec
+                    self._out.status_update(
+                        f"Detected: Keithley {spec.model} — "
+                        f"max {spec.max_source_v:g}V / {spec.max_source_i:g}A / "
+                        f"{spec.max_power_w:g}W"
+                    )
+                else:
+                    self._out.status_update(
+                        "Warning: instrument model not in known table — proceeding with defaults"
+                    )
+                try:
+                    line_freq = float(self.keithley.query(":SYST:LFR?"))
+                except Exception:
+                    line_freq = 50.0
+                    self._out.status_update("Warning: Could not query line frequency. Assuming 50Hz.")
+                self.keithley.write("*RST"); time.sleep(0.5)
+                self.keithley.write("*CLS")
+                # Auto zero: ON (accurate), ONCE (fast), OFF (fastest)
+                azer = str(measurement_settings.get('auto_zero', 'on')).upper()
+                if azer == 'ONCE':
+                    self.keithley.write(":SYST:AZER:STAT ON")
+                    self.keithley.write(":SYST:AZER:STAT ONCE")
+                else:
+                    self.keithley.write(f":SYST:AZER:STAT {azer}")
+                self.keithley.write(":SENS:FUNC:CONC OFF")
+                self.keithley.write(":OUTP:SMOD HIMP")
+                instrument_ready = True
+            except Exception as e:
+                self._out.error_occurred(humanize_connection_error(e, gpib_address))
+                return
+
+            # Configure instrument
+            self._out.status_update(f"Configuring instrument for {self.mode} mode...")
+            metadata = {}
+            csv_headers = []
+            source_value_str = ""
+
+            try:
+                if self.mode == 'resistance':
+                    configured = configure_resistance(self.keithley, self._out, measurement_settings, nplc)
+                elif self.mode == 'source_v':
+                    configured = configure_source_v(self.keithley, self._out, measurement_settings, nplc)
+                elif self.mode == 'source_i':
+                    configured = configure_source_i(self.keithley, self._out, measurement_settings, nplc)
+                elif self.mode == 'four_point':
+                    configured = configure_four_point(self.keithley, self._out, measurement_settings, nplc)
+                    if configured is None:
+                        return  # pre-flight refused the power envelope
+                    self._fpp_overpower_emitted = False  # debounce: emit once
+                elif self.mode == 'sweep':
+                    configured = configure_sweep(self.keithley, self._out, measurement_settings, nplc)
+                else:
+                    configured = None
+                if configured is not None:
+                    self._mode_state, metadata, csv_headers, source_value_str = configured
+
+                # Hardware averaging filter (2400 series uses :SENS:AVER, not per-function paths)
+                if measurement_settings.get('filter_enabled', False):
+                    ftype = str(measurement_settings.get('filter_type', 'repeat')).upper()[:3]
+                    fcount = int(measurement_settings.get('filter_count', 10))
+                    self.keithley.write(f":SENS:AVER:TCON {ftype}")
+                    self.keithley.write(f":SENS:AVER:COUN {fcount}")
+                    self.keithley.write(":SENS:AVER ON")
+                    self._out.status_update(f"Hardware filter: {ftype} x{fcount}")
+
+                self.keithley.write(":TRIG:DEL 0")
+                self.keithley.write(":SOUR:DEL:AUTO ON")
+            except Exception as e:
+                self._out.error_occurred(f"Error configuring instrument: {str(e)}")
+                return
+
+            if not self._open_aux_sensor(measurement_settings):
+                return
+
+            if not self._open_output_file(measurement_settings, source_value_str):
+                return
+            file_ready = True
+
+            # Prevent system sleep during measurement
+            self._sleep_inhibitor.inhibit(f"ResistaMet: {self.mode} measurement on {self.sample_name}")
+
+            # Sweep mode: one atomic operation, then straight to finalization
+            if self.mode == 'sweep':
+                self._run_sweep()
+
+            # For sweep mode, self.running is already False — skip the polling loop
+            if self.mode != 'sweep':
+                # Continuous measurement modes: turn on output and enter polling loop
+                self._out.status_update("Starting measurement...")
+                try:
+                    self.keithley.write(":OUTP ON")
+                    self._out.status_update(f"Waiting for settling time ({settling_time}s)...")
+                    time.sleep(settling_time)
+                except Exception as e:
+                    self._out.error_occurred(f"Error turning on output: {str(e)}")
+                    return
+
+            last_save = self.start_time
+            last_measurement_time = 0
+            # For 4PP: respect a finite number of samples if provided
+            target_samples = 0
+            sample_count = 0
+            if self.mode == 'four_point':
+                try:
+                    target_samples = int(measurement_settings.get('fpp_samples', 0))
+                except Exception:
+                    target_samples = 0
+            end_time = None
+            if self.mode in ('source_v', 'source_i'):
+                dur = measurement_settings.get('vsource_duration_hours') if self.mode == 'source_v' else measurement_settings.get('isource_duration_hours')
+                try:
+                    dur_s = float(dur) * 3600.0
+                    if dur_s > 0:
+                        end_time = self.start_time + dur_s
+                except Exception:
+                    end_time = None
+
+            # Retry configuration for transient errors (cable wiggle, etc.)
+            max_retries = 5
+            consecutive_errors = 0
+
+            while self.running:
+                if self.paused:
+                    time.sleep(0.1)
+                    continue
+                now = time.time()
+                if now - last_measurement_time >= sample_interval:
+                    reading_str = None
+                    read_success = False
+
+                    # Delta mode: alternating +I/-I for 4PP thermoelectric cancellation
+                    use_delta = (self.mode == 'four_point' and
+                                 self._mode_state.delta_mode and
+                                 self.keithley is not None)
+
+                    if use_delta:
+                        for retry in range(max_retries):
+                            try:
+                                reading_str = self._read_delta()
+                                last_measurement_time = time.time()
+                                read_success = True
+                                if retry > 0:
+                                    self._out.status_update(f"Delta read recovered after {retry} retries")
+                                consecutive_errors = 0
+                                break
+                            except Exception as e:
+                                consecutive_errors += 1
+                                if retry < max_retries - 1:
+                                    delay = 0.1 * (2 ** retry)
+                                    self._out.status_update(
+                                        f"Delta read error (retry {retry + 1}/{max_retries}): {str(e)[:50]}... "
+                                        f"Retrying in {delay:.1f}s"
+                                    )
+                                    time.sleep(delay)
+                                    try:
+                                        self.keithley.write("*CLS")
+                                    except Exception:
+                                        pass
+                                else:
+                                    self._out.error_occurred(
+                                        f"Delta read error after {max_retries} retries: {str(e)}. Stopping."
+                                    )
+                    else:
+                        for retry in range(max_retries):
+                            try:
+                                reading_str = self.keithley.query(":READ?").strip()
+                                last_measurement_time = time.time()
+                                read_success = True
+                                if retry > 0:
+                                    self._out.status_update(f"Communication recovered after {retry} retries")
+                                consecutive_errors = 0
+                                break
+                            except pyvisa.errors.VisaIOError as e:
+                                consecutive_errors += 1
+                                if retry < max_retries - 1:
+                                    delay = 0.1 * (2 ** retry)
+                                    self._out.status_update(
+                                        f"VISA error (retry {retry + 1}/{max_retries}): {str(e)[:50]}... "
+                                        f"Retrying in {delay:.1f}s"
+                                    )
+                                    time.sleep(delay)
+                                    try:
+                                        self.keithley.write("*CLS")
+                                    except Exception:
+                                        pass
+                                else:
+                                    self._out.error_occurred(
+                                        f"VISA Read Error after {max_retries} retries: {str(e)}. Stopping."
+                                    )
+                            except Exception as e:
+                                self._out.error_occurred(f"Unexpected Read Error: {str(e)}. Stopping.")
+                                break
+
+                    if not read_success:
+                        break
+
+                    elapsed_time = now - self.start_time
+                    compliance_status = 'OK'
+                    compliance_type = None
+                    data_dict: Dict[str, float] = {}
+
+                    # Parse reading — all modes include STAT as last element
+                    # Fixed element order: RES,STAT or VOLT,CURR,STAT
+                    parts = [p.strip() for p in reading_str.split(',') if p.strip()]
+
+                    # Extract status word (last element) for compliance detection
+                    stat_word = 0
+                    try:
+                        stat_word = int(float(parts[-1]))
+                    except (ValueError, IndexError):
+                        pass
+                    hw_compliance = bool(stat_word & _STAT_BIT_COMPLIANCE)
+
+                    if self.mode == 'resistance':
+                        parsed = parse_resistance(
+                            parts, stat_word, hw_compliance, measurement_settings, nplc,
+                            self._model_name, self._mode_state, self._out, reading_str)
+                    elif self.mode == 'source_v':
+                        parsed = parse_source_v(
+                            parts, stat_word, hw_compliance, measurement_settings, nplc,
+                            self._model_name, self._mode_state, self._out)
+                    elif self.mode == 'source_i':
+                        parsed = parse_source_i(
+                            parts, stat_word, hw_compliance, measurement_settings, nplc,
+                            self._model_name, self._mode_state, self._out)
+                    elif self.mode == 'four_point':
+                        parsed = parse_four_point(
+                            parts, stat_word, hw_compliance, measurement_settings, nplc,
+                            self._model_name, self._mode_state, self._out)
+                    else:
+                        parsed = ({}, 'OK', None)
+                    data_dict, compliance_status, compliance_type = parsed
+
+                    # Auxiliary-sensor sample at the measurement instant —
+                    # shared across every mode that opened a sensor
+                    # (Keithley-centric co-logging). read_latest() is a
+                    # non-blocking cache read (the driver's reader thread does
+                    # the waiting), so the acquisition loop never stalls on
+                    # the sensor. Channel values are PRESERVED even when
+                    # flagged; provenance rides in the aux_fault column
+                    # (sensors.reading_to_columns). A stale/missing cache
+                    # records NaN + 'read_error' and the run continues.
+                    if self._aux_sensor is not None:
+                        try:
+                            aux_cols = reading_to_columns(self._aux_sensor.read_latest())
+                        except Exception:
+                            aux_cols = {name: float('nan') for name in self._aux_columns}
+                            aux_cols['aux_fault'] = 'read_error'
+                        data_dict.update(aux_cols)
+                        self._aux_row_values = [
+                            aux_cols.get(name, float('nan')) for name in self._aux_columns
+                        ]
+                        fault = aux_cols.get('aux_fault', '0')
+                        if fault != self._aux_last_fault:
+                            if fault != '0':
+                                self._out.status_update(f"⚠️ Auxiliary sensor: {fault}")
+                            self._aux_last_fault = fault
+
+                    stop_on_comp = bool(measurement_settings.get('stop_on_compliance', False))
+                    if compliance_status != 'OK' and compliance_type:
+                        try:
+                            self._out.compliance_hit(compliance_type)
+                            self._out.status_update(f"⚠️ {compliance_type} Compliance Hit!")
+                        except Exception:
+                            pass
+                        if stop_on_comp:
+                            self._out.status_update("Stopping due to compliance (per settings).")
+                            self.running = False
+
+                    # 4PP probe-safety runtime check: measured V*I against the
+                    # configured warn / hard-stop thresholds. Hard stop also
+                    # turns the output off on the worker side as a defense in
+                    # depth — _cleanup will run :OUTP OFF too on exit.
+                    if self.mode == 'four_point':
+                        v_meas = data_dict.get('voltage', float('nan'))
+                        i_meas = data_dict.get('current', float('nan'))
+                        if np.isfinite(v_meas) and np.isfinite(i_meas):
+                            measured_power = abs(v_meas * i_meas)
+                            stop_w = self._mode_state.power_stop_w
+                            warn_w = self._mode_state.power_warn_w
+                            if (measured_power > stop_w
+                                    and self._mode_state.stop_on_overpower):
+                                if not self._fpp_overpower_emitted:
+                                    self._fpp_overpower_emitted = True
+                                    try:
+                                        self._out.overpower_hit(measured_power, stop_w)
+                                    except Exception:
+                                        pass
+                                self._out.error_occurred(
+                                    f"4PP overpower: {measured_power*1e3:.1f} mW "
+                                    f"exceeds hard stop {stop_w*1e3:.0f} mW. "
+                                    f"Stopping to protect probe and sample."
+                                )
+                                try:
+                                    self.keithley.write(":OUTP OFF")
+                                except Exception:
+                                    pass
+                                self.running = False
+                            elif measured_power > warn_w:
+                                self._out.status_update(
+                                    f"⚠️ 4PP power {measured_power*1e3:.1f} mW above "
+                                    f"warn threshold {warn_w*1e3:.0f} mW"
+                                )
+
+                    # Atomically get and clear event marker (thread-safe)
+                    event_marker = self.get_and_clear_event_marker()
+                    if event_marker:
+                        self._out.status_update(f"Event marked at {elapsed_time:.3f}s: {event_marker}")
+
+                    row_data = build_row(
+                        self.mode, elapsed_time, data_dict, compliance_status, event_marker,
+                        measurement_settings, nplc, use_delta, self._model_name,
+                        self._last_delta)
+
+                    # Splice auxiliary-sensor values (+ aux_fault) for any mode
+                    # that opened a sensor — after any delta columns, before
+                    # compliance/event, mirroring get_column_config()'s splice.
+                    if self._aux_sensor is not None and self._aux_columns:
+                        row_data = splice_before_tail(row_data, self._aux_row_values)
+
+                    # Write to exporter (handles both JSON and CSV)
+                    try:
+                        self.exporter.write_row(row_data)
+                        self._csv_error_count = 0  # Reset error count on success
+                    except Exception as e:
+                        self._csv_error_count += 1
+                        error_msg = f"Error writing data ({self._csv_error_count}/{self._max_csv_errors}): {str(e)}"
+                        self._out.status_update(f"Warning: {error_msg}")
+
+                        if self._csv_error_count >= self._max_csv_errors:
+                            # Escalate: too many consecutive write failures (likely disk full)
+                            self._out.error_occurred(
+                                f"CRITICAL: {self._csv_error_count} consecutive write failures. "
+                                f"Possible disk full or write permission issue. Stopping measurement to prevent data loss."
+                            )
+                            self.running = False
+                            break
+
+                    self._out.data_point(now, data_dict, compliance_status, event_marker)
+
+                    # Increment sample count for 4PP and stop if target reached
+                    if self.mode == 'four_point':
+                        sample_count += 1
+                        if target_samples > 0 and sample_count >= target_samples:
+                            self._out.status_update(f"Reached target samples: {target_samples}. Stopping.")
+                            self.running = False
+
+                    if now - last_save >= auto_save_interval:
+                        try:
+                            if self.exporter:
+                                self.exporter.flush()
+                            last_save = now
+                        except Exception as e:
+                            self._out.status_update(f"Warning: Auto-save failed - {str(e)}")
+
+                    # Periodic instrument health check
+                    self._periodic_health_check(now)
+
+                    elapsed_time_formatted = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
+                    status_msg = f"Running {self.mode}: {elapsed_time_formatted}"
+                    if self.mode == 'resistance':
+                        rv = data_dict.get('resistance', float('nan'))
+                        status_msg += f" | R: {rv:.4f} Ohms" if np.isfinite(rv) else " | R: Invalid"
+                    elif self.mode == 'source_v':
+                        cv = data_dict.get('current', float('nan'))
+                        vv = data_dict.get('voltage', float('nan'))
+                        status_msg += (f" | I: {cv:.4e} A" if np.isfinite(cv) else " | I: Invalid")
+                        status_msg += (f" | V: {vv:.4e} V" if np.isfinite(vv) else " | V: Invalid")
+                    else:
+                        vv = data_dict.get('voltage', float('nan'))
+                        iv = data_dict.get('current', float('nan'))
+                        status_msg += (f" | V: {vv:.4e} V" if np.isfinite(vv) else " | V: Invalid")
+                        status_msg += (f" | I: {iv:.4e} A" if np.isfinite(iv) else " | I: Invalid")
+                    if compliance_status != 'OK':
+                        status_msg += f" ({compliance_status})"
+                    self._out.status_update(status_msg)
+
+                time.sleep(0.01 if sample_interval <= 0.001 else max(0.001, sample_interval / 10.0))
+
+                if end_time is not None and time.time() >= end_time:
+                    self._out.status_update("Reached configured duration. Stopping.")
+                    self.running = False
+
+            if instrument_ready and self.keithley:
+                try:
+                    self.keithley.write(":OUTP OFF")
+                    self._out.status_update("Output turned OFF.")
+                except Exception as e:
+                    self._out.status_update(f"Warning: Could not turn off output - {str(e)}")
+
+            final_message = f"Measurement ({self.mode}) stopped."
+            if file_ready and self.exporter:
+                try:
+                    end_time = datetime.now()
+                    end_metadata = {
+                        'ended_at': end_time.isoformat(),
+                        'total_samples': self.exporter.row_count,
+                        'duration_s': time.time() - self.start_time
+                    }
+                    self.exporter.finalize(end_metadata)
+                except Exception as e:
+                    self._out.status_update(f"Warning: Error finalizing export - {str(e)}")
+                final_message = f"Measurement ({self.mode}) completed! Data saved to: {self.filename}"
+            self._out.status_update(final_message)
+            self._out.measurement_complete(self.mode)
+
+        except Exception as e:
+            self._out.error_occurred(f"Unexpected Worker Error ({self.mode}): {str(e)}")
+        finally:
+            self._cleanup()
+            self.running = False
+
+    def _emit_compress_status(self, orig_path: Path, gz_path: Path,
+                              orig_mb: float, gz_mb: float) -> None:
+        """Status callback fired by CsvExporter after gzip finalize."""
+        self._out.status_update(
+            f"Compressed {orig_path.name} -> {gz_path.name} "
+            f"({orig_mb:.1f} MB -> {gz_mb:.1f} MB)"
+        )
+
+    def _emit_large_file_status(self, path: Path, size_mb: float) -> None:
+        """Status callback fired by CsvExporter when an uncompressed run is large."""
+        self._out.status_update(
+            f"Run wrote {size_mb:.1f} MB to {path.name}. "
+            f"Compression is off — enable in Settings -> Output to gzip future runs."
+        )
+
+    def mark_event(self, name: str = "MARK") -> None:
+        self._control.mark_event(name)
+
+    def pause_measurement(self) -> None:
+        if self.running:
+            self.paused = True
+            self._out.status_update(f"Measurement ({self.mode}) paused")
+
+    def resume_measurement(self) -> None:
+        if self.running:
+            self.paused = False
+            self._out.status_update(f"Measurement ({self.mode}) resumed")
+
+    def stop_measurement(self) -> None:
+        self._out.status_update(f"Stopping measurement ({self.mode})...")
+        self.running = False
+
+    def _cleanup(self) -> None:
+        # Re-enable system sleep
+        self._sleep_inhibitor.uninhibit()
+
+        if self.keithley:
+            try:
+                self.keithley.write(":OUTP OFF")
+                self.keithley.close()
+                self._out.status_update("Instrument disconnected.")
+            except Exception as e:
+                self._out.status_update(f"Warning: Error during instrument cleanup: {str(e)}")
+            finally:
+                self.keithley = None
+        if self._aux_sensor is not None:
+            try:
+                self._aux_sensor.close()
+            except Exception as e:
+                self._out.status_update(f"Warning: Error during aux-sensor cleanup: {str(e)}")
+            finally:
+                self._aux_sensor = None
+        if self.exporter:
+            try:
+                # Ensure exporter is finalized if not already
+                self.exporter.finalize()
+            except Exception as e:
+                logger.warning(f"Error finalizing exporter during cleanup: {e}")
+            finally:
+                self.exporter = None
+
+    def _check_instrument_errors(self) -> Optional[str]:
+        """Check instrument error queue and return any errors.
+
+        Returns:
+            Error message if instrument has errors, None otherwise.
+        """
+        if not self.keithley:
+            return None
+
+        try:
+            # Query error queue - format: error_code,"error_message"
+            response = self.keithley.query(":SYST:ERR?").strip()
+            if response:
+                parts = response.split(',', 1)
+                error_code = int(parts[0])
+                if error_code != 0:
+                    error_msg = parts[1].strip('"') if len(parts) > 1 else "Unknown error"
+                    return f"Instrument error {error_code}: {error_msg}"
+        except Exception as e:
+            logger.debug(f"Error checking instrument status: {e}")
+
+        return None
+
+    def _periodic_health_check(self, now: float) -> None:
+        """Perform periodic instrument health check.
+
+        Args:
+            now: Current timestamp
+        """
+        if now - self._last_error_check >= self._error_check_interval:
+            self._last_error_check = now
+            error = self._check_instrument_errors()
+            if error:
+                self._out.status_update(f"Warning: {error}")
+                logger.warning(f"Instrument error during measurement: {error}")
+
+    def _read_delta(self) -> str:
+        """Perform a current-reversal (delta) measurement for 4PP.
+
+        Takes two readings at +I and -I, computes V_delta = (V+ - V-) / 2
+        to cancel thermoelectric EMF. Returns a synthetic reading string
+        in the same format as a normal :READ? response (VOLT,CURR,STAT).
+
+        Side effect: stashes the raw V+, V- and the derived R_f, R_r on
+        self._last_delta so the main loop can log per-polarity values per
+        F84 §13.1 (forward/reverse resistances kept separate).
+        """
+        i_mag = abs(self._mode_state.source_current)
+        settling = self._mode_state.delta_settling
+
+        # +I reading
+        self.keithley.write(f":SOUR:CURR {i_mag}")
+        time.sleep(settling)
+        raw_plus = self.keithley.query(":READ?").strip()
+        parts_plus = [p.strip() for p in raw_plus.split(',')]
+        v_plus = float(parts_plus[0])
+        stat_plus = int(float(parts_plus[-1]))
+
+        # -I reading
+        self.keithley.write(f":SOUR:CURR {-i_mag}")
+        time.sleep(settling)
+        raw_minus = self.keithley.query(":READ?").strip()
+        parts_minus = [p.strip() for p in raw_minus.split(',')]
+        v_minus = float(parts_minus[0])
+        stat_minus = int(float(parts_minus[-1]))
+
+        # Restore positive polarity for next cycle
+        self.keithley.write(f":SOUR:CURR {i_mag}")
+
+        # Delta calculation: V_delta = (V+ - V-) / 2
+        v_delta = (v_plus - v_minus) / 2.0
+        # Per-polarity resistances per F84 §13.1. R_r negates I and V_minus
+        # so a symmetric DUT gives R_f ≈ R_r > 0; thermal offset shows up
+        # as a difference between them.
+        try:
+            r_f = v_plus / i_mag if i_mag != 0 else float('nan')
+            r_r = (-v_minus) / i_mag if i_mag != 0 else float('nan')
+        except Exception:
+            r_f = float('nan')
+            r_r = float('nan')
+        self._last_delta = {
+            'v_plus': v_plus, 'v_minus': v_minus,
+            'r_f': r_f, 'r_r': r_r,
+        }
+        # Compliance: OR of both readings
+        stat_combined = stat_plus | stat_minus
+
+        # Return synthetic reading string matching VOLT,CURR,STAT format
+        return f"{v_delta},{i_mag},{stat_combined}"
