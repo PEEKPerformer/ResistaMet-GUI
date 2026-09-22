@@ -19,256 +19,16 @@ from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb.controller import (DEFAULT_INFINITE_WAIT_S, DRAIN_WAIT_S, FRAMED_READ_MAX_BYTES,
                                                  IFC_SETTLE_S, RAW_READ_MIN_BYTES, BUS_MIN_RATE_BPS,
                                                  RAW_WRITE_MIN_BYTES, RECOVERY_WAIT_S, RAW_READ_SLICE_S,
-                                                 RAW_REPLY_POLL_S, SHORT_WAIT_S, SRQ_WAIT_SLICE_S, Controller)
+                                                 RAW_REPLY_POLL_S, SRQ_WAIT_SLICE_S, Controller)
 from resistamet_gui.gpib_usb.protocol import AdapterNotReady, GpibError, GpibTimeout, NoListener, ProtocolError
 from resistamet_gui.gpib_usb.transport import TransportError, TransportStall, TransportTimeout
-
-
-def h(text: str) -> bytes:
-    return bytes.fromhex(text.replace(' ', ''))
-
-
-def hex_diff(expected: bytes, actual: bytes) -> str:
-    first = next((i for i, (a, b) in enumerate(zip(expected, actual)) if a != b),
-                 min(len(expected), len(actual)))
-    return ('bulk_out mismatch at offset %d\n  expected: %s\n  actual:   %s\n  %s^'
-            % (first, expected.hex(' '), actual.hex(' '), ' ' * (12 + 3 * first)))
-
-
-class ScriptedTransport:
-    """Steps, in the order the controller must take them:
-
-    ``('out', bytes)`` and ``('raw_out', bytes)`` -- what the next bulk OUT on
-    the primary / alternate endpoint must carry; ``('in', bytes_or_exc[,
-    expected_length])``, ``('raw_in', ...)`` and ``('intr', ...)`` -- what the
-    next bulk IN on the primary / alternate / interrupt endpoint returns (or
-    raises); ``('ctrl', params, reply)`` and ``('ctrl_out', params)`` -- the
-    next control request; ``('clear_halt', endpoint[, exc])`` -- the next
-    pipe reset.
-    """
-
-    max_packet_size = 512
-    max_packet_size_raw = 512
-
-    def __init__(self, script: List[Tuple[Any, ...]]) -> None:
-        self.script = list(script)
-        self.pos = 0
-        self.closed = False
-        self.sent: List[bytes] = []
-        #: Calls the script did not expect. Kept as well as raised: the controller's pipe
-        #: reset swallows whatever it is given, and ``assert_done`` must still fail.
-        self.off_script: List[str] = []
-        #: ('out', opcode, timeout_ms) and ('in', length, timeout_ms) in call order.
-        self.timeouts: List[Tuple[str, int, int]] = []
-
-    def _next(self, kind: str, what: str) -> Tuple[Any, ...]:
-        if self.pos >= len(self.script):
-            self.off_script.append('unexpected %s after the script ended: %s' % (kind, what))
-            raise AssertionError(self.off_script[-1])
-        step = self.script[self.pos]
-        if step[0] != kind:
-            self.off_script.append('step %d: expected %r, got %s %s' % (self.pos + 1, step[0], kind, what))
-            raise AssertionError(self.off_script[-1])
-        self.pos += 1
-        return step
-
-    def control_in(self, request, value, index, length, timeout_ms,
-                   request_type=t.REQUEST_TYPE_VENDOR_DEVICE) -> bytes:
-        step = self._next('ctrl', 'request 0x%02x' % request)
-        expected = tuple(step[1])
-        actual = (request, value, index, length) + ((request_type,) if len(expected) == 5 else ())
-        if expected != actual:
-            raise AssertionError('control_in %r, expected %r' % (actual, expected))
-        if isinstance(step[2], Exception):
-            raise step[2]
-        return step[2]
-
-    def control_out(self, request, value, index, data, timeout_ms,
-                    request_type=t.REQUEST_TYPE_VENDOR_DEVICE_OUT) -> None:
-        step = self._next('ctrl_out', 'request 0x%02x' % request)
-        actual = (request_type, request, value, index, data)
-        if tuple(step[1]) != actual:
-            raise AssertionError('control_out %r, expected %r' % (actual, tuple(step[1])))
-        if len(step) > 2 and isinstance(step[2], Exception):
-            raise step[2]
-
-    def bulk_out(self, data: bytes, timeout_ms: int) -> None:
-        self._out('out', data, timeout_ms)
-        self.sent.append(data)
-        self.timeouts.append(('out', data[0], timeout_ms))
-
-    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> int:
-        """('raw_out', bytes[, exc_or_accepted_count]): the third item, if an int, is the short count returned."""
-        step = self._out('raw_out', data, timeout_ms)
-        self.timeouts.append(('raw_out', len(data), timeout_ms))
-        return step[2] if len(step) > 2 and isinstance(step[2], int) else len(data)
-
-    def _out(self, kind: str, data: bytes, timeout_ms: int) -> Tuple[Any, ...]:
-        step = self._next(kind, data[:64].hex(' '))
-        if data != step[1]:
-            raise AssertionError(hex_diff(step[1][:80], data[:80]))
-        if len(step) > 2 and isinstance(step[2], Exception):
-            raise step[2]
-        return step
-
-    def bulk_in(self, length: int, timeout_ms: int) -> bytes:
-        return self._in('in', length, timeout_ms)
-
-    def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
-        return self._in('raw_in', length, timeout_ms)
-
-    def interrupt_in(self, length: int, timeout_ms: int) -> bytes:
-        return self._in('intr', length, timeout_ms)
-
-    def _in(self, kind: str, length: int, timeout_ms: int) -> bytes:
-        step = self._next(kind, '%s(%d)' % (kind, length))
-        self.timeouts.append((kind, length, timeout_ms))
-        if len(step) > 2 and step[2] != length:
-            raise AssertionError('%s asked for %d bytes, expected %d' % (kind, length, step[2]))
-        if isinstance(step[1], Exception):
-            raise step[1]
-        if len(step[1]) > length:
-            raise AssertionError('reply of %d bytes would overflow the %d-byte buffer'
-                                 % (len(step[1]), length))
-        return step[1]
-
-    def clear_halt(self, endpoint: int) -> None:
-        step = self._next('clear_halt', 'endpoint 0x%02x' % endpoint)
-        if step[1] != endpoint:
-            raise AssertionError('clear_halt on 0x%02x, expected 0x%02x' % (endpoint, step[1]))
-        if len(step) > 2 and isinstance(step[2], Exception):
-            raise step[2]
-
-    def close(self) -> None:
-        self.closed = True
-
-    def assert_done(self) -> None:
-        assert not self.off_script, self.off_script
-        remaining = self.script[self.pos:]
-        assert not remaining, 'script steps not consumed: %r' % (remaining,)
-
-    def in_timeouts_after(self, opcode: int) -> List[int]:
-        """The bulk_in timeouts that followed each bulk_out of ``opcode``, up to the next bulk_out."""
-        found = []
-        collecting = False
-        for kind, value, timeout_ms in self.timeouts:
-            if kind == 'out':
-                collecting = value == opcode
-            elif collecting:
-                found.append(timeout_ms)
-        return found
-
-
-# --- reply builders ---------------------------------------------------------
-
-def status_reply(opcode: int, error: int = 0, count: int = 0, ibsta: int = 0x0130) -> bytes:
-    return (bytes((opcode,)) + ibsta.to_bytes(2, 'big') + bytes((error,))
-            + (count & 0xFFFF).to_bytes(2, 'little') + b'\x00\x00' + h('04 00 00 00'))
-
-
-def regwrite_reply(completed: int, error: int = 0) -> bytes:
-    return (h('09 01 30') + bytes((error,)) + h('00 00 00 00') + bytes((completed, 0, 0, 0))
-            + h('04 00 00 00'))
-
-
-def regread_reply(values: List[int]) -> bytes:
-    out = b''
-    for start in range(0, len(values), 3):
-        chunk = bytes(values[start:start + 3])
-        out += bytes((0x34,)) + chunk + b'\x00' * (3 - len(chunk))
-    return out + bytes((0x35, len(values), 0, 0)) + h('04 00 00 00')
-
-
-def read_reply(data: bytes, requested: int, *, end: bool = True, error: int = 0) -> bytes:
-    blocks = b''
-    for start in range(0, len(data), 15):
-        chunk = data[start:start + 15]
-        blocks += bytes((0x36,)) + chunk + b'\xee' * (15 - len(chunk))
-    last_count = len(data) - ((len(data) - 1) // 15) * 15 if data else 0
-    ibsta = 0x0100 | (t.IBSTA_END if end else 0) | (t.IBSTA_TIMO if error == t.ERR_TIMEOUT else 0)
-    count = (len(data) - requested) & 0xFFFF
-    # The 16-byte trailer as the GPIB-USB-HS sends it (no embedded 0x09 block).
-    trailer = (bytes((0x38,)) + ibsta.to_bytes(2, 'big') + bytes((error,))
-               + count.to_bytes(2, 'little') + b'\xff\xff'
-               + bytes((0xE0 if end else 0x60, last_count, 0, 0)) + h('04 00 00 00'))
-    return blocks + trailer
-
-
-SERIAL_REPLY = h('41 78 56 34 12')
-NOT_READY = h('40 01 00 01 30 01 00 00 00 00 00 00 00 00 00 00')
-READY = h('40 01 00 01 30 01 02 03 00 03 96 00 00 00 00 00')
-STATUS_8 = h('20 01 30 00 00 00 00 00')
-STOP = ('ctrl', (0x20, 0, 0, 8), STATUS_8)
-DRAIN_LENGTH = p.read_reply_buffer_size(p.MAX_TRANSFER_BYTES, 512)
-RAW_DRAIN_LENGTH = p.raw_read_buffer_size(p.MAX_RAW_TRANSFER_BYTES, 512)
-#: The §8.2 resync on an HS: stop, drain the primary IN, drain the alternate IN.
-RAW_DRAIN = ('raw_in', TransportTimeout('nothing on the alternate endpoint'), RAW_DRAIN_LENGTH)
-
-T3S = 0xFC  # 3 s, the timeout the worked examples use
-SHORT_MS = int(SHORT_WAIT_S * 1000)
-#: §7.2, §7.3: the larger expiry of the two timed units under the code sent plus 2 s, in
-#: whole milliseconds (GPIB-USB-HS 013CC9DF under NI's driver; 01CEE482 under this one).
-WAIT_3S_MS = 6196    # 0xfc: 4.196156 s (013CC9DF; 01CEE482 ends at 3.750) + 2 s
-WAIT_10S_MS = 22000  # 0xfd: 20.000 s (01CEE482; 013CC9DF ends at 16.778) + 2 s
-WAIT_30S_MS = 43250  # 0xfe: 41.250 s (01CEE482; 013CC9DF ends at 33.555) + 2 s
-
-
-def attach_script(take_control_error: int = 5) -> List[Tuple[Any, ...]]:
-    """§2.8 for an HS as system controller: steps 2, 5 and 7 (4 and 6 are optional and skipped)."""
-    return [
-        ('ctrl', (0x41, 0, 0, 16), SERIAL_REPLY),
-        ('ctrl', (0x40, 0, 0, 16), READY),
-        ('out', p.register_write_message(t.register_init_writes())), ('in', regwrite_reply(26), 16),
-        ('out', p.interface_clear_message()), ('in', status_reply(0x0F), 12),
-        ('out', p.register_write_message([t.REN_ON_WRITE])), ('in', regwrite_reply(1), 16),
-        ('out', p.take_control_message(True)), ('in', status_reply(0x01, error=take_control_error), 12),
-    ]
-
-
-#: Before a re-attach the bulk pipes are reset: the OUT pair in NI's order (§10.6.5), then the IN pair.
-CLEAR_HALTS = [('clear_halt', 0x06), ('clear_halt', 0x02), ('clear_halt', 0x84), ('clear_halt', 0x88)]
-
-
-#: The stop-and-drain of §8.2 when nothing is queued (raw transfers off).
-DRAIN = [STOP, ('in', TransportTimeout('nothing to drain'), DRAIN_LENGTH)]
-
-
-def reattach_script(take_control_error: int = 5) -> List[Tuple[Any, ...]]:
-    """What the operation after a fault does first on an HS: the pipe resets, then §2.8 again.
-
-    After a malformed reply, that is: the stop-and-drain of §8.2 ran when the reply was seen.
-    """
-    return CLEAR_HALTS + attach_script(take_control_error)
-
-
-def reattach_after_usb_fault_script(stale: Any = None, take_control_error: int = 5,
-                                    raw: bool = False) -> List[Tuple[Any, ...]]:
-    """The same after a USB error, which drains nothing when it happens: the stop-and-drain comes
-    here, behind the pipe resets, and ``stale`` is the queued reply it finds (None: nothing)."""
-    found = TransportTimeout('nothing to drain') if stale is None else stale
-    return (CLEAR_HALTS + [STOP, ('in', found, DRAIN_LENGTH)] + ([RAW_DRAIN] if raw else [])
-            + attach_script(take_control_error))
-
-
-def address_listener(pad: int = 22, code: int = T3S) -> List[Tuple[Any, ...]]:
-    return [('out', p.command_message(t.address_listener_command(0, pad), code)), ('in', status_reply(0x0C))]
-
-
-def address_talker(pad: int = 22, code: int = T3S) -> List[Tuple[Any, ...]]:
-    return [('out', p.command_message(t.address_talker_command(0, pad), code)), ('in', status_reply(0x0C)),
-            ('out', p.go_to_standby_message()), ('in', status_reply(0x06))]
-
-
-def attached(extra: List[Tuple[Any, ...]], **kwargs) -> Tuple[Controller, ScriptedTransport]:
-    transport = ScriptedTransport(attach_script() + extra)
-    controller = Controller(transport, t.PID_HS, sleep=lambda s: None, **kwargs)
-    controller.attach()
-    return controller, transport
-
-
-def attached_ni(extra: List[Tuple[Any, ...]], **kwargs) -> Tuple[Controller, ScriptedTransport]:
-    """``attached`` with NI's instructions (0x0b, 0x0e, 0x10) switched on; a controller leaves them off by default."""
-    return attached(extra, ni_instructions=True, **kwargs)
+from tests.fakes.gpib_usb import (CLEAR_HALTS, DRAIN, DRAIN_LENGTH, NOT_READY, RAW_DRAIN, READY, SERIAL_REPLY,
+                                  SHORT_MS, STATUS_8, STOP, T3S, WAIT_3S_MS, WAIT_10S_MS, WAIT_30S_MS,
+                                  QueueingAdapter, ScriptedTransport, address_listener,
+                                  address_talker, attach_script, attached, attached_ni, h, raw_read_reply,
+                                  raw_wait_ms, raw_wait_slices, raw_write_reply, read_reply,
+                                  reattach_after_usb_fault_script, reattach_script, regread_reply,
+                                  regwrite_reply, status_reply, talking)
 
 
 # ---------------------------------------------------------------------------
@@ -580,12 +340,6 @@ class TestWrite:
             controller.write(22, b'A', timeout_s=3.0)
         assert info.value.code == 1
         transport.assert_done()
-
-
-def raw_write_reply(requested: int, transferred: int, *, error: int = 0) -> bytes:
-    """Our bare 0x0e reply: the 8-byte status block with its 32-bit count, then termination."""
-    count = (transferred - requested).to_bytes(4, 'little', signed=True)
-    return bytes((0x0E, 0x00, 0x28, error)) + count + h('04 00 00 00')
 
 
 class TestRawWrite:
@@ -1067,61 +821,6 @@ class TestRead:
         assert not [step for step in transport.script if step[0] == 'clear_halt']
 
 
-class TalkingTransport:
-    """An adapter with one talker holding ``message``, for reads whose shape is not scripted.
-
-    Answers the attach and the addressing with plain successes, and every
-    0x0a with the next ``count`` bytes of the message -- END with the last
-    of them, a device timeout (error 0x0a, nothing read) once it is empty.
-    Records the count of every 0x0a and the host wait of every bulk IN.
-    """
-
-    max_packet_size = 512
-    max_packet_size_raw = 512
-
-    def __init__(self, message: bytes) -> None:
-        self.pending = message
-        self.reply = b''
-        self.sent: List[bytes] = []
-        self.read_counts: List[int] = []
-        self.in_timeouts: List[int] = []
-
-    def control_in(self, request, value, index, length, timeout_ms, request_type=0xC0) -> bytes:
-        return SERIAL_REPLY if request == 0x41 else READY
-
-    def bulk_out(self, data: bytes, timeout_ms: int) -> None:
-        self.sent.append(data)
-        opcode = data[0]
-        if opcode == p.OP_REGISTER_WRITE:
-            self.reply = regwrite_reply(data[1])
-        elif opcode == p.OP_READ:
-            count = 0x10000 - int.from_bytes(data[4:6], 'little')
-            self.read_counts.append(count)
-            if not self.pending:
-                self.reply = read_reply(b'', count, end=False, error=t.ERR_TIMEOUT)
-            else:
-                out, self.pending = self.pending[:count], self.pending[count:]
-                self.reply = read_reply(out, count, end=not self.pending)
-        else:
-            self.reply = status_reply(opcode)
-
-    def bulk_in(self, length: int, timeout_ms: int) -> bytes:
-        self.in_timeouts.append(timeout_ms)
-        assert len(self.reply) <= length, 'reply of %d bytes would overflow the %d-byte buffer' % (len(self.reply), length)
-        reply, self.reply = self.reply, b''
-        return reply
-
-    def close(self) -> None:
-        pass
-
-
-def talking(message: bytes) -> Tuple[Controller, TalkingTransport]:
-    transport = TalkingTransport(message)
-    controller = Controller(transport, t.PID_HS, sleep=lambda s: None)
-    controller.attach()
-    return controller, transport
-
-
 def framed_counts(messages: List[bytes]) -> List[int]:
     """The requested count of every 0x0a among ``messages``."""
     return [0x10000 - int.from_bytes(m[4:6], 'little') for m in messages if m[0] == p.OP_READ]
@@ -1273,33 +972,6 @@ class TestFramedReadCap:
         opcodes = [m[0] for m in transport.sent]
         assert opcodes.count(p.OP_COMMAND) == 1 and opcodes.count(p.OP_GO_TO_STANDBY) == 1
         assert p.OP_READ_RAW not in opcodes
-
-
-def raw_read_reply(requested: int, transferred: int, *, end: bool = True, error: int = 0) -> bytes:
-    """Our two-block 0x0b reply: the 0x0b status with its tail, the clear-END write's status, termination."""
-    count = (transferred - requested).to_bytes(4, 'little', signed=True)
-    ibsta = 0x0064 | (t.IBSTA_END if end else 0)
-    block = bytes((0x0B,)) + ibsta.to_bytes(2, 'big') + bytes((error,)) + count + bytes((0xE0 if end else 0x60, 0, 0, 0))
-    return block + h('09 00 64 00') + count + h('01 00 00 00') + h('04 00 00 00')
-
-
-def raw_wait_ms(count: int, base_ms: int = WAIT_3S_MS) -> int:
-    return base_ms + count * 1000 // BUS_MIN_RATE_BPS
-
-
-def raw_wait_slices(total_ms: int, buffer: int, partial: bytes = b'') -> List[Tuple[Any, ...]]:
-    """A 0x88 wait of ``total_ms`` that brings nothing: every slice times out, and so does every
-    look at the primary IN between two slices. ``partial`` arrives with the last slice."""
-    steps: List[Tuple[Any, ...]] = []
-    taken = 0
-    while total_ms > 0:
-        slice_ms = min(int(RAW_READ_SLICE_S * 1000), total_ms)
-        total_ms -= slice_ms
-        last = total_ms == 0
-        steps.append(('raw_in', TransportTimeout('nothing yet', partial=partial if last else b''), buffer - taken))
-        if not last:
-            steps.append(('in', TransportTimeout('no reply yet'), 512))
-    return steps
 
 
 IDN_2420 = b'KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L\n'
@@ -2345,54 +2017,6 @@ class TestFaults:
             controller.command(b'\x14', timeout_s=3.0)
         assert controller.command(b'\x14', timeout_s=3.0) == 1
         transport.assert_done()
-
-
-class QueueingAdapter:
-    """A fake whose replies stay queued until they are read, as they do in the real pipe.
-
-    Every message is answered; ``fail_in`` / ``fail_stop`` make the next reply read / stop
-    request raise once, leaving the reply it did not deliver in the queue.
-    """
-
-    max_packet_size = 512
-    max_packet_size_raw = 512
-
-    def __init__(self) -> None:
-        self.queue: List[bytes] = []
-        self.opcodes: List[int] = []
-        self.written: List[bytes] = []
-        self.fail_in: Optional[Exception] = None
-        self.fail_stop: Optional[Exception] = None
-
-    def control_in(self, request, value, index, length, timeout_ms, request_type=0xC0) -> bytes:
-        if request == 0x20 and self.fail_stop is not None:
-            failure, self.fail_stop = self.fail_stop, None
-            raise failure
-        return {0x41: SERIAL_REPLY, 0x40: READY}.get(request, STATUS_8)
-
-    def bulk_out(self, data: bytes, timeout_ms: int) -> None:
-        opcode = data[0]
-        self.opcodes.append(opcode)
-        if opcode == p.OP_REGISTER_WRITE:
-            self.queue.append(regwrite_reply(data[1]))
-        else:
-            if opcode == p.OP_WRITE:
-                self.written.append(data[8:8 + 0x10000 - int.from_bytes(data[1:3], 'little')])
-            self.queue.append(status_reply(opcode))
-
-    def bulk_in(self, length: int, timeout_ms: int) -> bytes:
-        if self.fail_in is not None:
-            failure, self.fail_in = self.fail_in, None
-            raise failure
-        if not self.queue:
-            raise TransportTimeout('nothing queued')
-        return self.queue.pop(0)
-
-    def clear_halt(self, endpoint: int) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
 
 
 class TestStaleReplyAfterAUsbFault:
