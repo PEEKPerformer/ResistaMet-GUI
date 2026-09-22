@@ -221,6 +221,30 @@ class TestParseMetadata:
         assert math.isnan(meta['params.temperature_c'])
 
 
+class TestParseMetadataTextKeys:
+    """Identifiers must come back as written, not as the literal they resemble."""
+
+    def _file(self, base_path):
+        meta = {'spot': {'map_id': '12_3', 'label': 'true', 'index': 4}}
+        exp = CsvExporter(base_path, meta, ['elapsed_s'], ['s'])
+        exp.write_row([0.0])
+        exp.finalize({'total_samples': 1})
+        return exp.output_paths[0]
+
+    def test_coercion_mangles_an_id_that_looks_like_a_number(self, base_path):
+        parsed = parse_metadata(self._file(base_path))
+        assert parsed['spot.map_id'] == 123
+        assert parsed['spot.label'] is True
+
+    def test_text_keys_come_back_as_written(self, base_path):
+        parsed = parse_metadata(self._file(base_path),
+                                text_keys=('spot.map_id', 'spot.label'))
+        assert parsed['spot.map_id'] == '12_3'
+        assert parsed['spot.label'] == 'true'
+        assert parsed['spot.index'] == 4
+        assert parsed['total_samples'] == 1
+
+
 # --------------------------------- All six modes ----------------------------
 
 
@@ -345,3 +369,241 @@ class TestMakeExporter:
         exp.write_row([0.0, 1.05])
         exp.finalize()
         assert exp.output_paths[0].name.endswith('.csv.gz')
+
+
+# ------------------------------- Spot block ---------------------------------
+
+
+SPOT_BLOCK = {
+    'map_id': 'wafer7', 'index': 2, 'label': 'rim', 'x_mm': 20.0, 'y_mm': 0.0,
+    'angle_deg': 90.0,
+    'sample': {'shape': 'circle', 'diameter_mm': 50.8, 'width_mm': None, 'length_mm': None},
+    'position_correction': 'warn', 'edge_warn_pct': 1.0,
+    'factor_here': 4.41, 'factor_centre': 4.5171, 'relative_error': 0.0243,
+    'edge_clearance_s': 5.06,
+}
+
+
+def _four_point_meta(**kwargs):
+    from datetime import datetime
+    return build_metadata(user='alice', sample_name='wafer7', mode='four_point',
+                          settings={'measurement': {'fpp_current': 1e-3}},
+                          start_time=datetime(2026, 9, 19, 12, 0, 0), **kwargs)
+
+
+class TestSpotBlock:
+    def test_a_run_without_a_spot_has_no_spot_keys(self):
+        assert 'spot' not in _four_point_meta()
+        assert _four_point_meta(spot=None) == _four_point_meta()
+
+    def test_the_block_is_the_only_difference(self):
+        with_spot = _four_point_meta(spot=SPOT_BLOCK)
+        assert with_spot.pop('spot') == SPOT_BLOCK
+        assert with_spot == _four_point_meta()
+
+    def test_csv_header_round_trip(self, base_path):
+        exp = CsvExporter(base_path, _four_point_meta(spot=SPOT_BLOCK), ['elapsed_s'], ['s'])
+        exp.write_row([0.0])
+        exp.finalize({'total_samples': 1})
+        text = exp.output_paths[0].read_text()
+        assert '# spot.map_id: wafer7\n' in text
+        assert '# spot.sample.shape: circle\n' in text
+        assert '# spot.sample.width_mm: \n' in text
+
+        parsed = parse_metadata(exp.output_paths[0])
+        assert parsed['spot.map_id'] == 'wafer7'
+        assert parsed['spot.index'] == 2
+        assert parsed['spot.label'] == 'rim'
+        assert (parsed['spot.x_mm'], parsed['spot.y_mm']) == (20.0, 0.0)
+        assert parsed['spot.sample.diameter_mm'] == 50.8
+        assert parsed['spot.sample.width_mm'] is None
+        assert parsed['spot.relative_error'] == 0.0243
+        assert parsed['spot.position_correction'] == 'warn'
+
+    def test_hdf5_attributes(self, base_path):
+        h5py = pytest.importorskip("h5py")
+        exp = Hdf5Exporter(base_path, _four_point_meta(spot=SPOT_BLOCK), ['elapsed_s'], ['s'])
+        exp.write_row([0.0])
+        exp.finalize({'total_samples': 1})
+        with h5py.File(exp.output_paths[0], 'r') as f:
+            assert f.attrs['spot.map_id'] == 'wafer7'
+            assert f.attrs['spot.index'] == 2
+            assert f.attrs['spot.sample.diameter_mm'] == 50.8
+            assert f.attrs['spot.sample.width_mm'] == ""
+            assert f.attrs['spot.edge_clearance_s'] == 5.06
+
+
+class TestClientBlock:
+    """``settings['client']``: the program that asked for the run."""
+
+    CLIENT = {'name': 'resistamet-desktop', 'version': '2.0.0-1'}
+
+    def _meta(self, mode, settings):
+        from datetime import datetime
+        return build_metadata(user='alice', sample_name='wafer7', mode=mode,
+                              settings=settings, start_time=datetime(2026, 9, 19, 12, 0, 0))
+
+    @pytest.mark.parametrize("mode", ['resistance', 'four_point', 'sweep', 'vdp'])
+    def test_the_block_is_the_only_difference(self, mode):
+        plain = self._meta(mode, {'measurement': {}})
+        with_client = self._meta(mode, {'measurement': {}, 'client': self.CLIENT})
+        assert 'client' not in plain
+        assert with_client.pop('client') == self.CLIENT
+        assert with_client == plain
+
+    def test_csv_header_lines(self, base_path):
+        meta = self._meta('resistance', {'measurement': {}, 'client': self.CLIENT})
+        exp = CsvExporter(base_path, meta, ['elapsed_s', 'R_ohm'])
+        exp.finalize()
+        text = exp.output_paths[0].read_text(encoding='utf-8')
+        assert "# client.name: resistamet-desktop\n" in text
+        assert "# client.version: 2.0.0-1\n" in text
+
+
+# ------------------------------- File names ---------------------------------
+
+
+class TestDottedBaseName:
+    """A base name ends in the source value, which has a decimal point.
+
+    ``Path.with_suffix`` read ``.10mA`` as a suffix and replaced it, so
+    ``..._4PP_0.10mA`` was written as ``..._4PP_0.csv``.
+    """
+
+    DOTTED = '1789000000_wafer_4PP_0.10mA'
+
+    def test_csv_keeps_the_whole_name(self, tmp_path, basic_meta):
+        exp = CsvExporter(tmp_path / self.DOTTED, basic_meta, ['elapsed_s', 'R_ohm'])
+        exp.finalize()
+        assert exp.output_paths[0].name == self.DOTTED + '.csv'
+
+    def test_gzipped_csv_keeps_the_whole_name(self, tmp_path, basic_meta):
+        exp = CsvExporter(tmp_path / self.DOTTED, basic_meta, ['elapsed_s', 'R_ohm'],
+                          compression='always')
+        exp.write_row([0.0, 1.05])
+        exp.finalize()
+        assert exp.output_paths[0].name == self.DOTTED + '.csv.gz'
+        assert [p.name for p in tmp_path.iterdir()] == [self.DOTTED + '.csv.gz']
+
+    def test_hdf5_keeps_the_whole_name(self, tmp_path, basic_meta):
+        pytest.importorskip("h5py")
+        exp = Hdf5Exporter(tmp_path / self.DOTTED, basic_meta, ['elapsed_s', 'R_ohm'])
+        exp.finalize()
+        assert exp.output_paths[0].name == self.DOTTED + '.h5'
+
+    def test_legacy_pair_keeps_the_whole_name(self, tmp_path, basic_meta):
+        exp = LegacyDualExporter(tmp_path / self.DOTTED, basic_meta, ['elapsed_s', 'R_ohm'])
+        exp.write_row([0.0, 1.05])
+        exp.flush()
+        assert (tmp_path / (self.DOTTED + '.json.tmp')).exists()
+        exp.finalize()
+        assert sorted(p.name for p in tmp_path.iterdir()) == [
+            self.DOTTED + '.csv', self.DOTTED + '.json']
+
+
+class TestExistingFilesAreNeverOpenedForWriting:
+    """The stamp in a base name has one-second resolution, so a second run of
+    the same sample in the same second asks for the same base path. It gets
+    ``name-2`` and the first run's file is left exactly as it was."""
+
+    COLUMNS = ['elapsed_s', 'R_ohm']
+
+    def test_second_csv_run_gets_a_new_name(self, base_path, basic_meta):
+        first = CsvExporter(base_path, basic_meta, self.COLUMNS)
+        first.write_row([0.0, 1.05])
+        first.finalize({'total_samples': 1})
+        before = first.output_paths[0].read_bytes()
+
+        second = CsvExporter(base_path, basic_meta, self.COLUMNS)
+        second.write_row([0.0, 2.10])
+        second.finalize({'total_samples': 1})
+
+        assert first.output_paths[0].name == 'run_001.csv'
+        assert second.output_paths[0].name == 'run_001-2.csv'
+        assert first.output_paths[0].read_bytes() == before
+
+    def test_a_run_still_being_written_is_not_truncated(self, base_path, basic_meta):
+        first = CsvExporter(base_path, basic_meta, self.COLUMNS)
+        first.write_row([0.0, 1.05])
+        first.flush()
+        second = CsvExporter(base_path, basic_meta, self.COLUMNS)
+        assert second.csv_path != first.csv_path
+        assert "0,1.05" in first.csv_path.read_text(encoding='utf-8')
+        first.finalize()
+        second.finalize()
+
+    def test_third_run_counts_on(self, base_path, basic_meta):
+        names = []
+        for _ in range(3):
+            exp = CsvExporter(base_path, basic_meta, self.COLUMNS)
+            exp.finalize()
+            names.append(exp.output_paths[0].name)
+        assert names == ['run_001.csv', 'run_001-2.csv', 'run_001-3.csv']
+
+    def test_a_compressed_first_run_also_holds_the_name(self, base_path, basic_meta):
+        first = CsvExporter(base_path, basic_meta, self.COLUMNS, compression='always')
+        first.write_row([0.0, 1.05])
+        first.finalize()
+        before = first.output_paths[0].read_bytes()
+
+        second = CsvExporter(base_path, basic_meta, self.COLUMNS, compression='always')
+        second.write_row([0.0, 2.10])
+        second.finalize()
+
+        assert first.output_paths[0].name == 'run_001.csv.gz'
+        assert second.output_paths[0].name == 'run_001-2.csv.gz'
+        assert first.output_paths[0].read_bytes() == before
+
+    def test_second_hdf5_run_gets_a_new_name(self, base_path, basic_meta):
+        pytest.importorskip("h5py")
+        first = Hdf5Exporter(base_path, basic_meta, self.COLUMNS)
+        first.write_row([0.0, 1.05])
+        first.finalize()
+        before = first.output_paths[0].read_bytes()
+
+        second = Hdf5Exporter(base_path, basic_meta, self.COLUMNS)
+        second.write_row([0.0, 2.10])
+        second.finalize()
+
+        assert second.output_paths[0].name == 'run_001-2.h5'
+        assert first.output_paths[0].read_bytes() == before
+
+    def test_second_legacy_run_gets_a_new_pair(self, base_path, basic_meta):
+        first = LegacyDualExporter(base_path, basic_meta, self.COLUMNS)
+        first.write_row([0.0, 1.05])
+        first.finalize()
+        before = [p.read_bytes() for p in first.output_paths]
+
+        second = LegacyDualExporter(base_path, basic_meta, self.COLUMNS)
+        second.write_row([0.0, 2.10])
+        second.finalize()
+
+        assert [p.name for p in second.output_paths] == ['run_001-2.csv', 'run_001-2.json']
+        assert [p.read_bytes() for p in first.output_paths] == before
+
+    def test_a_crashed_legacy_run_keeps_its_checkpoint(self, base_path, basic_meta):
+        # A leftover checkpoint is the crashed run's data: the name is taken.
+        crashed = LegacyDualExporter(base_path, basic_meta, self.COLUMNS)
+        crashed.write_row([0.0, 1.05])
+        crashed.flush()
+        crashed._csv_file.close()  # the process died; nothing finalized it
+        checkpoint = base_path.with_name('run_001.json.tmp')
+        before = checkpoint.read_bytes()
+
+        second = LegacyDualExporter(base_path, basic_meta, self.COLUMNS)
+        second.write_row([0.0, 2.10])
+        second.flush()
+        second.finalize()
+
+        assert checkpoint.read_bytes() == before
+
+    def test_a_name_taken_after_the_check_is_an_error_not_an_overwrite(
+            self, base_path, basic_meta, monkeypatch):
+        # Another process creating the file between the check and the open.
+        import resistamet_gui.data_export as data_export
+        taken = base_path.with_name('run_001.csv')
+        taken.write_text("someone else's data\n")
+        monkeypatch.setattr(data_export, '_unused_base_path', lambda base, exts: base)
+        with pytest.raises(FileExistsError):
+            CsvExporter(base_path, basic_meta, self.COLUMNS)
+        assert taken.read_text() == "someone else's data\n"

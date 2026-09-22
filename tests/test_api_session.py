@@ -231,3 +231,73 @@ class TestCors:
     def test_unknown_origin_gets_no_allowance(self, client):
         response = client.get('/session', headers={'Origin': 'https://example.com'})
         assert 'access-control-allow-origin' not in response.headers
+
+
+class TestStartWithASpot:
+    SPOT = {'map_id': 'wafer7', 'index': 1, 'label': 'centre'}
+
+    def test_the_spot_reaches_the_run_settings(self, client, fake_rm, sink):
+        assert _start(client, spot=self.SPOT).status_code == 202
+        assert _wait_for(lambda: sink.of_type('run_started'))
+        started = sink.of_type('run_started')[0].payload
+        assert started['settings']['spot']['map_id'] == 'wafer7'
+        assert started['settings']['spot']['label'] == 'centre'
+        client.post('/session/stop')
+
+    def test_a_map_id_that_could_build_a_path_is_unprocessable(self, client, fake_rm, sink):
+        for map_id in ('../wafer7', 'a/b', '..', ''):
+            response = _start(client, spot={**self.SPOT, 'map_id': map_id})
+            assert response.status_code == 422, map_id
+        assert sink.events == []
+
+    def test_only_four_point_may_carry_one(self, client, fake_rm, sink):
+        response = _start(client, mode='resistance', spot=self.SPOT)
+        assert response.status_code == 422
+        assert 'four_point' in response.json()['detail']
+        assert sink.events == []
+
+
+class TestStartWithAClient:
+    """Which program asked for the run, in the file header."""
+
+    CLIENT = {'name': 'resistamet-desktop', 'version': '2.0.0-1'}
+
+    def _start_as(self, http, who):
+        # Not _start(): its first parameter is already called "client".
+        body = {'mode': 'four_point', 'sample_name': 'wafer1', 'username': 'alice'}
+        if who is not None:
+            body['client'] = who
+        return http.post('/session/start', json=body)
+
+    def _header_of_a_stopped_run(self, http, sink, who):
+        from resistamet_gui.data_export import parse_metadata
+        assert self._start_as(http, who).status_code == 202
+        assert _wait_for(lambda: sink.of_type('sample'))
+        http.post('/session/stop')
+        assert _wait_for(lambda: sink.of_type('run_ended'))
+        path = sink.of_type('file_finalized')[0].payload['path']
+        return parse_metadata(path, text_keys=('client.name', 'client.version'))
+
+    def test_the_client_is_written_to_the_header(self, client, fake_rm, sink):
+        header = self._header_of_a_stopped_run(client, sink, self.CLIENT)
+        assert header['client.name'] == 'resistamet-desktop'
+        assert header['client.version'] == '2.0.0-1'
+        # The backend's own version is still there, and still its own.
+        from resistamet_gui.constants import __version__
+        assert str(header['software_version']) == __version__
+
+    def test_no_client_means_nothing_new_in_the_header(self, client, fake_rm, sink):
+        header = self._header_of_a_stopped_run(client, sink, None)
+        assert [key for key in header if key.startswith('client')] == []
+
+    @pytest.mark.parametrize("bad", [
+        {'name': 'resistamet-desktop'},                         # no version
+        {'name': '', 'version': '1'},
+        {'name': 'x' * 65, 'version': '1'},
+        {'name': 'desktop\n# user: mallory', 'version': '1'},   # would forge a header line
+        {'name': 'desktop', 'version': '1', 'token': 'extra'},
+        'resistamet-desktop',
+    ])
+    def test_a_malformed_client_is_unprocessable(self, client, fake_rm, sink, bad):
+        assert self._start_as(client, bad).status_code == 422
+        assert sink.events == []

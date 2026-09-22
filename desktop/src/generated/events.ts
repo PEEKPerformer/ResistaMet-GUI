@@ -76,6 +76,54 @@ export interface FileOpenedPayload {
 }
 
 /**
+ * A four-point spot's position is a problem, said before the first sample.
+ *
+ * ``refused`` with ``off_sample``: a probe tip is on or beyond the edge and
+ * the run ends without touching the instrument. ``near_edge``: the position
+ * costs more than ``edge_warn_pct`` here; the run goes on and the values are
+ * recorded as measured, without a position correction.
+ *
+ * Two errors, both fractions and not percentages. ``relative_error_rows`` is
+ * ``factor_rows / factor_here - 1``, against the lateral factor the run's
+ * rows really apply (the table look-up, or K*alpha); it is the error in the
+ * file's Rs. ``relative_error`` is ``factor_centre / factor_here - 1``,
+ * against the closed-form centre of the sample outline. ``compared_with``
+ * says which one was held against the threshold: ``rows`` whenever the rows
+ * have a factor, else ``centre``. The factors are absent off the sample,
+ * where they diverge.
+ */
+export interface GeometryWarningPayload {
+  compared_with?: "rows" | "centre";
+  edge_clearance_s: number;
+  edge_warn_pct: number;
+  factor_centre?: number | null;
+  factor_here?: number | null;
+  factor_rows?: number | null;
+  message: string;
+  reason: "off_sample" | "near_edge";
+  refused: boolean;
+  relative_error?: number | null;
+  relative_error_rows?: number | null;
+  spot: SpotRequest;
+}
+/**
+ * One placement of the probe, as the client describes it.
+ *
+ * The position is optional -- a spot can be a label and nothing more -- but
+ * ``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the
+ * direction of the probe array, anticlockwise from +x; absent, the run uses
+ * the ``fpp_array_angle_deg`` setting.
+ */
+export interface SpotRequest {
+  angle_deg?: number | null;
+  index: number;
+  label: string;
+  map_id: string;
+  x_mm?: number | null;
+  y_mm?: number | null;
+}
+
+/**
  * The SMU answered *IDN? and its limits are known.
  */
 export interface InstrumentConnectedPayload {
@@ -212,6 +260,52 @@ export interface DerivedPayload {
 }
 
 /**
+ * A four-point run's file is closed; these are the numbers in its footer.
+ *
+ * Emitted for every four-point run whose file was finalized, so a client
+ * shows the backend's statistics instead of computing its own. ``spot`` is
+ * null for a run that was not given one. How the run ended is in the
+ * ``run_ended`` event that follows.
+ */
+export interface SpotCompletePayload {
+  path?: string | null;
+  spot?: SpotRequest | null;
+  stats: SpotStats;
+}
+/**
+ * One placement of the probe, as the client describes it.
+ *
+ * The position is optional -- a spot can be a label and nothing more -- but
+ * ``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the
+ * direction of the probe array, anticlockwise from +x; absent, the run uses
+ * the ``fpp_array_angle_deg`` setting.
+ */
+export interface SpotStats {
+  end_reason?: string | null;
+  n: number;
+  n_excluded?: number;
+  rho: QuantityStats;
+  rs: QuantityStats;
+  sigma: QuantityStats;
+}
+/**
+ * One derived quantity over a spot's samples (``session.spot_stats``).
+ *
+ * ``n`` counts the finite values. Every other field is null on the wire when
+ * it does not exist: all of them with no finite value, ``sd`` and
+ * ``rsd_pct`` with fewer than two.
+ */
+export interface QuantityStats {
+  mean?: number | null;
+  n: number;
+  rsd_pct?: number | null;
+  sd?: number | null;
+  u_inst?: number | null;
+  u_stat?: number | null;
+  u_total?: number | null;
+}
+
+/**
  * Paused, resumed or stopping, as observed by the acquisition thread.
  */
 export interface SweepSegmentPayload {
@@ -272,6 +366,7 @@ export interface EventPayloadMap {
   error: ErrorPayload;
   file_finalized: FileFinalizedPayload;
   file_opened: FileOpenedPayload;
+  geometry_warning: GeometryWarningPayload;
   instrument_connected: InstrumentConnectedPayload;
   line_frequency: LineFrequencyPayload;
   log: LogPayload;
@@ -283,6 +378,7 @@ export interface EventPayloadMap {
   run_ended: RunEndedPayload;
   run_started: RunStartedPayload;
   sample: SamplePayload;
+  spot_complete: SpotCompletePayload;
   stopping: RunStatePayload;
   sweep_segment: SweepSegmentPayload;
   vdp_geometry_complete: VdpGeometryCompletePayload;

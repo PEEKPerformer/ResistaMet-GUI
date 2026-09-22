@@ -16,8 +16,9 @@ from typing import Dict, Optional
 import numpy as np
 import pyvisa
 
-from ..constants import AUX_READY_TIMEOUT_S
+from ..constants import AUX_READY_TIMEOUT_S, MODE_DISPLAY_NAMES
 from ..data_export import AUX_LOG_MODES, splice_before_tail
+from ..formatting import format_power
 from ..instrument import Keithley2400, humanize_connection_error
 from ..sensors import aux_column_names, make_sensor, reading_to_columns
 from ..system_utils import SleepInhibitor
@@ -28,6 +29,9 @@ from .configure import (
     configure_source_v, configure_sweep,
 )
 from .run_files import create_base_path, open_exporter
+from .spot_map import write_map_summary
+from .spot_record import spot_record_from_settings
+from .spot_stats import SpotSamples, spot_statistics
 from .samples import (
     build_row, parse_four_point, parse_resistance, parse_source_i, parse_source_v,
 )
@@ -53,6 +57,8 @@ class ContinuousRun:
         if mode not in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             raise ValueError(f"Invalid measurement mode: {mode}")
         self.mode = mode
+        #: The mode as log messages name it; self.mode stays the internal key.
+        self._mode_name = MODE_DISPLAY_NAMES[mode]
         self.sample_name = sample_name
         self.username = username
         self.settings = settings
@@ -67,6 +73,19 @@ class ContinuousRun:
         self._mode_state = None
         # Set by each delta read: the per-polarity values the row builder logs.
         self._last_delta = None
+        #: The negative-V/I warning is given once per run, not per sample.
+        self._fpp_negative_ratio_warned = False
+        # Set before anything is opened: this run's spot resolved against the
+        # sample outline, or None for a run that carries no spot.
+        self._spot_record = None
+        # The values behind the end-of-run statistics. Four-point only: no
+        # other mode has a per-spot result.
+        self._spot_samples = SpotSamples() if mode == 'four_point' else None
+        self._spot_sample_warned = False  # debounce: say it once per run
+        self._shut_down_started = False   # _shut_down runs once per run
+        # Set when a spot's file is finalized; its map summary is written
+        # once the instrument has been let go.
+        self._pending_map_id = None
 
         # Start/stop/pause state and the marker queue, shared with whoever is
         # driving the run.
@@ -192,6 +211,7 @@ class ContinuousRun:
                 on_compress=self._emit_compress_status,
                 on_large_file=self._emit_large_file_status,
                 effective=self._effective_settings(),
+                spot=self._spot_record.header() if self._spot_record else None,
             )
             # Hdf5Exporter does not expose them; the schema is still known
             # to the caller, so an empty list means "ask get_column_config".
@@ -211,7 +231,11 @@ class ContinuousRun:
         """Run the instrument's own sweep engine, write the points, report them."""
         # Sweep mode: single atomic operation, then done
         if self.mode == 'sweep':
-            self._events.log('sweep_started', f"Running I-V sweep ({self._mode_state.points} points)...")
+            if self._mode_state.up_down:
+                planned = f"{self._mode_state.points} points each way"
+            else:
+                planned = f"{self._mode_state.points} points"
+            self._events.log('sweep_started', f"Running I-V sweep ({planned})...")
             try:
                 self.keithley.write(":OUTP ON")
                 # Increase timeout for long sweeps
@@ -241,6 +265,11 @@ class ContinuousRun:
                         self.exporter.write_row(row_data)
                     except Exception:
                         pass
+
+                # What the closing log line reports: every point in the file,
+                # both legs of an up-then-down sweep. It used to give the
+                # forward leg's count alone ("41 points" for 82 rows).
+                points_summary = f"{len(voltages)} points acquired"
 
                 # For up_down: run reverse sweep
                 if self._mode_state.up_down:
@@ -278,6 +307,8 @@ class ContinuousRun:
                             self.exporter.write_row(row_data)
                         except Exception:
                             pass
+                    points_summary = (f"{len(voltages) + len(rev_v)} points acquired "
+                                      f"({len(voltages)} forward, {len(rev_v)} reverse)")
                     # Report both directions
                     self._events.emit('sweep_segment', {
                         'direction': 'forward', 'voltages': voltages,
@@ -290,7 +321,7 @@ class ContinuousRun:
                         'direction': 'forward', 'voltages': voltages,
                         'currents': currents, 'compliance': comp_list})
 
-                self._events.log('sweep_finished', f"Sweep complete: {len(voltages)} points acquired")
+                self._events.log('sweep_finished', f"Sweep complete: {points_summary}")
             except Exception as e:
                 self._events.error('sweep_error', 'smu', f"Sweep error: {str(e)}")
             # Sweep is done — skip to finalization
@@ -353,7 +384,86 @@ class ContinuousRun:
             # owns the profile file, not to a run.
             self._events.log('safety_silenced',
                               "Touch-safety warning silenced for this profile.")
-        return choice != 'acknowledge'
+        if choice != 'acknowledge':
+            # Cancelled, or stopped while the question was open. Without this
+            # line the log's last entry was still the previous run's: nothing
+            # recorded that a run was asked for and refused.
+            self._events.log('safety_declined',
+                              f"Run of '{self.sample_name}' not started: the touch-safety warning "
+                              f"was not acknowledged ({check.reason} = {check.voltage_v:g} V, "
+                              f"threshold {check.threshold_v:g} V).")
+            return True
+        return False
+
+    def _spot_refused(self) -> bool:
+        """Resolve this run's spot against the sample. True = do not start.
+
+        This runs after run_started and outside execute()'s main try, with the
+        instrument lock held. Whatever goes wrong in it -- a settings value of
+        the wrong type, arithmetic that overflows, a payload the event model
+        rejects -- must come out as a refusal, because the caller's refusal
+        path is what releases the lock and emits the run_ended every run is
+        promised. A spot that cannot be checked is a spot that cannot be
+        recorded.
+        """
+        try:
+            return self._check_spot()
+        except Exception as exc:
+            self._events.error('spot_invalid', 'run', f"The spot cannot be recorded: {exc}")
+            return True
+
+    def _check_spot(self) -> bool:
+        """The spot check itself. True = refused; may raise.
+
+        Pure arithmetic on the settings, done before the instrument is opened,
+        so a probe that is not on the sample never gets an output turned on
+        under it. A spot near an edge is a warning, not a refusal: the
+        measurement is valid, the centred correction is what is off, and the
+        file records by how much.
+        """
+        if self.mode != 'four_point':
+            return False
+        self._spot_record = spot_record_from_settings(self.settings)
+        record = self._spot_record
+        if record is not None and record.ignored_position_correction is not None:
+            self._events.warn('position_correction_ignored',
+                f"Warning: fpp_position_correction is '{record.ignored_position_correction}', "
+                f"which is not implemented. No position correction is applied; the file records 'warn'.")
+        if record is None or record.position is None:
+            return False
+        position = record.position
+        payload = {
+            'spot': record.spot.model_dump(),
+            'edge_clearance_s': position.edge_clearance_s,
+            'edge_warn_pct': record.edge_warn_pct,
+            'factor_here': position.factor_here,
+            'factor_centre': position.factor_centre,
+            'relative_error': position.relative_error,
+            'factor_rows': record.factor_rows,
+            'relative_error_rows': record.relative_error_rows,
+            'compared_with': record.warning_compares_with,
+        }
+        if record.off_sample:
+            message = (f"Spot '{record.spot.label}' is off the sample: a probe tip is "
+                       f"{abs(position.edge_clearance_s):.2f} s beyond the edge.")
+            self._events.emit('geometry_warning', {
+                **payload, 'refused': True, 'reason': 'off_sample', 'message': message})
+            self._events.error('spot_off_sample', 'run', message)
+            return True
+        if record.near_edge:
+            if record.warning_compares_with == 'rows':
+                compared = (f"the geometry factor this run applies ({record.factor_rows:.4g}) "
+                            f"differs from the factor at the spot ({position.factor_here:.4g})")
+            else:
+                compared = (f"the factor at the centre of the sample ({position.factor_centre:.4g}) "
+                            f"differs from the factor at the spot ({position.factor_here:.4g})")
+            message = (f"Spot '{record.spot.label}' is {position.edge_clearance_s:.1f} s from "
+                       f"the edge: {compared} by {abs(record.warning_error) * 100.0:.1f} % "
+                       f"(threshold {record.edge_warn_pct:g} %). No position correction is applied.")
+            self._events.emit('geometry_warning', {
+                **payload, 'refused': False, 'reason': 'near_edge', 'message': message})
+            self._events.warn('spot_near_edge', message)
+        return False
 
     def execute(self):
         self.running = True
@@ -373,6 +483,15 @@ class ContinuousRun:
             self._events.error('instrument_busy', 'smu', str(exc))
             self._events.emit('run_ended', {
                 'reason': 'instrument_busy', 'ok': False, 'samples': 0,
+                'duration_s': 0.0, 'path': None,
+            })
+            return
+
+        if self._spot_refused():
+            self._control.finish('spot_refused')
+            self._release_instrument_lock()
+            self._events.emit('run_ended', {
+                'reason': 'spot_refused', 'ok': False, 'samples': 0,
                 'duration_s': 0.0, 'path': None,
             })
             return
@@ -463,7 +582,7 @@ class ContinuousRun:
                 return
 
             # Configure instrument
-            self._events.log('configuring', f"Configuring instrument for {self.mode} mode...")
+            self._events.log('configuring', f"Configuring instrument for {self._mode_name} mode...")
             metadata = {}
             csv_headers = []
             source_value_str = ""
@@ -531,6 +650,11 @@ class ContinuousRun:
                 except Exception as e:
                     self._events.error('output_on_failed', 'smu', f"Error turning on output: {str(e)}")
                     self._control.finish('output_on_failed')
+                    # The data file is open by now. Leaving through the
+                    # shutdown gives it its footer and the log its closing
+                    # lines; a bare return left both to the silent backstop
+                    # in _cleanup.
+                    self._shut_down(instrument_ready, file_ready, nplc)
                     return
 
             last_save = self.start_time
@@ -710,7 +834,7 @@ class ContinuousRun:
                         fault = aux_cols.get('aux_fault', '0')
                         if fault != self._aux_last_fault:
                             if fault != '0':
-                                self._events.warn('aux_fault', f"⚠️ Auxiliary sensor: {fault}")
+                                self._events.warn('aux_fault', f"Warning: Auxiliary sensor: {fault}")
                             self._aux_last_fault = fault
 
                     stop_on_comp = bool(measurement_settings.get('stop_on_compliance', False))
@@ -720,12 +844,15 @@ class ContinuousRun:
                                 'kind': compliance_type,
                                 'stop_on_compliance': stop_on_comp,
                             })
-                            self._events.warn('compliance', f"⚠️ {compliance_type} Compliance Hit!")
+                            self._events.warn('compliance', f"Warning: {compliance_type} Compliance Hit!")
                         except Exception:
                             pass
                         if stop_on_comp:
                             self._events.log('compliance_stop', "Stopping due to compliance (per settings).")
                             self._control.finish('compliance_stop')
+
+                    if self.mode == 'four_point':
+                        self._warn_once_if_ratio_negative(data_dict, compliance_status)
 
                     # 4PP probe-safety runtime check: measured V*I against the
                     # configured warn / hard-stop thresholds. Hard stop also
@@ -748,8 +875,8 @@ class ContinuousRun:
                                     except Exception:
                                         pass
                                 self._events.error('overpower', 'run', 
-                                    f"4PP overpower: {measured_power*1e3:.1f} mW "
-                                    f"exceeds hard stop {stop_w*1e3:.0f} mW. "
+                                    f"4PP overpower: {format_power(measured_power)} "
+                                    f"exceeds hard stop {format_power(stop_w)}. "
                                     f"Stopping to protect probe and sample."
                                 )
                                 try:
@@ -759,8 +886,8 @@ class ContinuousRun:
                                 self._control.finish('overpower')
                             elif measured_power > warn_w:
                                 self._events.warn('power_envelope', 
-                                    f"⚠️ 4PP power {measured_power*1e3:.1f} mW above "
-                                    f"warn threshold {warn_w*1e3:.0f} mW"
+                                    f"Warning: 4PP power {format_power(measured_power)} above "
+                                    f"warn threshold {format_power(warn_w)}"
                                 )
 
                     # Atomically get and clear event marker (thread-safe)
@@ -797,6 +924,8 @@ class ContinuousRun:
                             self._control.finish('write_error')
                             break
 
+                    self._keep_for_statistics(data_dict, derived, compliance_status)
+
                     sample_payload = {
                         't_unix': now,
                         'elapsed_s': elapsed_time,
@@ -829,10 +958,10 @@ class ContinuousRun:
                     self._periodic_health_check(now)
 
                     elapsed_time_formatted = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
-                    status_msg = f"Running {self.mode}: {elapsed_time_formatted}"
+                    status_msg = f"Running {self._mode_name}: {elapsed_time_formatted}"
                     if self.mode == 'resistance':
                         rv = data_dict.get('resistance', float('nan'))
-                        status_msg += f" | R: {rv:.4f} Ohms" if np.isfinite(rv) else " | R: Invalid"
+                        status_msg += f" | R: {rv:.4f} Ω" if np.isfinite(rv) else " | R: Invalid"
                     elif self.mode == 'source_v':
                         cv = data_dict.get('current', float('nan'))
                         vv = data_dict.get('voltage', float('nan'))
@@ -853,43 +982,38 @@ class ContinuousRun:
                     self._events.log('duration_reached', "Reached configured duration. Stopping.")
                     self._control.finish('duration')
 
-            if instrument_ready and self.keithley:
-                try:
-                    self.keithley.write(":OUTP OFF")
-                    self._events.log('output_off', "Output turned OFF.")
-                except Exception as e:
-                    self._events.warn('output_off_failed', f"Warning: Could not turn off output - {str(e)}")
-
-            final_message = f"Measurement ({self.mode}) stopped."
-            if file_ready and self.exporter:
-                try:
-                    end_time = datetime.now()
-                    end_metadata = {
-                        'ended_at': end_time.isoformat(),
-                        'total_samples': self.exporter.row_count,
-                        'duration_s': time.time() - self.start_time
-                    }
-                    self.exporter.finalize(end_metadata)
-                    self._events.emit('file_finalized', {
-                        'path': self.filename, 'end_metadata': end_metadata})
-                except Exception as e:
-                    self._events.warn('finalize_failed', f"Warning: Error finalizing export - {str(e)}")
-                final_message = f"Measurement ({self.mode}) completed! Data saved to: {self.filename}"
-            self._events.log('completed', final_message)
-            self._events.emit('acquisition_finished', {'mode': self.mode})
+            self._shut_down(instrument_ready, file_ready, nplc)
 
         except RunStopped:
-            # A stop landed during a settle or a retry backoff; the normal
-            # shutdown path follows. Listed first: RunStopped is an Exception,
-            # and the handler below would otherwise report a stop as a fault.
-            pass
+            # A stop landed during a settle or a retry backoff. Listed first:
+            # RunStopped is an Exception, and the handler below would
+            # otherwise report a stop as a fault.
+            #
+            # The exception carried control past the shutdown at the end of
+            # the try block, so it is run here. Without it _cleanup still
+            # turned the output off and closed the file, but the file had no
+            # footer and the log never said the output was off or where the
+            # data went: a stop in the settle looked like a crash.
+            try:
+                self._shut_down(instrument_ready, file_ready, nplc)
+            except Exception as e:
+                self._control.finish('worker_error')
+                self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self._mode_name}): {str(e)}")
         except Exception as e:
             self._control.finish('worker_error')
-            self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self.mode}): {str(e)}")
+            self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self._mode_name}): {str(e)}")
+            # Whatever went wrong, a file that was opened still gets its
+            # footer. A no-op when the fault came after the shutdown began.
+            if file_ready:
+                try:
+                    self._shut_down(instrument_ready, file_ready, nplc)
+                except Exception as shutdown_error:
+                    logger.warning(f"shutdown after a worker error failed: {shutdown_error}")
         finally:
             # Read the counters before cleanup releases the exporter.
             samples = self.exporter.row_count if self.exporter else 0
             self._cleanup()
+            self._write_pending_map_summary()
             reason = self._control.finish_reason or 'completed'
             self._events.emit('run_ended', {
                 'reason': reason,
@@ -899,6 +1023,164 @@ class ContinuousRun:
                 'path': self.filename or None,
             })
             self.running = False
+
+    def _shut_down(self, instrument_ready, file_ready, nplc):
+        """The end of a run that got as far as its instrument: output off,
+        the file's footer, the closing log line.
+
+        ``_cleanup`` runs after this on every exit and would also turn the
+        output off and close the file, but silently and with no footer; it
+        is the backstop, this is the record.
+
+        Runs once: every way out of execute() after the file is open comes
+        through here, and a fault inside the shutdown itself must not send
+        the run round it a second time.
+        """
+        if self._shut_down_started:
+            return
+        self._shut_down_started = True
+        if instrument_ready and self.keithley:
+            try:
+                self.keithley.write(":OUTP OFF")
+                self._events.log('output_off', "Output turned OFF.")
+            except Exception as e:
+                self._events.warn('output_off_failed', f"Warning: Could not turn off output - {str(e)}")
+
+        final_message = f"Measurement ({self._mode_name}) stopped."
+        if file_ready and self.exporter:
+            try:
+                end_time = datetime.now()
+                end_metadata = {
+                    'ended_at': end_time.isoformat(),
+                    'total_samples': self.exporter.row_count,
+                    'duration_s': time.time() - self.start_time
+                }
+                spot_stats = self._spot_statistics(nplc)
+                if spot_stats is not None:
+                    end_metadata['spot_stats'] = spot_stats
+                self.exporter.finalize(end_metadata)
+                self._events.emit('file_finalized', {
+                    'path': self.filename, 'end_metadata': end_metadata})
+            except Exception as e:
+                spot_stats = None
+                self._events.warn('finalize_failed', f"Warning: Error finalizing export - {str(e)}")
+            if spot_stats is not None:
+                self._announce_spot(spot_stats)
+            final_message = f"Measurement ({self._mode_name}) completed! Data saved to: {self.filename}"
+        self._events.log('completed', final_message)
+        self._events.emit('acquisition_finished', {'mode': self.mode})
+
+    def _warn_once_if_ratio_negative(self, data_dict, compliance_status):
+        """Say so, once, when a four-point sample's V/I is negative.
+
+        A passive sample cannot have a negative resistance. With the sense
+        leads open the voltmeter floats (the bench saw about -0.95 V) and the
+        run recorded -43 kΩ/sq, in compliance with nothing, with no word from
+        the log. Swapped sense leads give the same sign.
+
+        A warning only: the sample, the row and the run are left exactly as
+        they were. Delta mode is excluded because its reading is the
+        half-difference of two polarities, where an offset of either sign
+        cancels by design and the sign test means something else.
+        """
+        if self._fpp_negative_ratio_warned or self._mode_state.delta_mode:
+            return
+        if compliance_status != 'OK':
+            return
+        voltage = data_dict.get('voltage', float('nan'))
+        current = data_dict.get('current', float('nan'))
+        if not (np.isfinite(voltage) and np.isfinite(current)):
+            return
+        if voltage * current < 0:
+            self._fpp_negative_ratio_warned = True
+            self._events.warn('fpp_negative_ratio',
+                f"Warning: four-point V/I is negative (V = {voltage:.4g} V at "
+                f"I = {current:.4g} A). The sense leads are probably open or swapped."
+            )
+
+    def _keep_for_statistics(self, data_dict, derived, compliance_status):
+        """Keep a written four-point row's values for the end-of-run statistics.
+
+        Its own guard, outside the one around the file write: a failure here
+        is not a write failure and must not count towards the three that stop
+        a run. The write's error count is zero exactly when this sample's row
+        reached the file, so the statistics cover the rows the file holds.
+        """
+        if self._spot_samples is None or self._csv_error_count != 0:
+            return
+        try:
+            self._spot_samples.add(data_dict.get('voltage'), data_dict.get('current'),
+                                   derived, compliance_status)
+        except Exception as e:
+            if not self._spot_sample_warned:
+                self._spot_sample_warned = True
+                self._events.warn('spot_sample_failed',
+                    f"Warning: A sample could not be kept for the spot statistics - {str(e)}")
+
+    def _spot_statistics(self, nplc):
+        """The four-point statistics for the file footer; None for other modes.
+
+        A failure here is reported and swallowed: the rows are the data, and
+        the file must still be finalized when its summary cannot be computed.
+        """
+        if self._spot_samples is None:
+            return None
+        try:
+            stats = spot_statistics(self._spot_samples, model=self._model_name, nplc=nplc)
+            # The same expression run_ended uses. It lets a map tell a spot
+            # that was stopped early from one that ran its course; what a map
+            # should do about it is not decided here.
+            stats['end_reason'] = self._control.finish_reason or 'completed'
+            return stats
+        except Exception as e:
+            self._events.warn('spot_stats_failed', f"Warning: Could not compute spot statistics - {str(e)}")
+            return None
+
+    def _announce_spot(self, spot_stats):
+        """Emit spot_complete for a file that has just been finalized.
+
+        Outside the guard around the finalize, with a code of its own: by now
+        the file is closed and whole, and a failure to announce it must not be
+        reported as a failure to finalize it.
+        """
+        record = self._spot_record
+        try:
+            self._events.emit('spot_complete', {
+                'spot': record.spot.model_dump() if record else None,
+                'path': self.filename,
+                'stats': spot_stats,
+            })
+        except Exception as e:
+            self._events.warn('spot_complete_failed',
+                f"Warning: The data file is complete, but its statistics could not be reported - {str(e)}")
+        if record is not None:
+            # Written later, by _write_pending_map_summary.
+            self._pending_map_id = record.spot.map_id
+
+    def _write_pending_map_summary(self):
+        """Refresh ``<map_id>_map.json`` beside this run's file, if it has a spot.
+
+        Called after _cleanup and before run_ended. After _cleanup, because
+        assembling a map reads every four-point file in the directory and the
+        directory may be a slow network share: the instrument is closed and
+        its lock released first, so nothing waits on the share but this run's
+        own last event. Before run_ended, because run_ended is promised to be
+        the last event of a run and the map_summary log line is one.
+
+        The summary is derived from the run files and can be rebuilt at any
+        time, so failing to write it is a warning and never the run's failure.
+        """
+        map_id, self._pending_map_id = self._pending_map_id, None
+        if map_id is None:
+            return
+        try:
+            path = write_map_summary(Path(self.filename).parent, map_id)
+            self._events.log('map_summary', f"Map summary: {path.name}")
+        except Exception as e:
+            try:
+                self._events.warn('map_summary_failed', f"Warning: Could not write the map summary - {str(e)}")
+            except Exception:
+                logger.warning("could not report a failed map summary", exc_info=True)
 
     def _emit_compress_status(self, orig_path: Path, gz_path: Path,
                               orig_mb: float, gz_mb: float) -> None:
@@ -921,16 +1203,16 @@ class ContinuousRun:
     def pause_measurement(self) -> None:
         if self.running:
             self.paused = True
-            self._events.log('paused', f"Measurement ({self.mode}) paused")
+            self._events.log('paused', f"Measurement ({self._mode_name}) paused")
 
     def resume_measurement(self) -> None:
         if self.running:
             self.paused = False
-            self._events.log('resumed', f"Measurement ({self.mode}) resumed")
+            self._events.log('resumed', f"Measurement ({self._mode_name}) resumed")
 
     def stop_measurement(self) -> None:
         self._events.emit('stopping', {'reason': 'user_stop'})
-        self._events.log('stopping', f"Stopping measurement ({self.mode})...")
+        self._events.log('stopping', f"Stopping measurement ({self._mode_name})...")
         self._control.finish('user_stop')
 
     def _release_instrument_lock(self) -> None:

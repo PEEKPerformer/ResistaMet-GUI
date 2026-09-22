@@ -1,0 +1,212 @@
+{
+  "definitions": {
+    "SessionStatus": {
+      "$defs": {
+        "InstrumentInfo": {
+          "additionalProperties": false,
+          "description": "The SourceMeter as last seen: what ``identify`` returns, and the data\nof a run's ``instrument_connected`` event. ``model`` is None when the\n*IDN? reply names a model the limits table does not know.",
+          "properties": {
+            "address": {
+              "title": "Address",
+              "type": "string"
+            },
+            "idn": {
+              "title": "Idn",
+              "type": "string"
+            },
+            "max_power_w": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Power W"
+            },
+            "max_source_i": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Source I"
+            },
+            "max_source_v": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Source V"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            }
+          },
+          "required": [
+            "address",
+            "idn",
+            "model",
+            "max_source_v",
+            "max_source_i",
+            "max_power_w"
+          ],
+          "title": "InstrumentInfo",
+          "type": "object"
+        },
+        "PendingPrompt": {
+          "additionalProperties": false,
+          "description": "The question a run is parked on. Same fields as the ``prompt`` event.",
+          "properties": {
+            "detail": {
+              "additionalProperties": true,
+              "title": "Detail",
+              "type": "object"
+            },
+            "kind": {
+              "enum": [
+                "vdp_geometry",
+                "safety_voltage_ack",
+                "cable_null_shorted"
+              ],
+              "title": "Kind",
+              "type": "string"
+            },
+            "options": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Options",
+              "type": "array"
+            },
+            "prompt_id": {
+              "title": "Prompt Id",
+              "type": "string"
+            },
+            "requires_human": {
+              "title": "Requires Human",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "prompt_id",
+            "kind",
+            "options",
+            "requires_human",
+            "detail"
+          ],
+          "title": "PendingPrompt",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "One session: its state and the run it is on, or was last on.",
+      "properties": {
+        "instrument": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstrumentInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_seq": {
+          "title": "Last Seq",
+          "type": "integer"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "resistance",
+                "source_v",
+                "source_i",
+                "four_point",
+                "sweep",
+                "vdp"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Mode"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Path"
+        },
+        "pending_prompt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PendingPrompt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Run Id"
+        },
+        "state": {
+          "enum": [
+            "idle",
+            "identifying",
+            "running",
+            "paused",
+            "awaiting_prompt",
+            "stopping"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "run_id",
+        "mode",
+        "path",
+        "last_seq",
+        "pending_prompt",
+        "instrument"
+      ],
+      "title": "SessionStatus",
+      "type": "object"
+    }
+  }
+}

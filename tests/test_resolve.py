@@ -83,6 +83,15 @@ class TestStartTimeChecks:
         }, strict=True)
         assert _keys(resolved) == ['fpp_power_stop_w']
 
+    def test_power_message_keeps_sub_milliwatt_thresholds(self, profile):
+        # Bench: a 0.1 mW stop was printed as "hard stop 0 mW".
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_current': 1e-4, 'fpp_voltage_compliance': 5.0,
+            'fpp_power_warn_w': 1e-4, 'fpp_power_stop_w': 1e-4,
+        }, strict=True)
+        assert [i.message for i in resolved.issues] == [
+            "worst-case power 500 µW exceeds the probe-safety hard stop 100 µW"]
+
     def test_aux_logging_unavailable_for_sweep(self, profile):
         resolved = resolve_run_settings(profile, 'sweep',
                                          {'aux_log_enabled': True}, strict=True)
@@ -155,3 +164,90 @@ class TestInvalidMode:
     def test_unknown_mode_raises(self, profile):
         with pytest.raises(ValueError):
             resolve_run_settings(profile, 'hall', {})
+
+
+class TestSampleOutline:
+    """The outline must be describable; the position-correction mode is fixed."""
+
+    def test_defaults_raise_nothing(self, profile):
+        assert resolve_run_settings(profile, 'four_point', {}, strict=True).issues == []
+
+    def test_a_legacy_outline_raises_nothing(self, profile):
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_geometry': 'rectangle_2', 'fpp_diameter_cm': 1.0}, strict=True)
+        assert resolved.issues == []
+
+    def test_a_shape_without_its_dimensions_is_an_error(self, profile):
+        resolved = resolve_run_settings(profile, 'four_point',
+                                         {'fpp_sample_shape': 'circle'}, strict=True)
+        assert _keys(resolved) == ['fpp_sample_shape']
+        assert 'needs diameter_mm' in resolved.issues[0].message
+        assert not resolved.ok
+
+    def test_an_outline_the_look_up_does_not_share_is_a_warning(self, profile):
+        """The rows still use the legacy keys; the client is told, not stopped."""
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_sample_shape': 'circle', 'fpp_sample_diameter_mm': 50.8}, strict=True)
+        assert [(i.key, i.severity) for i in resolved.issues] == [('fpp_sample_shape', 'warning')]
+        assert 'unbounded' in resolved.issues[0].message
+        assert resolved.ok
+
+    def test_matching_legacy_and_new_outline_raises_nothing(self, profile):
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_sample_shape': 'circle', 'fpp_sample_diameter_mm': 50.8,
+            'fpp_geometry': 'circle', 'fpp_diameter_cm': 5.08}, strict=True)
+        assert resolved.issues == []
+
+    def test_position_correction_can_only_warn_for_now(self, profile):
+        resolved = resolve_run_settings(profile, 'four_point',
+                                         {'fpp_position_correction': 'apply'}, strict=True)
+        assert _keys(resolved) == ['fpp_position_correction']
+        assert not resolved.ok
+
+    def test_other_modes_are_not_checked(self, profile):
+        profile['measurement']['fpp_sample_shape'] = 'circle'
+        assert resolve_run_settings(profile, 'resistance', {}, strict=True).issues == []
+
+
+class TestSweepCompliance:
+    """The compliance is a current on a voltage-sourced sweep and a voltage
+    on a current-sourced one, and is bounded in the unit it is in."""
+
+    I_SWEEP = {'sweep_source': 'current', 'sweep_start': 0.0, 'sweep_stop': 1e-3,
+               'sweep_step': 1e-4}
+    V_SWEEP = {'sweep_source': 'voltage', 'sweep_start': 0.0, 'sweep_stop': 1.0,
+               'sweep_step': 0.1}
+
+    @pytest.mark.parametrize("volts", [2.0, 21.0, 60.0, 210.0])
+    def test_a_current_sourced_sweep_takes_a_voltage_compliance(self, profile, volts):
+        resolved = resolve_run_settings(profile, 'sweep',
+                                         {**self.I_SWEEP, 'sweep_compliance': volts}, strict=True)
+        assert resolved.issues == []
+
+    def test_but_not_above_210_v(self, profile):
+        resolved = resolve_run_settings(profile, 'sweep',
+                                         {**self.I_SWEEP, 'sweep_compliance': 211.0}, strict=True)
+        assert _keys(resolved) == ['sweep_compliance']
+
+    def test_a_voltage_sourced_sweep_takes_up_to_3_15_a(self, profile):
+        resolved = resolve_run_settings(profile, 'sweep',
+                                         {**self.V_SWEEP, 'sweep_compliance': 3.15}, strict=True)
+        assert resolved.issues == []
+
+    @pytest.mark.parametrize("amps", [3.2, 60.0, 210.0])
+    def test_and_no_more(self, profile, amps):
+        """60 is a fine voltage limit and an absurd current limit; the bound
+        raised for one unit must not leak into the other."""
+        resolved = resolve_run_settings(profile, 'sweep',
+                                         {**self.V_SWEEP, 'sweep_compliance': amps}, strict=True)
+        assert _keys(resolved) == ['sweep_compliance']
+        assert '3.15 A' in resolved.issues[0].message
+
+    def test_60_v_of_compliance_is_reported_as_a_hazard(self, profile):
+        resolved = resolve_run_settings(profile, 'sweep',
+                                         {**self.I_SWEEP, 'sweep_compliance': 60.0}, strict=True)
+        source = resolve_run_settings(profile, 'source_v', {'vsource_voltage': 60.0}, strict=True)
+        assert resolved.hazard.hazardous and source.hazard.hazardous
+        assert resolved.hazard.voltage_v == source.hazard.voltage_v == 60.0
+        assert resolved.hazard.threshold_v == source.hazard.threshold_v
+        assert resolved.hazard.reason == 'V compliance'

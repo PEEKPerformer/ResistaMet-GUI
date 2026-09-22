@@ -141,10 +141,29 @@ class VdpRun:
             # owns the profile file, not to a run.
             self._events.log('safety_silenced',
                               "Touch-safety warning silenced for this profile.")
-        return choice != 'acknowledge'
+        if choice != 'acknowledge':
+            # Cancelled, or stopped while the question was open. Without this
+            # line the log's last entry was still the previous run's: nothing
+            # recorded that a run was asked for and refused.
+            self._events.log('safety_declined',
+                              f"Run of '{self.sample_name}' not started: the touch-safety warning "
+                              f"was not acknowledged ({check.reason} = {check.voltage_v:g} V, "
+                              f"threshold {check.threshold_v:g} V).")
+            return True
+        return False
 
     def execute(self) -> None:
         self.running = True
+        # First event of the run, before the lock and the safety prompt, as
+        # in ContinuousRun: a client learns the mode and the settings from
+        # it, and a run refused at either step is still a run that began.
+        self._events.emit('run_started', {
+            'mode': self.MODE,
+            'sample_name': self.sample_name,
+            'username': self.username,
+            'settings': self.settings,
+            'started_at': time.time(),
+        })
         address = self.settings.get('measurement', {}).get('gpib_address', '')
         try:
             if self._instrument_lock is None:
@@ -455,8 +474,8 @@ class VdpRun:
         }
         self._events.emit('vdp_result', result_dict)
         self._events.log('completed', 
-            f"vdP done: Rs={result.sheet_resistance:.4g} Ohm/sq, "
-            f"rho={result.rho_avg:.4g} Ohm.cm, "
+            f"vdP done: Rs={result.sheet_resistance:.4g} Ω/sq, "
+            f"rho={result.rho_avg:.4g} Ω·cm, "
             f"asym={result.asymmetry_pct:.2f}% "
             f"({'homogeneous' if result.homogeneous else 'NON-homogeneous'})"
         )

@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from ..constants import MODE_TIMING_OVERRIDES
+from ..formatting import format_power
 from .settings_common import AuxSensorSettings, InstrumentSettings, SafetySettings
 from .settings_modes import MODE_MODELS
 
@@ -175,6 +176,8 @@ def _validate(m_cfg: Dict[str, Any], mode: str, *, strict: bool) -> List[Issue]:
     issues: List[Issue] = []
     for model in (MODE_MODELS[mode], InstrumentSettings, AuxSensorSettings, SafetySettings):
         issues.extend(_model_issues(model, m_cfg))
+    if mode == 'four_point':
+        issues.extend(_sample_geometry_issues(m_cfg))
     if not strict:
         return issues
 
@@ -188,12 +191,48 @@ def _validate(m_cfg: Dict[str, Any], mode: str, *, strict: bool) -> List[Issue]:
         stop_w = float(m_cfg.get('fpp_power_stop_w', 0.0))
         if stop_w and worst_case > stop_w:
             issues.append(Issue('fpp_power_stop_w',
-                                 f"worst-case power {worst_case * 1e3:.1f} mW exceeds the "
-                                 f"probe-safety hard stop {stop_w * 1e3:.0f} mW"))
+                                 f"worst-case power {format_power(worst_case)} exceeds the "
+                                 f"probe-safety hard stop {format_power(stop_w)}"))
     if m_cfg.get('aux_log_enabled') and mode not in AUX_LOG_MODES:
         issues.append(Issue('aux_log_enabled',
                              f"auxiliary co-logging is not available for mode '{mode}'"))
     return issues
+
+
+def _sample_geometry_issues(m_cfg: Dict[str, Any]) -> List[Issue]:
+    """The outline must be describable, and must not contradict the look-up.
+
+    The per-sample correction still reads ``fpp_geometry`` and
+    ``fpp_diameter_cm``; the ``fpp_sample_*`` keys only feed the position
+    check of a spot. When the two describe different samples the run is
+    allowed -- nothing about the measurement is wrong -- but the client is
+    told, because the rows and the position check would otherwise disagree
+    in silence.
+    """
+    from .spots import legacy_sample_geometry, same_outline, sample_geometry_from_settings
+
+    try:
+        outline = sample_geometry_from_settings(m_cfg)
+        looked_up = legacy_sample_geometry(m_cfg)
+    except (TypeError, ValueError) as exc:
+        errors = exc.errors() if hasattr(exc, 'errors') else []
+        message = errors[0]['msg'] if errors else str(exc)
+        return [Issue('fpp_sample_shape', message)]
+    if not same_outline(outline, looked_up):
+        return [Issue('fpp_sample_shape',
+                      "the per-sample correction uses fpp_geometry / fpp_diameter_cm "
+                      f"({_describe(looked_up)}), not the fpp_sample_* outline "
+                      f"({_describe(outline)}); only the position check uses the outline",
+                      severity='warning')]
+    return []
+
+
+def _describe(outline) -> str:
+    if outline.shape == 'circle':
+        return f"circle, {outline.diameter_mm:g} mm"
+    if outline.shape == 'rectangle':
+        return f"rectangle, {outline.width_mm:g} x {outline.length_mm:g} mm"
+    return 'unbounded'
 
 
 def _derive(m_cfg: Dict[str, Any], mode: str) -> Dict[str, Any]:

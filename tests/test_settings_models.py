@@ -81,3 +81,27 @@ class TestRunRequest:
         """A typo in a request must fail loudly, unlike a stored profile."""
         with pytest.raises(ValidationError):
             RunRequest(mode='resistance', username='alice', sample_name='w', smaple_rate=5)
+
+
+class TestRunRequestSpot:
+    SPOT = {'map_id': 'wafer7', 'index': 2, 'label': 'edge', 'x_mm': 10.0, 'y_mm': 0.0}
+
+    def test_absent_by_default(self):
+        request = RunRequest(mode='four_point', username='alice', sample_name='wafer7')
+        assert request.spot is None
+
+    def test_four_point_may_carry_one(self):
+        request = RunRequest(mode='four_point', username='alice', sample_name='wafer7',
+                             spot=self.SPOT)
+        assert request.spot.map_id == 'wafer7'
+        assert request.spot.has_position
+
+    @pytest.mark.parametrize("mode", ['resistance', 'source_v', 'source_i', 'sweep', 'vdp'])
+    def test_no_other_mode_may(self, mode):
+        with pytest.raises(ValidationError, match="belongs to a four_point run"):
+            RunRequest(mode=mode, username='alice', sample_name='wafer7', spot=self.SPOT)
+
+    def test_the_spot_is_validated(self):
+        with pytest.raises(ValidationError):
+            RunRequest(mode='four_point', username='alice', sample_name='wafer7',
+                       spot={**self.SPOT, 'map_id': '../wafer7'})

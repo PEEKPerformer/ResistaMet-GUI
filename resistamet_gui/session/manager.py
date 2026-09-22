@@ -23,10 +23,13 @@ import time
 from typing import Any, Callable, Dict, Optional
 
 from ..schema.resolve import resolve_run_settings
+from ..schema.settings_modes import ClientInfo
+from ..schema.spots import SpotRequest, check_spot_mode
 from .continuous_run import ContinuousRun
 from .control import RunControl
 from .emitter import EventEmitter
 from .instrument_lock import HeldInstrument, InstrumentBusy, hold_instrument
+from .status import InstrumentInfo, PendingPrompt, SessionStatus
 from .vdp_run import VdpRun
 
 logger = logging.getLogger(__name__)
@@ -55,6 +58,8 @@ class MeasurementSession:
         self._control: Optional[RunControl] = None
         self._thread: Optional[threading.Thread] = None
         self._last_event_seq = 0
+        #: The instrument as last seen by a run or by identify(); see status().
+        self._instrument: Optional[InstrumentInfo] = None
         self._mode: Optional[str] = None
 
     # --- state ------------------------------------------------------------
@@ -76,37 +81,56 @@ class MeasurementSession:
         with self._lock:
             run_id, mode, run = self._run_id, self._mode, self._run
         prompt = self._control.pending_prompt if self._control else None
-        return {
-            'state': self.state,
-            'run_id': run_id,
-            'mode': mode,
-            'path': getattr(run, 'filename', '') or None,
-            'last_seq': self._last_event_seq,
-            'pending_prompt': None if prompt is None else {
-                'prompt_id': prompt.prompt_id,
-                'kind': prompt.kind,
-                'options': list(prompt.options),
-                'requires_human': prompt.requires_human,
-                'detail': dict(prompt.detail),
-            },
-        }
+        # Built through the model so the reply and its exported contract
+        # cannot drift; callers still get the plain dict they always did.
+        return SessionStatus(
+            state=self.state,
+            run_id=run_id,
+            mode=mode,
+            path=getattr(run, 'filename', '') or None,
+            last_seq=self._last_event_seq,
+            pending_prompt=None if prompt is None else PendingPrompt(
+                prompt_id=prompt.prompt_id,
+                kind=prompt.kind,
+                options=list(prompt.options),
+                requires_human=prompt.requires_human,
+                detail=dict(prompt.detail),
+            ),
+            instrument=self._instrument,
+        ).model_dump()
 
     # --- commands ---------------------------------------------------------
 
     def start(self, profile: Dict[str, Any], mode: str, sample_name: str, username: str,
               overrides: Optional[Dict[str, Any]] = None,
-              prompt_timeout_s: float = 900.0) -> str:
+              prompt_timeout_s: float = 900.0,
+              spot: Optional[Any] = None,
+              client: Optional[Any] = None) -> str:
         """Resolve settings, then run them. Returns the run id immediately.
+
+        ``spot`` (a ``SpotRequest`` or its dict) says which placement of the
+        four-point probe this run is. It rides in the run settings as
+        ``settings['spot']``, beside the sections the profile provides, so the
+        run procedure reads it the same way whoever started the run.
+
+        ``client`` (a ``ClientInfo`` or its dict) names the program that asked
+        for the run. It rides the same way, as ``settings['client']``, and
+        ``build_metadata`` writes it into the file header.
 
         Raises ``SessionBusy`` unless idle, ``InstrumentBusy`` when another
         process holds the instrument, and ``ValueError`` when the strict
-        resolver rejects the request — a run that cannot be described should
-        never reach the instrument.
+        resolver rejects the request or the spot — a run that cannot be
+        described should never reach the instrument.
         """
         resolved = resolve_run_settings(profile, mode, overrides or {}, strict=True)
         if not resolved.ok:
             raise ValueError('; '.join(f"{i.key}: {i.message}" for i in resolved.issues
                                         if i.severity == 'error'))
+        if spot is not None:
+            check_spot_mode(mode)
+            resolved.settings['spot'] = SpotRequest.model_validate(spot).model_dump()
+        if client is not None:
+            resolved.settings['client'] = ClientInfo.model_validate(client).model_dump()
 
         with self._lock:
             if self._state != 'idle':
@@ -204,7 +228,7 @@ class MeasurementSession:
                     spec = instrument.detect_model()
                 finally:
                     instrument.close()
-            return {
+            found = {
                 'address': address,
                 'idn': idn,
                 'model': spec.model if spec else None,
@@ -212,6 +236,8 @@ class MeasurementSession:
                 'max_source_i': spec.max_source_i if spec else None,
                 'max_power_w': spec.max_power_w if spec else None,
             }
+            self._instrument = InstrumentInfo(**found)
+            return found
         finally:
             with self._lock:
                 self._state = 'idle'
@@ -239,6 +265,10 @@ class MeasurementSession:
 
     def _record(self, event) -> None:
         self._last_event_seq = event.seq
+        if event.type == 'instrument_connected':
+            # Kept for status(): the event itself is gone for a client that
+            # connects, or reloads, after it was sent.
+            self._instrument = InstrumentInfo(**event.payload)
         self._sink(event)
 
     def _require_run(self):

@@ -243,3 +243,47 @@ class TestDerivedValues:
         samples = sink.of_type('sample')
         assert samples, "no samples"
         assert all(s.payload.get('derived') is None for s in samples)
+
+
+class TestVdpRunStarted:
+    """A van der Pauw run announces itself the way every other run does."""
+
+    def _vdp_run(self, tmp_path):
+        from resistamet_gui.session.vdp_run import VdpRun
+        settings = _settings(tmp_path, vdp_current=1e-3, vdp_voltage_compliance=5.0)
+        sink = ListSink()
+        return VdpRun("wafer1", "alice", settings, RunControl(), EventEmitter(sink)), sink
+
+    def _refuse_connection(self, monkeypatch, module):
+        """No instrument: the run gets as far as connecting and ends."""
+        def refuse(address, visa_library=''):
+            raise OSError(f"no instrument at {address}")
+        monkeypatch.setattr(module, 'Keithley2400', refuse)
+
+    def test_run_started_is_the_first_event(self, tmp_path, monkeypatch):
+        from resistamet_gui.session import vdp_run
+        self._refuse_connection(monkeypatch, vdp_run)
+        run, sink = self._vdp_run(tmp_path)
+        run.execute()
+
+        assert sink.types()[0] == 'run_started'
+        assert len(sink.of_type('run_started')) == 1
+        assert sink.types()[-1] == 'run_ended'
+
+    def test_the_payload_has_the_shape_other_runs_send(self, tmp_path, monkeypatch):
+        from resistamet_gui.session import continuous_run, vdp_run
+        self._refuse_connection(monkeypatch, vdp_run)
+        self._refuse_connection(monkeypatch, continuous_run)
+        run, sink = self._vdp_run(tmp_path)
+        run.execute()
+        vdp = sink.of_type('run_started')[0].payload
+
+        other, _, other_sink = _run(tmp_path)
+        other.execute()
+        continuous = other_sink.of_type('run_started')[0].payload
+
+        assert sorted(vdp) == sorted(continuous)
+        assert vdp['mode'] == 'vdp'
+        assert (vdp['sample_name'], vdp['username']) == ('wafer1', 'alice')
+        assert vdp['settings'] == run.settings
+        assert isinstance(vdp['started_at'], float)

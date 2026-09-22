@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
+from ..session.spot_map import MAP_SUMMARY_SUFFIX
 from .app import require_token
 
 router = APIRouter(prefix="/results", tags=["results"])
@@ -60,6 +61,11 @@ def list_results(request: Request, user: Optional[str] = Query(default=None),
     files: List[ResultFile] = []
     for path in root.rglob('*'):
         if not path.is_file() or not path.name.endswith(RESULT_SUFFIXES):
+            continue
+        if path.name.endswith(MAP_SUMMARY_SUFFIX):
+            # A four-point map's summary, not a run: derived from the runs
+            # beside it and served by /maps. '.json' is listed for the legacy
+            # CSV+JSON pair, which is how these got in.
             continue
         relative = path.relative_to(root)
         owner = relative.parts[0] if len(relative.parts) > 1 else None

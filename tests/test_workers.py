@@ -637,6 +637,47 @@ class TestCsvDefaultOutput:
         assert "# total_samples:" in text
 
 
+class TestFourPointSpot:
+    """A run the PySide6 window starts says in its file which spot it is."""
+
+    def test_the_windows_spot_reaches_the_file_header(self, qapp, fake_rm, tmp_path):
+        from resistamet_gui.data_export import parse_metadata
+        from resistamet_gui.schema.map_session import MapSession
+
+        settings = _four_point_settings(tmp_path, samples=3)
+        settings["output"] = {"format": "csv", "compression": "never",
+                              "compression_threshold_mb": 5}
+        # What ResistanceMeterApp.start_measurement adds to a four-point run.
+        spot = MapSession().spot_for_run("alice", "wafer 7", 2, "north edge")
+        settings["spot"] = spot
+
+        worker = MeasurementWorker("four_point", "wafer 7", "alice", settings)
+        spies = _drive_worker(qapp, worker, timeout_s=10.0)
+
+        assert spies.error_occurred == []
+        assert spies.measurement_complete == ["four_point"]
+        header = parse_metadata(worker.filename, text_keys=("spot.map_id", "spot.label"))
+        assert header["spot.map_id"] == spot["map_id"]
+        assert header["spot.index"] == 2
+        assert header["spot.label"] == "north edge"
+        # The window has no map, so the spot has no position.
+        assert header.get("spot.x_mm") is None
+        # The map summary is written beside the run, under the map's id.
+        assert (Path(worker.filename).parent / f"{spot['map_id']}_map.json").exists()
+
+    def test_a_run_without_a_spot_writes_no_spot_block(self, qapp, fake_rm, tmp_path):
+        from resistamet_gui.data_export import parse_metadata
+
+        settings = _four_point_settings(tmp_path, samples=3)
+        settings["output"] = {"format": "csv", "compression": "never",
+                              "compression_threshold_mb": 5}
+        worker = MeasurementWorker("four_point", "wafer 7", "alice", settings)
+        spies = _drive_worker(qapp, worker, timeout_s=10.0)
+
+        assert spies.error_occurred == []
+        assert not [key for key in parse_metadata(worker.filename) if key.startswith("spot.")]
+
+
 # ============================================================================
 # SCPI-contract tests
 # ----------------------------------------------------------------------------

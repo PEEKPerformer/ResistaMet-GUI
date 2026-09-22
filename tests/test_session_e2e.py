@@ -92,6 +92,10 @@ def _csv_rows(path):
     return rows[0], rows[1:]
 
 
+def _log_codes(sink):
+    return [e.payload['code'] for e in sink.of_type('log')]
+
+
 def _values(sink, key):
     return [e.payload['values'][key] for e in sink.of_type('sample')
             if key in e.payload['values']]
@@ -174,6 +178,95 @@ class TestFiles:
 
         directions = [e.payload['direction'] for e in session.sink.of_type('sweep_segment')]
         assert directions == ['forward', 'reverse']
+
+
+    def test_sweep_log_counts_every_point_written(self, session, profile):
+        session.start(profile, 'sweep', 'E2E-DUT', 'e2e', overrides={
+            'sweep_source': 'voltage', 'sweep_start': 0.0, 'sweep_stop': 0.5,
+            'sweep_step': 0.1, 'sweep_compliance': 0.1, 'sweep_delay': 0.0,
+            'sweep_direction': 'up_down',
+        })
+        assert _wait_for(lambda: session.state == 'idle')
+
+        sink = session.sink
+        messages = {e.payload['code']: e.payload['message'] for e in sink.of_type('log')}
+        assert messages['sweep_started'] == "Running I-V sweep (6 points each way)..."
+        assert messages['sweep_finished'] == (
+            "Sweep complete: 12 points acquired (6 forward, 6 reverse)")
+        total = sink.of_type('file_finalized')[0].payload['end_metadata']['total_samples']
+        assert total == 12
+
+    def test_one_way_sweep_log_is_unchanged(self, session, profile):
+        session.start(profile, 'sweep', 'E2E-DUT', 'e2e', overrides={
+            'sweep_source': 'voltage', 'sweep_start': 0.0, 'sweep_stop': 0.5,
+            'sweep_step': 0.1, 'sweep_compliance': 0.1, 'sweep_delay': 0.0,
+            'sweep_direction': 'up',
+        })
+        assert _wait_for(lambda: session.state == 'idle')
+
+        messages = {e.payload['code']: e.payload['message']
+                    for e in session.sink.of_type('log')}
+        assert messages['sweep_started'] == "Running I-V sweep (6 points)..."
+        assert messages['sweep_finished'] == "Sweep complete: 6 points acquired"
+
+
+class TestStopInsideTheSettle:
+    """A stop during the settle unwinds by exception. It must still end the
+    run the way every other stop does: footer in the file, output-off and
+    data-saved lines in the log."""
+
+    def _stop_in_the_settle(self, session, profile):
+        profile['measurement']['settling_time'] = 10.0
+        session.start(profile, 'resistance', 'E2E-DUT', 'e2e',
+                      overrides={'res_test_current': 1e-3, 'res_voltage_compliance': 5.0})
+        assert _wait_for(lambda: 'settling' in _log_codes(session.sink))
+        session.stop()
+        assert _wait_for(lambda: session.state == 'idle')
+        return session.sink
+
+    def test_the_file_gets_its_footer(self, session, profile):
+        sink = self._stop_in_the_settle(session, profile)
+        path = sink.of_type('file_opened')[0].payload['path']
+        text = open(path, encoding='utf-8').read()
+        assert "# --- run completed ---" in text
+        assert "# total_samples: 0" in text
+        assert "# ended_at:" in text
+        assert "# duration_s:" in text
+
+    def test_the_closing_events_match_any_other_stop(self, session, profile):
+        sink = self._stop_in_the_settle(session, profile)
+        path = sink.of_type('file_opened')[0].payload['path']
+
+        codes = _log_codes(sink)
+        assert codes.index('stopping') < codes.index('output_off') < codes.index('completed')
+        completed = [e.payload['message'] for e in sink.of_type('log')
+                     if e.payload['code'] == 'completed']
+        assert completed == [f"Measurement (Resistance) completed! Data saved to: {path}"]
+
+        finalized = sink.of_type('file_finalized')
+        assert [e.payload['path'] for e in finalized] == [path]
+        assert finalized[0].payload['end_metadata']['total_samples'] == 0
+        assert len(sink.of_type('acquisition_finished')) == 1
+
+        ended = sink.of_type('run_ended')[0].payload
+        assert (ended['reason'], ended['ok'], ended['samples']) == ('user_stop', True, 0)
+        assert sink.of_type('sample') == []
+        assert sink.of_type('error') == []
+
+    def test_a_stop_in_a_delta_settle_also_finalizes(self, session, profile):
+        session.start(profile, 'four_point', 'E2E-DUT', 'e2e', overrides={
+            'fpp_current': 1e-3, 'fpp_voltage_compliance': 5.0, 'fpp_samples': 0,
+            'fpp_delta_mode': True, 'fpp_delta_settling': 5.0})
+        assert _wait_for(lambda: 'starting' in _log_codes(session.sink))
+        time.sleep(0.3)  # into the first polarity's settle
+        session.stop()
+        assert _wait_for(lambda: session.state == 'idle')
+
+        sink = session.sink
+        path = sink.of_type('file_opened')[0].payload['path']
+        assert "# --- run completed ---" in open(path, encoding='utf-8').read()
+        assert 'output_off' in _log_codes(sink)
+        assert sink.of_type('error') == []
 
 
 class TestOperatorActions:

@@ -146,6 +146,13 @@
           "title": "Fpp Alpha",
           "type": "number"
         },
+        "fpp_array_angle_deg": {
+          "default": 0.0,
+          "maximum": 360.0,
+          "minimum": -360.0,
+          "title": "Fpp Array Angle Deg",
+          "type": "number"
+        },
         "fpp_current": {
           "default": 0.0001,
           "maximum": 3.0,
@@ -182,6 +189,13 @@
           "title": "Fpp Dopant Type",
           "type": "string"
         },
+        "fpp_edge_warn_pct": {
+          "default": 1.0,
+          "maximum": 100.0,
+          "minimum": 0.0,
+          "title": "Fpp Edge Warn Pct",
+          "type": "number"
+        },
         "fpp_geometry": {
           "default": "circle",
           "enum": [
@@ -212,6 +226,12 @@
           "title": "Fpp Model",
           "type": "string"
         },
+        "fpp_position_correction": {
+          "const": "warn",
+          "default": "warn",
+          "title": "Fpp Position Correction",
+          "type": "string"
+        },
         "fpp_power_stop_w": {
           "default": 0.1,
           "maximum": 22.0,
@@ -224,6 +244,37 @@
           "maximum": 10.0,
           "minimum": 0.0001,
           "title": "Fpp Power Warn W",
+          "type": "number"
+        },
+        "fpp_sample_diameter_mm": {
+          "default": 0.0,
+          "maximum": 1000.0,
+          "minimum": 0.0,
+          "title": "Fpp Sample Diameter Mm",
+          "type": "number"
+        },
+        "fpp_sample_length_mm": {
+          "default": 0.0,
+          "maximum": 1000.0,
+          "minimum": 0.0,
+          "title": "Fpp Sample Length Mm",
+          "type": "number"
+        },
+        "fpp_sample_shape": {
+          "default": "unbounded",
+          "enum": [
+            "unbounded",
+            "circle",
+            "rectangle"
+          ],
+          "title": "Fpp Sample Shape",
+          "type": "string"
+        },
+        "fpp_sample_width_mm": {
+          "default": 0.0,
+          "maximum": 1000.0,
+          "minimum": 0.0,
+          "title": "Fpp Sample Width Mm",
           "type": "number"
         },
         "fpp_samples": {
@@ -440,9 +491,113 @@
       "type": "object"
     },
     "RunRequest": {
+      "$defs": {
+        "ClientInfo": {
+          "additionalProperties": false,
+          "description": "Which program asked for the run, recorded in the file header.\n\nThe backend's own version is always written (``software_version``); this\nsays what was driving it -- the desktop app, a script, the MCP layer --\nso a file written through the API can be told from one the PySide6 app\nwrote. Self-reported, so it is provenance and not authentication.",
+          "properties": {
+            "name": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,63}$",
+              "title": "Name",
+              "type": "string"
+            },
+            "version": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,63}$",
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "version"
+          ],
+          "title": "ClientInfo",
+          "type": "object"
+        },
+        "SpotRequest": {
+          "additionalProperties": false,
+          "description": "One placement of the probe, as the client describes it.\n\nThe position is optional -- a spot can be a label and nothing more -- but\n``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the\ndirection of the probe array, anticlockwise from +x; absent, the run uses\nthe ``fpp_array_angle_deg`` setting.",
+          "properties": {
+            "angle_deg": {
+              "anyOf": [
+                {
+                  "maximum": 360.0,
+                  "minimum": -360.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Angle Deg"
+            },
+            "index": {
+              "maximum": 9999,
+              "minimum": 0,
+              "title": "Index",
+              "type": "integer"
+            },
+            "label": {
+              "maxLength": 80,
+              "minLength": 1,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+              "title": "Label",
+              "type": "string"
+            },
+            "map_id": {
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "title": "Map Id",
+              "type": "string"
+            },
+            "x_mm": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "X Mm"
+            },
+            "y_mm": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Y Mm"
+            }
+          },
+          "required": [
+            "map_id",
+            "index",
+            "label"
+          ],
+          "title": "SpotRequest",
+          "type": "object"
+        }
+      },
       "additionalProperties": false,
       "description": "What a client asks for. Never persisted.\n\n``overrides`` is flat measurement keys, the same shape the tabs produce\ntoday, so one request format serves the UI, a script and the MCP layer.\nStrict validation of the keys happens in the resolver, which knows which\nones the profile owns.",
       "properties": {
+        "client": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClientInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "mode": {
           "enum": [
             "resistance",
@@ -470,6 +625,17 @@
           "minLength": 1,
           "title": "Sample Name",
           "type": "string"
+        },
+        "spot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpotRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "username": {
           "minLength": 1,
@@ -505,13 +671,139 @@
       "title": "SafetySettings",
       "type": "object"
     },
+    "SampleGeometry": {
+      "additionalProperties": false,
+      "description": "The lateral outline of a thin sample with insulating edges.\n\n``unbounded`` means a sheet large enough that its edges do not matter,\nwhich is what the software assumed before it knew about outlines.",
+      "properties": {
+        "diameter_mm": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diameter Mm"
+        },
+        "length_mm": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Length Mm"
+        },
+        "shape": {
+          "default": "unbounded",
+          "enum": [
+            "unbounded",
+            "circle",
+            "rectangle"
+          ],
+          "title": "Shape",
+          "type": "string"
+        },
+        "width_mm": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Width Mm"
+        }
+      },
+      "title": "SampleGeometry",
+      "type": "object"
+    },
+    "SpotRequest": {
+      "additionalProperties": false,
+      "description": "One placement of the probe, as the client describes it.\n\nThe position is optional -- a spot can be a label and nothing more -- but\n``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the\ndirection of the probe array, anticlockwise from +x; absent, the run uses\nthe ``fpp_array_angle_deg`` setting.",
+      "properties": {
+        "angle_deg": {
+          "anyOf": [
+            {
+              "maximum": 360.0,
+              "minimum": -360.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Angle Deg"
+        },
+        "index": {
+          "maximum": 9999,
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "label": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "title": "Label",
+          "type": "string"
+        },
+        "map_id": {
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "title": "Map Id",
+          "type": "string"
+        },
+        "x_mm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "X Mm"
+        },
+        "y_mm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Y Mm"
+        }
+      },
+      "required": [
+        "map_id",
+        "index",
+        "label"
+      ],
+      "title": "SpotRequest",
+      "type": "object"
+    },
     "SweepSettings": {
       "additionalProperties": true,
-      "description": "Bulk linear sweep, run by the instrument's own sweep engine.\n\nStart/stop keep the +/-200 V bounds for both source types, as the widgets\ndo today; source-aware bounds are a follow-up.",
+      "description": "Bulk linear sweep, run by the instrument's own sweep engine.\n\nStart/stop keep the +/-200 V bounds for both source types, as the widgets\ndo today; source-aware bounds for them are a follow-up.",
       "properties": {
         "sweep_compliance": {
           "default": 0.1,
-          "maximum": 3.0,
+          "maximum": 210.0,
           "minimum": 1e-07,
           "title": "Sweep Compliance",
           "type": "number"

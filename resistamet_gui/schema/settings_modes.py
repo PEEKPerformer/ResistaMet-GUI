@@ -11,10 +11,11 @@ See ``docs/design/tauri_backend_split.md`` section 4.2.
 """
 from typing import Any, Dict, Literal, Optional
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ..constants import DEFAULT_SETTINGS
 from .settings_common import SettingsModel
+from .spots import SpotRequest, check_spot_mode
 
 _M = DEFAULT_SETTINGS['measurement']
 
@@ -53,20 +54,53 @@ class CurrentSourceSettings(SettingsModel):
     isource_duration_hours: float = Field(default=_M['isource_duration_hours'], ge=0.0, le=168.0)
 
 
+#: The compliance of a sweep limits what is *measured*, so its unit follows
+#: the source: a current when sourcing voltage, a voltage when sourcing
+#: current. These are the family's envelope, not one model's: 3.15 A is the
+#: compliance ceiling of the 3 A class (2420/2425), 210 V that of the 2400's
+#: 200 V range. The instrument in use may allow less and rejects what it
+#: cannot do.
+SWEEP_MAX_CURRENT_COMPLIANCE_A = 3.15
+SWEEP_MAX_VOLTAGE_COMPLIANCE_V = 210.0
+
+
 class SweepSettings(SettingsModel):
     """Bulk linear sweep, run by the instrument's own sweep engine.
 
     Start/stop keep the +/-200 V bounds for both source types, as the widgets
-    do today; source-aware bounds are a follow-up.
+    do today; source-aware bounds for them are a follow-up.
     """
 
     sweep_source: Literal['voltage', 'current'] = _M['sweep_source']
     sweep_start: float = Field(default=_M['sweep_start'], ge=-200.0, le=200.0)
     sweep_stop: float = Field(default=_M['sweep_stop'], ge=-200.0, le=200.0)
     sweep_step: float = Field(default=_M['sweep_step'], gt=0.0, le=200.0)
-    sweep_compliance: float = Field(default=_M['sweep_compliance'], ge=1e-7, le=3.0)
+    # ``le`` is the larger of the two per-source limits; the validator below
+    # applies the one that goes with ``sweep_source``.
+    sweep_compliance: float = Field(default=_M['sweep_compliance'], ge=1e-7,
+                                    le=SWEEP_MAX_VOLTAGE_COMPLIANCE_V)
     sweep_delay: float = Field(default=_M['sweep_delay'], ge=0.0, le=10.0)
     sweep_direction: Literal['up', 'down', 'up_down'] = _M['sweep_direction']
+
+    @field_validator('sweep_compliance')
+    @classmethod
+    def _compliance_fits_its_unit(cls, value, info):
+        """Bound the compliance in the unit it is in.
+
+        It used to be ``le=3`` whatever the source, which let a 3 A current
+        limit through but capped a current-sourced sweep at 3 V. A field
+        validator, not a model one, so the issue is keyed to
+        ``sweep_compliance``; ``sweep_source`` is declared first and is
+        therefore already in ``info.data`` (absent only when it was itself
+        invalid, where the tighter current limit applies).
+        """
+        if info.data.get('sweep_source') == 'current':
+            return value  # a voltage, already held to 210 V by ``le``
+        if value > SWEEP_MAX_CURRENT_COMPLIANCE_A:
+            raise ValueError(
+                f"a voltage-sourced sweep's compliance is a current: at most "
+                f"{SWEEP_MAX_CURRENT_COMPLIANCE_A:g} A")
+        return value
 
 
 class VdpSettings(SettingsModel):
@@ -110,6 +144,19 @@ class FourPointSettings(SettingsModel):
     fpp_geometry: Literal[
         'circle', 'square', 'rectangle_2', 'rectangle_3', 'rectangle_4'
     ] = _M['fpp_geometry']
+    # The sample outline, for the position check of a spot. While the shape is
+    # 'unbounded' the two legacy keys above describe the outline instead; see
+    # ``spots.sample_geometry_from_settings``. 0 = dimension not entered.
+    fpp_sample_shape: Literal['unbounded', 'circle', 'rectangle'] = _M['fpp_sample_shape']
+    fpp_sample_diameter_mm: float = Field(default=_M['fpp_sample_diameter_mm'], ge=0.0, le=1000.0)
+    fpp_sample_width_mm: float = Field(default=_M['fpp_sample_width_mm'], ge=0.0, le=1000.0)
+    fpp_sample_length_mm: float = Field(default=_M['fpp_sample_length_mm'], ge=0.0, le=1000.0)
+    # Only 'warn' exists: whether a position-aware correction ('apply') may be
+    # offered at all is an open question of the design, and until it is
+    # answered every number in a file is F84 as written.
+    fpp_position_correction: Literal['warn'] = _M['fpp_position_correction']
+    fpp_edge_warn_pct: float = Field(default=_M['fpp_edge_warn_pct'], ge=0.0, le=100.0)
+    fpp_array_angle_deg: float = Field(default=_M['fpp_array_angle_deg'], ge=-360.0, le=360.0)
     fpp_temperature_c: Optional[float] = Field(default=None, ge=-50.0, le=200.0)
     fpp_dopant_type: Literal['none', 'n', 'p'] = _M['fpp_dopant_type']
     fpp_delta_mode: bool = _M['fpp_delta_mode']
@@ -139,6 +186,26 @@ MODE_MODELS = {
 }
 
 
+#: A client's name or version: a short token that is safe on one line of a
+#: CSV header. Letters, digits, space and ``. _ + -``; no control characters.
+CLIENT_TEXT_PATTERN = r'^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,63}$'
+
+
+class ClientInfo(SettingsModel):
+    """Which program asked for the run, recorded in the file header.
+
+    The backend's own version is always written (``software_version``); this
+    says what was driving it -- the desktop app, a script, the MCP layer --
+    so a file written through the API can be told from one the PySide6 app
+    wrote. Self-reported, so it is provenance and not authentication.
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    name: str = Field(pattern=CLIENT_TEXT_PATTERN)
+    version: str = Field(pattern=CLIENT_TEXT_PATTERN)
+
+
 class RunRequest(SettingsModel):
     """What a client asks for. Never persisted.
 
@@ -157,3 +224,13 @@ class RunRequest(SettingsModel):
     # Session runs only: how long a prompt may sit unanswered before the run
     # aborts with the output off. The PySide6 path never times out.
     prompt_timeout_s: float = Field(default=900.0, gt=0.0)
+    # Which placement of the probe this run is (``spots.SPOT_MODES`` only).
+    spot: Optional[SpotRequest] = None
+    # Who is asking; absent, the file header says nothing about a client.
+    client: Optional[ClientInfo] = None
+
+    @model_validator(mode='after')
+    def _only_four_point_has_spots(self):
+        if self.spot is not None:
+            check_spot_mode(self.mode)
+        return self

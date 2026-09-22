@@ -56,16 +56,23 @@ export interface FileSettings {
  */
 export interface FourPointSettings {
   fpp_alpha?: number;
+  fpp_array_angle_deg?: number;
   fpp_current?: number;
   fpp_delta_mode?: boolean;
   fpp_delta_settling?: number;
   fpp_diameter_cm?: number;
   fpp_dopant_type?: "none" | "n" | "p";
+  fpp_edge_warn_pct?: number;
   fpp_geometry?: "circle" | "square" | "rectangle_2" | "rectangle_3" | "rectangle_4";
   fpp_k_factor?: number;
   fpp_model?: "thin_film" | "semi_infinite" | "finite_thin" | "finite_alpha";
+  fpp_position_correction?: "warn";
   fpp_power_stop_w?: number;
   fpp_power_warn_w?: number;
+  fpp_sample_diameter_mm?: number;
+  fpp_sample_length_mm?: number;
+  fpp_sample_shape?: "unbounded" | "circle" | "rectangle";
+  fpp_sample_width_mm?: number;
   fpp_samples?: number;
   fpp_spacing_cm?: number;
   fpp_stop_on_overpower?: boolean;
@@ -125,11 +132,41 @@ export interface ResistanceSettings {
  * ones the profile owns.
  */
 export interface RunRequest {
+  client?: ClientInfo | null;
   mode: "resistance" | "source_v" | "source_i" | "four_point" | "sweep" | "vdp";
   overrides?: {};
   prompt_timeout_s?: number;
   sample_name: string;
+  spot?: SpotRequest | null;
   username: string;
+}
+/**
+ * Which program asked for the run, recorded in the file header.
+ *
+ * The backend's own version is always written (``software_version``); this
+ * says what was driving it -- the desktop app, a script, the MCP layer --
+ * so a file written through the API can be told from one the PySide6 app
+ * wrote. Self-reported, so it is provenance and not authentication.
+ */
+export interface ClientInfo {
+  name: string;
+  version: string;
+}
+/**
+ * One placement of the probe, as the client describes it.
+ *
+ * The position is optional -- a spot can be a label and nothing more -- but
+ * ``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the
+ * direction of the probe array, anticlockwise from +x; absent, the run uses
+ * the ``fpp_array_angle_deg`` setting.
+ */
+export interface SpotRequest {
+  angle_deg?: number | null;
+  index: number;
+  label: string;
+  map_id: string;
+  x_mm?: number | null;
+  y_mm?: number | null;
 }
 
 /**
@@ -144,10 +181,25 @@ export interface SafetySettings {
 }
 
 /**
- * Bulk linear sweep, run by the instrument's own sweep engine.
+ * The lateral outline of a thin sample with insulating edges.
  *
- * Start/stop keep the +/-200 V bounds for both source types, as the widgets
- * do today; source-aware bounds are a follow-up.
+ * ``unbounded`` means a sheet large enough that its edges do not matter,
+ * which is what the software assumed before it knew about outlines.
+ */
+export interface SampleGeometry {
+  diameter_mm?: number | null;
+  length_mm?: number | null;
+  shape?: "unbounded" | "circle" | "rectangle";
+  width_mm?: number | null;
+}
+
+/**
+ * One placement of the probe, as the client describes it.
+ *
+ * The position is optional -- a spot can be a label and nothing more -- but
+ * ``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the
+ * direction of the probe array, anticlockwise from +x; absent, the run uses
+ * the ``fpp_array_angle_deg`` setting.
  */
 export interface SweepSettings {
   sweep_compliance?: number;
@@ -312,6 +364,12 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
       "max": 10,
       "default": 1
     },
+    "fpp_array_angle_deg": {
+      "type": "number",
+      "min": -360,
+      "max": 360,
+      "default": 0
+    },
     "fpp_current": {
       "type": "number",
       "min": -3,
@@ -343,6 +401,12 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
       ],
       "default": "none"
     },
+    "fpp_edge_warn_pct": {
+      "type": "number",
+      "min": 0,
+      "max": 100,
+      "default": 1
+    },
     "fpp_geometry": {
       "type": "string",
       "enum": [
@@ -370,6 +434,10 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
       ],
       "default": "thin_film"
     },
+    "fpp_position_correction": {
+      "type": "string",
+      "default": "warn"
+    },
     "fpp_power_stop_w": {
       "type": "number",
       "min": 0.0001,
@@ -381,6 +449,33 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
       "min": 0.0001,
       "max": 10,
       "default": 0.01
+    },
+    "fpp_sample_diameter_mm": {
+      "type": "number",
+      "min": 0,
+      "max": 1000,
+      "default": 0
+    },
+    "fpp_sample_length_mm": {
+      "type": "number",
+      "min": 0,
+      "max": 1000,
+      "default": 0
+    },
+    "fpp_sample_shape": {
+      "type": "string",
+      "enum": [
+        "unbounded",
+        "circle",
+        "rectangle"
+      ],
+      "default": "unbounded"
+    },
+    "fpp_sample_width_mm": {
+      "type": "number",
+      "min": 0,
+      "max": 1000,
+      "default": 0
     },
     "fpp_samples": {
       "type": "integer",
@@ -542,6 +637,10 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
     }
   },
   "RunRequest": {
+    "client": {
+      "nullable": true,
+      "default": null
+    },
     "mode": {
       "type": "string",
       "enum": [
@@ -566,6 +665,10 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
       "type": "string",
       "required": true
     },
+    "spot": {
+      "nullable": true,
+      "default": null
+    },
     "username": {
       "type": "string",
       "required": true
@@ -583,11 +686,73 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
       "default": 30
     }
   },
+  "SampleGeometry": {
+    "diameter_mm": {
+      "type": "number",
+      "nullable": true,
+      "exclusiveMin": 0,
+      "default": null
+    },
+    "length_mm": {
+      "type": "number",
+      "nullable": true,
+      "exclusiveMin": 0,
+      "default": null
+    },
+    "shape": {
+      "type": "string",
+      "enum": [
+        "unbounded",
+        "circle",
+        "rectangle"
+      ],
+      "default": "unbounded"
+    },
+    "width_mm": {
+      "type": "number",
+      "nullable": true,
+      "exclusiveMin": 0,
+      "default": null
+    }
+  },
+  "SpotRequest": {
+    "angle_deg": {
+      "type": "number",
+      "nullable": true,
+      "min": -360,
+      "max": 360,
+      "default": null
+    },
+    "index": {
+      "type": "integer",
+      "min": 0,
+      "max": 9999,
+      "required": true
+    },
+    "label": {
+      "type": "string",
+      "required": true
+    },
+    "map_id": {
+      "type": "string",
+      "required": true
+    },
+    "x_mm": {
+      "type": "number",
+      "nullable": true,
+      "default": null
+    },
+    "y_mm": {
+      "type": "number",
+      "nullable": true,
+      "default": null
+    }
+  },
   "SweepSettings": {
     "sweep_compliance": {
       "type": "number",
       "min": 1e-7,
-      "max": 3,
+      "max": 210,
       "default": 0.1
     },
     "sweep_delay": {
