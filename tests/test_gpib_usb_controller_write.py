@@ -72,24 +72,16 @@ class TestWrite:
             controller.write(22, b'x', timeout_s=3.0)
         assert info.value.code == 5
 
-    def test_readdress_false_skips_a_repeat_addressing(self):
+    def test_every_write_addresses_again(self):
+        # No record of who was addressed lets a repeat be skipped: the adapter serial-polls a
+        # device that asserts SRQ by itself, readdressing the bus behind it (§10.4.2).
         controller, transport = attached(address_listener() + [
             ('out', p.write_message(b'A', T3S, True)), ('in', status_reply(0x0D)),
-            ('out', p.write_message(b'B', T3S, True)), ('in', status_reply(0x0D)),
-        ])
-        controller.write(22, b'A', timeout_s=3.0, readdress=False)
-        controller.write(22, b'B', timeout_s=3.0, readdress=False)
-        transport.assert_done()
-
-    def test_a_failure_forgets_who_was_addressed(self):
-        controller, transport = attached(address_listener() + [
-            ('out', p.write_message(b'A', T3S, True)), ('in', status_reply(0x0D, error=8, count=-1)),
         ] + address_listener() + [
             ('out', p.write_message(b'B', T3S, True)), ('in', status_reply(0x0D)),
         ])
-        with pytest.raises(NoListener):
-            controller.write(22, b'A', timeout_s=3.0, readdress=False)
-        controller.write(22, b'B', timeout_s=3.0, readdress=False)
+        controller.write(22, b'A', timeout_s=3.0)
+        controller.write(22, b'B', timeout_s=3.0)
         transport.assert_done()
 
     def test_framed_writes_split_at_0xffff_with_eoi_on_the_last(self):

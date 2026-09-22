@@ -90,9 +90,9 @@ class TestSerialPoll:
         ] + address_listener() + [
             ('out', p.write_message(b'B', T3S, True)), ('in', status_reply(0x0D)),
         ])
-        controller.write(22, b'A', timeout_s=3.0, readdress=False)
+        controller.write(22, b'A', timeout_s=3.0)
         controller.serial_poll_instruction(22)
-        controller.write(22, b'B', timeout_s=3.0, readdress=False)
+        controller.write(22, b'B', timeout_s=3.0)
         transport.assert_done()
 
     def test_host_wait_expiry_takes_the_stop_path(self):

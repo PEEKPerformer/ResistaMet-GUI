@@ -45,6 +45,11 @@ class Model:
     #: which case only the framed 0x0a / 0x0d paths are used.
     endpoint_out_raw: Optional[int] = None
     endpoint_in_raw: Optional[int] = None
+    #: NI's driver was captured driving this model (§10), so the raw use of its
+    #: alternate pair and NI's other instructions are established on it. The
+    #: GPIB-USB-HS only: for the others the endpoint numbers are inherited and
+    #: what the alternate pair carries is not established (§1.2, §11.4).
+    ni_captured: bool = False
 
     @property
     def raw_endpoints(self) -> bool:
@@ -55,9 +60,10 @@ MODELS: Dict[int, Model] = {
     PID_USB_B: Model('GPIB-USB-B', PID_USB_B, 0x02, 0x82, 0x84, False, False, False),
     PID_USB_B_PRE_FIRMWARE: Model('GPIB-USB-B (no firmware)', PID_USB_B_PRE_FIRMWARE,
                                   0x02, 0x82, 0x84, True, False, False),
-    # The raw pair was observed on the HS (§10); the KUSB-488A and USB-488 share
-    # its endpoints and protocol (§1.1), the HS+ has its own alternate pair (§1.2).
-    PID_HS: Model('GPIB-USB-HS', PID_HS, 0x02, 0x84, 0x81, False, True, False, 0x06, 0x88),
+    # The raw pair was observed on the HS (§10). The KUSB-488A and USB-488 are
+    # said to share its endpoints and protocol, the HS+ has its own alternate
+    # pair (§1.1, §1.2); all three are inherited, and none takes NI's instructions.
+    PID_HS: Model('GPIB-USB-HS', PID_HS, 0x02, 0x84, 0x81, False, True, False, 0x06, 0x88, ni_captured=True),
     PID_HS_PLUS: Model('GPIB-USB-HS+', PID_HS_PLUS, 0x01, 0x82, 0x83, False, True, True, 0x04, 0x85),
     PID_KUSB_488A: Model('KUSB-488A', PID_KUSB_488A, 0x02, 0x84, 0x81, False, True, False, 0x06, 0x88),
     PID_MC_USB_488: Model('USB-488', PID_MC_USB_488, 0x02, 0x84, 0x81, False, True, False, 0x06, 0x88),
@@ -214,9 +220,6 @@ TIMEOUT_EXPIRY_MEASURED_SHORTEST_S: Dict[int, float] = {
     0xFD: 16.778260,
     0xFE: 33.555258,
 }
-#: The most a reply was seen to trail the power of two behind its expiry, in
-#: twelve timed-out instructions (§7.2).
-TIMEOUT_EXPIRY_JITTER_S = 1.9e-3
 
 #: §7.3, "A second unit expires at other times": how long GPIB-USB-HS
 #: 01CEE482 waits under a code, in seconds, timed on the bench with this

@@ -510,4 +510,23 @@ class TestRawTransfersSwitch:
         controller = Controller(ScriptedTransport(script), t.PID_USB_B, ni_instructions=True, sleep=lambda s: None)
         controller.attach()
         assert controller.raw_transfers is False
-        assert controller.ni_instructions is True  # the serial poll needs no alternate pair
+        assert controller.ni_instructions is False  # NI's driver was captured on the HS alone
+
+    @pytest.mark.parametrize('product_id', [t.PID_HS_PLUS, t.PID_KUSB_488A, t.PID_MC_USB_488, t.PID_USB_B])
+    def test_no_model_but_the_captured_one_takes_ni_s_instructions(self, product_id, caplog):
+        # §1.2, §11.4: what the alternate endpoints of the HS+ carry is not established, and the
+        # KUSB-488A and USB-488 endpoints are inherited; only the HS was captured under NI.
+        with caplog.at_level('WARNING', logger='resistamet_gui.gpib_usb.controller'):
+            controller = Controller(ScriptedTransport([]), product_id, ni_instructions=True, sleep=lambda s: None)
+        assert controller.ni_instructions is False and controller.raw_transfers is False
+        assert any('are not used' in r.getMessage() and '§11.4' in r.getMessage() for r in caplog.records)
+        assert [pid for pid, model in t.MODELS.items() if model.ni_captured] == [t.PID_HS]
+
+    def test_a_reattach_on_a_model_not_captured_leaves_its_alternate_pair_alone(self):
+        # The HS+ is said to have an alternate pair at 0x04 / 0x85 (§1.2); nothing here uses it,
+        # so the pipe resets before a re-attach are of its primary pair alone.
+        controller = Controller(ScriptedTransport([]), t.PID_HS_PLUS, sleep=lambda s: None)
+        transport = controller._link.transport
+        transport.script = [('clear_halt', 0x01), ('clear_halt', 0x82)]
+        controller._link.clear_halts_after_fault()
+        transport.assert_done()

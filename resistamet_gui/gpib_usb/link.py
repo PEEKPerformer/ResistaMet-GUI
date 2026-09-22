@@ -279,7 +279,8 @@ class AdapterLink:
         retried by the next operation.
         """
         model = self.model
-        alternate = model.raw_endpoints
+        # The alternate pair of a model whose use of it is not established is never touched.
+        alternate = model.raw_endpoints and model.ni_captured
         for endpoint in (model.endpoint_out_raw if alternate else None, model.endpoint_out,
                          model.endpoint_in, model.endpoint_in_raw if alternate else None):
             if endpoint is not None:
