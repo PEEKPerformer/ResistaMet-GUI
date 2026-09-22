@@ -361,6 +361,25 @@ class TestInstrumentSession:
         assert [m[3] for m in adapter.instructions(p.OP_READ)] == [0xFB] * 4   # the session's code on each
         inst.close()
 
+    def test_a_split_write_that_runs_out_reports_what_crossed(self, rm, adapter, monkeypatch):
+        # Three framed chunks of 0xffff under a 1 s timeout (0xfb, 1.25 s on the bench unit), each
+        # taking 0.7 s: two go, the third is not started, and VISA is told 131070 bytes went.
+        clock = FakeClock()
+        monkeypatch.setattr(boards, 'Controller', functools.partial(controller_module.Controller, clock=clock))
+        slow_reply = adapter.bulk_in
+
+        def bulk_in(length, timeout_ms):
+            if adapter.messages[-1][0] == p.OP_WRITE:
+                clock.advance(0.7)
+            return slow_reply(length, timeout_ms)
+
+        monkeypatch.setattr(adapter, 'bulk_in', bulk_in)
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 1000
+        session = inst.visalib.sessions[inst.session]
+        assert session.write(bytes(3 * 0xFFFF)) == (2 * 0xFFFF, StatusCode.error_timeout)
+        inst.close()
+
     def test_timeout_attribute_reaches_the_instruction(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 250

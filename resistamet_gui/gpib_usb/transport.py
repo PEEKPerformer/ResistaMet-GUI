@@ -467,9 +467,12 @@ class PyUsbTransport:
         self._run('clear halt on endpoint 0x%02x' % endpoint, lambda: self._device.clear_halt(endpoint))
 
     def _write(self, endpoint: int, what: str, data: bytes, timeout_ms: int) -> None:
+        """All of ``data`` or ``TransportTimeout``: pyusb returns a short count only when the wait
+        ran out after some packets went (its ``__write``), which is how a hung adapter takes the
+        first packets of a message and NAKs the rest (§8.17)."""
         written = self._run(what, lambda: self._device.write(endpoint, data, timeout_ms))
         if written != len(data):
-            raise TransportError('%s sent %d of %d bytes' % (what, written, len(data)))
+            raise TransportTimeout('%s timed out after %d of %d bytes' % (what, written, len(data)))
 
     def close(self) -> None:
         try:

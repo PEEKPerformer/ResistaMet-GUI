@@ -132,6 +132,8 @@ class _TransferMixin:
         data with it. (The read loop decides once per call instead.) Every
         chunk carries ``code``, and none starts once ``deadline`` has passed
         (``_refuse_after_deadline``): the timeout bounds the write as a whole.
+        A write that times out raises ``GpibTimeout`` whose ``partial`` is
+        the data of the chunks that crossed before it.
         With ``address`` a raw chunk is NI's message, which addresses the
         instrument itself (``_raw_write_instruction``); a framed tail after
         it finds the instrument still addressed to listen.
@@ -141,11 +143,15 @@ class _TransferMixin:
         written = 0
         for start in range(0, len(data), step):
             if start:
-                self._refuse_after_deadline(deadline, 'write', written, len(data))
+                self._refuse_after_deadline(deadline, 'write', written, len(data), data[:written])
             chunk = data[start:start + step]
             eoi = send_eoi and start + len(chunk) == len(data)
             if self._link.raw and len(chunk) >= RAW_WRITE_MIN_BYTES:
-                written += self._raw_write_instruction(chunk, code, eoi, eos_char, address)
+                try:
+                    written += self._raw_write_instruction(chunk, code, eoi, eos_char, address)
+                except GpibTimeout as exc:
+                    exc.partial = data[:written]  # the chunks before this one crossed
+                    raise
             else:
                 # The data rides inside the message, and the adapter takes the
                 # message only as fast as the instrument takes the data: the
@@ -154,9 +160,13 @@ class _TransferMixin:
                 # the short wait. Once it completes all but the adapter's own
                 # buffer is on the bus, and the reply waits for that remainder.
                 buffered = min(len(chunk), ADAPTER_OUT_BUFFER_BYTES)
-                status, _ = self._link.exchange(p.write_message(chunk, code, eoi), p.STATUS_REPLY_LENGTH,
-                                                self._link.transfer_wait_s(code, buffered), 'write',
-                                                paced_wait_s=self._link.transfer_wait_s(code, len(chunk)))
+                try:
+                    status, _ = self._link.exchange(p.write_message(chunk, code, eoi), p.STATUS_REPLY_LENGTH,
+                                                    self._link.transfer_wait_s(code, buffered), 'write',
+                                                    paced_wait_s=self._link.transfer_wait_s(code, len(chunk)))
+                except GpibTimeout as exc:
+                    exc.partial = data[:written]  # the chunks before this one crossed
+                    raise
                 written += status.transferred(len(chunk))
         return written
 

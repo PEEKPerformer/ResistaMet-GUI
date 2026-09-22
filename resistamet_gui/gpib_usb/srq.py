@@ -105,6 +105,7 @@ class _SrqMixin:
         while True:
             if self._closed:
                 raise AdapterNotReady('controller is closed')
+            self._refuse_when_gone()  # another thread's operation may have found it gone
             slice_ms = min(slice_limit_ms, remaining_ms)
             try:
                 return transport.interrupt_in(t.INTERRUPT_READ_LENGTH, slice_ms)

@@ -10,9 +10,9 @@ from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb.controller import (DEFAULT_INFINITE_WAIT_S, FRAMED_READ_MAX_BYTES,
                                                 RAW_READ_MIN_BYTES, BUS_MIN_RATE_BPS, RECOVERY_WAIT_S)
 from resistamet_gui.gpib_usb.protocol import GpibError, GpibTimeout
-from resistamet_gui.gpib_usb.transport import TransportTimeout
+from resistamet_gui.gpib_usb.transport import TransportError, TransportTimeout
 from tests.fakes.gpib_usb import (STOP, T3S, address_listener, address_talker, attached, h, read_reply,
-                                  status_reply, talking)
+                                  reattach_after_usb_fault_script, status_reply, talking)
 
 
 def piece_wait_ms(code: int, count: int = 1024) -> int:
@@ -394,6 +394,23 @@ class TestReadDeadline:
                        ('in', reply, piece_wait_buffer(), 0.199)]
         controller, transport = attached(script)
         assert controller.read(22, max_bytes=20480, timeout_s=3.0) == (chunk * 20, True)
+        transport.assert_done()
+
+    def test_a_reattach_before_the_read_does_not_use_up_its_deadline(self):
+        # After a USB fault the next read re-attaches first; the readiness poll can take up to
+        # 5 s and the IFC settle more. The read's deadline starts when the read does.
+        controller, transport = attached([
+            ('out', p.command_message(b'\x14', T3S)), ('in', TransportError('EIO')),
+        ] + reattach_after_usb_fault_script()[:-1] + [
+            ('in', status_reply(0x01, error=5), 12, 5.0),   # the attach's take control, 5 s in
+        ] + address_talker(code=0xFB) + [
+            ('out', p.read_message(1024, 0xFB)),
+            ('in', read_reply(bytes(1024), 1024, end=False), piece_wait_buffer(), 0.2),
+            ('out', p.read_message(1024, 0xFB)), ('in', read_reply(b'end', 1024), piece_wait_buffer()),
+        ])
+        with pytest.raises(TransportError):
+            controller.command(b'\x14', timeout_s=3.0)
+        assert controller.read(22, max_bytes=2048, timeout_s=1.0) == (bytes(1024) + b'end', True)
         transport.assert_done()
 
     def test_read_raw_has_the_same_deadline(self):
