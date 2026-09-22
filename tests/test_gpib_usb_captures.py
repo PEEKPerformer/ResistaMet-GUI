@@ -32,6 +32,7 @@ import pytest
 from resistamet_gui.gpib_usb import protocol as p
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb.controller import RAW_READ_MIN_BYTES, RAW_WRITE_MIN_BYTES, Controller
+from tests.fakes.gpib_usb import AnsweringAdapter
 
 CAPTURES = Path(__file__).resolve().parents[1] / 'docs' / 'design' / 'captures' / 'ni_usb_gpib_2026-09-19'
 ADAPTER_DEVICE_ADDRESS = 2
@@ -385,52 +386,6 @@ class TestReplyParserDecodesNi:
 # ---------------------------------------------------------------------------
 # (c) the choice of instruction (§10.1.1, §10.5.2)
 # ---------------------------------------------------------------------------
-
-class AnsweringAdapter:
-    """Just enough of an HS for a ``Controller`` to attach and send one data instruction.
-
-    Reads are answered as timed out with nothing read and writes as complete;
-    only the opcode the controller chose matters here.
-    """
-
-    max_packet_size = 512
-    max_packet_size_raw = 512
-
-    def __init__(self) -> None:
-        self.opcodes: List[int] = []
-        self._reply = b''
-
-    def control_in(self, request, value, index, length, timeout_ms, request_type=0xC0) -> bytes:
-        if request == 0x41:
-            return bytes.fromhex('4178563412')
-        return bytes.fromhex('40010001300102030003960000000000')
-
-    def bulk_out(self, data: bytes, timeout_ms: int) -> None:
-        opcode = data[0]
-        self.opcodes.append(opcode)
-        status = bytes((opcode, 0x01, 0x30, 0x00)) + bytes(4)
-        if opcode == p.OP_REGISTER_WRITE:
-            self._reply = status + bytes((data[1], 0, 0, 0))
-        elif opcode == p.OP_READ:
-            self._reply = bytes((p.BLOCK_READ_STATUS, 0x00, 0x20, 0x0A)) + data[4:6] + b'\xff\xff' + bytes((0x60, 0, 0, 0))
-        elif opcode == p.OP_READ_RAW:
-            self._reply = bytes((opcode, 0x00, 0x64, 0x0A)) + data[4:8] + bytes((0x60, 0, 0, 0))
-        else:
-            self._reply = status
-        self._reply += p.TERMINATION_BLOCK
-
-    def bulk_in(self, length: int, timeout_ms: int) -> bytes:
-        return self._reply
-
-    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> int:
-        return len(data)
-
-    def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
-        return b''
-
-    def close(self) -> None:
-        pass
-
 
 def captured_sizes(opcodes: Tuple[int, int]) -> List[Tuple[int, int]]:
     """(opcode, byte count) of every data instruction of the two ``opcodes`` in any capture, deduplicated."""
