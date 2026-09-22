@@ -12,7 +12,7 @@ from typing import Optional
 from . import protocol as p
 from . import tables as t
 from .protocol import AdapterNotReady, GpibError, GpibTimeout
-from .transport import Transport, TransportError, TransportTimeout
+from .transport import Transport, TransportError, TransportGone, TransportTimeout
 
 #: The interrupt read of ``wait_srq`` is issued in slices of this length so a
 #: ``close`` is noticed between them; the only cost is one extra interrupt
@@ -112,6 +112,9 @@ class _SrqMixin:
                 remaining_ms -= slice_ms
                 if remaining_ms <= 0:
                     raise GpibTimeout('no service request within %.3g s' % total_s) from exc
+            except TransportGone as gone:
+                with self._lock:
+                    raise self._adapter_gone(gone) from gone
             except TransportError:
                 with self._lock:
                     self._link.resync_pending = True

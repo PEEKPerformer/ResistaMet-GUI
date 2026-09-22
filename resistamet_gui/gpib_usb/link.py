@@ -15,7 +15,7 @@ from typing import List, Sequence, Tuple
 from . import protocol as p
 from . import tables as t
 from .protocol import GpibTimeout, NoReply, ProtocolError, StatusBlock
-from .transport import Transport, TransportError, TransportTimeout
+from .transport import Transport, TransportError, TransportGone, TransportTimeout
 
 #: The controller's logger: these are its methods, and they log as it.
 logger = logging.getLogger(__name__.rpartition('.')[0] + '.controller')
@@ -199,7 +199,12 @@ class AdapterLink:
         return self.reply_wait_s(code) + byte_count / BUS_MIN_RATE_BPS
 
     def resync(self) -> None:
-        """§8.2: stop whatever is in flight, drain one stale reply, re-attach later. Never raises."""
+        """§8.2: stop whatever is in flight, drain one stale reply, re-attach later.
+
+        Raises nothing but ``TransportGone``: an adapter that has left the
+        bus has no pipe to bring back into step, and the controller must
+        hear of it at once.
+        """
         self.resync_pending = True
         if self.drained:
             return  # nested guards report the same fault; one drain per fault
@@ -211,6 +216,8 @@ class AdapterLink:
             self.transport.bulk_in(
                 p.read_reply_buffer_size(p.MAX_TRANSFER_BYTES, self.transport.max_packet_size),
                 int(DRAIN_WAIT_S * 1000))
+        except TransportGone:
+            raise
         except TransportTimeout:
             logger.debug('nothing to drain')
         except TransportError as exc:
@@ -222,6 +229,8 @@ class AdapterLink:
                 self.transport.bulk_in_raw(
                     p.raw_read_buffer_size(p.MAX_RAW_TRANSFER_BYTES, self.transport.max_packet_size_raw),
                     int(DRAIN_WAIT_S * 1000))
+            except TransportGone:
+                raise
             except TransportTimeout:
                 logger.debug('nothing to drain on the alternate endpoint')
             except TransportError as exc:
@@ -249,12 +258,15 @@ class AdapterLink:
     def _clear_halt(self, endpoint: int) -> bool:
         """Reset one pipe; False, with a log line, when that could not be done.
 
-        Never raises: every caller is already reporting or recovering from
-        another failure, which a transport without ``clear_halt``, or one
-        whose reset fails, must not replace.
+        Raises nothing but ``TransportGone``: every caller is already
+        reporting or recovering from another failure, which a transport
+        without ``clear_halt``, or one whose reset fails, must not replace;
+        an adapter that has left the bus ends the recovery instead.
         """
         try:
             self.transport.clear_halt(endpoint)
+        except TransportGone:
+            raise
         except Exception as exc:  # noqa: BLE001 -- see the docstring
             logger.warning('%s: clearing the halt on endpoint 0x%02x failed: %s: %s',
                            self.model.name, endpoint, type(exc).__name__, exc)

@@ -440,6 +440,23 @@ class TestInstrumentSession:
         assert adapter.control_requests.count(0x41) == 2  # attach ran again first
         inst.close()
 
+    def test_an_unplugged_adapter_is_connection_lost_at_once_and_on_every_later_call(self, rm, adapter):
+        # §11.2, "Hot-unplug mid-run": one USB call finds the device gone and ends the query;
+        # the cleanup's ``:OUTP OFF`` after it fails the same way and touches no USB at all.
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        adapter.unplugged = True
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            inst.query('*IDN?')
+        assert info.value.error_code == StatusCode.error_connection_lost
+        assert adapter.calls_while_unplugged == 1
+        for _ in range(2):
+            with pytest.raises(pyvisa.errors.VisaIOError) as info:
+                inst.write(':OUTP OFF')
+            assert info.value.error_code == StatusCode.error_connection_lost
+        assert adapter.calls_while_unplugged == 1
+        inst.close()
+        assert adapter.closed
+
     def test_clear_sends_selected_device_clear_with_the_session_timeout(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 300
@@ -708,6 +725,57 @@ class TestBoardRegistry:
         assert enumeration['calls'] == 2
         assert registry.owns('7') is False
         assert enumeration['calls'] == 3
+
+    def test_a_replugged_adapter_opens_again_once_its_sessions_are_closed(self, enumeration):
+        # §11.2: after the replug the adapter enumerates as a new USB device with the same serial.
+        opened: List[AdapterInfo] = []
+        sims: List[SimulatedAdapter] = []
+
+        def opener(info):
+            opened.append(info)
+            sims.append(SimulatedAdapter({}))
+            return sims[-1]
+
+        enumeration['adapters'] = [fake_adapter_info(serial='AAA', address=5)]
+        registry = BoardRegistry(open_transport=opener, first_board=0)
+        controller = registry.acquire('0')
+        sims[0].unplugged = True
+        with pytest.raises(gpib_usb.AdapterGone):
+            controller.status()
+        registry.release('0')
+        assert sims[0].closed
+        enumeration['adapters'] = [fake_adapter_info(serial='AAA', address=7)]
+        assert registry.owns('0')
+        again = registry.acquire('0')
+        assert again is not controller and not again.adapter_gone
+        assert [info.address for info in opened] == [5, 7]
+        registry.release('0')
+
+    def test_a_replugged_adapter_opens_again_while_a_session_is_still_open_on_the_old_one(self, enumeration):
+        opened: List[AdapterInfo] = []
+        sims: List[SimulatedAdapter] = []
+
+        def opener(info):
+            opened.append(info)
+            sims.append(SimulatedAdapter({}))
+            return sims[-1]
+
+        enumeration['adapters'] = [fake_adapter_info(serial='AAA', address=5)]
+        registry = BoardRegistry(open_transport=opener, first_board=0)
+        old = registry.acquire('0')
+        sims[0].unplugged = True
+        with pytest.raises(gpib_usb.AdapterGone):
+            old.status()
+        enumeration['adapters'] = [fake_adapter_info(serial='AAA', address=7)]
+        new = registry.acquire('0')   # the old session has not been closed
+        assert new is not old and sims[0].closed and [info.address for info in opened] == [5, 7]
+        with pytest.raises(gpib_usb.AdapterGone):
+            old.status()                # the old session keeps failing, on USB it no longer touches
+        assert sims[0].calls_while_unplugged == 1
+        registry.release('0')           # the old session closes: the new one keeps its adapter
+        assert not sims[1].closed
+        registry.release('0')
+        assert sims[1].closed
 
     def test_failed_acquire_re_enumerates_next_time(self, enumeration):
         def broken(info):

@@ -28,6 +28,14 @@ for a 0x0b that got nothing, a 0x10 reply without its result block. Each
 comes with an ordinary reply carrying the error code, and the next
 operation follows without a stop request or a re-attach.
 
+An adapter that has left the USB bus is not a fault either: there is no
+pipe to bring back into step. The first USB call that finds the device
+gone (libusb's "no such device", errno ENODEV) ends the operation with
+``AdapterGone`` at once, with no pipe reset, stop request, drain or
+re-attach, and every later operation on the controller raises the same
+without touching USB. A replugged adapter is a new USB device, which the
+board registry opens afresh (spec §11.2, "Hot-unplug mid-run").
+
 The interrupt endpoint is not armed at attach (§2.5 calls it optional and
 operation without it reliable), so attach skips the interrupt-monitor-mask
 steps 4 and 6 of §2.8 and ``status()`` polls the control endpoint instead.
@@ -90,11 +98,11 @@ from .attach import _AttachMixin
 # The constants of the mixins are re-exported: callers import them from here.
 from .link import (BUS_MIN_RATE_BPS, DEFAULT_INFINITE_WAIT_S, DRAIN_WAIT_S,  # noqa: F401
                    RECOVERY_WAIT_S, SHORT_WAIT_S, AdapterLink)
-from .protocol import AdapterNotReady, GpibError, NoReply, ProtocolError, StatusBlock
+from .protocol import AdapterGone, AdapterNotReady, GpibError, NoReply, ProtocolError, StatusBlock
 from .srq import SRQ_WAIT_SLICE_S, _SrqMixin
 from .transfers import (ADAPTER_OUT_BUFFER_BYTES, FRAMED_READ_MAX_BYTES, RAW_READ_MIN_BYTES,  # noqa: F401
                         RAW_READ_SLICE_S, RAW_REPLY_POLL_S, RAW_WRITE_MIN_BYTES, _TransferMixin)
-from .transport import Transport, TransportError
+from .transport import Transport, TransportError, TransportGone
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +164,8 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         self._srq_idle.set()
         #: From the serial-number query (or the USB-B register read).
         self.serial_number: Optional[int] = None
+        #: The USB error that showed the adapter gone from the bus; set once, never cleared.
+        self._gone: Optional[TransportGone] = None
 
     @property
     def model(self) -> t.Model:
@@ -176,6 +186,11 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         return self._link.raw
 
     @property
+    def adapter_gone(self) -> bool:
+        """Whether the adapter has left the USB bus; every operation now raises ``AdapterGone``."""
+        return self._gone is not None
+
+    @property
     def system_controller(self) -> bool:
         """Whether attach set the adapter up as system controller (§2.6 row 16)."""
         return self._system_controller
@@ -192,6 +207,7 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
     def attach(self, system_controller: bool = True) -> None:
         """§2.8 in order. Step 1 (claiming the interface) is the transport's."""
         with self._guard():
+            self._refuse_when_gone()
             if self._closed:
                 raise AdapterNotReady('controller is closed')
             if self._attached:
@@ -245,7 +261,7 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
                            self._link.model.name)
         with self._lock:
             try:
-                if self._attached and not self._link.resync_pending:
+                if self._attached and not self._link.resync_pending and self._gone is None:
                     self._link.register_write(t.SHUTDOWN_WRITES, 'shutdown')
             except (GpibError, TransportError) as exc:
                 logger.warning('shutdown register write failed: %s', exc)
@@ -437,8 +453,29 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
 
     def _refuse_when_closed(self) -> None:
         """For the control requests that need no attach: pyusb would reopen a released handle for them."""
+        self._refuse_when_gone()
         if self._closed:
             raise AdapterNotReady('controller is closed')
+
+    def _refuse_when_gone(self) -> None:
+        """Before anything else, closed or not: a controller whose adapter left says so."""
+        if self._gone is not None:
+            raise self._gone_error() from self._gone
+
+    def _gone_error(self) -> AdapterGone:
+        return AdapterGone('%s is no longer on the USB bus (unplugged, or it lost power): the '
+                           'operation cannot reach it. Plug it back in and open the instrument again.'
+                           % self._link.model.name)
+
+    def _adapter_gone(self, cause: TransportGone) -> AdapterGone:
+        """Record that the adapter has left the bus (§11.2); the ``AdapterGone`` to raise for it."""
+        if self._gone is None:
+            self._gone = cause
+            self._attached = False
+            logger.warning('%s: the adapter has left the USB bus (%s); no recovery is attempted and '
+                           'every later operation fails until it is replugged and opened again',
+                           self._link.model.name, cause)
+        return self._gone_error()
 
     def bus_lines(self) -> int:
         """§5.13 BSR: REN, IFC, SRQ, EOI, NRFD, NDAC, DAV, ATN as bits."""
@@ -452,17 +489,29 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
 
     @contextmanager
     def _guard(self) -> Iterator[None]:
-        """The lock, plus the §8.2 fault rule around every public operation."""
+        """The lock, plus the §8.2 fault rule around every public operation.
+
+        An adapter gone from the bus is the exception: it is reported as
+        ``AdapterGone``, whether the operation or the recovery after it found
+        it, and nothing is recovered.
+        """
         with self._lock:
             try:
                 yield
+            except TransportGone as gone:
+                self._addressed = None
+                raise self._adapter_gone(gone) from gone
             except Exception as exc:
                 # Whatever was addressed cannot be trusted after a failure.
                 self._addressed = None
-                self._link.note_fault(exc)
+                try:
+                    self._link.note_fault(exc)
+                except TransportGone as gone:
+                    raise self._adapter_gone(gone) from gone
                 raise
 
     def _ensure_attached(self) -> None:
+        self._refuse_when_gone()
         if self._closed:
             raise AdapterNotReady('controller is closed')
         if self._link.resync_pending:
