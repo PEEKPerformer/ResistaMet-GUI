@@ -1,0 +1,12 @@
+1106095.332 RM open, scenario timeout_bound
+1106095.927 query :TRAC:DATA? with 1000 ms timeout
+-> VI_ERROR_TMO (-1073807339): Timeout expired before operation completed. after 1.053 s
+1106097.981 clear
+1106098.486 *IDN?
+82
+1106101.976 query :TRAC:DATA? with 300 ms timeout
+-> VI_ERROR_TMO (-1073807339): Timeout expired before operation completed. after 0.267 s
+1106103.243 clear
+1106103.749 *IDN?
+82
+1106104.264 done
