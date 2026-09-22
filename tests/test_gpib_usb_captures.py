@@ -304,6 +304,8 @@ class TestNiMessagesReproduced:
                         built, kind = p.ni_session_update_message(values[0x05], sad, values[0x07]), 'session update'
                 elif message == p.ni_session_close_message():
                     built, kind = message, 'session close'
+                elif message == p.ni_session_mark_message():
+                    built, kind = message, 'session mark'
                 else:
                     continue
                 if kind in ('read', 'write') and name == 'srq_poll' and blocks[1][3] == 0xFC:
@@ -316,6 +318,17 @@ class TestNiMessagesReproduced:
                 seen[kind] = seen.get(kind, 0) + 1
         assert seen['read'] >= 50 and seen['write'] >= 3
         assert seen['session open'] >= 20 and seen['session update'] >= 20 and seen['session close'] >= 20
+
+
+    @pytest.mark.skipif(not CAPTURES_2026_09_22.is_dir(), reason='2026-09-22 capture directory not present')
+    def test_a_new_timeout_code_is_the_12_byte_write_then_the_28_byte_update(self):
+        # §10.10.1: the sequence ``_ni_session`` sends when the code changes on an address.
+        messages = [x.payload for x in transfers('timeout_map')
+                    if x.endpoint == EP_OUT and not x.completion and x.payload]
+        updates = [i for i, message in enumerate(messages)
+                   if len(message) == 28 and split_host_blocks(message)[-1][1] == 4]
+        assert len(updates) >= 10
+        assert all(messages[i - 1] == p.ni_session_mark_message() for i in updates)
 
 
 # ---------------------------------------------------------------------------
