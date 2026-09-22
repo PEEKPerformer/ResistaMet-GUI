@@ -15,6 +15,11 @@ from tests.fakes.gpib_usb import (STOP, T3S, address_listener, address_talker, a
                                   status_reply, talking)
 
 
+def piece_wait_ms(code: int, count: int = 1024) -> int:
+    """The host wait for one framed piece of ``count`` bytes sent with ``code`` (§7.2)."""
+    return int((p.host_wait_s(code, DEFAULT_INFINITE_WAIT_S) + count / BUS_MIN_RATE_BPS) * 1000)
+
+
 class TestRead:
     #: The *IDN? reply as GPIB-USB-HS 01CEE482 sent it for a Keithley 2400 at PAD 3
     #: (2026-09-18): three 0x37 blocks and the 16-byte trailer. The specification's
@@ -280,3 +285,91 @@ class TestFramedReadCap:
         opcodes = [m[0] for m in transport.sent]
         assert opcodes.count(p.OP_COMMAND) == 1 and opcodes.count(p.OP_GO_TO_STANDBY) == 1
         assert p.OP_READ_RAW not in opcodes
+
+
+class TestReadDeadline:
+    """A read is bounded by its timeout as a whole (§7.1, §10.10.2).
+
+    NI sends one instruction for the read, whose code bounds it from its
+    start: a 0x0b still receiving the 2420's 61 kB trace answer at 5.3 kB/s
+    ended at the code's expiry with 5543 bytes and error 0x0a. The framed
+    path reads in pieces of 1024; each took the session's code afresh, so
+    the same answer under a 1 s timeout read on for as long as it kept
+    coming. Now each later piece gets the code for the time left.
+    """
+
+    PIECE = 0.19   # 1024 bytes at the 2420's 5.3 kB/s (§10.10.2)
+
+    def test_a_long_answer_stops_at_the_timeout_with_what_it_has(self):
+        chunk = bytes(range(256)) * 4
+        # 1.0 s: 0xfb for the first piece; 0.81, 0.62, 0.43 s left: 0xfb; 0.24 and 0.05 s:
+        # 0xfa and 0xf9. Then 1.14 s have passed and no sixth piece starts.
+        pieces = [0xFB, 0xFB, 0xFB, 0xFB, 0xFA, 0xF9]
+        script = address_talker(pad=24, code=0xFB)
+        for code in pieces:
+            script += [('out', p.read_message(1024, code)),
+                       ('in', read_reply(chunk, 1024, end=False), piece_wait_buffer(), self.PIECE)]
+        controller, transport = attached(script)
+        with pytest.raises(GpibTimeout) as info:
+            controller.read(24, max_bytes=20480, timeout_s=1.0)
+        assert info.value.partial == chunk * 6 and info.value.code == t.ERR_TIMEOUT
+        assert 'timeout ran out after 6144 of 20480 bytes' in str(info.value)
+        transport.assert_done()   # the script holds no seventh read
+        # Each piece waits as one instruction of its own code, not of the session's.
+        assert transport.in_timeouts_after(0x0A) == [piece_wait_ms(code) for code in pieces]
+
+    def test_the_deadline_is_counted_from_the_start_of_the_read(self):
+        # The addressing belongs to the read: time it takes is time the pieces do not get.
+        controller, transport = attached([
+            ('out', p.command_message(t.address_talker_command(0, 22), 0xFB)),
+            ('in', status_reply(0x0C), None, 0.9),
+            ('out', p.go_to_standby_message()), ('in', status_reply(0x06)),
+            ('out', p.read_message(1024, 0xFB)),
+            ('in', read_reply(bytes(1024), 1024, end=False), piece_wait_buffer(), 0.1),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.read(22, max_bytes=2048, timeout_s=1.0)
+        assert info.value.partial == bytes(1024)
+        transport.assert_done()
+
+    def test_a_little_time_left_is_the_shortest_code_captured_not_one_below_it(self):
+        controller, transport = attached(address_talker(code=0xFB) + [
+            ('out', p.read_message(1024, 0xFB)),
+            ('in', read_reply(bytes(1024), 1024, end=False), piece_wait_buffer(), 0.9999),
+            ('out', p.read_message(1024, 0xF5)), ('in', read_reply(b'end', 1024), piece_wait_buffer()),
+        ])
+        assert controller.read(22, max_bytes=2048, timeout_s=1.0) == (bytes(1024) + b'end', True)
+        transport.assert_done()
+
+    def test_an_answer_within_the_timeout_is_whole(self):
+        controller, transport = attached(address_talker(code=0xFB) + [
+            ('out', p.read_message(1024, 0xFB)),
+            ('in', read_reply(bytes(1024), 1024, end=False), piece_wait_buffer(), 0.3),
+            ('out', p.read_message(1024, 0xFB)), ('in', read_reply(b'tail\n', 1024), piece_wait_buffer(), 0.1),
+        ])
+        assert controller.read(22, max_bytes=20480, timeout_s=1.0) == (bytes(1024) + b'tail\n', True)
+        transport.assert_done()
+
+    def test_no_timeout_has_no_deadline(self):
+        controller, transport = attached(address_talker(code=0xF0) + [
+            ('out', p.read_message(1024, 0xF0)),
+            ('in', read_reply(bytes(1024), 1024, end=False), piece_wait_buffer(), 5000.0),
+            ('out', p.read_message(1024, 0xF0)), ('in', read_reply(b'end', 1024), piece_wait_buffer()),
+        ])
+        assert controller.read(22, max_bytes=2048, timeout_s=None) == (bytes(1024) + b'end', True)
+        transport.assert_done()
+
+    def test_read_raw_has_the_same_deadline(self):
+        controller, transport = attached([
+            ('out', p.read_message(1024, 0xFB)),
+            ('in', read_reply(bytes(1024), 1024, end=False), piece_wait_buffer(), 1.0),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.read_raw(2048, timeout_s=1.0)
+        assert info.value.partial == bytes(1024)
+        transport.assert_done()
+
+
+def piece_wait_buffer() -> int:
+    """The host receive buffer for one 1024-byte framed piece (§8.6)."""
+    return p.read_reply_buffer_size(1024, 512)

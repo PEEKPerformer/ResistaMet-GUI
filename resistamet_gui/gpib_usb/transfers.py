@@ -49,6 +49,11 @@ RAW_WRITE_MIN_BYTES = 2049
 #: read would sit out the whole transfer wait with the error reply queued.
 RAW_READ_SLICE_S = 1.0
 RAW_REPLY_POLL_S = 0.01
+#: The shortest timeout a later piece of a transfer is given when little of
+#: its deadline is left: a millisecond, VISA's own unit, which goes out as
+#: 0xf5, the shortest code captured (§7.1, §10.10.1). Below it are the codes
+#: 0xf1-0xf4, which no capture shows.
+PIECE_TIMEOUT_MIN_S = 1e-3
 #: What the adapter buffers of a framed 0x0d message: the hung adapter of
 #: §8.17 took about 4 KB on the primary OUT before it stopped accepting. The
 #: OUT of a framed write completes once the adapter holds the message, so up
@@ -59,17 +64,40 @@ ADAPTER_OUT_BUFFER_BYTES = 4096
 class _TransferMixin:
     """The write and read paths of ``Controller`` (see the module docstring)."""
 
-    def _write_bytes(self, data: bytes, code: int, send_eoi: bool, eos_char: Optional[int]) -> int:
+    def _code_for_the_rest(self, deadline: Optional[float], operation: str, done: int, asked: int,
+                           partial: bytes = b'') -> int:
+        """The timeout code for a later piece of a transfer: the time left before ``deadline``.
+
+        Rounded as every timeout is (``protocol.timeout_code``), so the piece
+        does not end before the deadline either. With the deadline passed no
+        piece is started, and the transfer ends with a timeout carrying what
+        it has, as NI's one instruction does at its code's expiry (§7.1,
+        §10.10.2). None (no timeout) keeps the disabled code.
+        """
+        if deadline is None:
+            return t.TIMEOUT_DISABLED_CODE
+        left = deadline - self._clock()
+        if left <= 0:
+            raise GpibTimeout('%s: the timeout ran out after %d of %d bytes' % (operation, done, asked), partial)
+        return p.timeout_code(max(left, PIECE_TIMEOUT_MIN_S))
+
+    def _write_bytes(self, data: bytes, code: int, send_eoi: bool, eos_char: Optional[int],
+                     deadline: Optional[float]) -> int:
         """Write instructions of at most 0xffff bytes each, EOI only with the last (§5.1).
 
         Framed or raw is decided per chunk, so a short tail after a raw
         chunk goes framed: each write instruction is complete in itself, its
-        data with it. (The read loop decides once per call instead.)
+        data with it. (The read loop decides once per call instead.) The
+        first chunk carries ``code``; a later one the code for what is left
+        of ``deadline``, and none starts once it has passed
+        (``_code_for_the_rest``): the timeout bounds the write as a whole.
         """
         # Both instructions carry at most 0xffff bytes, so one chunk size serves.
         step = min(p.MAX_TRANSFER_BYTES, p.MAX_RAW_TRANSFER_BYTES)
         written = 0
         for start in range(0, len(data), step):
+            if start:
+                code = self._code_for_the_rest(deadline, 'write', written, len(data))
             chunk = data[start:start + step]
             eoi = send_eoi and start + len(chunk) == len(data)
             if self._link.raw and len(chunk) >= RAW_WRITE_MIN_BYTES:
@@ -205,7 +233,7 @@ class _TransferMixin:
         raise refusal
 
     def _read_bytes(self, max_bytes: int, code: int, eos: Optional[int],
-                    eos_8bit: bool, operation: str) -> Tuple[bytes, bool]:
+                    eos_8bit: bool, operation: str, deadline: Optional[float]) -> Tuple[bytes, bool]:
         """Read instructions until END, the count, or a short result; framed or raw by size.
 
         One instruction carries at most ``FRAMED_READ_MAX_BYTES`` on the
@@ -216,12 +244,21 @@ class _TransferMixin:
         keeps the rest for the next read (§10.1.7, where NI's second
         ``viRead`` re-addressed first and that was harmless, not needed).
         So the 0x0c and the 0x06 go once per call and each piece costs one
-        round trip. Every piece is a whole instruction with its own device
-        timeout code and its own host wait (``transfer_wait_s`` of one
-        piece, never of the request), so a long answer under a short code
-        completes as long as each piece keeps moving. A timeout mid-loop
-        raises with everything read so far as its partial (§5.2: the
-        partial data of a timed-out read is valid).
+        round trip.
+
+        The read is bounded by its timeout as a whole, as NI's is: NI sends
+        one instruction whose code bounds it from its start, and a read
+        still receiving data ends at the code's expiry with the bytes so
+        far and error 0x0a (§7.1, §10.10.2). Here the first piece carries
+        ``code`` and every later one the code for what is left of
+        ``deadline`` (``_code_for_the_rest``), with that code's host wait
+        (``transfer_wait_s`` of one piece); once the deadline has passed no
+        piece starts. Either way the read ends with ``GpibTimeout``
+        carrying everything read so far as its partial (§5.2: the partial
+        data of a timed-out read is valid), which the pyvisa-py session
+        returns with VI_ERROR_TMO as pyvisa-py's own sessions return a
+        timed-out read's bytes. Before, each piece took the session's code
+        afresh, and a read of many pieces could run for many expiries.
 
         The requested count decides the instruction, once, as it does for NI
         (§10.1.1): a request that starts as 0x0b stays 0x0b to its last
@@ -238,6 +275,9 @@ class _TransferMixin:
         raw = self._link.raw and max_bytes >= RAW_READ_MIN_BYTES
         step = p.MAX_TRANSFER_BYTES if raw else FRAMED_READ_MAX_BYTES
         while remaining > 0:
+            if chunks:
+                read = b''.join(chunks)
+                code = self._code_for_the_rest(deadline, operation, len(read), max_bytes, read)
             count = min(remaining, step)
             try:
                 if raw:

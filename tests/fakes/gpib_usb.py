@@ -35,23 +35,38 @@ def hex_diff(expected: bytes, actual: bytes) -> str:
             % (first, expected.hex(' '), actual.hex(' '), ' ' * (12 + 3 * first)))
 
 
+class FakeClock:
+    """A monotonic clock that moves only when told to: the controller's deadlines, made exact."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 class ScriptedTransport:
     """Steps, in the order the controller must take them:
 
     ``('out', bytes)`` and ``('raw_out', bytes)`` -- what the next bulk OUT on
     the primary / alternate endpoint must carry; ``('in', bytes_or_exc[,
-    expected_length])``, ``('raw_in', ...)`` and ``('intr', ...)`` -- what the
-    next bulk IN on the primary / alternate / interrupt endpoint returns (or
-    raises); ``('ctrl', params, reply)`` and ``('ctrl_out', params)`` -- the
-    next control request; ``('clear_halt', endpoint[, exc])`` -- the next
-    pipe reset.
+    expected_length[, elapsed_s]])``, ``('raw_in', ...)`` and ``('intr', ...)``
+    -- what the next bulk IN on the primary / alternate / interrupt endpoint
+    returns (or raises), and how far it moves ``clock`` first; ``('ctrl',
+    params, reply)`` and ``('ctrl_out', params)`` -- the next control
+    request; ``('clear_halt', endpoint[, exc])`` -- the next pipe reset.
     """
 
     max_packet_size = 512
     max_packet_size_raw = 512
 
-    def __init__(self, script: List[Tuple[Any, ...]]) -> None:
+    def __init__(self, script: List[Tuple[Any, ...]], clock: Optional[FakeClock] = None) -> None:
         self.script = list(script)
+        #: Moved by the ``elapsed_s`` of an IN step; the controller's clock when ``attached`` built it.
+        self.clock = clock if clock is not None else FakeClock()
         self.pos = 0
         self.closed = False
         self.sent: List[bytes] = []
@@ -123,8 +138,10 @@ class ScriptedTransport:
     def _in(self, kind: str, length: int, timeout_ms: int) -> bytes:
         step = self._next(kind, '%s(%d)' % (kind, length))
         self.timeouts.append((kind, length, timeout_ms))
-        if len(step) > 2 and step[2] != length:
+        if len(step) > 2 and step[2] is not None and step[2] != length:
             raise AssertionError('%s asked for %d bytes, expected %d' % (kind, length, step[2]))
+        if len(step) > 3:
+            self.clock.advance(step[3])
         if isinstance(step[1], Exception):
             raise step[1]
         if len(step[1]) > length:
@@ -260,8 +277,9 @@ def address_talker(pad: int = 22, code: int = T3S) -> List[Tuple[Any, ...]]:
 
 
 def attached(extra: List[Tuple[Any, ...]], **kwargs) -> Tuple[Controller, ScriptedTransport]:
+    """An attached HS over a script; the controller's clock is the script's, still unless a step moves it."""
     transport = ScriptedTransport(attach_script() + extra)
-    controller = Controller(transport, t.PID_HS, sleep=lambda s: None, **kwargs)
+    controller = Controller(transport, t.PID_HS, sleep=lambda s: None, clock=transport.clock, **kwargs)
     controller.attach()
     return controller, transport
 
@@ -354,7 +372,7 @@ class TalkingTransport:
 
 def talking(message: bytes) -> Tuple[Controller, TalkingTransport]:
     transport = TalkingTransport(message)
-    controller = Controller(transport, t.PID_HS, sleep=lambda s: None)
+    controller = Controller(transport, t.PID_HS, sleep=lambda s: None, clock=FakeClock())
     controller.attach()
     return controller, transport
 

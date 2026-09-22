@@ -33,14 +33,17 @@ DRAIN_WAIT_S = 0.2
 #: host wait to the application. Ten minutes; on expiry the operation is
 #: stopped (§5.11) and reported as a timeout.
 DEFAULT_INFINITE_WAIT_S = 600.0
-#: The device timeout code bounds a handshake interval, not the whole
-#: instruction (§10.1.8: 20480-byte chunks took 4.0 s each under the 3 s code
-#: and completed with error 0), so the host wait for a transfer must also
-#: cover the transfer itself. This is the slowest instrument pace assumed: the
-#: host wait grows by one second per this many bytes. The 2420 formats at
-#: about 5000 bytes per second (§10.1.4) and took write data at about 5600
-#: (2049 bytes in 368 ms, §10.5.2). This is a driver choice, not a
-#: specification value.
+#: The host wait for a transfer grows by one second per this many bytes, on
+#: top of the expiry of its code. Under NI's messages the code bounds the
+#: whole instruction, data moving or not (§7.1, §10.10.2), and expiry + 2 s
+#: covers it (§7.2); the allowance stays as margin for what no capture shows:
+#: a framed 0x0a cut off while data arrives, the expiry of a 0x0d or 0x0e
+#: (§7.3), and unit 01CEE482, whose 0x0b of this driver's ran to 20.0 s
+#: whatever its code (§11.2). The host wait is only the backstop for an
+#: instruction the adapter does not end itself; a longer one costs nothing
+#: when it does. 1000 bytes a second is below the 2420's pace (about 5000
+#: formatting, §10.1.4; about 5600 taking write data, §10.5.2). A driver
+#: choice, not a specification value.
 BUS_MIN_RATE_BPS = 1000
 
 
@@ -190,8 +193,8 @@ class AdapterLink:
         """The host wait for a transfer of ``byte_count`` bytes that the bus paces.
 
         The reply wait for ``code``, plus the time the bytes themselves take
-        at ``BUS_MIN_RATE_BPS``: the code bounds a handshake, not the
-        transfer (§10.1.8). Used for the reply to one framed 0x0a, which comes
+        at ``BUS_MIN_RATE_BPS`` (see there for why, now that the code is
+        known to bound the whole instruction). Used for the reply to one framed 0x0a, which comes
         only when that instruction is over; the OUT of a 0x0d message, and its
         reply for the part the adapter buffers; the raw IN of a 0x0b; the
         raw OUT of a 0x0e and its reply.
