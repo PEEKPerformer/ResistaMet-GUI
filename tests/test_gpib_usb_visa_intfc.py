@@ -361,7 +361,7 @@ class TestData:
     @pytest.mark.parametrize('opcode', [p.OP_READ, p.OP_READ_RAW])
     def test_read_termination_selects_eos(self, rm, board, monkeypatch, opcode):
         if opcode == p.OP_READ_RAW:
-            monkeypatch.setenv('RESISTAMET_GPIB_NI_INSTRUCTIONS', '1')
+            monkeypatch.setenv('NI_GPIB_USB_INSTRUCTIONS', '1')
         intf = rm.open_resource('GPIB0::INTFC', read_termination='\n')
         intf.send_command(bytes((UNL, MTA0, LAD24)))
         intf.write('*IDN?')

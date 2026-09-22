@@ -245,7 +245,7 @@ class TestInstrumentSession:
     @pytest.mark.parametrize('value', [None, '0'])
     def test_without_the_environment_switch_every_transfer_is_framed(self, rm, adapter, monkeypatch, value):
         if value is not None:
-            monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, value)
+            monkeypatch.setenv(boards.INSTRUCTIONS_ENV, value)
         inst = rm.open_resource('GPIB0::24::INSTR')
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         inst.write('*CLS;' * 500)
@@ -254,26 +254,53 @@ class TestInstrumentSession:
         assert len(adapter.instructions(p.OP_WRITE)[-1]) == 8 + 2502 + 2 + 4
         inst.close()
 
-    def test_the_environment_switch_spellings(self, monkeypatch):
+    def test_the_switch_s_names(self):
+        assert boards.INSTRUCTIONS_ENVS == (
+            'NI_GPIB_USB_INSTRUCTIONS', 'RESISTAMET_GPIB_NI_INSTRUCTIONS', 'RESISTAMET_GPIB_RAW_TRANSFERS',
+        )
+        assert boards.INSTRUCTIONS_ENV == 'NI_GPIB_USB_INSTRUCTIONS'
+        assert boards.NI_INSTRUCTIONS_ENV == 'RESISTAMET_GPIB_NI_INSTRUCTIONS'
+        assert boards.RAW_TRANSFERS_ENV == 'RESISTAMET_GPIB_RAW_TRANSFERS'
+
+    @pytest.mark.parametrize('name', boards.INSTRUCTIONS_ENVS)
+    def test_the_environment_switch_spellings_under_every_name(self, monkeypatch, name):
         for value in ('1', 'true', 'Yes', ' on '):
-            monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, value)
+            monkeypatch.setenv(name, value)
             assert boards.ni_instructions_enabled() is True, value
         for value in ('0', 'false', 'no', 'off', '', 'raw'):
-            monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, value)
+            monkeypatch.setenv(name, value)
             assert boards.ni_instructions_enabled() is False, value
-        monkeypatch.delenv(boards.NI_INSTRUCTIONS_ENV)
+        monkeypatch.delenv(name)
         assert boards.ni_instructions_enabled() is False
 
-    def test_the_switch_s_first_name_still_works_and_the_new_name_wins(self, monkeypatch):
-        assert boards.RAW_TRANSFERS_ENV == 'RESISTAMET_GPIB_RAW_TRANSFERS'
-        assert boards.NI_INSTRUCTIONS_ENV == 'RESISTAMET_GPIB_NI_INSTRUCTIONS'
-        monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '1')
-        assert boards.ni_instructions_enabled() is True
-        monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, '0')
-        assert boards.ni_instructions_enabled() is False
-        monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '0')
-        monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, '1')
-        assert boards.ni_instructions_enabled() is True
+    @pytest.mark.parametrize('name', boards.INSTRUCTIONS_ENVS)
+    def test_each_name_alone_turns_the_instructions_on(self, rm, adapter, monkeypatch, caplog, name):
+        monkeypatch.setenv(name, '1')
+        with caplog.at_level('INFO', logger='resistamet_gui.gpib_usb.boards'):
+            inst = rm.open_resource('GPIB0::24::INSTR')
+        assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
+        assert adapter.blocks(p.OP_READ) == []  # the chunk went out as a 0x0b, not a framed 0x0a
+        inst.close()
+        attached = [record.getMessage() for record in caplog.records if 'attached' in record.getMessage()]
+        assert len(attached) == 1 and 'raw transfers' in attached[0] and '0x10' in attached[0]
+
+    @pytest.mark.parametrize('first, second, third, expected', [
+        ('1', '0', '0', True),
+        ('0', '1', '1', False),
+        ('', '1', '1', False),
+        (None, '1', '0', True),
+        (None, '0', '1', False),
+        (None, '', '1', False),
+        (None, None, '1', True),
+        (None, None, '0', False),
+        ('on', None, 'off', True),
+        ('off', 'on', None, False),
+    ])
+    def test_the_first_name_that_is_set_decides(self, monkeypatch, first, second, third, expected):
+        for name, value in zip(boards.INSTRUCTIONS_ENVS, (first, second, third)):
+            if value is not None:
+                monkeypatch.setenv(name, value)
+        assert boards.ni_instructions_enabled() is expected
 
     def test_the_attach_log_line_says_which_instructions(self, rm, adapter, monkeypatch, caplog):
         with caplog.at_level('INFO', logger='resistamet_gui.gpib_usb.boards'):

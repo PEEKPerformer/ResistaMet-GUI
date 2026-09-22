@@ -73,11 +73,11 @@ def enumeration(monkeypatch):
 @pytest.fixture(autouse=True)
 def switch_unset(monkeypatch):
     """The developer's shell must not decide which instructions these tests see."""
-    monkeypatch.delenv(boards.NI_INSTRUCTIONS_ENV, raising=False)
-    monkeypatch.delenv(boards.RAW_TRANSFERS_ENV, raising=False)
+    for name in boards.INSTRUCTIONS_ENVS:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture
 def ni_instructions(monkeypatch, switch_unset):
     """Switch NI's instructions (0x0b, 0x0e, 0x10) on for boards opened in this test; they are off by default."""
-    monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, '1')
+    monkeypatch.setenv(boards.INSTRUCTIONS_ENV, '1')
