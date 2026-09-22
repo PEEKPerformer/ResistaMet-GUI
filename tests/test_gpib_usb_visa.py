@@ -340,7 +340,8 @@ class TestInstrumentSession:
                                                                                     monkeypatch):
         # §7.1, §10.10.2: NI's read ends at its code's expiry with the bytes so far and a timeout;
         # pyvisa-py's own sessions return a timed-out read's bytes with VI_ERROR_TMO. A talker
-        # giving 1024 bytes each 0.4 s under a 1 s timeout: three pieces, then no fourth.
+        # giving 1024 bytes each 0.4 s under a 1 s timeout (0xfb, 1.25 s on the bench unit):
+        # four pieces, then no fifth.
         clock = FakeClock()
         monkeypatch.setattr(boards, 'Controller', functools.partial(controller_module.Controller, clock=clock))
         slow_reply = adapter.bulk_in
@@ -355,9 +356,9 @@ class TestInstrumentSession:
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 1000
         session = inst.visalib.sessions[inst.session]
-        assert session.read(20480) == (bytes(range(256)) * 12, StatusCode.error_timeout)
-        assert framed_counts(adapter) == [1024, 1024, 1024]
-        assert [m[3] for m in adapter.instructions(p.OP_READ)] == [0xFB, 0xFB, 0xFA]
+        assert session.read(20480) == (bytes(range(256)) * 16, StatusCode.error_timeout)
+        assert framed_counts(adapter) == [1024, 1024, 1024, 1024]
+        assert [m[3] for m in adapter.instructions(p.OP_READ)] == [0xFB, 0xFB, 0xFB, 0xF9]
         inst.close()
 
     def test_timeout_attribute_reaches_the_instruction(self, rm, adapter):
