@@ -1,20 +1,32 @@
 // Wires the backend into the UI once, at the root: discover it, build the API
 // client, open the event stream, keep the session store current.
 //
-// Status is polled at a slow cadence as a backstop; the stream is what keeps
-// the UI live. Polling exists because a stream can be silently dead for the
-// few seconds before the socket notices, and the run state is what the
-// operator is looking at.
+// The run state on screen is the backend's status. It is read when a command
+// answers (the client reports every reply), when the stream says the run
+// changed state, and at a slow cadence as a backstop: a stream can be
+// silently dead for the few seconds before the socket notices, and the run
+// state is what the operator is looking at.
 
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { discoverBackend, type BackendInfo } from "../lib/backend";
 import { ApiClient } from "../lib/api";
 import { EventStream } from "../lib/events";
 import type { AnyEvent } from "../generated/events";
-import { applyEvent, getSessionSnapshot, setBackendReachable, setConnected, setGap, setStatus } from "../state/session";
+import {
+  applyEvent,
+  backendRestarted,
+  getSessionSnapshot,
+  markPromptAnswered,
+  promptRunId,
+  setBackendReachable,
+  setConnected,
+  setGap,
+  setStatus,
+} from "../state/session";
 import { applySample, getSeries, resetSamples } from "../state/samples";
 import { applySweepSegment, resetSweep } from "../state/sweep";
 import { applyVdpGeometry, applyVdpResult, resetVdp } from "../state/vdp";
+import { applyGeometryWarning, applySpotComplete, applySpotRunEnded, applySpotRunStarted } from "../state/spots";
 
 interface AppServices {
   api: ApiClient;
@@ -27,6 +39,17 @@ interface AppServices {
 const ServicesContext = createContext<AppServices | null>(null);
 
 const STATUS_POLL_MS = 2000;
+
+/** Events after which the status the screen holds is out of date. */
+const RUN_STATE_EVENTS: ReadonlySet<AnyEvent["type"]> = new Set([
+  "run_started",
+  "run_ended",
+  "paused",
+  "resumed",
+  "prompt",
+  "prompt_resolved",
+  "stopping",
+] as const);
 
 /** Point the per-run stores at the run an event belongs to.
  *
@@ -51,6 +74,9 @@ function beginRunIfNew(event: AnyEvent): void {
   resetSamples(mode, runId);
   resetSweep(runId);
   resetVdp(runId);
+  // A gap is about one run's trace. The stream reports a new run's own gap
+  // after the first of its events.
+  setGap(false);
 }
 
 export function useServices(): AppServices {
@@ -89,11 +115,11 @@ export function AppProvider({ children, fallback }: ProviderProps) {
 
   const services = useMemo<AppServices | null>(() => {
     if (!backend) return null;
-    const api = new ApiClient(backend);
+    const api = new ApiClient(backend, { onStatus: setStatus, onPromptAnswered: markPromptAnswered, promptRunId });
     const stream = new EventStream(api);
     const retryConnection = async () => {
       try {
-        setStatus(await api.status());
+        await api.status();
       } catch {
         setBackendReachable(false);
       }
@@ -114,23 +140,51 @@ export function AppProvider({ children, fallback }: ProviderProps) {
         case "gap":
           setGap(true);
           return;
+        case "restarted":
+          // Same run ids, another process: nothing on screen is this one's.
+          resetSamples();
+          resetSweep(null);
+          resetVdp(null);
+          backendRestarted();
+          return;
         case "event":
           beginRunIfNew(message.event);
           if (message.event.type === "sample") applySample(message.event);
           if (message.event.type === "sweep_segment") applySweepSegment(message.event);
           if (message.event.type === "vdp_geometry_complete") applyVdpGeometry(message.event);
           if (message.event.type === "vdp_result") applyVdpResult(message.event);
+          if (message.event.type === "run_started") applySpotRunStarted(message.event);
+          if (message.event.type === "geometry_warning") applyGeometryWarning(message.event);
+          if (message.event.type === "spot_complete") applySpotComplete(message.event);
+          if (message.event.type === "run_ended") applySpotRunEnded();
           applyEvent(message.event);
+          if (RUN_STATE_EVENTS.has(message.event.type)) void poll(true);
           return;
       }
     });
     let alive = true;
-    const poll = async () => {
+    let polling = false;
+    let pollAgain = false;
+    // One status request at a time. While one is out the timer's tick is
+    // skipped; an event's is remembered and sent when the first returns, so a
+    // burst of events (the history after a reload) costs two requests and the
+    // last word is still current.
+    const poll = async (afterEvent = false): Promise<void> => {
+      if (polling) {
+        if (afterEvent) pollAgain = true;
+        return;
+      }
+      polling = true;
       try {
-        const status = await api.status();
-        if (alive) setStatus(status);
+        await api.status();
       } catch {
         if (alive) setBackendReachable(false);
+      } finally {
+        polling = false;
+      }
+      if (pollAgain && alive) {
+        pollAgain = false;
+        void poll(true);
       }
     };
     // Status first, then the stream: the history the stream opens with is

@@ -73,9 +73,22 @@ cd desktop && npm run tauri build
 ```
 
 `.github/workflows/desktop.yml` does this for Windows (msi, nsis) and macOS
-(dmg) on every `v*` tag and attaches the bundles to the release. The frozen
-backend is smoke-tested in CI — handshake, `/health`, clean exit on stdin close
-— before the shell is built around it.
+(dmg) on pushes to the migration branch and on pull requests that touch the
+desktop app or the backend, and on a `desktop-v<version>` tag — the version in
+`src-tauri/tauri.conf.json`, e.g. `desktop-v2.0.0-1` — it uploads the bundles to
+the release of that name. The release must already exist (`gh release create
+desktop-v<version> ...`): a workflow never creates one, and a `v*` tag of the
+PySide6 application never receives a desktop bundle. The frozen backend is
+smoke-tested in CI — handshake, `/health`, a WebSocket upgrade, a simulated run
+written to CSV and to HDF5, clean exit on stdin close — before the shell is
+built around it.
+
+Third-party: the macOS app bundles **libusb 1.0** (https://libusb.info),
+licensed under the GNU LGPL 2.1. The licence text ships inside the app as
+`libusb-COPYING`, and the build fails if it is missing. The library is the
+unmodified Homebrew build; its source is at
+https://github.com/libusb/libusb/releases (the version Homebrew's `libusb`
+formula provided when the bundle was built).
 
 `sidecar/resistamet-api/` holds only a README in the repository so the resource
 path exists at compile time; the build fills it.

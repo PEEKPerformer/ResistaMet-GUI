@@ -1,6 +1,7 @@
 // The HTTP side of the backend, one method per route.
 //
-// Thin on purpose: no caching, no retries, no state. Each method builds a
+// Thin on purpose: no caching, no retries, and no state beyond the order the
+// session requests went out in. Each method builds a
 // request, sends the bearer token, and turns a non-2xx response into an
 // ApiError carrying the backend's `detail` so the UI can show the reason the
 // backend gave rather than one it made up.
@@ -9,8 +10,11 @@ import type { BackendInfo } from "./backend";
 import type { ClientInfo, Mode, RunRequest } from "../generated/settings";
 import type { EventEnvelope } from "../generated/events";
 import type { InstrumentInfo, SessionStatus } from "../generated/session";
-import type { SpotMap } from "../generated/maps";
+import type { MapImage, MapImageRegistration, SpotMap, SpotPreflight, SpotPreflightRequest } from "../generated/maps";
 import { version as packageVersion } from "../../package.json";
+import { describeDetail } from "./apiDetail";
+import { ReplyOrder } from "./replyOrder";
+import { isTimeout, timeoutFor, timeoutSignal } from "./requestTimeout";
 
 /** Written into the header of every file a run started from here produces,
  *  so desktop output can be told from the PySide6 app's. */
@@ -77,6 +81,15 @@ export interface EventPage {
   last_seq: number;
 }
 
+/** What PUT /maps/{id}/image answers. `replaced` names the file the old
+ *  image was moved to, when there was one. */
+export interface StoredImage {
+  file: string;
+  sha256: string;
+  bytes: number;
+  replaced: string | null;
+}
+
 export type Profile = Record<string, Record<string, unknown>>;
 
 export interface ResultFile {
@@ -97,45 +110,78 @@ export class ApiError extends Error {
   }
 }
 
+/** Where the client reports what the session routes tell it, so the run
+ *  state on screen follows a command's reply rather than the next poll. */
+export interface ApiHooks {
+  /** The status GET /session and every session command answer with. */
+  onStatus?: (status: SessionStatus) => void;
+  /** The backend accepted an answer to this prompt. */
+  onPromptAnswered?: (promptId: string) => void;
+  /** The run the UI believes this prompt belongs to, sent with the answer so
+   *  the backend can refuse one meant for another run. */
+  promptRunId?: (promptId: string) => string | null;
+}
+
 export class ApiClient {
-  constructor(readonly backend: BackendInfo) {}
+  private readonly statusOrder = new ReplyOrder();
+
+  constructor(
+    readonly backend: BackendInfo,
+    private readonly hooks: ApiHooks = {},
+  ) {}
 
   // --- session -----------------------------------------------------------
 
   status(): Promise<SessionStatus> {
-    return this.request("GET", "/session");
+    return this.sessionRequest("GET", "/session");
   }
 
-  start(request: StartRequest): Promise<{ run_id: string }> {
-    return this.request("POST", "/session/start", { ...request, client: CLIENT });
+  async start(request: StartRequest): Promise<{ run_id: string }> {
+    const reply = await this.request<{ run_id: string }>("POST", "/session/start", { ...request, client: CLIENT });
+    // Start answers with the run id only. Read the status before returning,
+    // so the caller's "busy" does not end on a screen that still says idle.
+    await this.status().catch(() => undefined);
+    return reply;
   }
 
   stop(): Promise<SessionStatus> {
-    return this.request("POST", "/session/stop");
+    return this.sessionRequest("POST", "/session/stop");
   }
 
   abort(): Promise<SessionStatus> {
-    return this.request("POST", "/session/abort");
+    return this.sessionRequest("POST", "/session/abort");
   }
 
   pause(): Promise<SessionStatus> {
-    return this.request("POST", "/session/pause");
+    return this.sessionRequest("POST", "/session/pause");
   }
 
   resume(): Promise<SessionStatus> {
-    return this.request("POST", "/session/resume");
+    return this.sessionRequest("POST", "/session/resume");
   }
 
   mark(label = "MARK"): Promise<SessionStatus> {
-    return this.request("POST", "/session/mark", { label });
+    return this.sessionRequest("POST", "/session/mark", { label });
   }
 
-  answerPrompt(
+  async answerPrompt(
     promptId: string,
     choice: string,
     fields: Record<string, unknown> = {},
   ): Promise<SessionStatus> {
-    return this.request("POST", "/session/prompt", { prompt_id: promptId, choice, fields });
+    const body: { prompt_id: string; choice: string; fields: Record<string, unknown>; run_id?: string } = {
+      prompt_id: promptId,
+      choice,
+      fields,
+    };
+    const runId = this.hooks.promptRunId?.(promptId) ?? null;
+    if (runId !== null) body.run_id = runId;
+    const ticket = this.statusOrder.sent();
+    const status = await this.request<SessionStatus>("POST", "/session/prompt", body);
+    // Before the status: the reply may still name the prompt it answered.
+    this.hooks.onPromptAnswered?.(promptId);
+    if (this.statusOrder.accepts(ticket)) this.hooks.onStatus?.(status);
+    return status;
   }
 
   events(sinceSeq = 0, runId?: string, limit = 500): Promise<EventPage> {
@@ -144,13 +190,16 @@ export class ApiClient {
     return this.request("GET", `/session/events?${params}`);
   }
 
-  /** The WebSocket URL for the live stream, resuming from a cursor if given. */
-  eventsSocketUrl(runId?: string | null, sinceSeq = 0): string {
+  /** The WebSocket URL for the live stream, resuming from a position if
+   *  given. `sinceCursor` is the backend's cross-run cursor and is what it
+   *  resumes from when sent; (run id, seq) is for a backend without one. */
+  eventsSocketUrl(runId?: string | null, sinceSeq = 0, sinceCursor: number | null = null): string {
     const url = new URL(this.backend.url.replace(/^http/, "ws"));
     url.pathname = "/session/events/ws";
     url.searchParams.set("token", this.backend.token);
     if (runId) url.searchParams.set("run_id", runId);
     if (sinceSeq) url.searchParams.set("since_seq", String(sinceSeq));
+    if (sinceCursor !== null) url.searchParams.set("since_cursor", String(sinceCursor));
     return url.toString();
   }
 
@@ -202,7 +251,7 @@ export class ApiClient {
     if (!response.ok) {
       let detail = response.statusText;
       try {
-        detail = String(((await response.json()) as { detail?: unknown }).detail ?? detail);
+        detail = describeDetail(((await response.json()) as { detail?: unknown }).detail, detail);
       } catch {
         // keep status text
       }
@@ -227,6 +276,34 @@ export class ApiClient {
     return this.request("GET", `/maps/${encodeURIComponent(mapId)}?user=${encodeURIComponent(user)}`);
   }
 
+  /** Store the photograph beside the map's runs: the raw bytes under their
+   *  content type. Resolves for 201 (stored) and 200 (already there); an
+   *  ApiError 409 means the map holds another image and `replace` would
+   *  move it aside, 413 and 415 carry the reason. */
+  async putMapImage(mapId: string, user: string, image: Blob, contentType: string, replace = false): Promise<StoredImage> {
+    const query = `user=${encodeURIComponent(user)}${replace ? "&replace=true" : ""}`;
+    const response = await this.send("PUT", `/maps/${encodeURIComponent(mapId)}/image?${query}`, image, contentType);
+    return (await response.json()) as StoredImage;
+  }
+
+  /** Where the stored photograph sits on the sample. */
+  putMapRegistration(mapId: string, user: string, registration: MapImageRegistration): Promise<MapImage> {
+    return this.request("PUT", `/maps/${encodeURIComponent(mapId)}/registration?user=${encodeURIComponent(user)}`, registration);
+  }
+
+  /** The stored photograph's bytes. The route wants the token, so an <img>
+   *  cannot point at it; the caller shows the blob. */
+  async mapImage(mapId: string, user: string): Promise<Blob> {
+    const response = await this.send("GET", `/maps/${encodeURIComponent(mapId)}/image?user=${encodeURIComponent(user)}`);
+    return response.blob();
+  }
+
+  /** What a four-point run with this body would record about the spot's
+   *  position, without the run. 422 wherever Start would be. */
+  spotPreflight(body: SpotPreflightRequest): Promise<SpotPreflight> {
+    return this.request("POST", "/spots/preflight", body);
+  }
+
   // --- instruments -------------------------------------------------------
 
   /** `visaLibrary` / `gpibInterface` undefined = this machine's saved value. */
@@ -248,27 +325,45 @@ export class ApiClient {
 
   // --- transport ---------------------------------------------------------
 
+  /** A route that answers with the session's status: report it, unless a
+   *  request sent after this one has already been answered. */
+  private async sessionRequest(method: string, path: string, body?: unknown): Promise<SessionStatus> {
+    const ticket = this.statusOrder.sent();
+    const status = await this.request<SessionStatus>(method, path, body);
+    if (this.statusOrder.accepts(ticket)) this.hooks.onStatus?.(status);
+    return status;
+  }
+
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const response = await this.send(method, path, body === undefined ? undefined : JSON.stringify(body), "application/json");
+    return (await response.json()) as T;
+  }
+
+  /** One request with the token; a non-2xx answer is an ApiError. */
+  private async send(method: string, path: string, body?: BodyInit, contentType?: string): Promise<Response> {
     const headers: Record<string, string> = { Authorization: `Bearer ${this.backend.token}` };
     const init: RequestInit = { method, headers };
     if (body !== undefined) {
-      headers["Content-Type"] = "application/json";
-      init.body = JSON.stringify(body);
+      if (contentType !== undefined) headers["Content-Type"] = contentType;
+      init.body = body;
     }
-    const response = await fetch(`${this.backend.url}${path}`, init);
+    init.signal = timeoutSignal(timeoutFor(method, path));
+    let response: Response;
+    try {
+      response = await fetch(`${this.backend.url}${path}`, init);
+    } catch (error) {
+      if (isTimeout(error)) throw new ApiError(0, "The backend did not answer in time.");
+      throw error;
+    }
     if (!response.ok) {
       let detail = response.statusText;
       try {
-        const parsed = (await response.json()) as { detail?: unknown };
-        if (parsed.detail !== undefined) {
-          detail =
-            typeof parsed.detail === "string" ? parsed.detail : JSON.stringify(parsed.detail);
-        }
+        detail = describeDetail(((await response.json()) as { detail?: unknown }).detail, detail);
       } catch {
         // no JSON body; keep the status text
       }
       throw new ApiError(response.status, detail);
     }
-    return (await response.json()) as T;
+    return response;
   }
 }

@@ -1,13 +1,15 @@
 // What runs have written: a list of files and a preview of one.
 //
 // The preview parses the CSV in the browser and plots one column against
-// elapsed time; the metadata header is shown as-is, because it is the record
-// of what the run was.
+// elapsed time, or for a sweep file current against voltage; the metadata
+// header is shown as-is, because it is the record
+// of what the run was, and so is the block the run wrote when it ended,
+// which is the only place a van der Pauw result or a spot's statistics are.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useApi } from "../../app/AppContext";
 import { ApiError, type ResultFile } from "../../lib/api";
-import { parseResistametCsv, type ParsedCsv } from "../../lib/csv";
+import { parseResistametCsv, sweepPreview, type ParsedCsv } from "../../lib/csv";
 import { useUi } from "../../state/ui";
 import { Badge, Button, Notice, Panel, Select } from "../../components/ui";
 import { Icons } from "../../components/icons";
@@ -18,6 +20,7 @@ const UNIT_BY_COLUMN: Record<string, string> = {
   R_ohm: "Ω",
   R_unc_ohm: "Ω",
   V_meas: "V",
+  V_source: "V",
   I_meas: "A",
   V: "V",
   I: "A",
@@ -56,7 +59,13 @@ export function ResultsView() {
 
   useEffect(refresh, [api, onlyMine, ui.username]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Replies can arrive out of order, and a large file is slow. Only the
+  // reply to the latest click may fill the preview, or one file's data is
+  // shown under another file's name.
+  const latestOpen = useRef(0);
+
   const open = (file: ResultFile) => {
+    const request = ++latestOpen.current;
     setSelected(file);
     setParsed(null);
     setError(null);
@@ -64,6 +73,7 @@ export function ResultsView() {
     api
       .resultFile(file.path)
       .then((text) => {
+        if (request !== latestOpen.current) return;
         const result = parseResistametCsv(text);
         setParsed(result);
         // The quantity the run was about, when the file has it.
@@ -73,17 +83,37 @@ export function ResultsView() {
           result.columns.find((c) => c !== "elapsed_s" && c in result.data && !c.includes("unc"));
         setColumn(first ?? null);
       })
-      .catch((e: unknown) => setError(e instanceof ApiError ? e.detail : String(e)));
+      .catch((e: unknown) => {
+        if (request === latestOpen.current) setError(e instanceof ApiError ? e.detail : String(e));
+      });
   };
 
-  const series = useMemo(() => {
-    if (!parsed || !column) return [];
-    const x = parsed.data["elapsed_s"] ?? parsed.data["Point"] ?? parsed.data[parsed.columns[0] ?? ""] ?? [];
-    const y = parsed.data[column] ?? [];
-    return [{ label: column, color: "var(--data-r)", x, y, points: y.length < 400 }];
-  }, [parsed, column]);
+  // A sweep file has no time axis: it is an I-V curve, one trace per leg.
+  const sweep = useMemo(() => (parsed ? sweepPreview(parsed) : null), [parsed]);
 
-  const numericColumns = parsed ? parsed.columns.filter((c) => c in parsed.data && c !== "elapsed_s") : [];
+  const series = useMemo(() => {
+    if (!parsed) return [];
+    if (sweep) {
+      const x = parsed.data[sweep.x] ?? [];
+      const y = parsed.data[sweep.y] ?? [];
+      return sweep.legs.map((leg, i) => ({
+        label: i === 0 ? "Forward" : "Reverse",
+        color: i === 0 ? "var(--data-v)" : "var(--data-i)",
+        x: x.slice(leg.from, leg.to),
+        y: y.slice(leg.from, leg.to),
+        points: leg.to - leg.from < 400,
+      }));
+    }
+    if (!column) return [];
+    const x = parsed.data["elapsed_s"] ?? parsed.data[parsed.columns[0] ?? ""] ?? [];
+    // An infinite cell would take the y scale with it; it plots as a gap.
+    const y = (parsed.data[column] ?? []).map((v) => (Number.isFinite(v) ? v : NaN));
+    return [{ label: column, color: "var(--data-r)", x, y, points: y.length < 400 }];
+  }, [parsed, column, sweep]);
+
+  const xColumn = sweep ? sweep.x : parsed && "elapsed_s" in parsed.data ? "elapsed_s" : (parsed?.columns[0] ?? "");
+  const yColumn = sweep ? sweep.y : (column ?? "");
+  const numericColumns = parsed && !sweep ? parsed.columns.filter((c) => c in parsed.data && c !== "elapsed_s") : [];
 
   return (
     <div className={styles.view}>
@@ -133,6 +163,11 @@ export function ResultsView() {
             <header className={styles.previewHeader}>
               <h2 className={styles.previewTitle}>{selected.name}</h2>
               {parsed ? <Badge>{parsed.rows} rows</Badge> : null}
+              {sweep ? (
+                <span className={styles.axes}>
+                  {sweep.y} against {sweep.x}
+                </span>
+              ) : null}
               {numericColumns.length > 0 ? (
                 <Select value={column ?? ""} onChange={(e) => setColumn(e.target.value)} className={styles.columnPicker}>
                   {numericColumns.map((c) => (
@@ -149,27 +184,41 @@ export function ResultsView() {
             ) : null}
             {parsed && series.length > 0 ? (
               <Panel className={styles.plotPanel} bodyClassName={styles.plotBody}>
-                <XYPlot series={series} xUnit="s" yUnit={UNIT_BY_COLUMN[column ?? ""] ?? ""} />
+                <XYPlot series={series} xUnit={UNIT_BY_COLUMN[xColumn] ?? ""} yUnit={UNIT_BY_COLUMN[yColumn] ?? ""} />
               </Panel>
             ) : null}
             {parsed ? (
               <Panel title="Metadata" className={styles.meta} bodyClassName={styles.metaBody}>
-                <table className={styles.metaTable}>
-                  <tbody>
-                    {Object.entries(parsed.metadata).map(([key, value]) => (
-                      <tr key={key}>
-                        <th>{key}</th>
-                        <td className="mono">{value}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                {/* The result first: the panel scrolls, and the header is long. */}
+                <div className={styles.metaHeading}>End of run</div>
+                {Object.keys(parsed.footer).length > 0 ? (
+                  <MetadataTable entries={parsed.footer} />
+                ) : (
+                  <div className={styles.muted}>None written: the run did not finish this file.</div>
+                )}
+                <div className={styles.metaHeading}>Header</div>
+                <MetadataTable entries={parsed.metadata} />
               </Panel>
             ) : null}
           </>
         )}
       </div>
     </div>
+  );
+}
+
+function MetadataTable({ entries }: { entries: Record<string, string> }) {
+  return (
+    <table className={styles.metaTable}>
+      <tbody>
+        {Object.entries(entries).map(([key, value]) => (
+          <tr key={key}>
+            <th>{key}</th>
+            <td className="mono">{value}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

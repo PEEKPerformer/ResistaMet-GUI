@@ -1,0 +1,168 @@
+.panel {
+  flex: none;
+}
+
+.closed {
+  display: none;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.summary {
+  color: var(--fg-faint);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.pick {
+  width: auto;
+  height: 26px;
+  font-size: var(--text-sm);
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* The figure keeps its aspect; on a wide workspace it stops growing so the
+   markers do not become saucers. */
+.canvas {
+  position: relative;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.canvas svg:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-md);
+}
+
+.tip {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-2) var(--sp-3);
+  transform: translateY(-50%);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-2);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-4);
+  min-height: 20px;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+
+.warn {
+  color: var(--warn);
+}
+
+.danger {
+  color: var(--danger);
+}
+
+.position {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--text-sm);
+}
+
+.coordinate {
+  width: 112px;
+  flex: none;
+}
+
+.positionLabel {
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.faint {
+  color: var(--fg-faint);
+}
+
+.photoBar,
+.alignBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  font-size: var(--text-sm);
+}
+
+.photoName {
+  color: var(--fg-muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.alignBar label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--fg-muted);
+}
+
+.alignBar input[type="range"] {
+  width: 140px;
+  accent-color: var(--accent);
+}
+
+.exportTools {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-left: auto;
+}

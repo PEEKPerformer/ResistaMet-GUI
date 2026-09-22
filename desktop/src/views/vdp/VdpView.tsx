@@ -56,12 +56,19 @@ export function VdpView() {
   const geometryPrompt = prompt && prompt.kind === "vdp_geometry" ? prompt : null;
   const geometry = geometryPrompt ? (geometryPrompt.detail as unknown as GeometryDetail) : null;
 
+  // Said before Start, as the other modes do: the compliance voltage reaches
+  // contacts the operator rewires by hand.
+  const hazard = resolved?.hazard?.hazardous ? resolved.hazard : null;
+
   const fieldKeys = useMemo(() => [...Object.keys(FIELD_META.VdpSettings ?? {}), ...MODE_TIMING.vdp], []);
   useEffect(() => {
     if (!ui.username) return;
+    // The reply may arrive after the operator has changed: seed the tab of
+    // the operator the profile was fetched for.
+    const username = ui.username;
     api
-      .profile(ui.username)
-      .then((profile) => seedOverrides(MODE, fieldKeys, profile.measurement ?? {}))
+      .profile(username)
+      .then((profile) => seedOverrides(MODE, fieldKeys, profile.measurement ?? {}, username))
       .catch(() => undefined);
   }, [api, ui.username, fieldKeys]);
 
@@ -138,6 +145,12 @@ export function VdpView() {
         {error ? <Notice tone="danger">{error}</Notice> : null}
         {running && !thisRunning ? <Notice tone="info">Another run is in progress.</Notice> : null}
         {ui.sampleName.trim() === "" && !running ? <Notice tone="info">{NAME_THE_SAMPLE}</Notice> : null}
+        {hazard && !running ? (
+          <Notice tone="warn">
+            {hazard.reason} = {hazard.voltage_v} V is at or above the {hazard.threshold_v} V touch-safety threshold. You will be asked to
+            acknowledge before the output turns on.
+          </Notice>
+        ) : null}
 
         <div className={own.body}>
           <Panel className={own.wizard} bodyClassName={own.wizardBody} title={<Stepper done={done} active={geometry?.index ?? null} running={thisRunning} />}>
@@ -169,7 +182,9 @@ export function VdpView() {
                   <Button variant="primary" size="lg" disabled={busy} onClick={() => void measure(geometryPrompt!)}>
                     <Icons.check /> Measure
                   </Button>
-                  {geometry.index === 0 ? <div className={own.muted}>Output is off while you rewire.</div> : null}
+                  {/* True at every wiring, not only the first: the run turns the
+                      output off after each geometry and on again after Measure. */}
+                  <div className={own.muted}>Output off</div>
                 </div>
               </div>
             ) : thisRunning ? (

@@ -10,6 +10,7 @@ import {
   type ReactNode,
   type SelectHTMLAttributes,
 } from "react";
+import { CONTAINER, trappedTabStop } from "../../lib/focusTrap";
 import { Icons } from "../icons";
 import styles from "./ui.module.css";
 
@@ -48,19 +49,22 @@ interface FieldProps {
   label: ReactNode;
   hint?: ReactNode | undefined;
   error?: ReactNode | undefined;
+  /** Something the backend wants said that does not stop the run. */
+  warning?: ReactNode | undefined;
   stacked?: boolean | undefined;
   children: ReactNode;
 }
 
 /** Label on the left, control on the right — the dense form layout an
  *  instrument panel wants. `stacked` puts the label above for wide controls. */
-export function Field({ label, hint, error, stacked = false, children }: FieldProps) {
+export function Field({ label, hint, error, warning, stacked = false, children }: FieldProps) {
   return (
     <label className={styles.field} data-stacked={stacked}>
       <span className={styles.fieldLabel}>{label}</span>
       {children}
       {hint ? <span className={styles.fieldHint}>{hint}</span> : null}
       {error ? <span className={styles.fieldError}>{error}</span> : null}
+      {warning ? <span className={styles.fieldWarning}>{warning}</span> : null}
     </label>
   );
 }
@@ -153,18 +157,56 @@ interface DialogProps {
   children: ReactNode;
 }
 
+const TAB_STOPS =
+  'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+
+/** Open dialogs, the one on top last. Only that one owns the keyboard. */
+const openDialogs: HTMLElement[] = [];
+
 export function Dialog({ title, onClose, footer, size = "md", dismissable = true, children }: DialogProps) {
   const titleId = useId();
   const ref = useRef<HTMLDivElement>(null);
 
+  // A parent hands over a new onClose on every render, and the workspace
+  // renders on every status poll. The latest one is kept here so that taking
+  // focus happens once, when the dialog opens, and never again under the
+  // operator's cursor.
+  const latest = useRef({ dismissable, onClose });
   useEffect(() => {
-    ref.current?.focus();
+    latest.current = { dismissable, onClose };
+  });
+
+  // The dialog is modal to the keyboard as well as to the eye: Tab cycles
+  // inside it, and a key pressed with focus behind it goes no further, so a
+  // view's shortcut (M marks a run) cannot fire through a safety prompt.
+  useEffect(() => {
+    const dialog = ref.current;
+    if (!dialog) return;
+    const opener = document.activeElement;
+    openDialogs.push(dialog);
+    dialog.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && dismissable) onClose?.();
+      if (openDialogs[openDialogs.length - 1] !== dialog) return;
+      if (e.key === "Tab") {
+        const stops = Array.from(dialog.querySelectorAll<HTMLElement>(TAB_STOPS));
+        const active = stops.findIndex((stop) => stop === document.activeElement);
+        const to = trappedTabStop(stops.length, active, e.shiftKey);
+        if (to !== null) {
+          e.preventDefault();
+          (to === CONTAINER ? dialog : stops[to]!).focus();
+        }
+      }
+      if (e.target instanceof Node && dialog.contains(e.target)) return; // onKeyDown below
+      e.stopPropagation();
+      if (e.key === "Escape" && latest.current.dismissable) latest.current.onClose?.();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [dismissable, onClose]);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      openDialogs.splice(openDialogs.indexOf(dialog), 1);
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  }, []);
 
   return (
     <div
@@ -181,6 +223,12 @@ export function Dialog({ title, onClose, footer, size = "md", dismissable = true
         aria-labelledby={titleId}
         tabIndex={-1}
         ref={ref}
+        onKeyDown={(e) => {
+          // Keys pressed inside end here, for the same reason. A field that
+          // used Escape to drop its own edit has already stopped it.
+          e.stopPropagation();
+          if (e.key === "Escape" && dismissable) onClose?.();
+        }}
       >
         <header className={styles.dialogHeader}>
           <h2 className={styles.dialogTitle} id={titleId}>

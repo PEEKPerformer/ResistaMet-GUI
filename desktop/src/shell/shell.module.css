@@ -1,0 +1,119 @@
+/* Above the app's own dialogs (z-index 50): these concern the instrument. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.alert {
+  width: min(460px, calc(100vw - 48px));
+  padding: var(--sp-5);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  box-shadow: var(--shadow-2);
+  outline: none;
+}
+
+.alert[data-tone="danger"] {
+  border-color: var(--danger);
+}
+
+.title {
+  margin: 0 0 var(--sp-3);
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+
+.alert[data-tone="danger"] .title {
+  color: var(--danger);
+}
+
+.body {
+  font-size: var(--text-md);
+  line-height: var(--leading);
+}
+
+.body p {
+  margin: 0 0 var(--sp-2);
+}
+
+.detail {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+
+.error {
+  color: var(--danger);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+
+.button {
+  height: 32px;
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-md);
+}
+
+.button:hover:not(:disabled) {
+  background: var(--bg-active);
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.button:disabled {
+  opacity: 0.55;
+}
+
+.button[data-variant="primary"] {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--fg-on-accent);
+}
+
+.button[data-variant="primary"]:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.button[data-variant="danger"] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* Above the alerts too, and never in the way of a click. */
+.simulated {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  padding: 3px var(--sp-4);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  background: var(--warn);
+  color: #1a1200;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  pointer-events: none;
+  user-select: none;
+}
