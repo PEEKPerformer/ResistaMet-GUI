@@ -10,12 +10,14 @@ import { useApi } from "../../app/AppContext";
 import { FIELD_META, type Mode } from "../../generated/settings";
 import { MODE_FIELDS, MODE_LABEL, MODE_TIMING, TIMING_FIELDS } from "../../lib/fields";
 import { ApiError, type Resolved } from "../../lib/api";
+import { NAME_THE_SAMPLE } from "../../lib/copy";
 import { formatEngineering } from "../../lib/format";
 import { useSession } from "../../state/session";
 import { fitResistance, useSweep } from "../../state/sweep";
 import { useUi } from "../../state/ui";
 import { seedOverrides, setOverride, useOverrides } from "../../state/overrides";
 import { Badge, Button, Notice, Panel } from "../../components/ui";
+import { BackendNotice } from "../../components/BackendNotice";
 import { Icons } from "../../components/icons";
 import { XYPlot, type XYSeries } from "../../components/plot/XYPlot";
 import { FieldRow, SettingsForm } from "../../components/forms/SettingsForm";
@@ -28,7 +30,6 @@ const MODE: Mode = "sweep";
  *  voltage set is the profile default; the current set is its mirror at the
  *  scale a 2400 sources into an unknown DUT without drama. */
 const SWEEP_FOR_VOLTAGE = { sweep_start: 0.0, sweep_stop: 1.0, sweep_step: 0.05, sweep_compliance: 0.1 };
-// sweep_compliance is bounded at 3 in the schema whatever the unit, so 2 V.
 const SWEEP_FOR_CURRENT = { sweep_start: 0.0, sweep_stop: 1e-3, sweep_step: 50e-6, sweep_compliance: 2.0 };
 
 export function SweepView() {
@@ -94,7 +95,7 @@ export function SweepView() {
   const complianceUnit = sourceIsVoltage ? "A" : "V";
   const points = typeof resolved?.derived.sweep_points === "number" ? resolved.derived.sweep_points : null;
 
-  const canStart = !running && ui.username !== null && ui.sampleName.trim() !== "" && resolved?.ok === true && !busy;
+  const canStart = session.backendReachable === true && !running && ui.username !== null && ui.sampleName.trim() !== "" && resolved?.ok === true && !busy;
 
   const start = async () => {
     if (!ui.username) return;
@@ -145,10 +146,11 @@ export function SweepView() {
           </div>
         </header>
 
+        <BackendNotice />
         {error ? <Notice tone="danger">{error}</Notice> : null}
         {reset ? <Notice tone="info">{reset}</Notice> : null}
         {running && !thisRunning ? <Notice tone="info">Another run is in progress.</Notice> : null}
-        {ui.sampleName.trim() === "" && !running ? <Notice tone="info">Name the sample in the top bar to enable the sweep.</Notice> : null}
+        {ui.sampleName.trim() === "" && !running ? <Notice tone="info">{NAME_THE_SAMPLE}</Notice> : null}
         {resolved?.hazard?.hazardous && !running ? (
           <Notice tone="warn">
             {resolved.hazard.reason} = {resolved.hazard.voltage_v} V is at or above the {resolved.hazard.threshold_v} V touch-safety
@@ -176,7 +178,24 @@ export function SweepView() {
           ) : null}
         </div>
 
-        <Panel className={styles.plotPanel} bodyClassName={styles.plotBody} title="I–V">
+        <Panel
+          className={styles.plotPanel}
+          bodyClassName={styles.plotBody}
+          title="I–V"
+          actions={
+            curve.length > 0 ? (
+              // The key to the two legs: hysteresis is what this view is for.
+              <div className={own.legend} aria-label="Legend">
+                {curve.map((s, i) => (
+                  <span key={i} className={own.legendItem}>
+                    <span className={own.swatch} style={{ background: s.color }} />
+                    {s.label}
+                  </span>
+                ))}
+              </div>
+            ) : undefined
+          }
+        >
           {curve.length > 0 ? (
             <XYPlot series={curve} xUnit="V" yUnit="A" />
           ) : (

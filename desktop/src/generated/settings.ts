@@ -50,9 +50,11 @@ export interface FileSettings {
  * Four-point probe, with the ASTM F84 correction-factor inputs.
  *
  * ``fpp_temperature_c`` is ``None`` when the temperature was not measured.
- * The UI carries that as a -50 C sentinel on its spin box (the widget's
- * "not measured" special value) and the worker as NaN; the resolver converts
- * between the two, and neither representation reaches this model.
+ * The PySide6 UI carries that as a -50 C sentinel on its spin box (the
+ * widget's "not measured" special value) and a profile as NaN. The resolver
+ * shows this model ``None`` in place of NaN and converts nothing in the run
+ * settings: NaN from a profile stays NaN and a JSON client's ``null`` stays
+ * ``None``. The consumers read both as "not measured".
  */
 export interface FourPointSettings {
   fpp_alpha?: number;
@@ -130,6 +132,10 @@ export interface ResistanceSettings {
 
 /**
  * What a client asks for. Never persisted.
+ *
+ * This is the body ``POST /session/start`` validates, and the model the
+ * desktop's request type is generated from; unknown fields are refused so
+ * a misspelt one cannot be silently ignored.
  *
  * ``overrides`` is flat measurement keys, the same shape the tabs produce
  * today, so one request format serves the UI, a script and the MCP layer.
@@ -673,6 +679,7 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
     "prompt_timeout_s": {
       "type": "number",
       "exclusiveMin": 0,
+      "max": 86400,
       "default": 900
     },
     "sample_name": {

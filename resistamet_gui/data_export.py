@@ -26,6 +26,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -112,12 +113,38 @@ def _parse_scalar(value: str) -> Any:
         return value
 
 
+#: What ends a line of the file: the universal newlines a text-mode reader,
+#: ``csv`` and ``pandas.read_csv`` split on. ``parse_metadata`` splits on
+#: exactly these and nothing else (not ``str.splitlines``, which also breaks
+#: on VT, FF, FS, GS, RS, NEL, LS and PS), so any other character in a value
+#: stays inside its line and reads back as written.
+_LINE_BREAKS = re.compile('\r\n|\r|\n')
+
+
+def _one_line(text: str) -> str:
+    """``text`` with every line break written as the two characters ``\\n``.
+
+    A metadata value can come from a client -- the sample name does -- and a
+    line break inside it would start a header line, or a data row, of the
+    value's own choosing. Nothing else is changed, backslashes included, so a
+    Windows path reads as it always did; the price is that the break is not
+    restored on reading. A header line is one line.
+    """
+    return _LINE_BREAKS.sub(r'\\n', text)
+
+
+def _metadata_line(key: str, value: Any) -> str:
+    """One ``# key: value`` line. The key also loses its colons, which would
+    move the split between key and value."""
+    return f"# {_one_line(str(key)).replace(':', '_')}: {_one_line(_format_scalar(value))}\n"
+
+
 def _write_metadata_block(f, meta: Dict[str, Any], units: Optional[List[str]] = None) -> None:
-    f.write(f"# resistamet_format_version: {FORMAT_VERSION}\n")
+    f.write(_metadata_line('resistamet_format_version', FORMAT_VERSION))
     for key, value in _flatten_metadata(meta):
-        f.write(f"# {key}: {_format_scalar(value)}\n")
+        f.write(_metadata_line(key, value))
     if units:
-        f.write(f"# units: {','.join(units)}\n")
+        f.write(_metadata_line('units', ','.join(units)))
 
 
 def parse_metadata(path: Union[str, Path], text_keys: Iterable[str] = ()) -> Dict[str, Any]:
@@ -176,7 +203,9 @@ def parse_metadata(path: Union[str, Path], text_keys: Iterable[str] = ()) -> Dic
             with open(path, 'rb') as fb:
                 fb.seek(max(0, size - 8192))
                 tail_text = fb.read().decode('utf-8', errors='replace')
-            tail_lines = tail_text.splitlines()
+            # Not splitlines(): see _LINE_BREAKS. A value holding, say, U+2028
+            # would otherwise end its line here and start a forged one.
+            tail_lines = _LINE_BREAKS.split(tail_text)
         for line in reversed(tail_lines):
             line = line.rstrip()
             if not line:
@@ -447,24 +476,46 @@ def _with_extension(base_path: Path, extension: str) -> Path:
     return base_path.with_name(base_path.name + extension)
 
 
-def _unused_base_path(base_path: Path, extensions: Tuple[str, ...]) -> Path:
-    """``base_path``, or the first of ``base_path-2``, ``-3``, ... that is free.
+# Names tried for one run (``name``, ``name-2``, ...) before giving up.
+MAX_NAME_ATTEMPTS = 1000
 
-    Free means none of the files the exporter will write (``extensions``)
-    exists yet. The stamp in a run's name has one-second resolution, so two
-    runs of one sample inside the same second ask for the same path; the
-    second used to be opened with ``'w'`` and replaced the first run's data.
 
-    The exporters then create their files in exclusive mode, so a name taken
-    between this check and the open (another process, same second) is an
-    error for the second run and never an overwrite of the first.
+def _name_in_use(candidate: Path, extensions: Tuple[str, ...]) -> bool:
+    """True when any file an exporter would write under ``candidate`` exists."""
+    return any(_with_extension(candidate, ext).exists() for ext in extensions)
+
+
+def _create_unused(base_path: Path, extensions: Tuple[str, ...],
+                   create: Callable[[Path], Any]) -> Tuple[Path, Any]:
+    """Create a run's file under ``base_path``, or ``base_path-2``, ``-3``, ...
+
+    Returns the base path that was free and whatever ``create(candidate)``
+    returned. ``create`` must open its file in exclusive mode and let
+    ``FileExistsError`` out.
+
+    The stamp in a run's name has one-second resolution, so two runs of one
+    sample inside the same second ask for the same path; the second used to
+    be opened with ``'w'`` and replaced the first run's data.
+
+    A name is skipped when any of the files the exporter will write
+    (``extensions``) exists. That check alone leaves a window: another
+    process can create the file between the check and the open. So the
+    exclusive create is the real probe, and losing that race moves on to
+    the next name like any other taken name. An existing file is never
+    opened for writing.
     """
     candidate = base_path
-    number = 1
-    while any(_with_extension(candidate, ext).exists() for ext in extensions):
-        number += 1
-        candidate = base_path.with_name(f"{base_path.name}-{number}")
-    return candidate
+    for number in range(1, MAX_NAME_ATTEMPTS + 1):
+        if number > 1:
+            candidate = base_path.with_name(f"{base_path.name}-{number}")
+        if _name_in_use(candidate, extensions):
+            continue
+        try:
+            return candidate, create(candidate)
+        except FileExistsError:
+            continue
+    raise FileExistsError(
+        f"No free file name for {base_path} after {MAX_NAME_ATTEMPTS} tries")
 
 
 # --------------------------------- Backends ---------------------------------
@@ -518,8 +569,15 @@ class CsvExporter(_BaseExporter):
         # ended_at: ...
         # total_samples: ...
 
-    Crash safety: rows are written and fsync'd as they arrive; the partial
-    CSV is itself the recovery artifact, so no checkpoint sidecar is needed.
+    Crash safety: each row is flushed and fsync'd as it is written, so a
+    process that is killed outright loses at most the row it was in the
+    middle of; the partial CSV is itself the recovery artifact, and no
+    checkpoint sidecar is needed. (fsync hands the row to the operating
+    system and the drive. A drive that acknowledges before its own cache is
+    on the medium -- macOS without F_FULLFSYNC, some consumer SSDs -- can
+    still lose the last moments to a power cut, and nothing here can help
+    that.) This holds while the run is going, whatever ``compression`` says:
+    the file is plain CSV until finalize.
 
     Compression: if ``compression == 'always'`` the file is gzipped on
     finalize. ``auto`` only gzips if the file is larger than
@@ -543,8 +601,7 @@ class CsvExporter(_BaseExporter):
     ):
         # '.csv.gz' too: finalize may compress, and must not land on another
         # run's compressed file.
-        self.base_path = _unused_base_path(Path(base_path), ('.csv', '.csv.gz'))
-        self.csv_path = _with_extension(self.base_path, '.csv')
+        self._requested_base_path = Path(base_path)
         self.metadata = metadata
         self.columns = list(columns)
         self.units = list(units or [])
@@ -558,15 +615,19 @@ class CsvExporter(_BaseExporter):
         self._csv_file = None
         self._csv_writer = None
         self._finalized = False
-        self._final_path = self.csv_path
 
         self._init_csv()
+        self._final_path = self.csv_path
 
     def _init_csv(self) -> None:
         try:
-            self.csv_path.parent.mkdir(parents=True, exist_ok=True)
-            # 'x': never open an existing file for writing (_unused_base_path).
-            self._csv_file = open(self.csv_path, 'x', newline='', encoding='utf-8')
+            self._requested_base_path.parent.mkdir(parents=True, exist_ok=True)
+            # 'x': never open an existing file for writing (_create_unused).
+            self.base_path, self._csv_file = _create_unused(
+                self._requested_base_path, ('.csv', '.csv.gz'),
+                lambda base: open(_with_extension(base, '.csv'), 'x',
+                                  newline='', encoding='utf-8'))
+            self.csv_path = _with_extension(self.base_path, '.csv')
             _write_metadata_block(self._csv_file, self.metadata, self.units)
             self._csv_writer = csv.writer(self._csv_file)
             self._csv_writer.writerow(self.columns)
@@ -586,6 +647,10 @@ class CsvExporter(_BaseExporter):
             ]
             self._csv_writer.writerow(formatted)
             self._row_count += 1
+            # Per row, not per auto-save interval: Python holds up to 8 kB of
+            # rows in its own buffer, which is minutes of a slow run, and a
+            # killed process takes that buffer with it.
+            self.flush()
 
     def flush(self, checkpoint: bool = True) -> None:
         if self._csv_file:
@@ -603,7 +668,7 @@ class CsvExporter(_BaseExporter):
                 if end_metadata:
                     self._csv_file.write(f"{_CSV_END_MARKER}\n")
                     for key, value in _flatten_metadata(end_metadata):
-                        self._csv_file.write(f"# {key}: {_format_scalar(value)}\n")
+                        self._csv_file.write(_metadata_line(key, value))
                 self._csv_file.flush()
                 self._csv_file.close()
             except Exception as e:
@@ -641,9 +706,18 @@ class CsvExporter(_BaseExporter):
             return self.csv_path
         if self.compression == "auto" and size_mb < self.threshold_mb:
             return self.csv_path
-        gz_path = _with_extension(self.csv_path, '.gz')
         try:
-            with open(self.csv_path, 'rb') as src, gzip.open(gz_path, 'xb', compresslevel=6) as dst:
+            # The .csv.gz name was free when the run started; if another
+            # process has taken it since, the archive gets the next name.
+            def create_gz(base: Path):
+                # Another run's .csv holds its .csv.gz name too.
+                if base != self.base_path and _with_extension(base, '.csv').exists():
+                    raise FileExistsError(str(base))
+                return gzip.open(_with_extension(base, '.csv.gz'), 'xb', compresslevel=6)
+
+            gz_base, dst = _create_unused(self.base_path, ('.csv.gz',), create_gz)
+            gz_path = _with_extension(gz_base, '.csv.gz')
+            with open(self.csv_path, 'rb') as src, dst:
                 shutil.copyfileobj(src, dst)
             self.csv_path.unlink()
             gz_size_mb = gz_path.stat().st_size / (1024 * 1024)
@@ -673,6 +747,12 @@ class Hdf5Exporter(_BaseExporter):
     All columns are stored as variable-length UTF-8 strings in a compound
     dtype, so mixed-type modes (vdP labels, compliance flags) work without
     a separate schema per mode. Numeric callers can re-cast on read.
+
+    Crash safety is weaker than the CSV's, and that is the format: rows reach
+    the file when ``flush()`` is called -- the run loop does that every
+    ``auto_save_interval`` seconds -- and HDF5 makes no promise that a file
+    whose writer was killed between flushes can be opened at all. A run that
+    must survive a hard kill row by row should be written as CSV.
     """
 
     DATASET_NAME = "data"
@@ -694,8 +774,7 @@ class Hdf5Exporter(_BaseExporter):
             ) from e
         self._h5py = h5py
 
-        self.base_path = _unused_base_path(Path(base_path), ('.h5',))
-        self.h5_path = _with_extension(self.base_path, '.h5')
+        self._requested_base_path = Path(base_path)
         self.metadata = metadata
         self.columns = list(columns)
         self.units = list(units or [])
@@ -706,9 +785,12 @@ class Hdf5Exporter(_BaseExporter):
         self._init_h5()
 
     def _init_h5(self) -> None:
-        self.h5_path.parent.mkdir(parents=True, exist_ok=True)
-        # 'x': create, fail if it exists (_unused_base_path).
-        self._file = self._h5py.File(self.h5_path, 'x')
+        self._requested_base_path.parent.mkdir(parents=True, exist_ok=True)
+        # 'x': create, fail if it exists (_create_unused).
+        self.base_path, self._file = _create_unused(
+            self._requested_base_path, ('.h5',),
+            lambda base: self._h5py.File(_with_extension(base, '.h5'), 'x'))
+        self.h5_path = _with_extension(self.base_path, '.h5')
         vlen_str = self._h5py.string_dtype(encoding='utf-8')
         dtype = [(c, vlen_str) for c in self.columns]
         self._dataset = self._file.create_dataset(
@@ -785,6 +867,10 @@ class LegacyDualExporter(_BaseExporter):
 
     Identical behavior to the original ``DualExporter`` so anyone with pipelines
     parsing the ``.json`` file keeps working through one or two more releases.
+
+    Crash safety, as it always was for this format: rows are flushed to the
+    CSV and checkpointed when ``flush()`` is called, which the run loop does
+    every ``auto_save_interval`` seconds, not per row.
     """
 
     FORMAT_VERSION = LEGACY_FORMAT_VERSION
@@ -796,9 +882,7 @@ class LegacyDualExporter(_BaseExporter):
         columns: List[str],
         units: Optional[List[str]] = None,
     ):
-        self.base_path = _unused_base_path(Path(base_path), ('.csv', '.json', '.json.tmp'))
-        self.json_path = _with_extension(self.base_path, '.json')
-        self.csv_path = _with_extension(self.base_path, '.csv')
+        self._requested_base_path = Path(base_path)
         self.metadata = metadata
         self.columns = columns
         self.units = units or []
@@ -811,9 +895,16 @@ class LegacyDualExporter(_BaseExporter):
 
     def _init_csv(self) -> None:
         try:
-            self.csv_path.parent.mkdir(parents=True, exist_ok=True)
-            # 'x': never open an existing file for writing (_unused_base_path).
-            self._csv_file = open(self.csv_path, 'x', newline='', encoding='utf-8')
+            self._requested_base_path.parent.mkdir(parents=True, exist_ok=True)
+            # 'x': never open an existing file for writing (_create_unused).
+            # The CSV's name holds the pair: a name whose .json or .json.tmp
+            # exists is skipped, and finalize never replaces a .json.
+            self.base_path, self._csv_file = _create_unused(
+                self._requested_base_path, ('.csv', '.json', '.json.tmp'),
+                lambda base: open(_with_extension(base, '.csv'), 'x',
+                                  newline='', encoding='utf-8'))
+            self.csv_path = _with_extension(self.base_path, '.csv')
+            self.json_path = _with_extension(self.base_path, '.json')
             self._csv_writer = csv.writer(self._csv_file)
             self._csv_writer.writerow(self.columns)
             self._csv_file.flush()
@@ -889,8 +980,7 @@ class LegacyDualExporter(_BaseExporter):
             "data": self._data_rows
         }
         try:
-            with open(self.json_path, 'x', encoding='utf-8') as f:
-                json.dump(json_data, f, indent=2, ensure_ascii=False)
+            self._write_json(json_data)
             checkpoint_path = _with_extension(self.base_path, '.json.tmp')
             if checkpoint_path.exists():
                 try:
@@ -901,6 +991,40 @@ class LegacyDualExporter(_BaseExporter):
             logger.error(f"Failed to write JSON: {e}")
             raise
         self._finalized = True
+
+    def _write_json(self, json_data: Dict[str, Any]) -> None:
+        """Write the JSON whole, or not at all, and never over another file.
+
+        The document is written to ``<name>.json.part`` first (the base name
+        is this exporter's: it created the CSV exclusively) and only a
+        complete file is given the final name. A finalize that fails part-way
+        therefore leaves no truncated ``.json`` behind, and calling
+        ``finalize()`` again can still succeed. The final name is taken with
+        a hard link, which fails if the name exists; where the file system
+        has no hard links, with an exclusive create whose partial result is
+        removed on failure.
+        """
+        part_path = _with_extension(self.base_path, '.json.part')
+        try:
+            with open(part_path, 'w', encoding='utf-8') as f:
+                json.dump(json_data, f, indent=2, ensure_ascii=False)
+            try:
+                os.link(part_path, self.json_path)
+            except FileExistsError:
+                raise
+            except OSError:
+                with open(part_path, 'rb') as src, open(self.json_path, 'xb') as dst:
+                    try:
+                        shutil.copyfileobj(src, dst)
+                    except BaseException:
+                        dst.close()
+                        self.json_path.unlink()
+                        raise
+        finally:
+            try:
+                part_path.unlink()
+            except OSError:
+                pass
 
     @property
     def output_paths(self) -> List[Path]:

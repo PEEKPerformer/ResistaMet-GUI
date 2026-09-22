@@ -77,10 +77,13 @@ def _bus_overrides(request: Request, visa_library: Optional[str],
                    gpib_interface: Optional[str]):
     """The VISA backend and GPIB interface one bus request will use.
 
-    None means this machine's stored setting. A request may try another
-    backend before saving it, but only one of the named ones: a path would be
-    loaded into this process. The stored value itself is always allowed, so a
-    client can send back what the profile gave it.
+    None means this machine's stored setting. A request may try something
+    else before saving it, within limits: the library is one of the named
+    backends -- a path would be loaded into this process -- and the interface
+    is a Prologix ``INTFC`` name, because it is opened and held, and any other
+    resource (an aux sensor's serial port, say) is not the request's to take.
+    The stored value itself is always allowed, so a client can send back what
+    the profile gave it.
     """
     config = _config(request)
     stored_library, stored_interface = config.get_visa_library(), config.get_gpib_interface()
@@ -93,6 +96,12 @@ def _bus_overrides(request: Request, visa_library: Optional[str],
                    "in this machine's settings")
     if gpib_interface is None:
         gpib_interface = stored_interface
+    elif gpib_interface != stored_interface:
+        try:
+            gpib_interface = InstrumentSettings(gpib_interface=gpib_interface).gpib_interface
+        except ValidationError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                 detail=f"gpib_interface: {exc.errors()[0]['msg']}")
     return visa_library, gpib_interface
 
 
@@ -121,7 +130,17 @@ def add_user(body: NewUser, request: Request, role: str = Depends(require_token)
 
 @router.get("/profiles/{username}")
 def read_profile(username: str, request: Request, role: str = Depends(require_token)):
-    return _config(request).get_user_settings(username)
+    """The profile's sections, and nothing else.
+
+    ``get_user_settings`` starts from the whole defaults dict, which also
+    carries the config-level ``users`` list and ``last_user``; a client that
+    walks the reply section by section would trip over a ``None`` there.
+    """
+    return _profile_sections(_config(request).get_user_settings(username))
+
+
+def _profile_sections(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return {section: settings[section] for section in SECTION_MODELS if section in settings}
 
 
 def _section_issues(section: str, values: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -210,8 +229,8 @@ def patch_profile(username: str, body: ProfilePatch, request: Request,
         # one on the bus.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                              detail="cannot change the instrument address during a run")
-    return config.merge_user_settings(username, sections,
-                                       check=_refuse_a_worse_profile(sections, role))
+    return _profile_sections(config.merge_user_settings(
+        username, sections, check=_refuse_a_worse_profile(sections, role)))
 
 
 @router.get("/schema/settings")

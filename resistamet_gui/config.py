@@ -216,8 +216,19 @@ def _file_lock(path: str):
 
 class ConfigManager:
     def __init__(self, config_file: str = CONFIG_FILE, hostname: Optional[str] = None,
-                 machine_file: Optional[str] = None, raise_on_save_error: bool = False):
+                 machine_file: Optional[str] = None, raise_on_save_error: bool = False,
+                 read_only: bool = False, persist_on_open: bool = True):
         self.config_file = config_file
+        #: False: opening writes nothing. A missing file is not created and
+        #: the migrations are applied in memory only, so runs already use the
+        #: migrated settings; the first deliberate save carries them to disk.
+        #: For a manager that may be built as a side effect of a read -- the
+        #: API's -- where rewriting whatever config.json the process was
+        #: started beside is not acceptable.
+        self.persist_on_open = persist_on_open
+        #: A diagnostic that only wants to know what is configured must not
+        #: change it: no file is created, no migration runs, nothing is saved.
+        self.read_only = read_only
         #: A save that fails is always logged as an error. A caller that can
         #: tell its user -- the API answers 500 -- also asks for the
         #: exception; the PySide6 dialogs do not handle one yet, and an
@@ -245,13 +256,14 @@ class ConfigManager:
         self.config = self.load_config()
         if not self._baseline:
             self._baseline = copy.deepcopy(self.config)
-        if self.load_failed:
+        if self.load_failed or self.read_only:
             # A migration would "fix" the defaults and save them over the
             # file, which may only be half-synced and whole again in a moment.
             return
         try:
-            self._migrate_machine_file()
-            if self._migrate_output_reset():
+            if self.persist_on_open:
+                self._migrate_machine_file()
+            if self._migrate_output_reset() and self.persist_on_open:
                 self.save_config()
         except ConfigSaveError:
             # Already logged. The application still opens, on what is in
@@ -275,6 +287,8 @@ class ConfigManager:
             return {}
 
     def _write(self, path: str, data: Dict) -> None:
+        if self.read_only:
+            raise ConfigSaveError(f"'{path}' was opened read-only")
         try:
             _write_json_atomically(path, data)
         except ConfigSaveError:
@@ -419,6 +433,9 @@ class ConfigManager:
                     "The file is left as it is, and is copied aside before anything "
                     "is saved over it.")
                 return copy.deepcopy(DEFAULT_SETTINGS)
+        elif self.read_only or not self.persist_on_open:
+            logger.info(f"Configuration file '{self.config_file}' not found. Using defaults.")
+            return copy.deepcopy(DEFAULT_SETTINGS)
         else:
             logger.info(f"Configuration file '{self.config_file}' not found. Creating with defaults.")
             new_config = copy.deepcopy(DEFAULT_SETTINGS)
@@ -506,6 +523,8 @@ class ConfigManager:
         ``raise_on_save_error``, so that a caller able to tell its user can
         say the change was not kept.
         """
+        if self.read_only:
+            raise ConfigSaveError(f"'{self.config_file}' was opened read-only")
         with self._lock, _file_lock(f"{self.config_file}.lock"):
             merged = self._merged_with_disk()
             if merged is None:

@@ -144,6 +144,46 @@ class TestStart:
     def test_unknown_mode_is_unprocessable(self, client, fake_rm):
         assert _start(client, mode='hall').status_code == 422
 
+    @pytest.mark.parametrize("field, value", [
+        ('sample_name', "wafer\n# total_samples: 999\n0.0,1,1,1,1,OK,"),
+        ('sample_name', 'x' * 121),
+        ('username', "alice\nroot"),
+        ('username', 'x' * 65),
+        ('prompt_timeout_s', 1e9),
+    ])
+    def test_text_that_could_forge_a_header_line_is_unprocessable(self, client, fake_rm, sink,
+                                                                  field, value):
+        response = _start(client, **{field: value})
+        assert response.status_code == 422
+        assert [error['loc'] for error in response.json()['detail']] == [['body', field]]
+        assert sink.events == []
+        assert fake_rm.opened == []
+
+    def test_an_infinite_prompt_timeout_is_unprocessable(self, client, fake_rm, sink):
+        """json.dumps writes Infinity and the server's parser reads it."""
+        response = client.post('/session/start', content=(
+            '{"mode": "four_point", "sample_name": "w", "username": "alice", '
+            '"prompt_timeout_s": Infinity}'), headers={'Content-Type': 'application/json'})
+        assert response.status_code == 422, "not a 500 from failing to echo the input"
+        assert [error['loc'] for error in response.json()['detail']] == [
+            ['body', 'prompt_timeout_s']]
+        assert sink.events == []
+
+    def test_the_body_is_the_exported_contract(self, client):
+        """The desktop's types are generated from RunRequest; a second model
+        here could drift from it without anything failing."""
+        body = client.app.openapi()['paths']['/session/start']['post']['requestBody']
+        assert body['content']['application/json']['schema']['$ref'].endswith('/RunRequest')
+
+    @pytest.mark.parametrize("typo", ['sample', 'override', 'prompt_timeout', 'acknowledge'])
+    def test_a_misspelt_field_fails_loudly(self, client, fake_rm, sink, typo):
+        """It used to be dropped, and the run started without it."""
+        response = _start(client, **{typo: 'x'})
+        assert response.status_code == 422
+        assert [error['loc'] for error in response.json()['detail']] == [['body', typo]]
+        assert sink.events == []
+        assert fake_rm.opened == []
+
 
 class TestCommands:
     def test_stop_returns_to_idle(self, client, fake_rm, sink):
@@ -167,6 +207,18 @@ class TestCommands:
         assert client.post('/session/mark', json={'label': 'PROBE'}).status_code == 200
         assert _wait_for(lambda: any(e.payload['event_marker'] == 'PROBE'
                                       for e in sink.of_type('sample')))
+        client.post('/session/stop')
+
+    # Named ids: pytest puts the test id in PYTEST_CURRENT_TEST, and Windows
+    # refuses an environment variable as long as the 200 kB label.
+    @pytest.mark.parametrize("label", ['x' * 200_000, 'x' * 81, "two\nlines", "", "  "],
+                             ids=['200kB', '81-chars', 'two-lines', 'empty', 'spaces'])
+    def test_a_mark_label_is_one_short_line(self, client, fake_rm, sink, label):
+        _start(client)
+        assert _wait_for(lambda: sink.of_type('sample'))
+        response = client.post('/session/mark', json={'label': label})
+        assert response.status_code == 422
+        assert [error['loc'] for error in response.json()['detail']] == [['body', 'label']]
         client.post('/session/stop')
 
     def test_commands_without_a_run_are_conflicts(self, client):
@@ -246,6 +298,66 @@ class TestPromptAuthorization:
         assert response.status_code == 409
         client.post('/session/abort')
 
+    def test_a_choice_the_prompt_did_not_offer_is_unprocessable(self, client, fake_rm, sink,
+                                                                profile):
+        self._hazardous(profile)
+        _start(client, mode='source_v')
+        assert _wait_for(lambda: client.get('/session').json()['pending_prompt'])
+        prompt = client.get('/session').json()['pending_prompt']
+
+        response = client.post('/session/prompt', json={'prompt_id': prompt['prompt_id'],
+                                                         'choice': 'proceed'})
+        assert response.status_code == 422
+        assert 'acknowledge, cancel' in response.json()['detail']
+        # Still waiting for a real answer; nothing was energised.
+        assert client.get('/session').json()['pending_prompt']['prompt_id'] == prompt['prompt_id']
+        assert sink.of_type('instrument_connected') == []
+        client.post('/session/abort')
+
+    def test_a_wrong_choice_for_a_stale_id_is_still_a_conflict(self, client, fake_rm, sink,
+                                                               profile):
+        self._hazardous(profile)
+        _start(client, mode='source_v')
+        assert _wait_for(lambda: client.get('/session').json()['pending_prompt'])
+        response = client.post('/session/prompt', json={'prompt_id': 'nope', 'choice': 'x'})
+        assert response.status_code == 409
+        client.post('/session/abort')
+
+    def test_a_non_ui_role_is_refused_before_its_choice_is_looked_at(self, session, profile,
+                                                                     fake_rm, sink):
+        self._hazardous(profile)
+        app = create_app(session, token=TOKEN, role='mcp',
+                          profile_provider=lambda username: profile)
+        with TestClient(app) as client:
+            client.headers.update({'Authorization': f'Bearer {TOKEN}'})
+            _start(client, mode='source_v')
+            assert _wait_for(lambda: client.get('/session').json()['pending_prompt'])
+            prompt = client.get('/session').json()['pending_prompt']
+            response = client.post('/session/prompt', json={
+                'prompt_id': prompt['prompt_id'], 'choice': 'not-an-option'})
+            assert response.status_code == 403
+            client.post('/session/abort')
+
+    def test_an_answer_meant_for_another_run_is_a_conflict(self, client, fake_rm, sink, profile):
+        """Prompt ids repeat: every run's first safety prompt is ...-1."""
+        self._hazardous(profile)
+        _start(client, mode='source_v')
+        assert _wait_for(lambda: client.get('/session').json()['pending_prompt'])
+        status_now = client.get('/session').json()
+        prompt = status_now['pending_prompt']
+
+        stale = client.post('/session/prompt', json={
+            'prompt_id': prompt['prompt_id'], 'choice': 'acknowledge', 'run_id': 'run-0'})
+        assert stale.status_code == 409
+        assert 'run-0' in stale.json()['detail']
+        assert client.get('/session').json()['pending_prompt'] is not None
+        assert sink.of_type('instrument_connected') == []
+
+        current = client.post('/session/prompt', json={
+            'prompt_id': prompt['prompt_id'], 'choice': 'cancel',
+            'run_id': status_now['run_id']})
+        assert current.status_code == 200
+
     def test_answering_with_no_prompt_is_a_conflict(self, client):
         response = client.post('/session/prompt', json={'prompt_id': 'x', 'choice': 'y'})
         assert response.status_code == 409
@@ -288,7 +400,7 @@ class TestStartWithASpot:
     def test_only_four_point_may_carry_one(self, client, fake_rm, sink):
         response = _start(client, mode='resistance', spot=self.SPOT)
         assert response.status_code == 422
-        assert 'four_point' in response.json()['detail']
+        assert 'four_point' in str(response.json()['detail'])
         assert sink.events == []
 
 

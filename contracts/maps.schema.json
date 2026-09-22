@@ -53,6 +53,116 @@
           "title": "InterSpotStats",
           "type": "object"
         },
+        "MapImage": {
+          "additionalProperties": false,
+          "description": "The photograph kept beside a map's runs.\n\n``sha256`` and ``bytes`` are those of the file as it is on disk now.\n``registration`` is absent until a client has stored one, and when the\nstored one was fitted to a different image than the file holds.",
+          "properties": {
+            "bytes": {
+              "title": "Bytes",
+              "type": "integer"
+            },
+            "file": {
+              "title": "File",
+              "type": "string"
+            },
+            "registration": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MapImageRegistration"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "sha256": {
+              "title": "Sha256",
+              "type": "string"
+            }
+          },
+          "required": [
+            "file",
+            "sha256",
+            "bytes"
+          ],
+          "title": "MapImage",
+          "type": "object"
+        },
+        "MapImageRegistration": {
+          "additionalProperties": false,
+          "description": "Where a map's photograph sits on the sample: numbers, never pixels.\n\nThe image's centre is at (``centre_x_mm``, ``centre_y_mm``) in sample\ncoordinates (millimetres from the sample's centre, y up), one image pixel\nis ``mm_per_px`` wide, and the image is turned ``rotation_deg``\nanticlockwise as seen on the sample. ``sha256`` names the image the\nnumbers were fitted to, so they cannot end up beside another picture.\n``calibrated`` says the scale is real -- fitted to the outline or set from\ntwo points -- rather than the placeholder a fresh image starts with.",
+          "properties": {
+            "calibrated": {
+              "default": false,
+              "title": "Calibrated",
+              "type": "boolean"
+            },
+            "calibration": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TwoPointCalibration"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "centre_x_mm": {
+              "maximum": 100000.0,
+              "minimum": -100000.0,
+              "title": "Centre X Mm",
+              "type": "number"
+            },
+            "centre_y_mm": {
+              "maximum": 100000.0,
+              "minimum": -100000.0,
+              "title": "Centre Y Mm",
+              "type": "number"
+            },
+            "image_height_px": {
+              "maximum": 100000,
+              "minimum": 1,
+              "title": "Image Height Px",
+              "type": "integer"
+            },
+            "image_width_px": {
+              "maximum": 100000,
+              "minimum": 1,
+              "title": "Image Width Px",
+              "type": "integer"
+            },
+            "mm_per_px": {
+              "exclusiveMinimum": 0.0,
+              "maximum": 1000.0,
+              "title": "Mm Per Px",
+              "type": "number"
+            },
+            "rotation_deg": {
+              "maximum": 360.0,
+              "minimum": -360.0,
+              "title": "Rotation Deg",
+              "type": "number"
+            },
+            "sha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Sha256",
+              "type": "string"
+            }
+          },
+          "required": [
+            "sha256",
+            "image_width_px",
+            "image_height_px",
+            "mm_per_px",
+            "centre_x_mm",
+            "centre_y_mm",
+            "rotation_deg"
+          ],
+          "title": "MapImageRegistration",
+          "type": "object"
+        },
         "MapSpot": {
           "additionalProperties": false,
           "description": "One spot of a map: the newest run with that index.",
@@ -335,11 +445,67 @@
           ],
           "title": "SpotStats",
           "type": "object"
+        },
+        "TwoPointCalibration": {
+          "additionalProperties": false,
+          "description": "Two image points a known distance apart: the scale of a photograph of\na sample that has no outline to fit. Pixel coordinates of the image as it\nwas taken, x to the right and y down, origin at its top-left corner.",
+          "properties": {
+            "distance_mm": {
+              "exclusiveMinimum": 0.0,
+              "maximum": 100000.0,
+              "title": "Distance Mm",
+              "type": "number"
+            },
+            "x1_px": {
+              "maximum": 1000000.0,
+              "minimum": -1000000.0,
+              "title": "X1 Px",
+              "type": "number"
+            },
+            "x2_px": {
+              "maximum": 1000000.0,
+              "minimum": -1000000.0,
+              "title": "X2 Px",
+              "type": "number"
+            },
+            "y1_px": {
+              "maximum": 1000000.0,
+              "minimum": -1000000.0,
+              "title": "Y1 Px",
+              "type": "number"
+            },
+            "y2_px": {
+              "maximum": 1000000.0,
+              "minimum": -1000000.0,
+              "title": "Y2 Px",
+              "type": "number"
+            }
+          },
+          "required": [
+            "x1_px",
+            "y1_px",
+            "x2_px",
+            "y2_px",
+            "distance_mm"
+          ],
+          "title": "TwoPointCalibration",
+          "type": "object"
         }
       },
       "additionalProperties": false,
       "description": "A map: its spots in index order and the spread between them.",
       "properties": {
+        "image": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MapImage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "map_id": {
           "title": "Map Id",
           "type": "string"
@@ -375,6 +541,324 @@
         "sigma"
       ],
       "title": "SpotMap",
+      "type": "object"
+    },
+    "SpotPreflight": {
+      "$defs": {
+        "SampleGeometry": {
+          "additionalProperties": false,
+          "description": "The lateral outline of a thin sample with insulating edges.\n\n``unbounded`` means a sheet large enough that its edges do not matter,\nwhich is what the software assumed before it knew about outlines.",
+          "properties": {
+            "diameter_mm": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Diameter Mm"
+            },
+            "length_mm": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Length Mm"
+            },
+            "shape": {
+              "default": "unbounded",
+              "enum": [
+                "unbounded",
+                "circle",
+                "rectangle"
+              ],
+              "title": "Shape",
+              "type": "string"
+            },
+            "width_mm": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Width Mm"
+            }
+          },
+          "title": "SampleGeometry",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "What a four-point run with these settings would record about a spot.\n\n``geometry_factor`` is the closed-form lateral factor with the probe at\nthe centre of ``sample``, pointing along ``angle_deg``: pi / ln 2 for an\nunbounded sheet, absent when the probe does not fit on the sample.\n``factor_rows`` is the lateral factor the run's rows would apply (the\ntable look-up or K*alpha, thickness term divided out), absent when the\nrows have no finite Rs.\n\nThe rest describes the spot's position and is absent -- ``checked`` false\n-- when no spot was given, the spot has no position or the sample no\nedges. The values are the ones the file header's ``spot`` block and the\n``geometry_warning`` event carry; the errors are fractions.",
+      "properties": {
+        "angle_deg": {
+          "title": "Angle Deg",
+          "type": "number"
+        },
+        "checked": {
+          "default": false,
+          "title": "Checked",
+          "type": "boolean"
+        },
+        "compared_with": {
+          "anyOf": [
+            {
+              "enum": [
+                "rows",
+                "centre"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Compared With"
+        },
+        "edge_clearance_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Edge Clearance S"
+        },
+        "edge_warn_pct": {
+          "title": "Edge Warn Pct",
+          "type": "number"
+        },
+        "factor_centre": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Factor Centre"
+        },
+        "factor_here": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Factor Here"
+        },
+        "factor_rows": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Factor Rows"
+        },
+        "geometry_factor": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Geometry Factor"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "near_edge": {
+          "default": false,
+          "title": "Near Edge",
+          "type": "boolean"
+        },
+        "off_sample": {
+          "default": false,
+          "title": "Off Sample",
+          "type": "boolean"
+        },
+        "relative_error": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relative Error"
+        },
+        "relative_error_rows": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relative Error Rows"
+        },
+        "sample": {
+          "$ref": "#/$defs/SampleGeometry"
+        },
+        "spacing_mm": {
+          "title": "Spacing Mm",
+          "type": "number"
+        }
+      },
+      "required": [
+        "sample",
+        "spacing_mm",
+        "angle_deg",
+        "edge_warn_pct"
+      ],
+      "title": "SpotPreflight",
+      "type": "object"
+    },
+    "SpotPreflightRequest": {
+      "$defs": {
+        "SpotRequest": {
+          "additionalProperties": false,
+          "description": "One placement of the probe, as the client describes it.\n\nThe position is optional -- a spot can be a label and nothing more -- but\n``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the\ndirection of the probe array, anticlockwise from +x; absent, the run uses\nthe ``fpp_array_angle_deg`` setting.",
+          "properties": {
+            "angle_deg": {
+              "anyOf": [
+                {
+                  "maximum": 360.0,
+                  "minimum": -360.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Angle Deg"
+            },
+            "index": {
+              "maximum": 9999,
+              "minimum": 0,
+              "title": "Index",
+              "type": "integer"
+            },
+            "label": {
+              "maxLength": 80,
+              "minLength": 1,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+              "title": "Label",
+              "type": "string"
+            },
+            "map_id": {
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "title": "Map Id",
+              "type": "string"
+            },
+            "x_mm": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "X Mm"
+            },
+            "y_mm": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Y Mm"
+            }
+          },
+          "required": [
+            "map_id",
+            "index",
+            "label"
+          ],
+          "title": "SpotRequest",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "A four-point run request without the run: whose profile, which\noverrides, and -- optionally -- which spot. ``user`` is accepted for\n``username``, the name the map routes use.",
+      "properties": {
+        "overrides": {
+          "additionalProperties": true,
+          "title": "Overrides",
+          "type": "object"
+        },
+        "spot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpotRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "username": {
+          "minLength": 1,
+          "title": "Username",
+          "type": "string"
+        }
+      },
+      "required": [
+        "username"
+      ],
+      "title": "SpotPreflightRequest",
       "type": "object"
     }
   }

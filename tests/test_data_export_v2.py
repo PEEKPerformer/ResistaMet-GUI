@@ -1,6 +1,7 @@
 """Tests for the v2.0 export pipeline (CsvExporter, Hdf5Exporter, parse_metadata, factory)."""
 
 import gzip
+import json
 from pathlib import Path
 
 import pytest
@@ -597,13 +598,123 @@ class TestExistingFilesAreNeverOpenedForWriting:
 
         assert checkpoint.read_bytes() == before
 
-    def test_a_name_taken_after_the_check_is_an_error_not_an_overwrite(
-            self, base_path, basic_meta, monkeypatch):
-        # Another process creating the file between the check and the open.
+    @staticmethod
+    def _lose_the_race(monkeypatch, taken: Path):
+        """Another process creates ``taken`` just after the name was found
+        free and just before this run's exclusive create."""
         import resistamet_gui.data_export as data_export
+        real = data_export._name_in_use
+
+        def check_then_lose(candidate, extensions):
+            in_use = real(candidate, extensions)
+            if not in_use and not taken.exists():
+                taken.write_bytes(b"someone else's data\n")
+            return in_use
+        monkeypatch.setattr(data_export, '_name_in_use', check_then_lose)
+
+    def test_a_csv_name_taken_after_the_check_moves_to_the_next_name(
+            self, base_path, basic_meta, monkeypatch):
         taken = base_path.with_name('run_001.csv')
-        taken.write_text("someone else's data\n")
-        monkeypatch.setattr(data_export, '_unused_base_path', lambda base, exts: base)
+        self._lose_the_race(monkeypatch, taken)
+        exp = CsvExporter(base_path, basic_meta, self.COLUMNS)
+        exp.write_row([0.0, 2.10])
+        exp.finalize()
+        assert exp.output_paths[0].name == 'run_001-2.csv'
+        assert "0,2.1" in exp.output_paths[0].read_text(encoding='utf-8')
+        assert taken.read_bytes() == b"someone else's data\n"
+
+    def test_a_gz_name_taken_during_the_run_moves_to_the_next_name(
+            self, base_path, basic_meta):
+        exp = CsvExporter(base_path, basic_meta, self.COLUMNS, compression='always')
+        exp.write_row([0.0, 2.10])
+        taken = base_path.with_name('run_001.csv.gz')
+        taken.write_bytes(b"someone else's data\n")
+        exp.finalize()
+        assert exp.output_paths[0].name == 'run_001-2.csv.gz'
+        with gzip.open(exp.output_paths[0], 'rt', encoding='utf-8') as f:
+            assert "0,2.1" in f.read()
+        assert not base_path.with_name('run_001.csv').exists()
+        assert taken.read_bytes() == b"someone else's data\n"
+
+    def test_a_gz_name_is_not_taken_from_another_runs_csv(self, base_path, basic_meta):
+        exp = CsvExporter(base_path, basic_meta, self.COLUMNS, compression='always')
+        exp.write_row([0.0, 2.10])
+        base_path.with_name('run_001.csv.gz').write_bytes(b"someone else's data\n")
+        other = base_path.with_name('run_001-2.csv')
+        other.write_bytes(b"a third run, still being written\n")
+        exp.finalize()
+        assert exp.output_paths[0].name == 'run_001-3.csv.gz'
+        assert other.read_bytes() == b"a third run, still being written\n"
+
+    def test_an_hdf5_name_taken_after_the_check_moves_to_the_next_name(
+            self, base_path, basic_meta, monkeypatch):
+        pytest.importorskip("h5py")
+        taken = base_path.with_name('run_001.h5')
+        self._lose_the_race(monkeypatch, taken)
+        exp = Hdf5Exporter(base_path, basic_meta, self.COLUMNS)
+        exp.write_row([0.0, 2.10])
+        exp.finalize()
+        assert exp.output_paths[0].name == 'run_001-2.h5'
+        assert taken.read_bytes() == b"someone else's data\n"
+
+    def test_a_legacy_name_taken_after_the_check_moves_the_pair(
+            self, base_path, basic_meta, monkeypatch):
+        taken = base_path.with_name('run_001.csv')
+        self._lose_the_race(monkeypatch, taken)
+        exp = LegacyDualExporter(base_path, basic_meta, self.COLUMNS)
+        exp.write_row([0.0, 2.10])
+        exp.finalize()
+        assert [p.name for p in exp.output_paths] == ['run_001-2.csv', 'run_001-2.json']
+        assert taken.read_bytes() == b"someone else's data\n"
+        assert not base_path.with_name('run_001.json').exists()
+
+    def test_a_legacy_finalize_that_failed_part_way_can_be_repeated(
+            self, base_path, basic_meta):
+        # The run's finalize fails while the JSON is being written; the
+        # cleanup backstop then calls finalize() again.
+        exp = LegacyDualExporter(base_path, basic_meta, self.COLUMNS)
+        exp.write_row([0.0, 2.10])
+        with pytest.raises(TypeError):
+            exp.finalize({'fine': 1, 'not_json': object()})
+        json_path = base_path.with_name('run_001.json')
+        assert not json_path.exists()  # no truncated file under the final name
+
+        exp.finalize()
+        loaded = json.loads(json_path.read_text(encoding='utf-8'))
+        assert loaded['data'] == [[0.0, 2.10]]
+        assert sorted(p.name for p in base_path.parent.iterdir()) == [
+            'run_001.csv', 'run_001.json']
+
+    def test_a_legacy_finalize_never_replaces_a_json(self, base_path, basic_meta):
+        exp = LegacyDualExporter(base_path, basic_meta, self.COLUMNS)
+        exp.write_row([0.0, 2.10])
+        taken = base_path.with_name('run_001.json')
+        taken.write_bytes(b'{"someone": "else"}')
+        with pytest.raises(FileExistsError):
+            exp.finalize()
+        assert taken.read_bytes() == b'{"someone": "else"}'
+        assert sorted(p.name for p in base_path.parent.iterdir()) == [
+            'run_001.csv', 'run_001.json']
+
+    def test_a_legacy_json_is_written_where_hard_links_are_not_supported(
+            self, base_path, basic_meta, monkeypatch):
+        import resistamet_gui.data_export as data_export
+
+        def no_links(src, dst):
+            raise OSError(95, 'Operation not supported')
+        monkeypatch.setattr(data_export.os, 'link', no_links)
+        exp = LegacyDualExporter(base_path, basic_meta, self.COLUMNS)
+        exp.write_row([0.0, 2.10])
+        exp.finalize()
+        loaded = json.loads(base_path.with_name('run_001.json').read_text(encoding='utf-8'))
+        assert loaded['row_count'] == 1
+        assert sorted(p.name for p in base_path.parent.iterdir()) == [
+            'run_001.csv', 'run_001.json']
+
+    def test_the_search_for_a_name_is_bounded(self, base_path, basic_meta, monkeypatch):
+        import resistamet_gui.data_export as data_export
+        monkeypatch.setattr(data_export, 'MAX_NAME_ATTEMPTS', 3)
+        monkeypatch.setattr(data_export, '_name_in_use', lambda candidate, exts: True)
         with pytest.raises(FileExistsError):
             CsvExporter(base_path, basic_meta, self.COLUMNS)
-        assert taken.read_text() == "someone else's data\n"
+        assert list(base_path.parent.iterdir()) == []

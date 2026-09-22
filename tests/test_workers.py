@@ -1200,11 +1200,15 @@ class TestEventMarkerQueue:
         worker.data_point.connect(lambda *a: None)
 
         marked = []
+        armed = []
 
         def mark_once(timestamp, data, compliance, event):
+            # Queued signals can deliver two unmarked rows before the marked
+            # one arrives, so "not yet marked" is not "not yet asked".
             if event:
                 marked.append(event)
-            elif not marked:
+            elif not armed:
+                armed.append(True)
                 worker.mark_event("ONE")
                 worker.mark_event("TWO")
 

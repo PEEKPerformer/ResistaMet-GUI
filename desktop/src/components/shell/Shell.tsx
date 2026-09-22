@@ -40,12 +40,15 @@ function TopBar({ onOpenSettings, onOpenUser }: Omit<ShellProps, "children">) {
   const running = session.status?.state !== undefined && session.status.state !== "idle";
 
   const instrument = session.instrument;
-  const backendState = !session.backendReachable ? "off" : session.connected ? "live" : "warn";
-  const backendLabel = !session.backendReachable
-    ? "Backend unreachable"
-    : session.connected
-      ? "Live"
-      : "Reconnecting";
+  const backendState = session.backendReachable === false ? "off" : session.connected ? "live" : "warn";
+  const backendLabel =
+    session.backendReachable === false
+      ? "Backend unreachable"
+      : session.connected
+        ? "Connected"
+        : session.backendReachable === null
+          ? "Connecting"
+          : "Reconnecting";
 
   return (
     <header className={styles.topbar}>

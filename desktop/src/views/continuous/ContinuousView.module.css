@@ -8,12 +8,16 @@
   padding: var(--sp-4);
 }
 
+/* The column scrolls when the window is too short for what it holds (the
+   four-point panels under a minimum-height plot, above an open log), rather
+   than letting the last panel be cut off. */
 .workspace {
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
+  overflow-y: auto;
 }
 
 .controls {
@@ -23,19 +27,31 @@
   gap: var(--sp-3) var(--sp-4);
 }
 
+/* Heading, state and run meta stay on one line. If that line does not fit
+   beside the run buttons, the buttons drop to their own line; if it does not
+   fit a line of its own either, the heading gives way with an ellipsis. The
+   state badge and the elapsed time and sample count never shrink. */
 .title {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  flex: 1 1 260px;
+  flex: 1 1 auto;
   min-width: 0;
+  white-space: nowrap;
 }
 
 .title h1 {
   margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: var(--text-xl);
   font-weight: 600;
   letter-spacing: -0.01em;
+}
+
+.title > :not(h1) {
+  flex: none;
 }
 
 .runState {
@@ -54,6 +70,12 @@
   gap: var(--sp-2);
   flex: none;
   margin-left: auto;
+}
+
+/* Three large buttons share the line with the heading while measuring; a
+   little less padding keeps them on it at the default window width. */
+.buttons > button[data-size="lg"] {
+  padding: 0 var(--sp-4);
 }
 
 /* --- readout ------------------------------------------------------------ */
@@ -76,17 +98,28 @@
   min-width: 120px;
 }
 
+/* Every readout label is a quantity symbol (R, V, I, Rs, ρ, σ), so it is
+   shown as written, never uppercased. */
 .readoutLabel {
   font-size: var(--text-xs);
   font-weight: 600;
   letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
 .readoutValue {
   font-size: var(--text-xl);
   color: var(--fg);
   white-space: nowrap;
+}
+
+/* After the run: the closing reading, visibly not live. */
+.readout[data-final="true"] .readoutValue {
+  color: var(--fg-muted);
+}
+
+.readoutFinal {
+  margin-left: auto;
+  align-self: flex-start;
 }
 
 .readoutCell[data-primary="true"] .readoutValue {
@@ -152,6 +185,13 @@
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
+}
+
+/* Rows keep their height and the body scrolls. A field row has an explicit
+   min-height, so as a shrinkable flex item it collapsed to that and its hint
+   spilled over the row below. */
+.settingsBody > * {
+  flex: none;
 }
 
 .sectionTitle {

@@ -147,6 +147,70 @@ class TestWebSocket:
                 assert message['run_id'] == 'run-1'
 
 
+class TestOverflowedClientIsDisconnected:
+    """A client the hub gave up on must find out: its socket is closed."""
+
+    def test_the_socket_is_closed_with_an_application_code(self):
+        from starlette.websockets import WebSocketDisconnect
+
+        session = MeasurementSession(ListSink())
+        hub = EventHub(capacity=3, high_water=3)
+        app = create_app(session, token=TOKEN, profile_provider=lambda u: {}, hub=hub)
+        burst = [_event('run_ended', seq=100 + i, reason='completed') for i in range(10)]
+        try:
+            with TestClient(app) as client:
+                with client.websocket_connect(f'/session/events/ws?token={TOKEN}') as ws:
+                    # One callback, so the handler cannot drain in between:
+                    # what a stalled client looks like from the hub's side.
+                    hub._loop.call_soon_threadsafe(
+                        lambda: [hub._deliver(event) for event in burst])
+
+                    received = []
+                    with pytest.raises(WebSocketDisconnect) as closed:
+                        for _ in range(len(burst) + 1):
+                            received.append(ws.receive_json()['seq'])
+
+                assert closed.value.code == 4408
+                # Whatever arrived is the unbroken head of the burst: the
+                # client resumes from the last seq it saw.
+                assert len(received) <= 3
+                assert received == [100, 101, 102][:len(received)]
+                assert hub._clients == set()
+        finally:
+            session.close(timeout=5.0)
+
+
+class TestDisconnectWatcher:
+    def test_it_returns_on_disconnect_instead_of_asking_again(self):
+        """Starlette raises RuntimeError on a receive() after the disconnect."""
+        from resistamet_gui.api.events_ws import _watch_for_disconnect
+
+        class Socket:
+            def __init__(self):
+                self.messages = [{'type': 'websocket.receive', 'text': 'ping'},
+                                 {'type': 'websocket.disconnect', 'code': 1001}]
+
+            async def receive(self):
+                if not self.messages:
+                    raise RuntimeError('Cannot call "receive" once a disconnect message '
+                                       'has been received.')
+                return self.messages.pop(0)
+
+        assert asyncio.run(_watch_for_disconnect(Socket())) is None
+
+    def test_a_wrong_token_of_any_length_is_refused(self):
+        session = MeasurementSession(ListSink())
+        app = create_app(session, token=TOKEN, profile_provider=lambda u: {})
+        try:
+            with TestClient(app) as client:
+                for wrong in ('', 'x', TOKEN + 'x', 'tést'):
+                    with pytest.raises(Exception):
+                        with client.websocket_connect(f'/session/events/ws?token={wrong}'):
+                            pass
+        finally:
+            session.close(timeout=5.0)
+
+
 class TestHistory:
     """A dropped connection must be resumable, or say it is not."""
 
@@ -191,6 +255,78 @@ class TestHistory:
         events, gap = hub.history('run-1', since_seq=2)
         assert gap is True
         assert [e.seq for e in events] == [16, 17, 18, 19, 20]
+
+
+class TestCursorAcrossRuns:
+    """``seq`` restarts with every run; the hub's ``cursor`` never does."""
+
+    @pytest.fixture
+    def hub(self):
+        hub = EventHub(clock=lambda: 0.0)
+        for seq in range(1, 6):
+            hub._deliver(_event('log', seq=seq, run_id='run-1', level='info', code='x',
+                                message='m'))
+        for seq in range(1, 4):
+            hub._deliver(_event('log', seq=seq, run_id='run-2', level='info', code='x',
+                                message='m'))
+        return hub
+
+    def _ids(self, events):
+        return [(e.run_id, e.seq) for e in events]
+
+    def test_every_delivered_event_carries_the_next_cursor(self, hub):
+        events, _ = hub.history()
+        assert [e.cursor for e in events] == list(range(1, 9))
+        assert hub.cursor == 8
+
+    def test_an_event_the_hub_filters_out_takes_no_cursor(self):
+        hub = EventHub(clock=lambda: 0.0)
+        hub._deliver(_event('compliance', seq=1, kind='Voltage'))
+        hub._deliver(_event('compliance', seq=2, kind='Voltage'))  # not a transition
+        hub._deliver(_event('log', seq=3, level='info', code='x', message='m'))
+        assert [(e.seq, e.cursor) for e in hub.history()[0]] == [(1, 1), (3, 2)]
+
+    def test_resuming_by_cursor_crosses_into_the_next_run(self, hub):
+        events, gap = hub.history(since_cursor=4)
+        assert self._ids(events) == [('run-1', 5), ('run-2', 1), ('run-2', 2), ('run-2', 3)]
+        assert gap is False
+
+    def test_pages_by_cursor_neither_repeat_nor_skip(self, hub):
+        first, _ = hub.history(since_cursor=0, limit=6)
+        second, _ = hub.history(since_cursor=first[-1].cursor, limit=6)
+        assert self._ids(first + second) == self._ids(hub.history()[0])
+        assert len(first) == 6 and len(second) == 2
+
+    def test_resuming_an_old_run_also_replays_the_runs_after_it(self, hub):
+        """A run started while the socket was down must not lose its head."""
+        events, gap = hub.history('run-1', since_seq=5)
+        assert self._ids(events) == [('run-2', 1), ('run-2', 2), ('run-2', 3)]
+        assert gap is False
+
+        events, _ = hub.history('run-1', since_seq=3)
+        assert self._ids(events) == [('run-1', 4), ('run-1', 5),
+                                     ('run-2', 1), ('run-2', 2), ('run-2', 3)]
+
+    def test_a_run_whose_head_was_evicted_is_a_gap_even_from_the_start(self):
+        from collections import deque
+
+        hub = EventHub(clock=lambda: 0.0)
+        hub._history = deque(maxlen=4)
+        for seq in range(1, 11):
+            hub._deliver(_event('log', seq=seq, level='info', code='x', message='m'))
+
+        assert hub.history('run-1', since_seq=0)[1] is True
+        assert hub.history(since_seq=0)[1] is True
+        assert hub.history(since_cursor=0)[1] is True
+        assert hub.history(since_cursor=6) == (hub.history()[0], False)
+
+    def test_a_run_that_is_gone_from_the_ring_is_a_gap(self, hub):
+        events, gap = hub.history('run-0', since_seq=800)
+        assert gap is True
+        assert len(events) == 8
+
+    def test_nothing_delivered_is_not_a_gap(self):
+        assert EventHub().history(since_cursor=0) == ([], False)
 
 
 class TestPullRoute:
@@ -251,3 +387,58 @@ class TestPullRoute:
                 first = ws.receive_json()
                 assert first['type'] == 'gap'
                 assert first['since_seq'] == 2
+
+    def test_websocket_resumes_by_cursor_into_a_newer_run(self, session):
+        app = create_app(session, token=TOKEN, profile_provider=lambda u: {})
+        with TestClient(app) as client:
+            hub = app.state.api.hub
+            for run, seqs in (('run-1', (1, 2)), ('run-2', (1, 2))):
+                for seq in seqs:
+                    hub._deliver(_event('log', seq=seq, run_id=run, level='info', code='x',
+                                         message='m'))
+
+            with client.websocket_connect(
+                    f'/session/events/ws?token={TOKEN}&since_cursor=2') as ws:
+                got = [ws.receive_json() for _ in range(2)]
+            assert [(e['run_id'], e['seq'], e['cursor']) for e in got] == [
+                ('run-2', 1, 3), ('run-2', 2, 4)]
+
+    def test_websocket_resume_with_the_old_run_replays_the_new_runs_start(self, session):
+        app = create_app(session, token=TOKEN, profile_provider=lambda u: {})
+        with TestClient(app) as client:
+            hub = app.state.api.hub
+            hub._deliver(_event('log', seq=800, run_id='run-1', level='info', code='x',
+                                 message='m'))
+            hub._deliver(_event('run_started', seq=1, run_id='run-2', mode='resistance'))
+
+            url = f'/session/events/ws?token={TOKEN}&run_id=run-1&since_seq=800'
+            with client.websocket_connect(url) as ws:
+                first = ws.receive_json()
+            assert (first['type'], first['run_id'], first['seq']) == ('run_started', 'run-2', 1)
+
+    def test_polling_by_cursor(self, session):
+        app = create_app(session, token=TOKEN, profile_provider=lambda u: {})
+        with TestClient(app) as client:
+            client.headers.update({'Authorization': f'Bearer {TOKEN}'})
+            hub = app.state.api.hub
+            for run in ('run-1', 'run-2'):
+                for seq in (1, 2, 3):
+                    hub._deliver(_event('log', seq=seq, run_id=run, level='info', code='x',
+                                         message='m'))
+
+            first = client.get('/session/events?since_cursor=0&limit=4').json()
+            rest = client.get(f"/session/events?since_cursor={first['cursor']}").json()
+
+            assert first['cursor'] == 4
+            assert [(e['run_id'], e['seq']) for e in first['events'] + rest['events']] == [
+                ('run-1', 1), ('run-1', 2), ('run-1', 3), ('run-2', 1), ('run-2', 2), ('run-2', 3)]
+            assert rest['cursor'] == 6
+            assert client.get('/session/events?since_cursor=6').json()['cursor'] == 6
+
+    @pytest.mark.parametrize('query', ['limit=0', 'limit=-1', 'limit=10001', 'since_seq=-1',
+                                       'since_cursor=-1'])
+    def test_out_of_range_paging_is_refused(self, session, query):
+        app = create_app(session, token=TOKEN, profile_provider=lambda u: {})
+        with TestClient(app) as client:
+            client.headers.update({'Authorization': f'Bearer {TOKEN}'})
+            assert client.get(f'/session/events?{query}').status_code == 422

@@ -317,10 +317,6 @@ class TestUnusableInputsReturnNaN:
         if out.rho_23 is not None:
             assert math.isfinite(out.f_T)
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "Finite, positive but absurd magnitudes escape the NaN contract as "
-        "OverflowError: f_thickness_correction squares n*w/S with `**`, which "
-        "raises where `*` would give inf (calculations.py, the sum1 loop)."))
     @pytest.mark.parametrize("w, s", [(1e200, 1.0), (1.0, 1e-200), (1e-100, 5e-324)])
     def test_absurd_but_finite_thickness_ratio_does_not_raise(self, w, s):
         value = calc.f_thickness_correction(w, s)
@@ -453,12 +449,9 @@ class TestVanDerPauw:
     @given(st.dictionaries(st.sampled_from(vdp._REQUIRED_BASE_LABELS), any_reading, min_size=0, max_size=8),
            any_reading, any_reading)
     def test_only_the_documented_errors(self, volts, current, thickness):
-        """KeyError for a missing label, ValueError for a current, thickness
-        or Q that cannot be used. (A Q of exactly zero is the one exception;
-        see the xfail below.)"""
+        """KeyError for a missing label, ValueError for a current, thickness,
+        reading or Q that cannot be used."""
         complete = len(volts) == 8
-        if complete and _a_q_is_zero(volts):
-            return
         try:
             out = vdp.calculate_van_der_pauw(volts, current, thickness)
         except KeyError:
@@ -470,13 +463,6 @@ class TestVanDerPauw:
             if not out.rho_avg > 0:
                 assert math.isnan(out.sheet_resistance) and not out.homogeneous
 
-    @pytest.mark.xfail(strict=True, raises=ZeroDivisionError, reason=(
-        "vdp_resistivity_pair guards delta_second == 0 but not delta_first == 0: "
-        "q = |0 / d| = 0 and `q = 1.0 / q` raises ZeroDivisionError where the "
-        "docstring promises ValueError for an undefined Q. Reached when both "
-        "polarities of geometry 1 (or 3) read the same, e.g. both pinned at the "
-        "9.9e37 overflow sentinel or both 0.0 with a lead off; an infinite "
-        "second difference gets there too."))
     @pytest.mark.parametrize("label, value", [("V_21,34", 0.0), ("V_21,34", 9.9e37), ("V_21,34", 1.25e-3),
                                               ("V_43,12", 0.0), ("V_32,41", INF)])
     def test_a_q_of_zero_is_a_value_error(self, label, value):

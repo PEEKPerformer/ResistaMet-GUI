@@ -421,6 +421,21 @@ class TestInstruments:
 
         assert response.status_code == 200
 
+    @pytest.mark.parametrize('interface', ['ASRL6::INSTR', 'GPIB0::INTFC', 'COM5'])
+    def test_a_request_cannot_open_an_arbitrary_resource_as_the_interface(
+            self, client, fake_rm, interface):
+        """An aux sensor's serial port would be opened, and held, by this."""
+        opened = []
+        fake_rm.open_resource = lambda name, **k: (opened.append(name), object())[1]
+
+        listed = client.get('/instruments/resources', params={'gpib_interface': interface})
+        identified = client.post('/instruments/identify', json={
+            'address': 'GPIB0::24::INSTR', 'gpib_interface': interface})
+
+        assert listed.status_code == 422
+        assert identified.status_code == 422
+        assert opened == []
+
     def test_a_library_path_is_stored_when_the_file_exists(self, client, config, tmp_path):
         library = tmp_path / 'libvisa.so'
         library.touch()
@@ -508,3 +523,15 @@ class TestAddUser:
 
     def test_blank_name_is_rejected(self, client):
         assert client.post('/users', json={'username': '   '}).status_code == 422
+
+
+class TestProfileReplyShape:
+    def test_a_profile_is_its_sections_only(self, client):
+        """`users` and `last_user` live in the defaults dict the profile is built
+        from; a client walking the reply by section must not meet them."""
+        client.post('/users', json={'username': 'alice'})
+        body = client.get('/profiles/alice').json()
+        assert set(body) == {'measurement', 'display', 'file', 'output'}
+        assert all(isinstance(section, dict) for section in body.values())
+        patched = client.patch('/profiles/alice', json={'display': {'enable_plot': False}}).json()
+        assert set(patched) == set(body)

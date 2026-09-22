@@ -9,7 +9,7 @@
 
 import { useSyncExternalStore } from "react";
 import type { AnyEvent, LogPayload } from "../generated/events";
-import type { SessionStatus } from "../lib/api";
+import type { InstrumentInfo, SessionStatus } from "../lib/api";
 
 export interface LogLine {
   seq: number;
@@ -31,9 +31,18 @@ export interface InstrumentState {
 export interface SessionSnapshot {
   status: SessionStatus | null;
   connected: boolean;
-  backendReachable: boolean;
+  /** Whether the last status request was answered; null before the first. */
+  backendReachable: boolean | null;
   instrument: InstrumentState | null;
-  lastRunEnded: { reason: string; ok: boolean; path: string | null } | null;
+  /** How the last run ended, kept until the next one starts. Duration and
+   *  sample count are null when the backend did not report them. */
+  lastRunEnded: {
+    reason: string;
+    ok: boolean;
+    path: string | null;
+    durationS: number | null;
+    samples: number | null;
+  } | null;
   log: LogLine[];
   gap: boolean;
 }
@@ -43,7 +52,7 @@ const MAX_LOG_LINES = 500;
 let snapshot: SessionSnapshot = {
   status: null,
   connected: false,
-  backendReachable: false,
+  backendReachable: null,
   instrument: null,
   lastRunEnded: null,
   log: [],
@@ -73,7 +82,14 @@ export function useSession(): SessionSnapshot {
 }
 
 export function setStatus(status: SessionStatus): void {
-  publish({ ...snapshot, status, backendReachable: true });
+  // After a reload the events that named the instrument are gone; the backend
+  // remembers the last one it saw. Only fills a gap: a live event or an
+  // Identify is newer than any status that was in flight.
+  const instrument =
+    snapshot.instrument === null && status.instrument !== null
+      ? instrumentState(status.instrument)
+      : snapshot.instrument;
+  publish({ ...snapshot, status, instrument, backendReachable: true });
 }
 
 export function setBackendReachable(reachable: boolean): void {
@@ -86,6 +102,23 @@ export function setConnected(connected: boolean): void {
 
 export function setGap(gap: boolean): void {
   if (snapshot.gap !== gap) publish({ ...snapshot, gap });
+}
+
+/** An Identify from the settings dialog is as good a sighting of the
+ *  instrument as a run connecting to it, and the header badge shows either. */
+export function setIdentifiedInstrument(info: InstrumentInfo): void {
+  publish({ ...snapshot, instrument: instrumentState(info) });
+}
+
+function instrumentState(info: InstrumentInfo): InstrumentState {
+  return {
+    address: info.address,
+    idn: info.idn,
+    model: info.model ?? "?",
+    maxSourceV: info.max_source_v,
+    maxSourceI: info.max_source_i,
+    maxPowerW: info.max_power_w,
+  };
 }
 
 function appendLog(line: LogLine): LogLine[] {
@@ -147,6 +180,8 @@ export function applyEvent(event: AnyEvent): void {
           reason: event.payload.reason,
           ok: event.payload.ok ?? true,
           path: event.payload.path ?? null,
+          durationS: event.payload.duration_s ?? null,
+          samples: event.payload.samples ?? null,
         },
       });
       return;

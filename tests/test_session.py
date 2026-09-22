@@ -506,9 +506,10 @@ class TestSafetyPrompt:
         session.start(profile, 'sweep', 'wafer1', 'alice', overrides={
             'sweep_source': 'current', 'sweep_start': 0.0, 'sweep_stop': 1e-3,
             'sweep_step': 1e-4, 'sweep_compliance': 60.0})
-        assert _wait_for(lambda: self._pending(session) is not None)
+        assert _wait_for(lambda: self._pending(session) is not None, timeout=15.0)
         session.answer_prompt(self._pending(session)['prompt_id'], 'acknowledge')
-        assert _wait_for(lambda: session.state == 'idle')
+        # A whole sweep and its cleanup on a loaded CI runner; 5 s was not enough.
+        assert _wait_for(lambda: session.state == 'idle', timeout=15.0)
         assert [e.payload['reason'] for e in sink.of_type('run_ended')] == ['completed']
         assert len(sink.of_type('sweep_segment')) == 1
 
@@ -702,20 +703,28 @@ class TestPauseClock:
 
     def test_paused_time_does_not_count_toward_the_duration(self, session, sink,
                                                               fake_rm, profile):
-        # 1.5 s of measuring time, then pause well past that deadline.
-        session.start(self._timed(profile, 1.5 / 3600.0), 'source_v', 'wafer1', 'alice')
+        # 2 s of measuring time, then pause well past that deadline.
+        duration_s = 2.0
+        started = time.monotonic()
+        session.start(self._timed(profile, duration_s / 3600.0), 'source_v', 'wafer1', 'alice')
         assert _wait_for(lambda: sink.of_type('sample'))
         session.pause()
+        # No more than this was measured before the pause (the run's clock
+        # starts after start() was called).
+        measured_before = time.monotonic() - started
         assert _wait_for(lambda: session.state == 'paused')
-        time.sleep(1.8)
+        time.sleep(duration_s + 0.3)
 
         assert session.state == 'paused', "run ended while paused"
+        resumed = time.monotonic()
         session.resume()
-        assert _wait_for(lambda: session.state == 'running')
-        # still measuring after the wall-clock deadline has passed
-        before = len(sink.of_type('sample'))
-        assert _wait_for(lambda: len(sink.of_type('sample')) > before)
-        session.stop()
+        # Nobody stops it: the run gets the rest of its measuring time and
+        # then ends on its own. A clock that counted the pause would end it
+        # on the first pass after the resume.
+        assert _wait_for(lambda: session.state == 'idle', timeout=10.0)
+        after_resume = time.monotonic() - resumed
+        assert after_resume >= duration_s - measured_before - 0.2
+        assert [e.payload['reason'] for e in sink.of_type('run_ended')] == ['duration']
 
     def test_an_unpaused_run_still_stops_on_time(self, session, sink, fake_rm, profile):
         session.start(self._timed(profile, 0.5 / 3600.0), 'source_v', 'wafer1', 'alice')
@@ -735,8 +744,15 @@ class TestInstrumentHeldElsewhere:
         from resistamet_gui.session import instrument_lock
         from resistamet_gui.session.instrument_lock import InstrumentBusy
 
+        import functools
+        from resistamet_gui.session import manager
+
         monkeypatch.setattr(instrument_lock, 'default_lock_dir', lambda: tmp_path / 'locks')
-        monkeypatch.setattr(instrument_lock, 'ACQUIRE_GRACE_S', 0.3)
+        # The grace is a default argument, bound when the class was defined:
+        # patching ACQUIRE_GRACE_S changes nothing. Shorten it where the
+        # session takes the lock.
+        monkeypatch.setattr(manager, 'HeldInstrument', functools.partial(
+            instrument_lock.HeldInstrument, wait_s=0.3))
         holder_script = textwrap.dedent(f"""
             import sys, time
             from resistamet_gui.session.instrument_lock import hold_instrument
@@ -748,8 +764,10 @@ class TestInstrumentHeldElsewhere:
                                    stdout=subprocess.PIPE, text=True)
         try:
             assert holder.stdout.readline().strip() == 'held'
+            asked = time.monotonic()
             with pytest.raises(InstrumentBusy, match='in use by another ResistaMet process'):
                 session.start(_four_point(profile), 'four_point', 'wafer1', 'alice')
+            assert time.monotonic() - asked < 2.0  # the short grace, not the 3 s default
             assert session.state == 'idle'
             assert sink.events == []  # nothing started, nothing reported
         finally:

@@ -137,7 +137,7 @@
     },
     "FourPointSettings": {
       "additionalProperties": true,
-      "description": "Four-point probe, with the ASTM F84 correction-factor inputs.\n\n``fpp_temperature_c`` is ``None`` when the temperature was not measured.\nThe UI carries that as a -50 C sentinel on its spin box (the widget's\n\"not measured\" special value) and the worker as NaN; the resolver converts\nbetween the two, and neither representation reaches this model.",
+      "description": "Four-point probe, with the ASTM F84 correction-factor inputs.\n\n``fpp_temperature_c`` is ``None`` when the temperature was not measured.\nThe PySide6 UI carries that as a -50 C sentinel on its spin box (the\nwidget's \"not measured\" special value) and a profile as NaN. The resolver\nshows this model ``None`` in place of NaN and converts nothing in the run\nsettings: NaN from a profile stays NaN and a JSON client's ``null`` stays\n``None``. The consumers read both as \"not measured\".",
       "properties": {
         "fpp_alpha": {
           "default": 1.0,
@@ -591,7 +591,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "What a client asks for. Never persisted.\n\n``overrides`` is flat measurement keys, the same shape the tabs produce\ntoday, so one request format serves the UI, a script and the MCP layer.\nStrict validation of the keys happens in the resolver, which knows which\nones the profile owns.",
+      "description": "What a client asks for. Never persisted.\n\nThis is the body ``POST /session/start`` validates, and the model the\ndesktop's request type is generated from; unknown fields are refused so\na misspelt one cannot be silently ignored.\n\n``overrides`` is flat measurement keys, the same shape the tabs produce\ntoday, so one request format serves the UI, a script and the MCP layer.\nStrict validation of the keys happens in the resolver, which knows which\nones the profile owns.",
       "properties": {
         "client": {
           "anyOf": [
@@ -624,11 +624,14 @@
         "prompt_timeout_s": {
           "default": 900.0,
           "exclusiveMinimum": 0.0,
+          "maximum": 86400.0,
           "title": "Prompt Timeout S",
           "type": "number"
         },
         "sample_name": {
+          "maxLength": 120,
           "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
           "title": "Sample Name",
           "type": "string"
         },
@@ -644,7 +647,9 @@
           "default": null
         },
         "username": {
+          "maxLength": 64,
           "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
           "title": "Username",
           "type": "string"
         }
