@@ -74,8 +74,9 @@ is only meaningful after 0x0a/0x0c/0x0d; other replies carry stale or marker
 bytes there, which is why nothing here reads it elsewhere.
 
 Layout: ``Controller`` inherits the exchange primitives and the fault
-recovery from ``link``, the transfer paths from ``transfers`` and the wait
-for a service request from ``srq``.
+recovery from ``link``, the transfer paths from ``transfers``, the wait for
+a service request from ``srq`` and the model-specific attach steps from
+``attach``.
 """
 import logging
 import threading
@@ -85,6 +86,7 @@ from typing import Callable, Iterator, Optional, Tuple
 
 from . import protocol as p
 from . import tables as t
+from .attach import _AttachMixin
 # The constants of the mixins are re-exported: callers import them from here.
 from .link import (BUS_MIN_RATE_BPS, DEFAULT_INFINITE_WAIT_S, DRAIN_WAIT_S,  # noqa: F401
                    RECOVERY_WAIT_S, SHORT_WAIT_S, _ExchangeMixin)
@@ -92,7 +94,7 @@ from .protocol import AdapterNotReady, GpibError, NoReply, ProtocolError, Status
 from .srq import SRQ_WAIT_SLICE_S, _SrqMixin
 from .transfers import (ADAPTER_OUT_BUFFER_BYTES, FRAMED_READ_MAX_BYTES, RAW_READ_MIN_BYTES,  # noqa: F401
                         RAW_READ_SLICE_S, RAW_REPLY_POLL_S, RAW_WRITE_MIN_BYTES, _TransferMixin)
-from .transport import Transport, TransportError, TransportTimeout
+from .transport import Transport, TransportError
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +112,7 @@ _LISTEN = 'listen'
 _TALK = 'talk'
 
 
-class Controller(_SrqMixin, _TransferMixin, _ExchangeMixin):
+class Controller(_AttachMixin, _SrqMixin, _TransferMixin, _ExchangeMixin):
     """Sequencing rules for one adapter over one ``Transport``."""
 
     def __init__(self, transport: Transport, product_id: int, *,
@@ -235,37 +237,6 @@ class Controller(_SrqMixin, _TransferMixin, _ExchangeMixin):
                 self._sleep(IFC_SETTLE_S)  # let the instruments finish reacting to IFC/REN
             self._attached = True
             self._resync_pending = False
-
-    def _readiness_poll(self) -> None:
-        reply = self._control(t.SERIAL_NUMBER_QUERY)
-        try:
-            self.serial_number = p.parse_serial_number(reply)
-        except ProtocolError as exc:
-            raise AdapterNotReady(str(exc)) from exc
-        for attempt in range(t.READINESS_ATTEMPTS):
-            try:
-                reply = self._control(t.READINESS_QUERY, timeout_ms=t.READINESS_USB_TIMEOUT_MS)
-            except TransportTimeout:
-                reply = b''
-            if reply and p.readiness_reported(reply):
-                return
-            if attempt + 1 < t.READINESS_ATTEMPTS:
-                self._sleep(t.READINESS_INTERVAL_S)
-        raise AdapterNotReady('%s did not report ready after %d polls'
-                              % (self._model.name, t.READINESS_ATTEMPTS))
-
-    def _hs_plus_extras(self) -> None:
-        for request, expected in t.HS_PLUS_INIT_REQUESTS:
-            reply = self._control(request)
-            if reply != expected:
-                # spec gap: only the LED effect of these requests is known, so an
-                # unexpected reply is recorded rather than treated as fatal.
-                logger.warning('HS+ init request 0x%02x answered %s, expected %s',
-                               request.request, reply.hex(), expected.hex())
-
-    def _usb_b_serial(self) -> int:
-        values = self._register_read(t.USB_B_SERIAL_REGISTERS)
-        return int.from_bytes(bytes(values), 'little')
 
     def close(self) -> None:
         """§2.9: chip reset, the device-level register, release the interface.

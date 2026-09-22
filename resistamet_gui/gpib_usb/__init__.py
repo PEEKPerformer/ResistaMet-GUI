@@ -10,7 +10,8 @@ this package when an NI adapter is plugged in, and through whatever
 pyvisa-py had before otherwise. Nothing here imports Qt.
 
 Layers, bottom up: ``protocol`` (bytes, pure), ``transport`` (pyusb),
-``controller`` (sequencing over one adapter), ``visa_session`` and
+``controller`` (sequencing over one adapter, with its parts in ``link``,
+``transfers``, ``srq`` and ``attach``), ``visa_session`` and
 ``visa_intfc`` (pyvisa-py).
 """
 import logging
