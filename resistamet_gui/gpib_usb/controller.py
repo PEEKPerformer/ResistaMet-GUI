@@ -128,8 +128,11 @@ VISA timeout means: the least time to wait before reporting one.
 Bench notes (GPIB-USB-HS 01CEE482, Keithley 2400 at PAD 3, 2026-09-18): the
 attach sequence, addressing, the framed write and read and the presence
 probe all work as written. The serial poll that ran that day was the
-IEEE-488.1 command sequence of §5.9, which is still the default; the 0x10
-instruction has not run on hardware. Instruments need a moment after IFC and REN before the
+IEEE-488.1 command sequence of §5.9, which is still the default. The 0x10
+instruction ran on the same unit on 2026-09-21 (§11.2): its status byte
+agreed with ``*STB?``, and at an empty address it returned error 5 after
+1.252 s, where NI's timed-out poll returned error 0x0a (§10.6.6).
+Instruments need a moment after IFC and REN before the
 first addressed command (``IFC_SETTLE_S``); without it the 2400 silently
 dropped the first query after a close-then-attach, and the adapter hung once
 under the backend at exactly that point. The read reply's trailer is 16 bytes, not the 28 the
@@ -186,8 +189,9 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
                  sleep: Callable[[float], None] = time.sleep,
                  clock: Callable[[], float] = time.monotonic) -> None:
         """``ni_instructions`` True uses the instructions NI's driver was captured
-        sending and our bench has not run: 0x0b / 0x0e for large transfers and
-        0x10 for the serial poll (see the module docstring), on the one model
+        sending, which our bench has run only in part (§11.2): 0x0b / 0x0e for
+        large transfers and 0x10 for the serial poll (see the module
+        docstring), on the one model
         NI's driver was captured on, the GPIB-USB-HS; on any other it is logged
         and ignored. The default keeps every transfer on the framed 0x0a /
         0x0d paths and the serial poll on the §5.9 command sequence, the ones
@@ -527,8 +531,10 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
 
         NI's driver polls this way rather than with the IEEE-488.1 command
         sequence of §5.9. The adapter addresses the bus itself for the poll.
-        Not run on hardware yet, and NI's captures all had its bank-2 session
-        configuration written first, which this driver does not write;
+        Run on bench unit 01CEE482 on 2026-09-21 (§11.2), where its status
+        byte agreed with ``*STB?``. NI's captures all had its bank-2 session
+        configuration written first, which this driver writes only before a
+        raw read or write, not for a poll;
         ``device_ops.serial_poll`` sends this only when the controller was
         built with ``ni_instructions``, and the §5.9 sequence otherwise.
         """
