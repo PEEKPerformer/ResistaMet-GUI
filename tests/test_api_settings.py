@@ -14,6 +14,7 @@ from resistamet_gui.session.emitter import ListSink
 from resistamet_gui.session.manager import MeasurementSession
 
 TOKEN = 'test-token'
+PRLGX = 'PRLGX-ASRL::/dev/cu.usbserial-PX12345::INTFC'
 
 
 @pytest.fixture
@@ -78,6 +79,108 @@ class TestUsersAndProfiles:
     def test_patch_needs_something_to_change(self, client):
         assert client.patch('/profiles/alice', json={}).status_code == 422
 
+    def test_patch_leaves_the_other_keys_of_the_section_alone(self, client, config):
+        before = client.get('/profiles/alice').json()
+
+        response = client.patch('/profiles/alice',
+                                 json={'measurement': {'res_test_current': 5e-4}})
+
+        assert response.status_code == 200
+        after = response.json()
+        assert after['measurement']['res_test_current'] == 5e-4
+        before['measurement']['res_test_current'] = 5e-4
+        assert after == before
+        stored = config.config['user_settings']['alice']['measurement']
+        assert stored['fpp_current'] == 1e-4
+        assert stored['sampling_rate'] == 50.0
+
+    def test_an_address_only_patch_does_not_touch_the_stored_profile(self, client, config):
+        stored_before = copy.deepcopy(config.config['user_settings']['alice'])
+
+        response = client.patch('/profiles/alice', json={'measurement': {
+            'gpib_address': 'GPIB0::9::INSTR', 'visa_library': '@py', 'gpib_interface': ''}})
+
+        assert response.status_code == 200
+        assert config.config['user_settings']['alice'] == stored_before
+        assert config.get_gpib_address() == 'GPIB0::9::INSTR'
+        assert response.json()['measurement']['fpp_current'] == 1e-4
+        assert response.json()['measurement']['gpib_address'] == 'GPIB0::9::INSTR'
+
+    def test_first_patch_keeps_what_the_user_was_running_on(self, client, config):
+        """A user with no stored overrides runs on the shared sections."""
+        config.update_global_settings({'measurement': {'sampling_rate': 3.0}})
+        config.add_user('bob')
+        assert client.get('/profiles/bob').json()['measurement']['sampling_rate'] == 3.0
+
+        response = client.patch('/profiles/bob', json={'measurement': {'nplc': 2.0}})
+
+        assert response.status_code == 200
+        assert response.json()['measurement']['nplc'] == 2.0
+        assert response.json()['measurement']['sampling_rate'] == 3.0
+
+    def test_patch_for_an_unknown_user_is_not_found(self, client, config):
+        response = client.patch('/profiles/ghost',
+                                 json={'measurement': {'res_test_current': 5e-4}})
+        assert response.status_code == 404
+        assert 'ghost' not in config.config.get('user_settings', {})
+
+    def test_invalid_values_are_refused_and_nothing_is_stored(self, client, config, tmp_path):
+        stored_before = copy.deepcopy(config.config['user_settings']['alice'])
+
+        response = client.patch('/profiles/alice', json={'measurement': {
+            'nplc': 'banana', 'res_test_current': 1e9, 'sampling_rate': 5.0}})
+
+        assert response.status_code == 422
+        keys = {issue['key'] for issue in response.json()['detail']['issues']}
+        assert keys == {'nplc', 'res_test_current'}
+        assert config.config['user_settings']['alice'] == stored_before
+        reloaded = ConfigManager(config_file=str(tmp_path / 'config.json'))
+        assert reloaded.config['user_settings']['alice'] == stored_before
+
+    def test_invalid_values_in_other_sections_are_refused(self, client):
+        response = client.patch('/profiles/alice', json={'output': {'format': 'xlsx'}})
+        assert response.status_code == 422
+        assert response.json()['detail']['issues'][0]['section'] == 'output'
+
+    def test_an_old_out_of_range_value_does_not_block_other_edits(self, client, config):
+        """A drifted profile must stay editable, one key at a time."""
+        config.update_user_settings('alice', {'measurement': {'vdp_current': 5.0}})
+
+        response = client.patch('/profiles/alice', json={'measurement': {'nplc': 2.0}})
+
+        assert response.status_code == 200
+        assert response.json()['measurement']['vdp_current'] == 5.0
+
+    def test_resending_an_old_out_of_range_value_does_not_block_either(self, client, config):
+        """The desktop dialog sends the whole section it edited."""
+        config.update_user_settings('alice', {'measurement': {'vdp_current': 5.0}})
+        section = client.get('/profiles/alice').json()['measurement']
+        section['nplc'] = 2.0
+
+        assert client.patch('/profiles/alice', json={'measurement': section}).status_code == 200
+
+        section['vdp_current'] = 6.0
+        assert client.patch('/profiles/alice', json={'measurement': section}).status_code == 422
+
+    def test_a_save_that_fails_is_reported(self, client, config, monkeypatch):
+        from resistamet_gui.config import ConfigSaveError
+
+        def fail():
+            raise ConfigSaveError("disk full")
+
+        monkeypatch.setattr(config, 'save_config', fail)
+
+        response = client.patch('/profiles/alice', json={'measurement': {'nplc': 2.0}})
+
+        assert response.status_code == 500
+        assert 'not saved' in response.json()['detail']
+
+    def test_a_bad_interface_name_is_refused(self, client, config):
+        response = client.patch('/profiles/alice',
+                                 json={'measurement': {'gpib_interface': 'COM5'}})
+        assert response.status_code == 422
+        assert config.get_gpib_interface() == ''
+
     def test_address_change_is_refused_during_a_run(self, client, fake_rm):
         client.post('/session/start', json={'mode': 'four_point', 'sample_name': 'w',
                                              'username': 'alice'})
@@ -96,6 +199,43 @@ class TestUsersAndProfiles:
         response = client.patch('/profiles/alice', json={'display': {'enable_plot': False}})
         assert response.status_code == 200
         client.post('/session/stop')
+
+
+class TestTouchSafetyKeysNeedTheUiRole:
+    """Only a person at the bench may move or silence the voltage warning."""
+
+    @pytest.fixture
+    def agent(self, session, config):
+        app = create_app(session, token=TOKEN, role='mcp', config=config)
+        with TestClient(app) as test_client:
+            test_client.headers.update({'Authorization': f'Bearer {TOKEN}'})
+            yield test_client
+
+    @pytest.mark.parametrize('patch', [{'safety_voltage_warn_silenced': True},
+                                        {'safety_voltage_warn_v': 150.0}])
+    def test_another_role_is_refused(self, agent, config, patch):
+        before = copy.deepcopy(config.config['user_settings']['alice'])
+
+        response = agent.patch('/profiles/alice', json={'measurement': patch})
+
+        assert response.status_code == 403
+        assert config.config['user_settings']['alice'] == before
+
+    def test_another_role_may_resend_them_unchanged(self, agent):
+        section = agent.get('/profiles/alice').json()['measurement']
+        section['nplc'] = 2.0
+        section.pop('gpib_address')
+
+        response = agent.patch('/profiles/alice', json={'measurement': section})
+
+        assert response.status_code == 200
+        assert response.json()['measurement']['nplc'] == 2.0
+
+    def test_the_ui_role_may_change_them(self, client):
+        response = client.patch('/profiles/alice',
+                                 json={'measurement': {'safety_voltage_warn_silenced': True}})
+        assert response.status_code == 200
+        assert response.json()['measurement']['safety_voltage_warn_silenced'] is True
 
 
 class TestSchema:
@@ -202,6 +342,129 @@ class TestInstruments:
                                 json={'address': 'GPIB0::24::INSTR', 'visa_library': '@py'})
         assert response.status_code == 200
         assert calls == [('@py',)]
+
+    def test_resources_can_try_an_interface_before_saving_it(self, client, config, fake_rm):
+        opened = []
+        fake_rm.open_resource = lambda name, **k: (opened.append(name), object())[1]
+        body = client.get('/instruments/resources',
+                          params={'gpib_interface': PRLGX}).json()
+        assert opened == [PRLGX]
+        assert body['gpib_interface'] == PRLGX
+        assert config.get_gpib_interface() == ''
+
+    def test_resources_use_the_machine_interface_by_default(self, client, config, fake_rm):
+        config.set_machine_local('gpib_interface', PRLGX)
+        opened = []
+        fake_rm.open_resource = lambda name, **k: (opened.append(name), object())[1]
+        assert client.get('/instruments/resources').json()['gpib_interface'] == PRLGX
+        assert opened == [PRLGX]
+
+    def test_an_empty_interface_overrides_the_machine_one(self, client, config, fake_rm):
+        config.set_machine_local('gpib_interface', PRLGX)
+        opened = []
+        fake_rm.open_resource = lambda name, **k: (opened.append(name), object())[1]
+        body = client.get('/instruments/resources', params={'gpib_interface': ''}).json()
+        assert opened == []
+        assert body['gpib_interface'] is None
+
+    def test_an_interface_that_does_not_open_is_named(self, client, fake_rm):
+        response = client.get('/instruments/resources', params={'gpib_interface': PRLGX})
+        assert response.status_code == 503
+        assert response.json()['detail'].startswith(f'Could not open GPIB interface {PRLGX}')
+
+    def test_identify_opens_the_interface_first(self, client, fake_rm):
+        opened = []
+        opening = fake_rm.open_resource
+
+        def recording(name, **kwargs):
+            opened.append(name)
+            return object() if name == PRLGX else opening(name, **kwargs)
+
+        fake_rm.open_resource = recording
+        response = client.post('/instruments/identify',
+                                json={'address': 'GPIB0::24::INSTR', 'gpib_interface': PRLGX})
+        assert response.status_code == 200
+        assert opened == [PRLGX, 'GPIB0::24::INSTR']
+
+    def test_identify_names_an_interface_that_does_not_open(self, client, fake_rm):
+        response = client.post('/instruments/identify',
+                                json={'address': 'GPIB0::24::INSTR', 'gpib_interface': PRLGX})
+        assert response.status_code == 503
+        assert PRLGX in response.json()['detail']
+
+    @pytest.mark.parametrize('library', ['/tmp/evil.dylib', 'C:\\evil.dll', '@sim', 'py'])
+    def test_a_request_cannot_name_a_library_to_load(self, client, fake_rm, monkeypatch,
+                                                     library):
+        """The value goes to ctypes; a request may only pick a known backend."""
+        import pyvisa
+        calls = []
+        factory = pyvisa.ResourceManager
+        monkeypatch.setattr(pyvisa, 'ResourceManager',
+                            lambda *a, **k: (calls.append(a), factory(*a, **k))[1])
+
+        listed = client.get('/instruments/resources', params={'visa_library': library})
+        identified = client.post('/instruments/identify', json={
+            'address': 'GPIB0::24::INSTR', 'visa_library': library})
+
+        assert listed.status_code == 422
+        assert identified.status_code == 422
+        assert calls == []
+
+    def test_a_request_may_repeat_the_library_this_machine_uses(self, client, config, fake_rm,
+                                                                tmp_path):
+        """The desktop dialog sends back what the profile gave it."""
+        library = tmp_path / 'libvisa.so'
+        library.touch()
+        config.set_machine_local('visa_library', str(library))
+
+        response = client.get('/instruments/resources', params={'visa_library': str(library)})
+
+        assert response.status_code == 200
+
+    def test_a_library_path_is_stored_when_the_file_exists(self, client, config, tmp_path):
+        library = tmp_path / 'libvisa.so'
+        library.touch()
+
+        response = client.patch('/profiles/alice',
+                                 json={'measurement': {'visa_library': str(library)}})
+
+        assert response.status_code == 200
+        assert config.get_visa_library() == str(library)
+
+    def test_a_library_path_that_is_not_a_file_is_refused(self, client, config, tmp_path):
+        response = client.patch('/profiles/alice', json={'measurement': {
+            'visa_library': str(tmp_path / 'no-such-libvisa.so')}})
+
+        assert response.status_code == 422
+        assert response.json()['detail']['issues'][0]['key'] == 'visa_library'
+        assert config.get_visa_library() == ''
+
+    def test_a_library_path_needs_the_ui_role(self, session, config, tmp_path):
+        library = tmp_path / 'libvisa.so'
+        library.touch()
+        app = create_app(session, token=TOKEN, role='mcp', config=config)
+        with TestClient(app) as agent:
+            agent.headers.update({'Authorization': f'Bearer {TOKEN}'})
+            path = agent.patch('/profiles/alice',
+                               json={'measurement': {'visa_library': str(library)}})
+            named = agent.patch('/profiles/alice', json={'measurement': {'visa_library': '@py'}})
+
+        assert path.status_code == 403
+        assert named.status_code == 200
+        assert config.get_visa_library() == '@py'
+
+    def test_the_interface_is_machine_local(self, client, config, fake_rm):
+        client.patch('/profiles/alice', json={'measurement': {'gpib_interface': PRLGX}})
+        assert config.get_gpib_interface() == PRLGX
+        assert client.get('/profiles/alice').json()['measurement']['gpib_interface'] == PRLGX
+
+    def test_the_interface_cannot_change_during_a_run(self, client, fake_rm):
+        client.post('/session/start', json={'mode': 'four_point', 'sample_name': 'w',
+                                             'username': 'alice'})
+        assert _wait_for(lambda: client.get('/session').json()['state'] == 'running')
+        response = client.patch('/profiles/alice', json={'measurement': {'gpib_interface': PRLGX}})
+        assert response.status_code == 409
+        client.post('/session/stop')
 
     def test_identify_is_refused_during_a_run(self, client, fake_rm):
         client.post('/session/start', json={'mode': 'four_point', 'sample_name': 'w',

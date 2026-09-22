@@ -28,7 +28,11 @@ def _sidecar_env(tmp_path):
     checkout. PYTHONPATH keeps it importing this checkout from there."""
     home = tmp_path / 'home'
     home.mkdir(exist_ok=True)
-    env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
+    # RESISTAMET_DISABLE_NI_USB: `--check-visa bus` under pyvisa-py enumerates
+    # for real, and through the NI GPIB-USB driver that is an IFC pulse and a
+    # walk over every address of whatever bench the adapter is plugged into.
+    env = dict(os.environ, HOME=str(home), USERPROFILE=str(home),
+               RESISTAMET_DISABLE_NI_USB='1')
     env['PYTHONPATH'] = os.pathsep.join(filter(None, [str(_REPO), env.get('PYTHONPATH')]))
     return env
 
@@ -251,6 +255,39 @@ class TestCheckVisa:
         # The NI USB view is independent of the vendor library and still there.
         assert 'ni_usb' in report
 
+    def test_the_gpib_interface_is_named_but_not_opened(self, tmp_path):
+        name = 'PRLGX-ASRL::/dev/cu.resistamet-no-such-adapter::INTFC'
+        result, report = self._check(tmp_path, '--visa-library', '@py',
+                                     '--gpib-interface', name)
+        assert result.returncode == 0
+        assert report['gpib_interface'] == {'configured': name}
+
+    def test_the_machines_gpib_interface_is_the_default(self, tmp_path):
+        from resistamet_gui.config import ConfigManager
+        name = 'PRLGX-TCPIP::192.0.2.1::1234::INTFC'
+        # The machine file the child will look in: under the home it is given.
+        machine_file = tmp_path / 'home' / '.resistamet' / 'machine.json'
+        ConfigManager(config_file=str(tmp_path / 'config.json'),
+                      machine_file=str(machine_file)).set_machine_local('gpib_interface', name)
+        _, report = self._check(tmp_path, '--visa-library', '@py')
+        assert report['gpib_interface'] == {'configured': name}
+
+    def test_bus_mode_says_whether_the_gpib_interface_opened(self, tmp_path):
+        pytest.importorskip('serial')
+        name = 'PRLGX-ASRL::/dev/cu.resistamet-no-such-adapter::INTFC'
+        result = subprocess.run(
+            [sys.executable, '-m', 'resistamet_gui.api', '--check-visa', 'bus',
+             '--visa-library', '@py', '--gpib-interface', name,
+             '--config', str(tmp_path / 'config.json')],
+            capture_output=True, text=True, timeout=120,
+            cwd=str(tmp_path), env=_sidecar_env(tmp_path),
+        )
+        report = json.loads(result.stdout)
+        assert result.returncode == 0  # VISA itself is fine
+        assert report['gpib_interface']['configured'] == name
+        assert report['gpib_interface']['opened'] is False
+        assert name in report['gpib_interface']['error']
+
     def test_bus_mode_enumerates(self, tmp_path):
         result = subprocess.run(
             [sys.executable, '-m', 'resistamet_gui.api', '--check-visa', 'bus',
@@ -261,3 +298,5 @@ class TestCheckVisa:
         report = json.loads(result.stdout)
         assert result.returncode == 0
         assert isinstance(report.get('resources', report.get('resources_error')), (list, str))
+        # Enumerated by pyvisa-py alone: an attached NI adapter was not asked.
+        assert 'RESISTAMET_DISABLE_NI_USB=1' in result.stderr

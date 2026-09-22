@@ -22,6 +22,7 @@ from ..buffers import EnhancedDataBuffer
 from ..config import ConfigManager
 from ..schema.map_session import MapSession
 from ..schema.resolve import resolve_run_settings
+from ..session.instrument_lock import InstrumentBusy, hold_instrument
 from ..constants import (
     __version__,
     AUX_PREVIEW_GIVEUP_TICKS,
@@ -32,6 +33,7 @@ from ..workers import MeasurementWorker, VdpMeasurementWorker
 from .canvas import HistogramCanvas, IVCanvas, PgLiveCanvas
 from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, VdpSampleDiagram, VdpProtocolFilmstrip, VdpPerGeometryBarChart, format_engineering, format_readout_html, format_with_uncertainty, precision_for_nplc
 from .dialogs import SettingsDialog, UserSelectionDialog
+from .visa_helpers import configured_resource_manager, query_idn
 
 
 class ResistanceMeterApp(QMainWindow):
@@ -2365,7 +2367,11 @@ class ResistanceMeterApp(QMainWindow):
         Driver/address come from the global Settings ▸ Measurement aux_* keys.
         No-op during a run (the worker holds the port). Failures are shown in
         the readout label, not raised — a missing sensor must not block setup.
-        The driver's reader thread does the serial I/O; nothing here blocks.
+
+        The open runs here, on the GUI thread: the VISA resource listing and
+        the port open take as long as the backend takes, and the window does
+        not repaint meanwhile. Only the reads that follow are off-thread, on
+        the driver's reader thread.
         """
         w = getattr(self, 'tab_four_point', None)
         if (not w or self.measurement_running
@@ -2390,7 +2396,12 @@ class ResistanceMeterApp(QMainWindow):
             w.fpp_temp_readout.setText(f"Aux sensor: not connected ({str(e)[:40]})")
 
     def _stop_aux_preview(self):
-        """Stop the preview timer, release the serial port, drop cached state."""
+        """Stop the preview timer, release the serial port, drop cached state.
+
+        Returns with the port closed, which is what lets Start hand it to the
+        worker. The close runs on the GUI thread and can take up to a second
+        when the backend does not abort the reader's pending read.
+        """
         self._aux_monitor_timer.stop()
         if self._aux_preview_sensor is not None:
             try:
@@ -3269,8 +3280,7 @@ class ResistanceMeterApp(QMainWindow):
 
     def prompt_gpib_selection(self, current_addr: str):
         try:
-            import pyvisa
-            rm = pyvisa.ResourceManager()
+            rm = configured_resource_manager(self.config_manager)
             resources = rm.list_resources()
         except Exception as e:
             QMessageBox.information(self, "GPIB Detection", f"Failed to list VISA resources: {e}")
@@ -3425,25 +3435,27 @@ class ResistanceMeterApp(QMainWindow):
             return
         addr = self.user_settings['measurement']['gpib_address']
         visa_library = self.user_settings['measurement'].get('visa_library', '')
+        gpib_interface = self.user_settings['measurement'].get('gpib_interface', '')
         try:
             from ..instrument import Keithley2400
-            k = Keithley2400(addr, visa_library=visa_library).connect()
-            k.write("*RST"); import time; time.sleep(0.5)
-            k.write("*CLS")
-            k.write(":SENS:FUNC:CONC OFF")
-            k.write(":SENS:FUNC 'RES'")
-            k.write(":SENS:RES:MODE MAN")
-            k.write(":SOUR:FUNC CURR")
-            test_current = self.tab_resistance.res_test_current.value()
-            k.write(f":SOUR:CURR:RANG {abs(test_current)}")
-            k.write(f":SOUR:CURR {test_current}")
-            k.write(":SENS:VOLT:PROT 5")
-            k.write(":SENS:RES:NPLC 10")  # high accuracy for null
-            k.write(":FORM:ELEM RES")
-            k.write(":OUTP ON"); time.sleep(0.5)
-            ref = float(k.query(":READ?").strip().split(',')[0])
-            k.write(":OUTP OFF")
-            k.close()
+            with hold_instrument(addr, wait_s=0):
+                k = Keithley2400(addr, visa_library=visa_library, gpib_interface=gpib_interface).connect()
+                k.write("*RST"); import time; time.sleep(0.5)
+                k.write("*CLS")
+                k.write(":SENS:FUNC:CONC OFF")
+                k.write(":SENS:FUNC 'RES'")
+                k.write(":SENS:RES:MODE MAN")
+                k.write(":SOUR:FUNC CURR")
+                test_current = self.tab_resistance.res_test_current.value()
+                k.write(f":SOUR:CURR:RANG {abs(test_current)}")
+                k.write(f":SOUR:CURR {test_current}")
+                k.write(":SENS:VOLT:PROT 5")
+                k.write(":SENS:RES:NPLC 10")  # high accuracy for null
+                k.write(":FORM:ELEM RES")
+                k.write(":OUTP ON"); time.sleep(0.5)
+                ref = float(k.query(":READ?").strip().split(',')[0])
+                k.write(":OUTP OFF")
+                k.close()
 
             if not np.isfinite(ref) or ref < 0:
                 QMessageBox.warning(self, "Null Failed", f"Invalid reading: {ref}. Ensure probes are shorted.")
@@ -3455,6 +3467,8 @@ class ResistanceMeterApp(QMainWindow):
             self.tab_resistance.null_label.setText(f"Cable null: {format_engineering(ref, ohm)}")
             self.tab_resistance.null_label.setStyleSheet("color: green; font-weight: bold;")
             self.log_status(f"Cable null set: {format_engineering(ref, ohm)} (software subtraction)", color="darkGreen")
+        except InstrumentBusy as e:
+            QMessageBox.warning(self, "Busy", str(e))
         except Exception as e:
             QMessageBox.critical(self, "Null Failed", f"Error during cable null: {e}")
 
@@ -3492,13 +3506,8 @@ class ResistanceMeterApp(QMainWindow):
         addr = self.user_settings['measurement']['gpib_address']
         self.statusBar().showMessage(f"Testing connection to {addr}...")
         try:
-            import pyvisa
-            rm = pyvisa.ResourceManager()
-            resources = rm.list_resources()
-            if addr not in resources:
-                # Do not rm.close(): the ResourceManager is a process-wide
-                # cached singleton; closing it would sever every live VISA
-                # session (e.g. the aux-sensor preview).
+            idn, resources = query_idn(self.config_manager, addr)
+            if idn is None:
                 available = ', '.join(resources) if resources else 'none'
                 QMessageBox.warning(
                     self, "Connection Failed",
@@ -3509,19 +3518,12 @@ class ResistanceMeterApp(QMainWindow):
                 )
                 self.statusBar().showMessage("Connection failed", 5000)
                 return
-            dev = rm.open_resource(addr)
-            dev.timeout = 5000
-            try:
-                dev.read_termination = '\n'
-                dev.write_termination = '\n'
-            except Exception:
-                pass
-            idn = dev.query("*IDN?").strip()
-            dev.close()
-            # No rm.close() — see membership-check comment above.
             QMessageBox.information(self, "Connection OK", f"Connected to:\n{idn}")
             self.log_status(f"Connection test OK: {idn}", color="darkGreen")
             self.statusBar().showMessage(f"Connected: {idn}", 5000)
+        except InstrumentBusy as e:
+            QMessageBox.warning(self, "Busy", str(e))
+            self.statusBar().showMessage("Connection failed", 5000)
         except Exception as e:
             from ..instrument import humanize_connection_error
             QMessageBox.critical(self, "Connection Failed", humanize_connection_error(e, addr))

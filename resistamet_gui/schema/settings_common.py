@@ -22,9 +22,10 @@ of range must still open.
 
 No Qt, no pyvisa: this module is importable from anywhere.
 """
+import re
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..constants import DEFAULT_SETTINGS
 
@@ -32,6 +33,13 @@ _M = DEFAULT_SETTINGS['measurement']
 _F = DEFAULT_SETTINGS['file']
 _O = DEFAULT_SETTINGS['output']
 _D = DEFAULT_SETTINGS['display']
+
+#: pyvisa's two Prologix interface resource classes (``pyvisa/rname.py``):
+#: ``PRLGX-ASRL[board]::serial device::INTFC`` and
+#: ``PRLGX-TCPIP[board]::host address[::port]::INTFC``. The middle part is
+#: left to pyvisa; this only catches a name that cannot be one at all.
+#: pyvisa reads the prefix in any case but wants ``INTFC`` in capitals.
+_PRLGX_INTFC = re.compile(r'^(?i:PRLGX-(?:ASRL|TCPIP))\d*::.+::INTFC$')
 
 
 class SettingsModel(BaseModel):
@@ -43,15 +51,32 @@ class SettingsModel(BaseModel):
 class InstrumentSettings(SettingsModel):
     """Knobs that apply to every mode, wherever the value comes from.
 
-    ``gpib_address`` and ``visa_library`` are machine-local — ``ConfigManager``
-    keeps them under ``machines[hostname]`` and injects them into the profile
-    on read, so they are never stored per user (``config.py``).
+    ``gpib_address``, ``visa_library`` and ``gpib_interface`` are machine-local
+    — ``ConfigManager`` keeps them under ``machines[hostname]`` and injects
+    them into the profile on read, so they are never stored per user
+    (``config.py``).
     """
 
     gpib_address: str = Field(default=_M['gpib_address'], min_length=1)
     #: '' = pyvisa's default, '@ivi' = vendor VISA, '@py' = pyvisa-py, or a
     #: path to a VISA library (``visa_backend.py``).
     visa_library: str = _M['visa_library']
+    gpib_interface: str = Field(
+        default=_M['gpib_interface'],
+        description=(
+            "Interface resource of a Prologix-style GPIB adapter (Prologix "
+            "GPIB-USB / GPIB-ETHERNET, AR488), opened before the instrument "
+            "so that GPIB<board>::<addr>::INSTR resolves; pyvisa-py only. "
+            "Empty = none. Serial: PRLGX-ASRL[board]::<device>::INTFC, where "
+            "<device> is the port path on macOS and Linux "
+            "(PRLGX-ASRL::/dev/cu.usbserial-PX12345::INTFC, "
+            "PRLGX-ASRL::/dev/ttyUSB0::INTFC) and the COM port number alone "
+            "on Windows (PRLGX-ASRL::5::INTFC for COM5). Ethernet: "
+            "PRLGX-TCPIP[board]::<host>[::port]::INTFC, port 1234 by default. "
+            "[board] defaults to 0 and is the <board> of the instrument "
+            "address."
+        ),
+    )
     nplc: float = Field(default=_M['nplc'], ge=0.01, le=10.0)
     sampling_rate: float = Field(default=_M['sampling_rate'], ge=0.1, le=100.0)
     settling_time: float = Field(default=_M['settling_time'], ge=0.0, le=10.0)
@@ -60,6 +85,16 @@ class InstrumentSettings(SettingsModel):
     filter_type: Literal['repeat', 'moving'] = _M['filter_type']
     filter_count: int = Field(default=_M['filter_count'], ge=1, le=100)
     stop_on_compliance: bool = _M['stop_on_compliance']
+
+    @field_validator('gpib_interface')
+    @classmethod
+    def _interface_is_a_prologix_intfc(cls, value: str) -> str:
+        value = value.strip()
+        if value and not _PRLGX_INTFC.match(value):
+            raise ValueError(
+                "expected PRLGX-ASRL[board]::<serial device>::INTFC or "
+                "PRLGX-TCPIP[board]::<host>[::port]::INTFC")
+        return value
 
 
 class AuxSensorSettings(SettingsModel):
@@ -80,9 +115,14 @@ class SafetySettings(SettingsModel):
 
     ``safety_voltage_warn_silenced`` is the sticky per-profile flag behind the
     warning dialog's "don't show again" checkbox.
+
+    The threshold runs to 1100 V, the 2410's range and the Settings dialog's
+    maximum: a threshold the dialog can save must not make the profile
+    unrunnable here. 0 disables the warning. Both keys belong to the profile;
+    a strict run request may not send either (``resolve.SAFETY_KEYS``).
     """
 
-    safety_voltage_warn_v: float = Field(default=_M['safety_voltage_warn_v'], ge=0.0, le=200.0)
+    safety_voltage_warn_v: float = Field(default=_M['safety_voltage_warn_v'], ge=0.0, le=1100.0)
     safety_voltage_warn_silenced: bool = _M['safety_voltage_warn_silenced']
 
 

@@ -335,7 +335,7 @@
     },
     "InstrumentSettings": {
       "additionalProperties": true,
-      "description": "Knobs that apply to every mode, wherever the value comes from.\n\n``gpib_address`` and ``visa_library`` are machine-local \u2014 ``ConfigManager``\nkeeps them under ``machines[hostname]`` and injects them into the profile\non read, so they are never stored per user (``config.py``).",
+      "description": "Knobs that apply to every mode, wherever the value comes from.\n\n``gpib_address``, ``visa_library`` and ``gpib_interface`` are machine-local\n\u2014 ``ConfigManager`` keeps them under ``machines[hostname]`` and injects\nthem into the profile on read, so they are never stored per user\n(``config.py``).",
       "properties": {
         "auto_zero": {
           "default": "once",
@@ -372,6 +372,12 @@
           "default": "GPIB0::24::INSTR",
           "minLength": 1,
           "title": "Gpib Address",
+          "type": "string"
+        },
+        "gpib_interface": {
+          "default": "",
+          "description": "Interface resource of a Prologix-style GPIB adapter (Prologix GPIB-USB / GPIB-ETHERNET, AR488), opened before the instrument so that GPIB<board>::<addr>::INSTR resolves; pyvisa-py only. Empty = none. Serial: PRLGX-ASRL[board]::<device>::INTFC, where <device> is the port path on macOS and Linux (PRLGX-ASRL::/dev/cu.usbserial-PX12345::INTFC, PRLGX-ASRL::/dev/ttyUSB0::INTFC) and the COM port number alone on Windows (PRLGX-ASRL::5::INTFC for COM5). Ethernet: PRLGX-TCPIP[board]::<host>[::port]::INTFC, port 1234 by default. [board] defaults to 0 and is the <board> of the instrument address.",
+          "title": "Gpib Interface",
           "type": "string"
         },
         "nplc": {
@@ -653,7 +659,7 @@
     },
     "SafetySettings": {
       "additionalProperties": true,
-      "description": "Touch-safety warning threshold. Serialized inside ``measurement``.\n\n``safety_voltage_warn_silenced`` is the sticky per-profile flag behind the\nwarning dialog's \"don't show again\" checkbox.",
+      "description": "Touch-safety warning threshold. Serialized inside ``measurement``.\n\n``safety_voltage_warn_silenced`` is the sticky per-profile flag behind the\nwarning dialog's \"don't show again\" checkbox.\n\nThe threshold runs to 1100 V, the 2410's range and the Settings dialog's\nmaximum: a threshold the dialog can save must not make the profile\nunrunnable here. 0 disables the warning. Both keys belong to the profile;\na strict run request may not send either (``resolve.SAFETY_KEYS``).",
       "properties": {
         "safety_voltage_warn_silenced": {
           "default": false,
@@ -662,7 +668,7 @@
         },
         "safety_voltage_warn_v": {
           "default": 30.0,
-          "maximum": 200.0,
+          "maximum": 1100.0,
           "minimum": 0.0,
           "title": "Safety Voltage Warn V",
           "type": "number"
@@ -799,7 +805,7 @@
     },
     "SweepSettings": {
       "additionalProperties": true,
-      "description": "Bulk linear sweep, run by the instrument's own sweep engine.\n\nStart/stop keep the +/-200 V bounds for both source types, as the widgets\ndo today; source-aware bounds for them are a follow-up.",
+      "description": "Bulk linear sweep, run by the instrument's own sweep engine.\n\nStart, stop, step and compliance change unit with ``sweep_source``. Their\n``ge``/``le`` are the wider of the two units' limits -- the PySide6 spin\nboxes', which do not follow the source -- and the validators below apply\nthe limit of the unit the value is actually in. For a headless client\nthe model is the only gate: without them a current-sourced sweep \"to\n200\" validated, and 200 there is amperes.",
       "properties": {
         "sweep_compliance": {
           "default": 0.1,

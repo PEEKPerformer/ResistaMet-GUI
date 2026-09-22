@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import secrets
+import signal
 import socket
 import sys
 import threading
@@ -39,6 +40,11 @@ logger = logging.getLogger(__name__)
 #: Long enough for a stop to land during a slow VISA read and for the run to
 #: turn the output off and finalize; see the stop-latency table in the design.
 SHUTDOWN_GRACE_S = 35.0
+
+#: How long the server may wait for open connections once it is told to
+#: exit. A client that never hangs up must not stand between a signal and
+#: the run being stopped.
+SERVER_DRAIN_S = 3
 
 
 def _parse_args(argv):
@@ -69,6 +75,9 @@ def _parse_args(argv):
     parser.add_argument("--visa-library", default=None, metavar="'' | @ivi | @py | PATH",
                          help="Override the machine's configured VISA backend, for "
                               "--check-visa.")
+    parser.add_argument("--gpib-interface", default=None, metavar="'' | PRLGX-...::INTFC",
+                         help="Override the machine's configured GPIB interface, for "
+                              "--check-visa. Only 'bus' opens it.")
     return parser.parse_args(argv)
 
 
@@ -88,11 +97,35 @@ def _watch_stdin(on_eof):
     return thread
 
 
+def _exit_through_the_shutdown_on_signals(server) -> None:
+    """Make SIGTERM, SIGINT and Ctrl+Break end the process the ordered way.
+
+    While it serves, uvicorn handles these itself and stops serving. It then
+    puts back whatever handler was there before and raises the signal again
+    -- and with the default handler in place that kills the process on the
+    spot, before the ``finally`` in :func:`main` has stopped the run. A
+    Python-level handler here is what gets put back, so the second delivery
+    is harmless and ``main`` carries on to its shutdown.
+
+    Closing the console window on Windows (CTRL_CLOSE_EVENT) is not a signal
+    Python can handle; the parent closing stdin is the route that covers it.
+    """
+    def ask_to_exit(signum, frame):
+        server.should_exit = True
+
+    for name in ('SIGTERM', 'SIGINT', 'SIGBREAK'):
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            signal.signal(signum, ask_to_exit)
+
+
 def build(args):
     """Wire session, hub and app together. Returns (app, session)."""
     hub = EventHub()
     session = MeasurementSession(hub.publish)
-    config = ConfigManager(config_file=args.config) if args.config else ConfigManager()
+    # The API can tell its client that a save failed, so it asks to be told.
+    config = (ConfigManager(config_file=args.config, raise_on_save_error=True)
+              if args.config else ConfigManager(raise_on_save_error=True))
     token = args.token or secrets.token_urlsafe(32)
     app = create_app(session, token=token, config=config, hub=hub)
     return app, session, token
@@ -108,12 +141,15 @@ def check_visa(args) -> int:
     """
     from .. import visa_backend
 
-    if args.visa_library is not None:
-        library = args.visa_library
-    else:
+    library, interface = args.visa_library, args.gpib_interface
+    if library is None or interface is None:
         config = ConfigManager(config_file=args.config) if args.config else ConfigManager()
-        library = config.get_visa_library()
-    report = visa_backend.report(library, probe_bus=(args.check_visa == 'bus'))
+        if library is None:
+            library = config.get_visa_library()
+        if interface is None:
+            interface = config.get_gpib_interface()
+    report = visa_backend.report(library, probe_bus=(args.check_visa == 'bus'),
+                                 gpib_interface=interface)
     print(json.dumps(report), flush=True)
     return 0 if report.get('ok') else 1
 
@@ -143,7 +179,8 @@ def main(argv=None):
     listener.listen(128)
     port = listener.getsockname()[1]
 
-    config = uvicorn.Config(app, log_config=None, access_log=False)
+    config = uvicorn.Config(app, log_config=None, access_log=False,
+                             timeout_graceful_shutdown=SERVER_DRAIN_S)
     server = uvicorn.Server(config)
     app.state.api.server = server
 
@@ -151,15 +188,27 @@ def main(argv=None):
     print(json.dumps({'url': f"http://{args.host}:{port}", 'token': token,
                        'pid': os.getpid()}), flush=True)
 
-    if not args.no_watchdog:
-        _watch_stdin(lambda: setattr(server, 'should_exit', True))
+    def parent_went_away():
+        # The run first: it can be turning the output off while the server
+        # is still closing its connections.
+        session.stop()
+        server.should_exit = True
 
+    if not args.no_watchdog:
+        _watch_stdin(parent_went_away)
+
+    _exit_through_the_shutdown_on_signals(server)
     try:
         server.run(sockets=[listener])
     finally:
         # The run gets its grace period before the process goes away, so the
         # output is off and the file is finalized.
         session.close(timeout=SHUTDOWN_GRACE_S)
+        if session.state != 'idle':
+            logger.error("the run did not end within %.0f s of being stopped; exiting "
+                         "anyway. The source output may still be ON and the data file "
+                         "is not finalized -- check the instrument's front panel.",
+                         SHUTDOWN_GRACE_S)
 
 
 if __name__ == "__main__":

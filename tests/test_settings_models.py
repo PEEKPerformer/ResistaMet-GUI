@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from resistamet_gui.constants import DEFAULT_SETTINGS
+from resistamet_gui.schema.settings_common import InstrumentSettings
 from resistamet_gui.schema.settings_modes import (
     MODE_MODELS,
     FourPointSettings,
@@ -40,6 +41,53 @@ class TestFourPointTemperature:
     def test_rejects_out_of_range(self):
         with pytest.raises(ValidationError):
             FourPointSettings(fpp_temperature_c=500.0)
+
+
+class TestGpibInterface:
+    """The Prologix interface resource: empty, or pyvisa's PRLGX INTFC grammar."""
+
+    #: Serial on macOS, Linux and Windows (COM5), then Ethernet with and
+    #: without the port, and a second board.
+    EXAMPLES = (
+        'PRLGX-ASRL::/dev/cu.usbserial-PX12345::INTFC',
+        'PRLGX-ASRL::/dev/ttyUSB0::INTFC',
+        'PRLGX-ASRL::5::INTFC',
+        'PRLGX-TCPIP::192.168.1.50::1234::INTFC',
+        'PRLGX-TCPIP::prologix.local::INTFC',
+        'PRLGX-ASRL1::/dev/ttyUSB0::INTFC',
+    )
+
+    def test_default_is_none(self):
+        assert InstrumentSettings().gpib_interface == ''
+
+    @pytest.mark.parametrize('name', EXAMPLES)
+    def test_real_names_are_accepted(self, name):
+        assert InstrumentSettings(gpib_interface=name).gpib_interface == name
+
+    @pytest.mark.parametrize('name', EXAMPLES)
+    def test_what_is_accepted_is_what_pyvisa_parses(self, name):
+        """The validator must not drift from the installed grammar."""
+        from pyvisa import rname
+        if not hasattr(rname, 'PrlgxASRLIntfc'):
+            pytest.skip("this pyvisa predates the Prologix resource names")
+        parsed = rname.ResourceName.from_string(name)
+        assert isinstance(parsed, (rname.PrlgxASRLIntfc, rname.PrlgxTCPIPIntfc))
+
+    def test_surrounding_whitespace_is_dropped(self):
+        settings = InstrumentSettings(gpib_interface='  PRLGX-ASRL::5::INTFC ')
+        assert settings.gpib_interface == 'PRLGX-ASRL::5::INTFC'
+
+    @pytest.mark.parametrize('name', [
+        'GPIB0::INTFC',                  # an interface, but not a Prologix one
+        'ASRL5::INSTR',                  # the serial port itself
+        'PRLGX-ASRL::/dev/ttyUSB0',      # no resource class
+        'PRLGX-ASRL::INTFC',             # no serial device
+        'PRLGX-USB::/dev/ttyUSB0::INTFC',
+        'PRLGX-ASRL::5::intfc',          # pyvisa wants INTFC in capitals
+    ])
+    def test_other_names_are_rejected(self, name):
+        with pytest.raises(ValidationError):
+            InstrumentSettings(gpib_interface=name)
 
 
 class TestModeModels:
