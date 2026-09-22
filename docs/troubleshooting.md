@@ -78,7 +78,7 @@ The lock only knows about ResistaMet. Another program holding the instrument sho
 
 **Fix:** Close the other program. On Windows, **Task Manager → Details** can confirm — look for `KickStart.exe`, `LabVIEW.exe`, or another `python.exe` holding a VISA handle.
 
-On a Mac or Linux PC using the built-in NI GPIB-USB driver, see also [A timeout takes about 17 s](#a-timeout-takes-about-17-s-although-5-s-or-10-s-was-asked) and [the hung adapter](#the-ni-gpib-usb-adapter-stops-answering).
+On a Mac or Linux PC using the built-in NI GPIB-USB driver, see also [A timeout takes about 20 s](#a-timeout-takes-about-20-s-although-5-s-was-asked) and [the hung adapter](#the-ni-gpib-usb-adapter-stops-answering).
 
 ### "VISA backend not found": `ValueError: Could not locate a VISA implementation`
 
@@ -98,25 +98,27 @@ These apply only when the pyvisa-py backend drives an NI GPIB-USB-HS through Res
 
 **Fix:** Unplug the adapter from USB and plug it back in. Nothing software can send recovers it; a USB reset was tried and does not. Restarting ResistaMet or the Keithley does not help either.
 
-### A timeout takes about 17 s although 5 s or 10 s was asked
+### A timeout takes about 20 s although 5 s was asked
 
-**Symptom:** With the instrument off, disconnected or at the wrong address, the timeout error arrives after roughly 16.8 s, not after the 5 s ResistaMet asks for. A long sweep that times out takes about 33.6 s.
+**Symptom:** With the instrument off, disconnected or at the wrong address, the timeout error arrives after about 20 s, not after the 5 s ResistaMet asks for. A sweep of 11 to 30 points that times out takes about 41 s.
 
-**Cause:** The adapter, not the computer, times a GPIB handshake, and it offers a fixed ladder of timeouts. The driver must round the requested timeout up to the next rung, and the adapter's real wait on each rung is a power of two in microseconds, which is longer than the rung's nominal value in every measured case but one:
+**Cause:** The adapter does not take a timeout in seconds. It takes a code from a fixed table, and it ends the read when that code's time runs out. The driver sends the code NI's own driver sends: the smallest nominal limit not below the timeout, so 5 s goes out as the 10 s code. How long the adapter then waits differs from one adapter to another. The driver bounds a whole read by the longer of the two measured adapters' waits for its code, so that it never gives up on a read NI's driver would still have finished. Under the 10 s code the adapter the driver has run on is the slower of the two: it ends a silent read after 20.0 s.
 
-| Timeout asked of VISA | Rung (nominal) | Adapter really waits |
-|---|---|---|
-| up to 100 ms | 100 ms | 0.13 s |
-| up to 300 ms | 300 ms | 0.26 s (the one rung that expires early) |
-| up to 1 s | 1 s | 1.05 s |
-| up to 3 s | 3 s | 4.20 s |
-| up to 10 s (ResistaMet's 5 s default lands here) | 10 s | **16.78 s** |
-| up to 30 s | 30 s | 33.56 s |
-| longer | 100 s, 300 s, 1000 s | not measured |
+| Timeout asked of VISA | Code (nominal) | GPIB-USB-HS 01CEE482, this driver | GPIB-USB-HS 013CC9DF, NI's driver |
+|---|---|---|---|
+| up to 100 ms | 0xf9 (100 ms) | 0.13 s | 0.13 s |
+| 101 to 263 ms | 0xfa (300 ms) | 0.38 s | 0.26 s |
+| 264 ms to 1 s | 0xfb (1 s) | 1.25 s | 1.05 s |
+| above 1 s, up to 3 s | 0xfc (3 s) | 3.75 s | 4.20 s |
+| above 3 s, up to 10 s: ResistaMet's 5 s, sweeps of up to 10 points | 0xfd (10 s) | **20.0 s** | 16.78 s |
+| above 10 s, up to 30 s: sweeps of 11 to 30 points | 0xfe (30 s) | 41.25 s | 33.56 s |
+| longer | 0xff, 0x01, 0x02 (100 s, 300 s, 1000 s) | not measured | not measured |
 
-The waits were measured on the wire on 2026-09-19 with NI's own Windows driver driving a GPIB-USB-HS, so they are a property of the adapter and NI's software shows the same delays. The built-in driver sends the same rung codes and sizes its own USB wait to these figures; the delays have not been re-timed through the built-in driver. I-V sweeps ask for `max(10 s, 1 s per point)`, so a sweep of 11 to 30 points waits on the 30 s rung and a longer one on the 100 s rung, which was not measured.
+The 01CEE482 figures were measured on the wire on 2026-09-21 (spec §7.3), with the adapter on a Mac and nothing to read at a Keithley 2400; its 0.13 s under 0xf9 is a session total, not a wire timing. The driver's code choice and its bound on the read were changed the next day, and the time to the error has not been re-measured through the changed driver. I-V sweeps ask for `max(10 s, 1 s per point)`.
 
-**Fix:** None needed; the reading is not affected, only how long a failure takes to report. Pressing Stop during the wait is honored once the read returns. If the delay is a nuisance while you hunt for the right GPIB address, use **Scan** instead of repeated connection attempts.
+With NI-VISA on Windows the adapter is driven by NI's software, not by this driver. The 013CC9DF column is what it does: a 5 s timeout reports after about 16.8 s, measured on the wire on 2026-09-19 and 2026-09-22.
+
+**Fix:** None needed. The reading is not affected, only how long a failure takes to report. Pressing Stop during the wait is honored once the read returns. If the delay is a nuisance while you hunt for the right GPIB address, use **Scan** instead of repeated connection attempts.
 
 ## Compliance and reading anomalies
 
