@@ -345,12 +345,19 @@ def _regwrite_block(writes: int) -> bytes:
 def ni_session(pad: int = 22, code: int = T3S, sad: Optional[int] = None,
                update: bool = False) -> List[Tuple[Any, ...]]:
     """NI's bank-2 session configuration before a raw instruction (§10.2.4): the 32-byte open
-    form, or with ``update`` the 28-byte one a new timeout code sends; and its reply."""
+    form, or with ``update`` the 12-byte bank-2 0x03 write and the 28-byte update a new timeout
+    code sends (§10.10.1); and their replies."""
     if update:
-        return [('out', p.ni_session_update_message(pad, sad, code)),
+        return [('out', p.ni_session_mark_message()), ('in', _regwrite_block(1) + p.TERMINATION_BLOCK, 512),
+                ('out', p.ni_session_update_message(pad, sad, code)),
                 ('in', _regwrite_block(1) + _regwrite_block(4) + p.TERMINATION_BLOCK, 512)]
     return [('out', p.ni_session_open_message(pad, sad, code)),
             ('in', h('03 00 30 00 00 00 ff ff') + _regwrite_block(1) + _regwrite_block(4) + p.TERMINATION_BLOCK, 512)]
+
+
+#: NI's close of the session on an address (§10.3.3) and its reply.
+NI_SESSION_CLOSE = [('out', p.ni_session_close_message()),
+                    ('in', _regwrite_block(1) + _regwrite_block(1) + p.TERMINATION_BLOCK, 512)]
 
 
 def ni_read(count: int, code: int = T3S, pad: int = 22, **kwargs: Any) -> bytes:

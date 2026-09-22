@@ -86,21 +86,30 @@ class _TransferMixin:
         the secondary byte, 0x07 := the timeout code -- and again whenever
         the code changes; every capture of 0x0b and 0x0e had it written
         first, and bench unit 01CEE482, sent a 0x0b without it, ended the
-        instruction at 20.0 s whatever its code (§11.2). So the first raw
-        instruction to an address sends NI's 32-byte open form, a later one
-        with another code its 28-byte update, and one that repeats both
-        nothing. Whether any of it is needed is not established (§8.15).
+        instruction at 20.0 s whatever its code (§11.2). The sequence is
+        NI's: the first raw instruction to an address sends the 32-byte
+        open form; a later one with another code the 12-byte bank-2 0x03
+        write and then the 28-byte update (§10.10.1); one to another address
+        first NI's close of the session on the old one (0x04 := 0, §10.3.3),
+        as NI closed GPIB0::5 before opening GPIB0::24 in the same process
+        (§10.6.7), then the open form; one that repeats both, nothing.
+        Whether any of it is needed is not established (§8.15).
         """
         pad, sad = address
         current = self._ni_session_state
         if current == (pad, sad, code):
             return
+        steps = []
+        if current is not None and current[:2] != (pad, sad):
+            steps.append((p.ni_session_close_message(), 'bank-2 session close', (1, 1)))
         if current is None or current[:2] != (pad, sad):
-            message, operation = p.ni_session_open_message(pad, sad, code), 'bank-2 session configuration'
+            steps.append((p.ni_session_open_message(pad, sad, code), 'bank-2 session configuration', (1, 4)))
         else:
-            message, operation = p.ni_session_update_message(pad, sad, code), 'bank-2 timeout update'
-        reply = self._link.transact(message, p.SMALL_REPLY_BUFFER, SHORT_WAIT_S)
-        self._check_ni_reply(reply, operation, (1, 4), strict=True)
+            steps.append((p.ni_session_mark_message(), 'bank-2 session mark', (1,)))
+            steps.append((p.ni_session_update_message(pad, sad, code), 'bank-2 timeout update', (1, 4)))
+        for message, operation, writes in steps:
+            reply = self._link.transact(message, p.SMALL_REPLY_BUFFER, SHORT_WAIT_S)
+            self._check_ni_reply(reply, operation, writes, strict=True)
         self._ni_session_state = (pad, sad, code)
 
     def _check_ni_reply(self, reply: bytes, operation: str, writes: Sequence[int], strict: bool) -> None:

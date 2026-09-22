@@ -389,6 +389,12 @@ def ni_session_update_message(pad: int, sad: Optional[int], timeout_code: int) -
                          register_write_block(t.bank2_session_writes(pad, sad, timeout_code)))
 
 
+def ni_session_mark_message() -> bytes:
+    """The 12-byte bank-2 0x03 write alone (§10.2.5), which NI sends before the 28-byte update
+    when a new timeout changes the code (§10.10.1)."""
+    return build_message(register_write_block((t.BANK2_SESSION_MARK_WRITE,)))
+
+
 def ni_session_close_message() -> bytes:
     """The close of the last session on an address (§10.3.3, open.pcap 1.0126, 20 bytes): 0x04 := 0."""
     return build_message(register_write_block((t.BANK2_SESSION_MARK_WRITE,)),

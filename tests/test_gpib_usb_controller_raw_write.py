@@ -9,7 +9,8 @@ from resistamet_gui.gpib_usb.controller import RAW_WRITE_MIN_BYTES, RECOVERY_WAI
 from resistamet_gui.gpib_usb.protocol import GpibError, GpibTimeout, NoListener, ProtocolError
 from resistamet_gui.gpib_usb.transport import TransportError, TransportStall, TransportTimeout
 from tests.fakes.gpib_usb import (DRAIN, DRAIN_LENGTH, RAW_DRAIN, SHORT_MS, STOP, T3S, ScriptedTransport,
-                                  address_listener, attach_script, attached_ni, h, ni_raw_write_reply, ni_session,
+                                  NI_SESSION_CLOSE, address_listener, attach_script, attached_ni, h,
+                                  ni_raw_write_reply, ni_session,
                                   ni_write, raw_wait_ms, raw_write_reply, reattach_after_usb_fault_script,
                                   reattach_script, regread_reply, status_reply)
 
@@ -167,7 +168,7 @@ class TestRawWrite:
         # driver sends, an ordinary 0x0e with no stop request and no re-attach in between.
         controller, transport = attached_ni(self.refused_write([
             ('clear_halt', 0x06), ('clear_halt', 0x02),
-        ]) + ni_session(pad=24) + [
+        ]) + NI_SESSION_CLOSE + ni_session(pad=24) + [
             ('out', ni_write(2502, pad=24, e=0x0A)), ('raw_out', self.NOBODY),
             ('in', ni_raw_write_reply(2502, 2502), 512),
         ])
