@@ -52,9 +52,14 @@ PROBE_ADDRESSES = tuple(range(31))
 #: sending: 0x0b / 0x0e with the data raw on the alternate endpoints for large
 #: transfers, and 0x10 for the serial poll. Unset, 0 or anything else keeps
 #: what ran on the bench: every transfer framed (0x0a / 0x0d) and the serial
-#: poll as the §5.9 command sequence. NI's instructions have not run on an
-#: adapter of ours, and every read the application makes is large enough to
-#: take 0x0b. Read once per board open, here and nowhere else.
+#: poll as the §5.9 command sequence. On bench unit 01CEE482 (2026-09-21,
+#: §11.2) an earlier form of the 0x0b read answers of up to 35 000 bytes
+#: whole but, with nothing to read, ended at 20.0 s whatever its code, and
+#: the 0x10 serial poll's status byte agreed with ``*STB?``. The raw read
+#: and write were changed on 2026-09-22 to send NI's own messages, which
+#: have not run on an adapter; no bench run of the 0x0e is recorded. With
+#: the switch on, pyvisa's reads, of 20480 bytes by default, all take 0x0b.
+#: Read once per board open, here and nowhere else.
 INSTRUCTIONS_ENV = 'NI_GPIB_USB_INSTRUCTIONS'
 #: Aliases of ``INSTRUCTIONS_ENV``, with the same spellings: the name the
 #: switch had inside ResistaMet, and its first name, from when it covered
