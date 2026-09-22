@@ -23,10 +23,10 @@ operations); ``NiUsbGpibInstrSession`` adds the addressed device on top.
 
 Timeouts. VI_ATTR_TMO_VALUE is the least time to wait, and reads back as
 set (capped at 1000 s, the longest the device table offers). It goes into
-every instruction of an operation as the smallest device code under which
-no adapter timed in §7.3 ends sooner: NI's code, except that 264 to 300 ms
-go out as 0xfb (NI's 0xfa ends at 0.2635 s on the captured unit) and 300 s
-as 0x02. The adapter then waits the code's expiry, which differs by unit:
+every instruction of an operation as NI's code, the smallest nominal limit
+not below it (§7.1), except where that code ends sooner on an adapter timed
+in §7.3: 264 to 300 ms go out as 0xfb (NI's 0xfa ends at 0.2635 s on the
+captured unit) and 268 to 300 s as 0x02. The adapter then waits the code's expiry, which differs by unit:
 for the application's 5000 ms, code 0xfd, 16.78 s on the captured unit
 013CC9DF and 20.0 s on bench unit 01CEE482; for 1000 ms, 0xfb, 1.05 s and
 1.25 s; for 3000 ms, 0xfc, 4.20 s and 3.75 s (the table is in the

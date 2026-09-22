@@ -201,10 +201,12 @@ class TestTimeoutCodes:
         if least is None:
             assert a > t.TIMEOUT_MAX_S and code == t.TIMEOUT_DISABLED_CODE
         else:
-            assert least >= a
+            # Covered on every unit timed, and never shorter than NI's code (§7.1).
+            assert least >= a and t.TIMEOUT_NOMINAL_S[code] * (1 + 1e-9) >= a
             codes = [row_code for _, row_code in t.TIMEOUT_TABLE]
             shorter = codes[:codes.index(code)]
-            assert all(t.timeout_expiry_least_s(row_code) < a for row_code in shorter)
+            assert all(t.timeout_expiry_least_s(row_code) < a or t.TIMEOUT_NOMINAL_S[row_code] < a
+                       for row_code in shorter)
         # More time asked for is never less time given.
         low, high = sorted((a, b))
         least_low, least_high = (t.timeout_expiry_least_s(p.timeout_code(low)),
