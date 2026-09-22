@@ -1,0 +1,143 @@
+"""Users, profiles, settings resolution and instrument discovery.
+
+The routes a client needs before it can start a run: who can run, what their
+stored settings are, what a request would resolve to, and what is on the bus.
+
+Resolution is exposed deliberately. A client should be able to ask "what would
+this run actually use, and does it have problems?" without starting anything,
+which is also how a UI shows validation before the Start button.
+"""
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, Field
+
+from ..schema.resolve import allowed_override_keys, resolve_run_settings
+from ..schema.settings_modes import MODE_MODELS
+from ..session.manager import MeasurementSession, SessionBusy
+from .app import busy_as_conflict, get_session, require_token
+
+router = APIRouter(tags=["settings"])
+
+#: Keys that describe this machine rather than this profile.
+MACHINE_LOCAL_KEYS = ('gpib_address',)
+
+
+class ResolveRequest(BaseModel):
+    mode: str
+    username: str = Field(min_length=1)
+    overrides: Dict[str, Any] = Field(default_factory=dict)
+    strict: bool = True
+
+
+class ProfilePatch(BaseModel):
+    measurement: Optional[Dict[str, Any]] = None
+    display: Optional[Dict[str, Any]] = None
+    file: Optional[Dict[str, Any]] = None
+    output: Optional[Dict[str, Any]] = None
+
+    def sections(self) -> Dict[str, Any]:
+        return {name: value for name, value in self.model_dump().items() if value is not None}
+
+
+class IdentifyRequest(BaseModel):
+    address: str = Field(min_length=1)
+
+
+def _config(request: Request):
+    return request.app.state.api.config
+
+
+@router.get("/users")
+def list_users(request: Request, role: str = Depends(require_token)):
+    return {"users": _config(request).config.get('users', []),
+            "last_user": _config(request).config.get('last_user')}
+
+
+@router.get("/profiles/{username}")
+def read_profile(username: str, request: Request, role: str = Depends(require_token)):
+    return _config(request).get_user_settings(username)
+
+
+@router.patch("/profiles/{username}")
+def patch_profile(username: str, body: ProfilePatch, request: Request,
+                   session: MeasurementSession = Depends(get_session),
+                   role: str = Depends(require_token)):
+    sections = body.sections()
+    if not sections:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                             detail="no sections to update")
+    measurement = sections.get('measurement') or {}
+    if any(key in measurement for key in MACHINE_LOCAL_KEYS) and session.state != 'idle':
+        # Changing the address mid-run would describe a run that is not the
+        # one on the bus.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                             detail="cannot change the instrument address during a run")
+    config = _config(request)
+    config.update_user_settings(username, sections)
+    return config.get_user_settings(username)
+
+
+@router.get("/schema/settings")
+def read_schema(role: str = Depends(require_token)):
+    """What a client may send, per mode."""
+    return {
+        'modes': {mode: {
+            'model': model.__name__,
+            'fields': sorted(model.model_fields),
+            'override_keys': sorted(allowed_override_keys(mode)),
+        } for mode, model in MODE_MODELS.items()},
+    }
+
+
+@router.post("/settings/resolve")
+def resolve(body: ResolveRequest, request: Request, role: str = Depends(require_token)):
+    """Preview a run's settings without starting it."""
+    if body.mode not in MODE_MODELS:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                             detail=f"unknown mode '{body.mode}'")
+    profile = _config(request).get_user_settings(body.username)
+    resolved = resolve_run_settings(profile, body.mode, body.overrides, strict=body.strict)
+    hazard = resolved.hazard
+    return {
+        'settings': resolved.settings,
+        'derived': resolved.derived,
+        'ok': resolved.ok,
+        'issues': [{'key': i.key, 'message': i.message, 'severity': i.severity}
+                    for i in resolved.issues],
+        'hazard': None if hazard is None else {
+            'hazardous': hazard.hazardous,
+            'voltage_v': hazard.voltage_v,
+            'threshold_v': hazard.threshold_v,
+            'reason': hazard.reason,
+        },
+    }
+
+
+@router.get("/instruments/resources")
+def list_resources(session: MeasurementSession = Depends(get_session),
+                    role: str = Depends(require_token)):
+    """What VISA can see. Refused during a run: enumerating touches the bus."""
+    if session.state != 'idle':
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                             detail=f"session is {session.state}")
+    import pyvisa
+
+    try:
+        resources = list(pyvisa.ResourceManager().list_resources())
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                             detail=f"VISA unavailable: {exc}")
+    return {"resources": resources}
+
+
+@router.post("/instruments/identify")
+def identify(body: IdentifyRequest, session: MeasurementSession = Depends(get_session),
+              role: str = Depends(require_token)):
+    try:
+        return session.identify(body.address)
+    except SessionBusy as exc:
+        raise busy_as_conflict(exc)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                             detail=str(exc))
