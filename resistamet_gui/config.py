@@ -5,7 +5,7 @@ import os
 import socket
 from typing import Dict, List, Optional
 
-from .constants import CONFIG_FILE, DEFAULT_SETTINGS
+from .constants import CONFIG_FILE, DEFAULT_SETTINGS, OUTPUT_RESET_MIGRATION
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
@@ -32,7 +32,9 @@ class ConfigManager:
         self.config = self.load_config()
         # One-shot: lift any legacy global gpib_address into this host's slot
         # the first time the host opens a NAS-shared config.
-        if self._migrate_machine_local():
+        dirty = self._migrate_machine_local()
+        dirty = self._migrate_output_reset() or dirty
+        if dirty:
             self.save_config()
 
     # --- machine-local layer ---------------------------------------------
@@ -85,6 +87,26 @@ class ConfigManager:
         if not legacy:
             return False
         self._machine_entry(create=True)['gpib_address'] = legacy
+        return True
+
+    # --- migrations -------------------------------------------------------
+
+    def _migrate_output_reset(self) -> bool:
+        """Reset stale Output choices once, when they first take effect.
+
+        Until 1.13 the Output section was saved but never handed to a run, so
+        a profile can carry an HDF5 or always-compress choice made long ago
+        and never seen. Delivering it (gather_settings_for_mode) would change
+        the file format of the next run without warning, so drop those
+        overrides once and let the CSV defaults apply.
+        """
+        if OUTPUT_RESET_MIGRATION in self.config.get('migrations', []):
+            return False
+        for user_overrides in self.config.get('user_settings', {}).values():
+            if isinstance(user_overrides, dict):
+                user_overrides.pop('output', None)
+        self.config['output'] = copy.deepcopy(DEFAULT_SETTINGS['output'])
+        self.config.setdefault('migrations', []).append(OUTPUT_RESET_MIGRATION)
         return True
 
     # --- file IO ----------------------------------------------------------

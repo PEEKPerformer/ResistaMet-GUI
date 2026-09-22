@@ -8,6 +8,11 @@ __author__ = "Brenden Ferland"
 # Configuration file
 CONFIG_FILE = "config.json"
 
+# Marker recorded in config.json's top-level "migrations" list once the
+# stale Output overrides have been reset (1.13; see
+# ConfigManager._migrate_output_reset).
+OUTPUT_RESET_MIGRATION = "output_reset_1_13"
+
 # Default settings (updated for new modes)
 DEFAULT_SETTINGS = {
     "measurement": {

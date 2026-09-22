@@ -29,7 +29,19 @@ def main_window(app, tmp_path, monkeypatch):
     original_config = constants.CONFIG_FILE
     constants.CONFIG_FILE = str(tmp_path / "config.json")
 
+    from resistamet_gui.config import ConfigManager
+    from resistamet_gui.ui import main_window as main_window_module
     from resistamet_gui.ui.main_window import ResistanceMeterApp
+
+    # Patching constants.CONFIG_FILE is not enough: ConfigManager binds it as
+    # a default argument at import time, so whichever path was live when
+    # resistamet_gui.config was first imported wins for the whole session —
+    # the real config.json when another test module imported it first.
+    config_path = str(tmp_path / "config.json")
+    monkeypatch.setattr(
+        main_window_module, 'ConfigManager',
+        lambda *args, **kwargs: ConfigManager(config_file=config_path),
+    )
 
     # Bypass the modal user selection dialog in __init__
     monkeypatch.setattr(ResistanceMeterApp, 'select_user', lambda self: None)
@@ -488,3 +500,122 @@ class TestSpotManagement:
         s = main_window.gather_settings_for_mode('four_point')
         assert s['measurement']['fpp_delta_mode'] is True
         assert s['measurement']['fpp_delta_settling'] == 0.2
+
+
+class TestSafetyWarningSilence:
+    """The safety-warning 'don't show again' checkbox must survive a restart."""
+
+    @staticmethod
+    def _hazardous(main_window, username):
+        # A profile of its own per test: the module's ConfigManager binds one
+        # config path for the whole module, so profiles leak between tests.
+        main_window.config_manager.add_user(username)
+        main_window.current_user = username
+        main_window.user_settings = main_window.config_manager.get_user_settings(username)
+        m = main_window.user_settings['measurement']
+        m['safety_voltage_warn_v'] = 30.0
+        m['safety_voltage_warn_silenced'] = False
+        m['res_cable_null'] = 1.234
+        # The hazard check runs on the gathered settings, so the widget is
+        # what decides.
+        main_window.tab_voltage_source.vsource_voltage.setValue(60.0)
+
+    @staticmethod
+    def _silence(main_window, monkeypatch, checked=True):
+        from PySide6.QtWidgets import QCheckBox, QMessageBox
+        monkeypatch.setattr(QMessageBox, 'exec', lambda self: QMessageBox.Ok)
+        monkeypatch.setattr(QCheckBox, 'isChecked', lambda self: checked)
+        settings = main_window.gather_settings_for_mode('source_v')
+        return main_window._confirm_voltage_safety('source_v', settings)
+
+    def test_silence_persists_across_reload(self, main_window, monkeypatch):
+        from resistamet_gui.config import ConfigManager
+        self._hazardous(main_window, 'silence_persists_user')
+        assert self._silence(main_window, monkeypatch) is True
+
+        reloaded = ConfigManager(config_file=main_window.config_manager.config_file)
+        settings = reloaded.get_user_settings(main_window.current_user)
+        assert settings['measurement']['safety_voltage_warn_silenced'] is True
+
+    def test_cable_null_not_persisted(self, main_window, monkeypatch):
+        import json
+        self._hazardous(main_window, 'cable_null_user')
+        self._silence(main_window, monkeypatch)
+
+        with open(main_window.config_manager.config_file) as f:
+            on_disk = json.load(f)
+        stored = on_disk['user_settings'][main_window.current_user]['measurement']
+        assert stored['safety_voltage_warn_silenced'] is True
+        assert 'res_cable_null' not in stored
+
+    def test_unchecked_box_persists_nothing(self, main_window, monkeypatch):
+        from resistamet_gui.config import ConfigManager
+        self._hazardous(main_window, 'unchecked_user')
+        self._silence(main_window, monkeypatch, checked=False)
+
+        reloaded = ConfigManager(config_file=main_window.config_manager.config_file)
+        settings = reloaded.get_user_settings(main_window.current_user)
+        assert settings['measurement']['safety_voltage_warn_silenced'] is False
+
+
+class TestOutputSectionDelivered:
+    """The Output section must reach the worker, which reads settings['output']."""
+
+    def test_gathered_for_continuous_mode(self, main_window):
+        main_window.user_settings['output']['format'] = 'hdf5'
+        s = main_window.gather_settings_for_mode('resistance')
+        assert s['output']['format'] == 'hdf5'
+
+    def test_gathered_for_vdp(self, main_window):
+        main_window.user_settings['output']['compression'] = 'always'
+        s = main_window.gather_settings_for_mode('vdp')
+        assert s['output']['compression'] == 'always'
+
+    def test_defaults_when_profile_has_none(self, main_window, tmp_path):
+        main_window.user_settings.pop('output', None)
+        s = main_window.gather_settings_for_mode('resistance')
+        assert s['output'] == {}
+        # An empty dict is what make_exporter already treats as CSV, so a
+        # profile without an Output section behaves exactly as before.
+        from resistamet_gui.data_export import make_exporter, CsvExporter
+        exporter = make_exporter(
+            str(tmp_path / 'probe'), {}, ['t'], ['s'], output_settings=s['output'],
+        )
+        assert isinstance(exporter, CsvExporter)
+
+
+class TestHazardUsesGatheredSettings:
+    """The warning and the status tag must report the run's own voltage."""
+
+    @staticmethod
+    def _setup(main_window, monkeypatch, profile_v, widget_v):
+        shown = []
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, 'exec', lambda self: shown.append(self.text()) or QMessageBox.Ok)
+        m = main_window.user_settings['measurement']
+        m['safety_voltage_warn_v'] = 30.0
+        m['safety_voltage_warn_silenced'] = False
+        m['vsource_voltage'] = profile_v
+        main_window.tab_voltage_source.vsource_voltage.setValue(widget_v)
+        return shown, main_window.gather_settings_for_mode('source_v')
+
+    def test_warns_on_the_widget_value(self, main_window, monkeypatch):
+        shown, settings = self._setup(main_window, monkeypatch, profile_v=1.0, widget_v=60.0)
+        assert main_window._confirm_voltage_safety('source_v', settings) is True
+        assert len(shown) == 1
+        assert '60' in shown[0]
+
+    def test_silent_when_the_widget_value_is_safe(self, main_window, monkeypatch):
+        shown, settings = self._setup(main_window, monkeypatch, profile_v=60.0, widget_v=1.0)
+        assert main_window._confirm_voltage_safety('source_v', settings) is True
+        assert shown == []
+
+    def test_status_tag_follows_the_widget(self, main_window, monkeypatch):
+        _, settings = self._setup(main_window, monkeypatch, profile_v=1.0, widget_v=60.0)
+        message = main_window._running_status_message('source_v', settings)
+        assert '60 V live' in message
+
+    def test_status_tag_absent_when_safe(self, main_window, monkeypatch):
+        _, settings = self._setup(main_window, monkeypatch, profile_v=60.0, widget_v=1.0)
+        message = main_window._running_status_message('source_v', settings)
+        assert 'live' not in message

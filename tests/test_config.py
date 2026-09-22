@@ -292,3 +292,45 @@ class TestMachineLocalGpib:
         # Address didn't leak back into the shared measurement block
         assert 'gpib_address' not in manager.config['measurement']
         assert manager.config['measurement']['sampling_rate'] == 42.0
+
+
+class TestOutputResetMigration:
+    """Stale Output overrides are dropped once, when they first take effect."""
+
+    def _write(self, path, config):
+        with open(path, 'w') as f:
+            json.dump(config, f)
+
+    def test_stale_user_override_dropped(self, temp_config_file):
+        self._write(temp_config_file, {
+            'users': ['alice'],
+            'user_settings': {'alice': {
+                'output': {'format': 'hdf5', 'compression': 'always'},
+                'file': {'data_directory': 'measurement_data'},
+            }},
+        })
+        manager = ConfigManager(config_file=temp_config_file)
+
+        settings = manager.get_user_settings('alice')
+        assert settings['output']['format'] == DEFAULT_SETTINGS['output']['format']
+        assert settings['file']['data_directory'] == 'measurement_data'
+
+    def test_runs_once(self, temp_config_file):
+        self._write(temp_config_file, {
+            'users': ['alice'],
+            'user_settings': {'alice': {'output': {'format': 'hdf5'}}},
+        })
+        ConfigManager(config_file=temp_config_file)
+
+        # A deliberate post-migration choice must survive the next open.
+        second = ConfigManager(config_file=temp_config_file)
+        second.update_user_settings('alice', {'output': {'format': 'hdf5'}})
+        third = ConfigManager(config_file=temp_config_file)
+        assert third.get_user_settings('alice')['output']['format'] == 'hdf5'
+
+    def test_marker_recorded(self, temp_config_file):
+        from resistamet_gui.constants import OUTPUT_RESET_MIGRATION
+        ConfigManager(config_file=temp_config_file)
+        with open(temp_config_file) as f:
+            on_disk = json.load(f)
+        assert on_disk['migrations'] == [OUTPUT_RESET_MIGRATION]

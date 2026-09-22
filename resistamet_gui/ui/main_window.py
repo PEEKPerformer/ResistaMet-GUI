@@ -1282,13 +1282,12 @@ class ResistanceMeterApp(QMainWindow):
             return
         if self._require_vdp_thickness() is None:
             return
-        if not self._confirm_voltage_safety('vdp'):
-            return
-
         try:
             current_settings = self.gather_settings_for_mode('vdp')
         except ValueError as e:
             QMessageBox.critical(self, "Settings Error", f"Failed to gather settings: {e}")
+            return
+        if not self._confirm_voltage_safety('vdp', current_settings):
             return
 
         self.active_mode = 'vdp'
@@ -1322,7 +1321,7 @@ class ResistanceMeterApp(QMainWindow):
         widget.vdp_result_group.setVisible(False)
 
         self.log_status(f"Starting van der Pauw measurement for sample: {sample_name}...")
-        self.statusBar().showMessage(self._running_status_message('vdp'))
+        self.statusBar().showMessage(self._running_status_message('vdp', current_settings))
 
         self.measurement_worker = VdpMeasurementWorker(
             sample_name=sample_name, username=self.current_user,
@@ -1940,7 +1939,8 @@ class ResistanceMeterApp(QMainWindow):
         effective_settings = {
             'measurement': dict(self.user_settings['measurement']),
             'display': dict(self.user_settings['display']),
-            'file': dict(self.user_settings['file'])
+            'file': dict(self.user_settings['file']),
+            'output': dict(self.user_settings.get('output', {})),
         }
         m_cfg = effective_settings['measurement']
         widget = self.get_widget_for_mode(mode)
@@ -2056,22 +2056,25 @@ class ResistanceMeterApp(QMainWindow):
         """
         self._active_model_name = model_name or "2400"
 
-    def _running_status_message(self, mode: str) -> str:
+    def _running_status_message(self, mode: str, settings: Dict) -> str:
         """Build the status-bar 'Measurement running' string, with the
         hazard tag appended when configured voltage exceeds the
         touch-safety threshold. Threshold respects per-user override and
         falls back to safety.DEFAULT_THRESHOLD_V; ``0`` disables.
+
+        ``settings`` is the gathered run settings, so the tag reports the
+        voltage the run actually uses rather than the stored profile value.
         """
         from ..safety import is_potentially_hazardous
         base = f"Measurement running ({mode})..."
-        if not self.user_settings:
+        if not settings:
             return base
-        check = is_potentially_hazardous(self.user_settings, mode)
+        check = is_potentially_hazardous(settings, mode)
         if check.hazardous:
             return f"{base}   ⚡ {check.voltage_v:g} V live (> {check.threshold_v:g} V)"
         return base
 
-    def _confirm_voltage_safety(self, mode: str) -> bool:
+    def _confirm_voltage_safety(self, mode: str, settings: Dict) -> bool:
         """Warn-then-proceed on configurations that put >30 V on the leads.
 
         Per the 1.9.1 design (resistamet_gui/safety.py): runs the pure
@@ -2083,12 +2086,14 @@ class ResistanceMeterApp(QMainWindow):
         proceed per the design memo, "users are domain experts."
         """
         from ..safety import is_potentially_hazardous, warning_message
-        if not self.user_settings:
+        if not self.user_settings or not settings:
             return True
         m = self.user_settings.get('measurement', {})
         if bool(m.get('safety_voltage_warn_silenced', False)):
             return True
-        check = is_potentially_hazardous(self.user_settings, mode)
+        # The gathered settings carry the live widget values; the stored
+        # profile can be stale by tens of volts.
+        check = is_potentially_hazardous(settings, mode)
         if not check.hazardous:
             return True
 
@@ -2103,7 +2108,12 @@ class ResistanceMeterApp(QMainWindow):
         if dont_show.isChecked():
             m['safety_voltage_warn_silenced'] = True
             try:
-                self.config_manager.set_user_settings(self.current_user, self.user_settings)
+                # Measurement section only. res_cable_null is a per-session
+                # bench reference (set live at _do_cable_null), not a profile
+                # setting, so it must not ride along into config.json.
+                m_save = dict(m)
+                m_save.pop('res_cable_null', None)
+                self.config_manager.update_user_settings(self.current_user, {'measurement': m_save})
             except Exception:
                 # Persistence is best-effort; in-memory flag is already set
                 # so the rest of this session is silenced.
@@ -2172,8 +2182,6 @@ class ResistanceMeterApp(QMainWindow):
         sample_name = self._require_sample_name()
         if not sample_name:
             return
-        if not self._confirm_voltage_safety(mode):
-            return
         widget = self.get_widget_for_mode(mode)
         if not widget:
             self.log_status(f"Error: Could not find UI for mode {mode}"); return
@@ -2181,6 +2189,8 @@ class ResistanceMeterApp(QMainWindow):
             current_settings = self.gather_settings_for_mode(mode)
         except ValueError as e:
             QMessageBox.critical(self, "Settings Error", f"Failed to gather settings: {e}")
+            return
+        if not self._confirm_voltage_safety(mode, current_settings):
             return
         self.active_mode = mode; self.measurement_running = True
         self.set_controls_for_mode(mode, running=True)
@@ -2199,7 +2209,7 @@ class ResistanceMeterApp(QMainWindow):
         widget.status_label.setText("Status: Sweeping..." if mode == 'sweep' else "Status: Running")
         widget.status_label.setStyleSheet("font-weight: bold; color: green;")
         if getattr(widget, 'mark_event_button', None): widget.mark_event_button.setEnabled(True)
-        self.log_status(f"Starting {mode} measurement for sample: {sample_name}..."); self.statusBar().showMessage(self._running_status_message(mode))
+        self.log_status(f"Starting {mode} measurement for sample: {sample_name}..."); self.statusBar().showMessage(self._running_status_message(mode, current_settings))
         # Release the idle aux-sensor preview so the worker can open the serial
         # port — only one handle per port. The in-run readout is fed from
         # data_point. Reset the label so a pre-run preview value never
