@@ -54,24 +54,34 @@ def _reset_simulator(ohms: float, model: str = "2420"):
     enable_simulation(dut_resistance_ohms=ohms, model=model)
 
 
+_MODE_KEYS = {
+    "Resistance Measurement": "resistance",
+    "Voltage Source": "source_v",
+    "Current Source": "source_i",
+    "4-Point Probe": "four_point",
+}
+
+
+def _points(window, mode_key):
+    return len(list(window.data_buffers[mode_key].timestamps))
+
+
 def _drive_timed_run(window, tab, label, seconds, app):
-    """Click Start on a time-series tab, pump events for ``seconds``, then
-    cleanly Stop. Returns the number of points captured."""
+    """Click Start on a time-series tab, pump events for ``seconds`` and
+    until at least three points have landed (a slow runner may need longer),
+    then cleanly Stop. Returns the buffers' contents."""
+    mode_key = _MODE_KEYS[label]
     _switch_to(window, label, app)
     tab.start_button.click()
     app.processEvents()
     assert window.measurement_running, f"{label}: worker did not start"
     _pump_for(seconds, app)
+    _wait_until(lambda: len(list(window.data_buffers[mode_key].timestamps)) >= 3,
+                timeout=15.0, app=app)
     window.stop_current_measurement()
     assert _wait_until(lambda: not window.measurement_running, timeout=3.0, app=app), (
         f"{label}: worker did not stop within timeout"
     )
-    mode_key = {
-        "Resistance Measurement": "resistance",
-        "Voltage Source": "source_v",
-        "Current Source": "source_i",
-        "4-Point Probe": "four_point",
-    }[label]
     return list(window.data_buffers[mode_key].timestamps), \
            list(window.data_buffers[mode_key].voltage), \
            list(window.data_buffers[mode_key].current), \
@@ -203,6 +213,8 @@ def test_csv_headers_match_documented_schema(sim_window, app):
         app.processEvents()
         assert sim_window.measurement_running, f"{label}: worker didn't start"
         _pump_for(1.0, app)
+        assert _wait_until(lambda: _points(sim_window, mode) >= 1, timeout=15.0, app=app), (
+            f"{label}: no point within 15 s")
         sim_window.stop_current_measurement()
         assert _wait_until(
             lambda: not sim_window.measurement_running, timeout=3.0, app=app
@@ -298,9 +310,12 @@ def test_mark_event_lands_in_csv(sim_window, app, monkeypatch):
     _switch_to(sim_window, "Resistance Measurement", app)
     sim_window.tab_resistance.start_button.click()
     app.processEvents()
-    _pump_for(0.5, app)
+    assert _wait_until(lambda: _points(sim_window, "resistance") >= 1, timeout=15.0, app=app)
     sim_window.mark_event_shortcut()
+    marked_at = _points(sim_window, "resistance")
     _pump_for(0.7, app)
+    assert _wait_until(lambda: _points(sim_window, "resistance") >= marked_at + 2,
+                       timeout=15.0, app=app), "no rows after the mark"
     sim_window.stop_current_measurement()
     assert _wait_until(
         lambda: not sim_window.measurement_running, timeout=3.0, app=app
@@ -516,6 +531,8 @@ def test_cable_null_subtracts_from_subsequent_run(sim_window, app, monkeypatch):
     sim_window.tab_resistance.start_button.click()
     app.processEvents()
     _pump_for(1.0, app)
+    assert _wait_until(lambda: _points(sim_window, "resistance") >= 2, timeout=15.0, app=app), (
+        "no resistance within 15 s")
     sim_window.stop_current_measurement()
     assert _wait_until(
         lambda: not sim_window.measurement_running, timeout=3.0, app=app
