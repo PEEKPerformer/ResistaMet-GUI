@@ -37,7 +37,6 @@ from pyvisa.constants import ResourceAttribute, StatusCode
 from pyvisa_py.sessions import OpenError, Session, UnknownAttribute
 
 from . import device_ops as ops
-from . import protocol as p
 from . import tables as t
 from .boards import BoardRegistry
 from .controller import Controller
@@ -308,6 +307,8 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
         self._pad = int(self.parsed.primary_address)
         sad = self.parsed.secondary_address
         self._sad: Optional[int] = None if sad is None else int(sad)
+        # Accepted and read back, and of no effect: the controller addresses before every
+        # transfer (``Controller._address``).
         readdress = ResourceAttribute.gpib_readdress_enabled
         self.attrs[readdress] = attributes.AttributesByID[readdress].default
 
@@ -316,10 +317,6 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
 
     def _label(self) -> str:
         return 'GPIB%s::%d' % (self.parsed.board, self._pad)
-
-    def _readdress(self) -> bool:
-        value, _ = self.get_attribute(ResourceAttribute.gpib_readdress_enabled)
-        return bool(value)
 
     # ------------------------------------------------------------------
     # data
@@ -337,8 +334,7 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
         try:
             data, ended = controller.read(self._pad, sad=self._sad, max_bytes=count,
                                           timeout_s=self._device_timeout(), eos=eos,
-                                          eos_8bit=True, readdress=self._readdress(),
-                                          termchar=self._termchar_byte())
+                                          eos_8bit=True, termchar=self._termchar_byte())
         except GpibTimeout as exc:
             return exc.partial, StatusCode.error_timeout
         except (GpibError, TransportError) as exc:
@@ -357,8 +353,7 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
         send_end, _ = self.get_attribute(ResourceAttribute.send_end_enabled)
         try:
             written = controller.write(self._pad, data, sad=self._sad, send_eoi=bool(send_end),
-                                       timeout_s=self._device_timeout(), eos_char=self._termchar_byte(),
-                                       readdress=self._readdress())
+                                       timeout_s=self._device_timeout(), eos_char=self._termchar_byte())
         except (GpibError, TransportError) as exc:
             logger.debug('%s write: %s', self._label(), exc)
             return 0, status_for(exc)
@@ -461,7 +456,6 @@ class NiUsbGpibDispatch(Session):
 
 def install() -> None:
     """Put our dispatchers in front of pyvisa-py's ``(gpib, INSTR)`` and ``(gpib, INTFC)``. Idempotent."""
-    import pyvisa_py  # noqa: F401 - registers pyvisa-py's own session classes first
     from . import visa_intfc  # here, not at the top: visa_intfc subclasses this module's session
     current = Session._session_classes.get(GPIB_INSTR)
     if current is not NiUsbGpibDispatch:

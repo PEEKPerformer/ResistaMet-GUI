@@ -35,7 +35,6 @@ OP_PRESENCE_PROBE = 0x02       # §10.6.1
 OP_STATUS_SNAPSHOT = 0x03      # §10.2.2
 OP_TERMINATION = 0x04
 OP_GO_TO_STANDBY = 0x06
-OP_PARALLEL_POLL = 0x07
 OP_REGISTER_READ = 0x08
 OP_REGISTER_WRITE = 0x09
 OP_READ = 0x0A
@@ -47,7 +46,6 @@ OP_INTERFACE_CLEAR = 0x0F
 OP_SERIAL_POLL = 0x10          # §10.5.4
 
 BLOCK_PAD = 0x11               # ``11 00 00 00``, four before a 0x37 run (§10.1.5); skip
-BLOCK_STATUS_QUERY = 0x21      # the 0x21 control request's reply id (§10.3.5)
 BLOCK_REGISTER_VALUES = 0x34   # up to 3 register values
 BLOCK_REGISTER_END = 0x35
 BLOCK_DATA_15 = 0x36           # id + 15 data bytes
@@ -66,7 +64,7 @@ REGISTER_READ_REPLY_LENGTH = 32
 #: its writes-completed word, the 0x0b status with its EOI tail.
 REPLY_BLOCK_LENGTHS = {
     OP_TAKE_CONTROL: 8, OP_STATUS_SNAPSHOT: 8, OP_GO_TO_STANDBY: 8, OP_COMMAND: 8,
-    OP_WRITE: 8, OP_WRITE_RAW: 8, OP_INTERFACE_CLEAR: 8, BLOCK_STATUS_QUERY: 8,
+    OP_WRITE: 8, OP_WRITE_RAW: 8, OP_INTERFACE_CLEAR: 8,
     BLOCK_SERIAL_POLL_STATUS: 8,
     OP_PRESENCE_PROBE: 12, OP_REGISTER_WRITE: 12, OP_READ_RAW: 12, BLOCK_READ_STATUS: 12,
     BLOCK_PAD: 4, BLOCK_REGISTER_VALUES: 4, BLOCK_REGISTER_END: 4, BLOCK_SERIAL_POLL_RESULT: 4,
@@ -459,30 +457,14 @@ class StatusBlock:
     def transferred(self, requested: int) -> int:
         return requested - self.bytes_not_transferred
 
-    # ibsta bits the specification calls reliable (§4.2), plus END.
+    # The ibsta bits something here reads (§4.2); the rest are in ``ibsta``.
     @property
     def end(self) -> bool:
         return bool(self.ibsta & t.IBSTA_END)
 
     @property
-    def srqi(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_SRQI)
-
-    @property
-    def lok(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_LOK)
-
-    @property
-    def rem(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_REM)
-
-    @property
     def cic(self) -> bool:
         return bool(self.ibsta & t.IBSTA_CIC)
-
-    @property
-    def atn(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_ATN)
 
     @property
     def tacs(self) -> bool:
@@ -491,20 +473,6 @@ class StatusBlock:
     @property
     def lacs(self) -> bool:
         return bool(self.ibsta & t.IBSTA_LACS)
-
-    # Derived from ibsta as reported; §4.2 says to trust the error code for
-    # ERR/TIMO instead, so these are informational.
-    @property
-    def err(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_ERR)
-
-    @property
-    def timo(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_TIMO)
-
-    @property
-    def cmpl(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_CMPL)
 
 
 def parse_status_block(buf: bytes, offset: int = 0) -> StatusBlock:

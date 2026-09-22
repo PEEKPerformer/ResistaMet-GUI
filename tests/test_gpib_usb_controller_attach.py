@@ -204,15 +204,14 @@ class TestAttach:
         controller.close()
         assert transport.closed
 
-    def test_status_and_abort_after_close_are_refused_without_touching_the_transport(self):
+    def test_status_after_close_is_refused_without_touching_the_transport(self):
         # pyusb reopens a handle it has released on the next request: a closed controller
         # must not make one.
         controller, transport = attached([('out', p.register_write_message(t.SHUTDOWN_WRITES)),
                                           ('in', regwrite_reply(2), 16)])
         controller.close()
-        for operation in (controller.status, controller.abort):
-            with pytest.raises(AdapterNotReady):
-                operation()
+        with pytest.raises(AdapterNotReady):
+            controller.status()
         transport.assert_done()
 
     def test_close_without_attach_only_releases(self):

@@ -357,8 +357,8 @@ class TestRepliesRoundTrip:
         status = p.parse_status_reply(reply, block_id)
         assert (status.id, status.ibsta, status.error, status.count) == (block_id, ibsta, error, count)
         assert status.bytes_not_transferred == (-count) & 0xFFFF
-        for name, bit in (("end", t.IBSTA_END), ("srqi", t.IBSTA_SRQI), ("cic", t.IBSTA_CIC),
-                          ("atn", t.IBSTA_ATN), ("err", t.IBSTA_ERR), ("timo", t.IBSTA_TIMO)):
+        for name, bit in (("end", t.IBSTA_END), ("cic", t.IBSTA_CIC), ("tacs", t.IBSTA_TACS),
+                          ("lacs", t.IBSTA_LACS)):
             assert getattr(status, name) == bool(ibsta & bit)
         with pytest.raises(p.ProtocolError):
             p.parse_status_reply(reply, (block_id + 1) & 0xFF)

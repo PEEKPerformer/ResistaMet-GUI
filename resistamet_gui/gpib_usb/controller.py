@@ -138,9 +138,10 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
                  sleep: Callable[[float], None] = time.sleep,
                  clock: Callable[[], float] = time.monotonic) -> None:
         """``ni_instructions`` True uses the instructions NI's driver was captured
-        sending and our bench has not run: 0x0b / 0x0e for large transfers, on a
-        model with the alternate pair, and 0x10 for the serial poll (see the
-        module docstring). The default keeps every transfer on the framed 0x0a /
+        sending and our bench has not run: 0x0b / 0x0e for large transfers and
+        0x10 for the serial poll (see the module docstring), on the one model
+        NI's driver was captured on, the GPIB-USB-HS; on any other it is logged
+        and ignored. The default keeps every transfer on the framed 0x0a /
         0x0d paths and the serial poll on the §5.9 command sequence, the ones
         proven on the bench. The SRQ wait is unaffected."""
         model = t.MODELS.get(product_id)
@@ -151,6 +152,12 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
                                   % model.name)
         if not 0 <= own_address <= 30:
             raise ValueError('own address %d outside 0..30' % own_address)
+        if ni_instructions and not model.ni_captured:
+            logger.warning('%s: NI\'s instructions were asked for and are not used: only the GPIB-USB-HS '
+                           'was captured under NI\'s driver, and what this model\'s alternate endpoints '
+                           'carry is not established (spec §1.2, §11.4). Framed transfers and the '
+                           '§5.9 serial poll instead.', model.name)
+            ni_instructions = False
         self._ni_instructions = bool(ni_instructions)
         #: The pipes to the adapter and the exchange state over them. 0x0b /
         #: 0x0e are used only when the caller has switched them on and the
@@ -166,9 +173,6 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         self._attached = False
         self._closed = False
         self._system_controller = True
-        #: (direction, pad, sad) of the last successful addressing command,
-        #: so a caller that disables re-addressing can skip a repeat.
-        self._addressed: Optional[Tuple[str, int, Optional[int]]] = None
         #: Clear while a ``wait_srq`` has an interrupt read in flight; ``close``
         #: waits for it so the transport is not released under a pending transfer.
         self._srq_idle = threading.Event()
@@ -228,7 +232,6 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
                 return
             self._system_controller = system_controller
             self._link.drained = False
-            self._addressed = None
             self._ni_session_state = None
             if self._link.model.readiness_poll:
                 self._readiness_poll()                              # step 2
@@ -317,7 +320,6 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
             return self._go_to_standby()
 
     def _interface_clear(self) -> None:
-        self._addressed = None
         self._link.status_exchange(p.interface_clear_message(), SHORT_WAIT_S, 'interface clear')
 
     def _remote_enable(self, on: bool) -> None:
@@ -332,7 +334,7 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
 
     def write(self, pad: int, data: bytes, *, sad: Optional[int] = None,
               send_eoi: bool = True, timeout_s: Optional[float],
-              eos_char: Optional[int] = None, readdress: bool = True) -> int:
+              eos_char: Optional[int] = None) -> int:
         """Address ``pad`` to listen, then write ``data`` (§5.1, §10.5).
 
         Writes of ``RAW_WRITE_MIN_BYTES`` and more go as 0x0e instructions
@@ -351,9 +353,8 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
                 return 0
             code = p.timeout_code(timeout_s)
             if self._link.raw and len(data) >= RAW_WRITE_MIN_BYTES:
-                self._addressed = None
                 return self._write_bytes(data, code, send_eoi, eos_char, deadline, address=(pad, sad))
-            self._address(_LISTEN, pad, sad, code, self._link.reply_wait_s(code), readdress)
+            self._address(_LISTEN, pad, sad, code, self._link.reply_wait_s(code))
             return self._write_bytes(data, code, send_eoi, eos_char, deadline)
 
     def write_raw(self, data: bytes, *, send_eoi: bool = True,
@@ -372,8 +373,7 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
 
     def read(self, pad: int, *, sad: Optional[int] = None, max_bytes: int,
              timeout_s: Optional[float], eos: Optional[int] = None,
-             eos_8bit: bool = False, readdress: bool = True,
-             termchar: Optional[int] = None) -> Tuple[bytes, bool]:
+             eos_8bit: bool = False, termchar: Optional[int] = None) -> Tuple[bytes, bool]:
         """Address ``pad`` to talk, go to standby, then read up to ``max_bytes`` (§5.2, §10.1).
 
         Returns the data and whether END (EOI, or the EOS character when
@@ -396,10 +396,9 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
                 return b'', False
             code = p.timeout_code(timeout_s)
             if self._reads_raw(max_bytes):
-                self._addressed = None
                 return self._read_bytes(max_bytes, code, eos, eos_8bit, 'read', deadline,
                                         address=(pad, sad), termchar=termchar)
-            self._address(_TALK, pad, sad, code, self._link.reply_wait_s(code), readdress)
+            self._address(_TALK, pad, sad, code, self._link.reply_wait_s(code))
             # ATN rule (§5): a 0x06 between the addressing 0x0c and the read.
             self._go_to_standby()
             return self._read_bytes(max_bytes, code, eos, eos_8bit, 'read', deadline)
@@ -423,8 +422,6 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         """Raw command bytes, 16 per instruction (§5.3). Returns bytes accepted."""
         with self._guard():
             self._ensure_attached()
-            # Arbitrary command bytes may change who is addressed.
-            self._addressed = None
             code = p.timeout_code(timeout_s)
             wait = self._link.reply_wait_s(code)
             accepted = 0
@@ -440,34 +437,34 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
             return None
         return self._clock() + timeout_s
 
-    def _address(self, direction: str, pad: int, sad: Optional[int], code: int,
-                 wait_s: float, readdress: bool) -> None:
-        target = (direction, pad, sad)
-        if not readdress and self._addressed == target:
-            return
-        self._addressed = None
+    def _address(self, direction: str, pad: int, sad: Optional[int], code: int, wait_s: float) -> None:
+        """Address ``pad`` for a transfer, every time (§6).
+
+        No record of who was addressed last lets a repeat be skipped: the
+        adapter serial-polls a device that asserts SRQ by itself (§10.4.2),
+        which readdresses the bus behind any such record, and NI's own
+        driver addresses before every transfer (§10.2.3). VI_ATTR_GPIB_READDR_EN
+        is therefore accepted and has no effect.
+        """
         if direction == _LISTEN:
             command = t.address_listener_command(self._own_address, pad, sad)
         else:
             command = t.address_talker_command(self._own_address, pad, sad)
         self._link.status_exchange(p.command_message(command, code), wait_s, 'address to %s' % direction)
-        self._addressed = target
 
     def serial_poll_instruction(self, pad: int, sad: Optional[int] = None,
                                 timeout_s: Optional[float] = DEFAULT_TIMEOUT_S) -> int:
         """The status byte of device ``pad`` through the 0x10 instruction (§10.5.4).
 
         NI's driver polls this way rather than with the IEEE-488.1 command
-        sequence of §5.9. The adapter addresses the bus itself for the poll,
-        so whoever was addressed before is forgotten here. Not run on
-        hardware yet, and NI's captures all had its bank-2 session
+        sequence of §5.9. The adapter addresses the bus itself for the poll.
+        Not run on hardware yet, and NI's captures all had its bank-2 session
         configuration written first, which this driver does not write;
         ``device_ops.serial_poll`` sends this only when the controller was
         built with ``ni_instructions``, and the §5.9 sequence otherwise.
         """
         with self._guard():
             self._ensure_attached()
-            self._addressed = None
             code = p.timeout_code(timeout_s)
             wait = self._link.reply_wait_s(code)
             reply = self._link.transact(p.serial_poll_message(pad, code, sad), p.SMALL_REPLY_BUFFER, wait)
@@ -482,12 +479,6 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
     # ------------------------------------------------------------------
     # adapter state
     # ------------------------------------------------------------------
-
-    def abort(self) -> StatusBlock:
-        """§5.11 stop request. Sequential recovery only: the lock serialises it."""
-        with self._guard():
-            self._refuse_when_closed()
-            return p.parse_status_block(self._link.control(t.STOP_REQUEST))
 
     def status(self) -> StatusBlock:
         """§5.12 status query: current ibsta without touching the bus."""
@@ -543,11 +534,8 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
             try:
                 yield
             except TransportGone as gone:
-                self._addressed = None
                 raise self._adapter_gone(gone) from gone
             except Exception as exc:
-                # Whatever was addressed cannot be trusted after a failure.
-                self._addressed = None
                 try:
                     self._link.note_fault(exc)
                 except TransportGone as gone:

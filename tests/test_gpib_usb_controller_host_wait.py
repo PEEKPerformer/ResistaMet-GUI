@@ -145,7 +145,6 @@ class TestHostWait:
         wait = p.host_wait_s(code, 600.0)
         assert wait > measured_s + 1.9e-3
         assert wait >= measured_s + 2.0
-        assert t.TIMEOUT_EXPIRY_JITTER_S == 1.9e-3
 
     def test_no_code_waits_less_than_it_did_from_the_first_unit_alone(self):
         # The wait before the second unit was timed: the first unit's figure, or the bare
