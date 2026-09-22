@@ -20,6 +20,7 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as Navigation
 
 from ..buffers import EnhancedDataBuffer
 from ..config import ConfigManager
+from ..schema.resolve import resolve_run_settings
 from ..constants import (
     __version__,
     AUX_PREVIEW_GIVEUP_TICKS,
@@ -1934,18 +1935,24 @@ class ResistanceMeterApp(QMainWindow):
         return None
 
     def gather_settings_for_mode(self, mode:str) -> Dict:
+        """Settings for one run: the tab's live values over the profile.
+
+        The widget reads live here; everything else — fallbacks, the
+        run-until-stopped flags, profile-owned keys, the accuracy-mode timing
+        overrides — is in schema.resolve, so a headless client resolves a run
+        exactly the way this window does.
+        """
         if not self.user_settings:
             raise ValueError("User settings not loaded.")
-        effective_settings = {
-            'measurement': dict(self.user_settings['measurement']),
-            'display': dict(self.user_settings['display']),
-            'file': dict(self.user_settings['file']),
-            'output': dict(self.user_settings.get('output', {})),
-        }
-        m_cfg = effective_settings['measurement']
         widget = self.get_widget_for_mode(mode)
         if not widget:
             raise ValueError(f"Invalid mode specified: {mode}")
+        overrides = self._overrides_from_widgets(mode, widget)
+        return resolve_run_settings(self.user_settings, mode, overrides).settings
+
+    def _overrides_from_widgets(self, mode: str, widget) -> Dict:
+        """Read the tab's widgets into flat measurement keys."""
+        m_cfg: Dict = {}
         try:
             if mode == 'resistance':
                 m_cfg['res_test_current'] = widget.res_test_current.value()
@@ -2017,37 +2024,21 @@ class ResistanceMeterApp(QMainWindow):
             m_cfg['nplc'] = widget.nplc.value()
         elif hasattr(widget, 'sweep_nplc'):
             m_cfg['nplc'] = widget.sweep_nplc.value()
-        else:
-            m_cfg['nplc'] = self.user_settings['measurement']['nplc']
         if hasattr(widget, 'sampling_rate'):
             m_cfg['sampling_rate'] = widget.sampling_rate.value()
-        else:
-            m_cfg['sampling_rate'] = self.user_settings['measurement']['sampling_rate']
         # auto_zero now lives on the sensor tabs (resistance / source_v /
         # source_i). 4PP and vdP don't expose it because MODE_TIMING_OVERRIDES
-        # below force their auto_zero to 'on' anyway. Falls back to the saved
-        # user setting for any mode without the widget.
+        # force their auto_zero to 'on' anyway; the resolver falls back to the
+        # saved user setting for any mode without the widget.
         if hasattr(widget, 'auto_zero'):
             m_cfg['auto_zero'] = widget.auto_zero.currentText()
-        else:
-            m_cfg['auto_zero'] = self.user_settings['measurement'].get('auto_zero', 'once')
-        # Handle run-until-stopped checkboxes (duration=0 means infinite)
-        if mode == 'source_v' and hasattr(widget, 'vsource_run_continuous') and widget.vsource_run_continuous.isChecked():
-            m_cfg['vsource_duration_hours'] = 0.0
-        if mode == 'source_i' and hasattr(widget, 'isource_run_continuous') and widget.isource_run_continuous.isChecked():
-            m_cfg['isource_duration_hours'] = 0.0
-        m_cfg['settling_time'] = self.user_settings['measurement']['settling_time']
-        m_cfg['gpib_address'] = self.user_settings['measurement']['gpib_address']
-        # Accuracy-critical modes (4PP, vdP) force the slow, low-noise
-        # timing knobs regardless of the shared defaults. Static-spot
-        # measurements care about the tightness of Rs / ρ / R_s, not how
-        # fast the trace updates — so we override here at the last moment
-        # before the worker reads the config.
-        from ..constants import MODE_TIMING_OVERRIDES
-        overrides = MODE_TIMING_OVERRIDES.get(mode, {})
-        for k, v in overrides.items():
-            m_cfg[k] = v
-        return effective_settings
+        # Run-until-stopped checkboxes; the resolver turns these into a
+        # duration of 0.
+        if mode == 'source_v' and hasattr(widget, 'vsource_run_continuous'):
+            m_cfg['vsource_run_continuous'] = widget.vsource_run_continuous.isChecked()
+        if mode == 'source_i' and hasattr(widget, 'isource_run_continuous'):
+            m_cfg['isource_run_continuous'] = widget.isource_run_continuous.isChecked()
+        return m_cfg
 
     def _on_instrument_identified(self, model_name: str):
         """Cache the connected instrument's model for post-measurement

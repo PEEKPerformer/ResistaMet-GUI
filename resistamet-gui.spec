@@ -35,6 +35,10 @@ a = Analysis(
         'PySide6',
         'shiboken6',
         'resistamet_gui.simulator',
+        # pydantic v2 keeps its validation core in a compiled module that
+        # PyInstaller's analysis does not reach from the pure-Python import.
+        'pydantic',
+        'pydantic_core',
         # h5py is lazy-imported by Hdf5Exporter; PyInstaller's static
         # analysis won't follow the import-inside-method, so list it
         # explicitly. Without this the .exe's Output → HDF5 radio stays
