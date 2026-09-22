@@ -107,10 +107,11 @@ VISA timeout means: the least time to wait before reporting one.
   is (§7.1, §10.10.2), and by what NI's is bounded by: not the timeout
   asked but the expiry of the code it goes out as, the longer of the two
   units' (5 s: 0xfd, 20.0 s), so that it is never cut off before NI's
-  single instruction would have ended on either. A framed read in pieces of 1024 gives
-  each later piece the code for the time left before that and starts none
-  after it, and a read that runs out raises ``GpibTimeout`` with the bytes
-  read so far. A write split into several instructions likewise.
+  single instruction would have ended on either. A framed read in pieces
+  of 1024 gives every piece the timeout's own code and starts none after
+  that, so its last piece may run up to one piece past it; a read that
+  runs out raises ``GpibTimeout`` with the bytes read so far. A write
+  split into several instructions likewise.
 - The raw path on unit 01CEE482: a 0x0b of this driver's earlier
   composition ended there at 20.0 s whatever its code (0xf9, 0xfb, 0xfc)
   with nothing to read, so a timeout on it came after 20 s whatever was

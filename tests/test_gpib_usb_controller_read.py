@@ -295,7 +295,9 @@ class TestReadDeadline:
     ended at the code's expiry with 5543 bytes and error 0x0a. The framed
     path reads in pieces of 1024; each took the session's code afresh, so
     the same answer under a 1 s timeout read on for as long as it kept
-    coming. Now each later piece gets the code for the time left.
+    coming. Now no piece starts after the code's expiry, and every piece
+    carries the session's code: a framed 0x0a cut off by a shorter one while
+    data is arriving has never been observed (§7.3, §11.2).
     """
 
     PIECE = 0.19   # 1024 bytes at the 2420's 5.3 kB/s (§10.10.2)
@@ -303,9 +305,10 @@ class TestReadDeadline:
     def test_a_long_answer_stops_at_the_code_s_expiry_with_what_it_has(self):
         # NI's 0x0b under 0xfb ended with 5543 bytes at 1.050 s (§10.10.2); the bench unit runs
         # 0xfb for 1.250 s. 1.0 s goes out as 0xfb, and the longer, 1.25 s, is the deadline:
-        # seven pieces start before it, and after 1.33 s no eighth does.
+        # seven pieces start before it, each under the session's 0xfb, and after 1.33 s no
+        # eighth does.
         chunk = bytes(range(256)) * 4
-        pieces = [0xFB, 0xFB, 0xFB, 0xFB, 0xFB, 0xFB, 0xF9]
+        pieces = [0xFB] * 7
         script = address_talker(pad=24, code=0xFB)
         for code in pieces:
             script += [('out', p.read_message(1024, code)),
@@ -316,8 +319,8 @@ class TestReadDeadline:
         assert info.value.partial == chunk * 7 and info.value.code == t.ERR_TIMEOUT
         assert 'timeout ran out after 7168 of 20480 bytes' in str(info.value)
         transport.assert_done()   # the script holds no eighth read
-        # Each piece waits as one instruction of its own code, not of the session's.
-        assert transport.in_timeouts_after(0x0A) == [piece_wait_ms(code) for code in pieces]
+        # Each piece waits as one instruction of the session's code.
+        assert transport.in_timeouts_after(0x0A) == [piece_wait_ms(0xFB)] * 7
 
     def test_the_deadline_is_counted_from_the_start_of_the_read(self):
         # The addressing belongs to the read: time it takes is time the pieces do not get.
@@ -333,11 +336,13 @@ class TestReadDeadline:
         assert info.value.partial == bytes(1024)
         transport.assert_done()
 
-    def test_a_little_time_left_is_the_shortest_code_captured_not_one_below_it(self):
+    def test_a_piece_started_with_little_time_left_carries_the_session_s_code(self):
+        # Not the 0xf5 that the 0.3 ms left would round to: 0xf5-0xf8 were never timed on the
+        # bench unit, and a framed read cut off while data arrives was never seen (§7.3, §11.2).
         controller, transport = attached(address_talker(code=0xFB) + [
             ('out', p.read_message(1024, 0xFB)),
             ('in', read_reply(bytes(1024), 1024, end=False), piece_wait_buffer(), 1.2497),
-            ('out', p.read_message(1024, 0xF5)), ('in', read_reply(b'end', 1024), piece_wait_buffer()),
+            ('out', p.read_message(1024, 0xFB)), ('in', read_reply(b'end', 1024), piece_wait_buffer()),
         ])
         assert controller.read(22, max_bytes=2048, timeout_s=1.0) == (bytes(1024) + b'end', True)
         transport.assert_done()
@@ -385,7 +390,7 @@ class TestReadDeadline:
         script = address_talker(code=T3S)
         for index in range(20):
             reply = read_reply(chunk, 1024, end=index == 19)
-            script += [('out', p.read_message(1024, 0xFC if index < 16 else 0xFB)),   # the code for the time left
+            script += [('out', p.read_message(1024, 0xFC)),
                        ('in', reply, piece_wait_buffer(), 0.199)]
         controller, transport = attached(script)
         assert controller.read(22, max_bytes=20480, timeout_s=3.0) == (chunk * 20, True)
