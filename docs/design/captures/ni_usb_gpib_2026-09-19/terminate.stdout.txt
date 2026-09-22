@@ -1,0 +1,8 @@
+832305.038 RM open, scenario terminate
+832305.630 query :TRAC:DATA?
+832307.130 viTerminate
+read returned 61768
+832318.598 clear
+832319.102 *IDN?
+82
+832319.618 done

@@ -32,6 +32,7 @@ from resistamet_gui.gpib_usb import controller as controller_module  # noqa: E40
 from resistamet_gui.gpib_usb import transport, visa_session  # noqa: E402
 from resistamet_gui.gpib_usb.boards import BoardRegistry  # noqa: E402
 from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportError  # noqa: E402
+from resistamet_gui.gpib_usb.visa_intfc import NiUsbGpibIntfcDispatch  # noqa: E402
 from resistamet_gui.gpib_usb.visa_session import GPIB_INSTR, NiUsbGpibDispatch  # noqa: E402
 
 
@@ -67,6 +68,12 @@ class SimulatedAdapter:
         self.listening: List[int] = []
         self.talker: Optional[int] = None
         self.atn = True
+        self.ren = False
+        #: The adapter's own addressed state (its address is 0).
+        self.own_talker = False
+        self.own_listener = False
+        #: Set by a test to hold the SRQ line asserted.
+        self.srq = False
         self.reply = b''
         self.messages: List[bytes] = []
         self.control_requests: List[int] = []
@@ -74,14 +81,32 @@ class SimulatedAdapter:
         self.closed = False
         #: Raised by the next bulk_out, once.
         self.fail_next: Optional[Exception] = None
+        #: Raised by the next control_in, once.
+        self.fail_next_control: Optional[Exception] = None
 
     def control_in(self, request, value, index, length, timeout_ms, request_type=0xC0) -> bytes:
+        if self.fail_next_control is not None:
+            failure, self.fail_next_control = self.fail_next_control, None
+            raise failure
         self.control_requests.append(request)
         if request == 0x41:
             return self.serial_reply
         if request == 0x40:
             return h('40 01 00 01 30 01 02 03 00 03 96 00 00 00 00 00')
+        if request == 0x21:
+            return self._status(request, ibsta=self.ibsta())
         return bytes((request,)) + h('01 30 00 00 00 00 00')
+
+    def ibsta(self) -> int:
+        """CMPL and CIC always; ATN, TACS, LACS and SRQI from the bus state."""
+        return (0x0120 | (0x0010 if self.atn else 0) | (0x0008 if self.own_talker else 0)
+                | (0x0004 if self.own_listener else 0) | (0x1000 if self.srq else 0))
+
+    def bus_lines(self) -> int:
+        """The BSR of §5.13 for the fake's state: a listener holds NDAC while ATN is false."""
+        ndac = 0x20 if (self.listening and not self.atn) else 0x00
+        return (ndac | (0x01 if self.ren else 0) | (0x80 if self.atn else 0)
+                | (0x04 if self.srq else 0))
 
     def _status(self, opcode: int, error: int = 0, count: int = 0, ibsta: int = 0x0130) -> bytes:
         return (bytes((opcode,)) + ibsta.to_bytes(2, 'big') + bytes((error,))
@@ -100,10 +125,14 @@ class SimulatedAdapter:
             self.atn = False
             self.reply = self._status(opcode) + h('04 00 00 00')
         elif opcode == p.OP_REGISTER_WRITE:
+            for start in range(3, 3 + 3 * data[1], 3):
+                if data[start:start + 3] == bytes(t.REN_ON_WRITE):
+                    self.ren = True
+                elif data[start:start + 3] == bytes(t.REN_OFF_WRITE):
+                    self.ren = False
             self.reply = self._status(opcode) + bytes((data[1], 0, 0, 0)) + h('04 00 00 00')
         elif opcode == p.OP_REGISTER_READ:
-            ndac = 0x20 if (self.listening and not self.atn) else 0x00
-            self.reply = bytes((0x34, ndac, 0, 0, 0x35, 1, 0, 0)) + h('04 00 00 00')
+            self.reply = bytes((0x34, self.bus_lines(), 0, 0, 0x35, 1, 0, 0)) + h('04 00 00 00')
         elif opcode == p.OP_COMMAND:
             self.reply = self._command(data)
         elif opcode == p.OP_WRITE:
@@ -122,17 +151,25 @@ class SimulatedAdapter:
         for byte in command_bytes:
             if byte == t.CMD_UNL:
                 self.listening = []
+                self.own_listener = False
             elif 0x20 <= byte <= 0x3E:
                 if byte - 0x20 in self.instruments:
                     self.listening.append(byte - 0x20)
+                self.own_listener = self.own_listener or byte == 0x20
             elif 0x40 <= byte <= 0x5E:
                 self.talker = byte - 0x40 if byte - 0x40 in self.instruments else None
+                self.own_talker = byte == 0x40
             elif byte == t.CMD_UNT:
                 self.talker = None
+                self.own_talker = False
             elif byte == t.CMD_SDC:
                 for pad in self.listening:
                     self.instruments[pad].cleared += 1
                     self.instruments[pad].pending = b''
+            elif byte == t.CMD_DCL:
+                for instrument in self.instruments.values():
+                    instrument.cleared += 1
+                    instrument.pending = b''
         return self._status(p.OP_COMMAND) + h('04 00 00 00')
 
     def _write(self, data: bytes) -> bytes:
@@ -220,14 +257,20 @@ class Sentinel(Session):
 
 @pytest.fixture
 def session_registry():
-    """Restore pyvisa-py's session table and the dispatcher's memory after each test."""
+    """Restore pyvisa-py's session table and both dispatchers' memory after each test.
+
+    ``install()`` puts the INSTR and the INTFC dispatcher in place together,
+    so both ``previous`` slots are saved here.
+    """
     saved = dict(Session._session_classes)
     saved_previous = NiUsbGpibDispatch.previous
+    saved_intfc_previous = NiUsbGpibIntfcDispatch.previous
     Sentinel.calls = []
     yield Session._session_classes
     Session._session_classes.clear()
     Session._session_classes.update(saved)
     NiUsbGpibDispatch.previous = saved_previous
+    NiUsbGpibIntfcDispatch.previous = saved_intfc_previous
 
 
 @pytest.fixture

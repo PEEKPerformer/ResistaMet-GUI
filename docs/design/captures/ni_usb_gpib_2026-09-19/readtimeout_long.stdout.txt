@@ -1,0 +1,7 @@
+832285.134 RM open, scenario readtimeout_long
+832285.718 query :TRAC:DATA? with 2 s timeout
+unexpected success 61768
+832298.688 clear
+832299.191 *IDN?
+82
+832299.706 done

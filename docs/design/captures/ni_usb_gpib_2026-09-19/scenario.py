@@ -1,0 +1,340 @@
+"""Drive NI-VISA through one operation so the USB traffic can be captured.
+
+Read-only toward the 2420 except the status-register scenarios, which restore
+*SRE/*ESE to 0 before leaving.  Never touches output, source or measure setup.
+"""
+import sys, time
+import pyvisa
+from pyvisa import constants as c
+
+ADDR = 'GPIB0::24::INSTR'
+
+def stamp(msg):
+    print('%.3f %s' % (time.perf_counter(), msg), flush=True)
+
+def open_inst(rm, timeout_ms=20000):
+    k = rm.open_resource(ADDR)
+    k.timeout = timeout_ms
+    return k
+
+def sc_idn(rm):
+    k = open_inst(rm)
+    time.sleep(0.5); stamp('query *IDN?')
+    print(repr(k.query('*IDN?')))
+    time.sleep(0.5); k.close()
+
+def sc_trac(rm):
+    k = open_inst(rm)
+    time.sleep(0.5); stamp('query :TRAC:DATA?')
+    t = time.perf_counter(); d = k.query(':TRAC:DATA?'); dt = time.perf_counter() - t
+    print('len', len(d), 'took %.3f s' % dt, 'head', repr(d[:60]), 'tail', repr(d[-30:]))
+    time.sleep(0.5); stamp('query :TRAC:POIN:ACT?'); print(repr(k.query(':TRAC:POIN:ACT?')))
+    time.sleep(0.5); k.close()
+
+def sc_eos(rm):
+    # character-terminated read: ask for the IDN with termchar enabled, then
+    # the same with termchar disabled, then a read with a count smaller than
+    # the reply so the library has to come back for the rest
+    k = open_inst(rm)
+    time.sleep(0.5)
+    k.read_termination = '\n'; k.write_termination = '\n'
+    stamp('termchar enabled query'); print(repr(k.query('*IDN?')))
+    time.sleep(0.5)
+    k.read_termination = None
+    stamp('termchar disabled query'); print(repr(k.query('*IDN?')))
+    time.sleep(0.5)
+    stamp('write then read_raw(10) x3')
+    k.write('*IDN?')
+    for _ in range(3):
+        try:
+            print(repr(k.read_raw(10)))
+        except Exception as e:
+            print('read_raw ->', e); break
+    time.sleep(0.5); k.close()
+
+def sc_srq(rm):
+    k = open_inst(rm)
+    time.sleep(0.5)
+    try:
+        stamp('enable SRQ on OPC: *CLS; *ESE 1; *SRE 32')
+        k.write('*CLS'); k.write('*ESE 1'); k.write('*SRE 32')
+        time.sleep(0.5)
+        stamp('viEnableEvent(SRQ, QUEUE)')
+        k.enable_event(c.EventType.service_request, c.EventMechanism.queue)
+        time.sleep(0.5)
+        stamp('write *OPC (raises SRQ)')
+        k.write('*OPC')
+        stamp('wait_on_event 5 s')
+        r = k.wait_on_event(c.EventType.service_request, 5000)
+        stamp('event: %r timed_out=%r' % (getattr(getattr(r,'event',None),'event_type',None), r.timed_out))
+        time.sleep(0.5)
+        stamp('read_stb'); print('STB', k.read_stb())
+        time.sleep(0.5)
+        stamp('*ESR? (clears)'); print(repr(k.query('*ESR?')))
+        stamp('disable_event'); k.disable_event(c.EventType.service_request, c.EventMechanism.queue)
+        stamp('*STB?'); print(repr(k.query('*STB?')))
+        time.sleep(0.5)
+        stamp('wait_on_event with nothing pending, 1 s (expect timeout)')
+        k.enable_event(c.EventType.service_request, c.EventMechanism.queue)
+        try:
+            k.wait_on_event(c.EventType.service_request, 1000)
+            print('unexpected event')
+        except Exception as e:
+            print('timeout as expected:', type(e).__name__)
+        k.disable_event(c.EventType.service_request, c.EventMechanism.queue)
+    finally:
+        stamp('restore *SRE 0; *ESE 0; *CLS')
+        k.write('*SRE 0'); k.write('*ESE 0'); k.write('*CLS')
+        print('SRE', k.query('*SRE?').strip(), 'ESE', k.query('*ESE?').strip(), 'STB', k.query('*STB?').strip())
+        time.sleep(0.5); k.close()
+
+def sc_stb(rm):
+    k = open_inst(rm)
+    time.sleep(0.5); stamp('read_stb x3')
+    for _ in range(3):
+        print('STB', k.read_stb()); time.sleep(0.2)
+    time.sleep(0.5); k.close()
+
+def sc_clear(rm):
+    k = open_inst(rm)
+    time.sleep(0.5); stamp('viClear (device clear)')
+    k.clear()
+    time.sleep(0.5); stamp('query *IDN? after clear'); print(repr(k.query('*IDN?')))
+    time.sleep(0.5); k.close()
+
+def sc_intfc(rm):
+    b = rm.open_resource('GPIB0::INTFC'); time.sleep(0.5)
+    stamp('send_ifc'); b.send_ifc(); time.sleep(0.5)
+    stamp('gpib_control_ren ASSERT'); b.control_ren(c.RENLineOperation.asrt); time.sleep(0.5)
+    stamp('gpib_control_atn ASSERT'); b.control_atn(c.ATNLineOperation.asrt); time.sleep(0.5)
+    stamp('gpib_control_atn DEASSERT'); b.control_atn(c.ATNLineOperation.deassert); time.sleep(0.5)
+    stamp('send_command UNL UNT'); b.send_command(b'\x3f\x5f'); time.sleep(0.5)
+    stamp('VI_ATTR_GPIB_*'); 
+    for a in ('VI_ATTR_GPIB_ATN_STATE','VI_ATTR_GPIB_REN_STATE','VI_ATTR_GPIB_NDAC_STATE','VI_ATTR_GPIB_SRQ_STATE','VI_ATTR_GPIB_CIC_STATE','VI_ATTR_GPIB_SYS_CNTRL_STATE','VI_ATTR_GPIB_HS488_CBL_LEN','VI_ATTR_GPIB_PRIMARY_ADDR'):
+        try: print(a, b.get_visa_attribute(getattr(c, a)))
+        except Exception as e: print(a, '->', e)
+    time.sleep(0.5); b.close()
+
+def sc_open(rm):
+    stamp('open'); k = open_inst(rm); time.sleep(1.0); stamp('close'); k.close(); time.sleep(0.5)
+
+SCENARIOS = {n[3:]: f for n, f in globals().items() if n.startswith('sc_')}
+
+
+
+# ---- second batch (payload captures) ------------------------------------
+
+def sc_write(rm):
+    k = open_inst(rm)
+    time.sleep(0.5); stamp('write *CLS (no read)'); k.write('*CLS')
+    time.sleep(0.5); stamp('send_end False, write *CLS'); k.send_end = False; k.write('*CLS')
+    time.sleep(0.5); stamp('send_end True, write_termination None, write_raw(b"*CLS")'); k.send_end = True; k.write_termination = None; k.write_raw(b'*CLS')
+    time.sleep(0.5); stamp('write_termination "\\r\\n"'); k.write_termination = '\r\n'; k.write('*CLS')
+    time.sleep(0.5); k.close()
+
+def sc_trigger(rm):
+    k = open_inst(rm)
+    time.sleep(0.5); stamp('assert_trigger (GET)'); k.assert_trigger()
+    time.sleep(0.5); stamp('*CLS'); k.write('*CLS')
+    time.sleep(0.5); k.close()
+
+def sc_nolistener(rm):
+    stamp('open GPIB0::5::INSTR (nothing there)')
+    try:
+        k = rm.open_resource('GPIB0::5::INSTR'); k.timeout = 2000
+        stamp('opened; write *IDN?')
+        try:
+            k.write('*IDN?'); print('write ok?!')
+        except Exception as e:
+            print('write ->', e)
+        time.sleep(0.5); stamp('read')
+        try:
+            print(repr(k.read()))
+        except Exception as e:
+            print('read ->', e)
+        time.sleep(0.5); k.close()
+    except Exception as e:
+        print('open ->', e)
+    time.sleep(0.5)
+    stamp('open GPIB0::24::1::INSTR (secondary address on the 2420)')
+    try:
+        k = rm.open_resource('GPIB0::24::1::INSTR'); k.timeout = 2000
+        stamp('opened; query *IDN?')
+        try:
+            print(repr(k.query('*IDN?')))
+        except Exception as e:
+            print('query ->', e)
+        time.sleep(0.5); k.close()
+    except Exception as e:
+        print('open ->', e)
+    time.sleep(0.5)
+
+def sc_timeouts(rm):
+    k = open_inst(rm)
+    for tmo in (100, 300, 1000, 3000, 10000, 30000, 100000, 300000, 1000000, float('+inf')):
+        time.sleep(0.4)
+        k.timeout = tmo
+        stamp('timeout %r -> attr %r; query *IDN?' % (tmo, k.timeout))
+        print(len(k.query('*IDN?')))
+    time.sleep(0.5); k.close()
+
+def sc_counts(rm):
+    # which read mode does NI pick for which count?  ask for the IDN, then
+    # read with an exact count; device-clear between rounds flushes the rest
+    k = open_inst(rm, 3000)
+    lib, s = k.visalib, k.session
+    for n in (1, 2, 8, 15, 16, 30, 31, 32, 60, 63, 64, 65, 100, 127, 128, 255, 256, 511, 512, 1023, 1024, 4096, 20480):
+        time.sleep(0.4)
+        k.write('*IDN?')
+        stamp('viRead count %d' % n)
+        try:
+            data, st = lib.read(s, n)
+            print(n, '->', len(data), 'bytes, status', st)
+        except Exception as e:
+            print(n, '->', e)
+        time.sleep(0.2); k.clear()
+    time.sleep(0.5); k.close()
+
+def sc_partial(rm):
+    # a count smaller than the message, then the rest, without a clear in between
+    k = open_inst(rm, 3000)
+    lib, s = k.visalib, k.session
+    time.sleep(0.5); k.write('*IDN?')
+    stamp('viRead 10 then viRead 200')
+    d1, st1 = lib.read(s, 10); print(repr(d1), st1)
+    d2, st2 = lib.read(s, 200); print(repr(d2), st2)
+    time.sleep(0.5); stamp('viRead 200 with nothing pending (timeout)')
+    try:
+        print(lib.read(s, 200))
+    except Exception as e:
+        print('->', e)
+    time.sleep(0.5); k.close()
+
+def sc_eosmodes(rm):
+    k = open_inst(rm, 3000)
+    lib, s = k.visalib, k.session
+    for termchar_en, termchar in ((False, 10), (True, 10), (True, 44), (True, 13)):
+        time.sleep(0.4)
+        k.set_visa_attribute(c.ResourceAttribute.termchar_enabled, termchar_en)
+        k.set_visa_attribute(c.ResourceAttribute.termchar, termchar)
+        k.write('*IDN?')
+        stamp('TERMCHAR_EN=%r TERMCHAR=%d viRead 200' % (termchar_en, termchar))
+        try:
+            d, st = lib.read(s, 200); print(len(d), repr(d[-12:]), st)
+        except Exception as e:
+            print('->', e)
+        time.sleep(0.2); k.clear()
+    time.sleep(0.5); k.close()
+
+def sc_ren(rm):
+    b = rm.open_resource('GPIB0::INTFC'); time.sleep(0.5)
+    ops = ('deassert', 'asrt', 'deassert_gtl', 'asrt_address', 'address_gtl', 'asrt_llo', 'asrt_address_llo', 'address_gtl', 'deassert', 'asrt')
+    for op in ops:
+        stamp('control_ren ' + op)
+        try:
+            b.control_ren(getattr(c.RENLineOperation, op))
+        except Exception as e:
+            print('->', e)
+        time.sleep(0.4)
+    for op in ('asrt', 'asrt_immediate', 'deassert', 'deassert_handshake'):
+        stamp('control_atn ' + op)
+        try:
+            b.control_atn(getattr(c.ATNLineOperation, op))
+        except Exception as e:
+            print('->', e)
+        time.sleep(0.4)
+    time.sleep(0.5); b.close()
+
+def sc_board_io(rm):
+    # board-level write and read after addressing by hand
+    b = rm.open_resource('GPIB0::INTFC'); b.timeout = 3000; time.sleep(0.5)
+    stamp('send_ifc (a fresh INTFC session is not CIC until then)'); b.send_ifc(); time.sleep(0.5)
+    stamp('send_command UNL LAD24 MTA0'); b.send_command(bytes([0x3f, 0x20 + 24, 0x40 + 0])); time.sleep(0.3)
+    stamp('board write *IDN?\\n'); b.write_raw(b'*IDN?\n'); time.sleep(0.3)
+    stamp('send_command UNL TAD24 MLA0'); b.send_command(bytes([0x3f, 0x40 + 24, 0x20 + 0])); time.sleep(0.3)
+    stamp('board read'); print(repr(b.read_raw(200))); time.sleep(0.3)
+    stamp('send_command UNL UNT'); b.send_command(bytes([0x3f, 0x5f])); time.sleep(0.3)
+    stamp('attributes')
+    for a in ('VI_ATTR_GPIB_ATN_STATE', 'VI_ATTR_GPIB_REN_STATE', 'VI_ATTR_GPIB_NDAC_STATE', 'VI_ATTR_GPIB_SRQ_STATE', 'VI_ATTR_GPIB_CIC_STATE', 'VI_ATTR_GPIB_SYS_CNTRL_STATE', 'VI_ATTR_GPIB_ADDR_STATE'):
+        try: print(a, b.get_visa_attribute(getattr(c, a)))
+        except Exception as e: print(a, '->', e)
+    time.sleep(0.5); b.close()
+
+def sc_srq_poll(rm):
+    # the same SRQ, but found by serial poll instead of the event queue
+    k = open_inst(rm)
+    time.sleep(0.5)
+    try:
+        stamp('*CLS; *ESE 1; *SRE 32'); k.write('*CLS'); k.write('*ESE 1'); k.write('*SRE 32'); time.sleep(0.5)
+        stamp('*OPC'); k.write('*OPC'); time.sleep(0.5)
+        stamp('VI_ATTR_GPIB_SRQ_STATE via INTFC')
+        b = rm.open_resource('GPIB0::INTFC'); print('SRQ line', b.get_visa_attribute(c.VI_ATTR_GPIB_SRQ_STATE)); b.close(); time.sleep(0.5)
+        stamp('read_stb'); print('STB', k.read_stb()); time.sleep(0.5)
+        stamp('read_stb again'); print('STB', k.read_stb()); time.sleep(0.5)
+    finally:
+        stamp('restore'); k.write('*SRE 0'); k.write('*ESE 0'); k.write('*CLS')
+        print('SRE', k.query('*SRE?').strip(), 'ESE', k.query('*ESE?').strip(), 'STB', k.query('*STB?').strip())
+        time.sleep(0.5); k.close()
+
+def sc_two_sessions(rm):
+    # two VISA sessions to the same instrument in one process
+    a = open_inst(rm); time.sleep(0.3); b = open_inst(rm); time.sleep(0.3)
+    stamp('a: *IDN?'); print(len(a.query('*IDN?'))); time.sleep(0.3)
+    stamp('b: *IDN?'); print(len(b.query('*IDN?'))); time.sleep(0.3)
+    stamp('close a'); a.close(); time.sleep(0.3)
+    stamp('b: *IDN?'); print(len(b.query('*IDN?'))); time.sleep(0.3)
+    stamp('close b'); b.close(); time.sleep(0.5)
+
+SCENARIOS = {n[3:]: f for n, f in globals().items() if n.startswith('sc_')}
+
+
+
+def sc_longwrite(rm):
+    # a write far longer than one bulk message: 2048 bytes of harmless *CLS;
+    k = open_inst(rm)
+    time.sleep(0.5); payload = ('*CLS;' * 410)[:2048]
+    stamp('write %d bytes' % len(payload)); k.write(payload)
+    time.sleep(0.5); stamp('*IDN?'); print(len(k.query('*IDN?')))
+    time.sleep(0.5); k.close()
+
+def sc_readtimeout_long(rm):
+    # a 61 kB read with a 2 s timeout: how NI abandons a transfer in progress
+    k = open_inst(rm, 2000)
+    time.sleep(0.5); stamp('query :TRAC:DATA? with 2 s timeout')
+    try:
+        d = k.query(':TRAC:DATA?'); print('unexpected success', len(d))
+    except Exception as e:
+        print('->', e)
+    time.sleep(1.0); stamp('clear'); k.clear()
+    time.sleep(0.5); stamp('*IDN?'); print(len(k.query('*IDN?')))
+    time.sleep(0.5); k.close()
+
+def sc_terminate(rm):
+    # viTerminate from another thread while a long read is in flight
+    import threading
+    k = open_inst(rm, 20000)
+    time.sleep(0.5)
+    lib, s = k.visalib, k.session
+    def killer():
+        time.sleep(1.5); stamp('viTerminate'); 
+        try: lib.terminate(s, 0, 0)
+        except Exception as e: print('terminate ->', e)
+    threading.Thread(target=killer).start()
+    stamp('query :TRAC:DATA?')
+    try:
+        d = k.query(':TRAC:DATA?'); print('read returned', len(d))
+    except Exception as e:
+        print('->', e)
+    time.sleep(1.0); stamp('clear'); k.clear()
+    time.sleep(0.5); stamp('*IDN?'); print(len(k.query('*IDN?')))
+    time.sleep(0.5); k.close()
+
+SCENARIOS = {n[3:]: f for n, f in globals().items() if n.startswith('sc_')}
+
+
+if __name__ == '__main__':
+    name = sys.argv[1]
+    rm = pyvisa.ResourceManager()
+    stamp('RM open, scenario ' + name)
+    SCENARIOS[name](rm)
+    stamp('done')

@@ -1,0 +1,26 @@
+831678.844 RM open, scenario ren
+831679.423 control_ren deassert
+831679.825 control_ren asrt
+831680.227 control_ren deassert_gtl
+-> VI_ERROR_INV_MODE (-1073807215): Invalid mode specified.
+831680.628 control_ren asrt_address
+-> VI_ERROR_INV_MODE (-1073807215): Invalid mode specified.
+831681.028 control_ren address_gtl
+-> VI_ERROR_INV_MODE (-1073807215): Invalid mode specified.
+831681.429 control_ren asrt_llo
+-> VI_ERROR_NCIC (-1073807264): The interface associated with this session is not currently the controller in charge.
+831681.831 control_ren asrt_address_llo
+-> VI_ERROR_INV_MODE (-1073807215): Invalid mode specified.
+831682.231 control_ren address_gtl
+-> VI_ERROR_INV_MODE (-1073807215): Invalid mode specified.
+831682.632 control_ren deassert
+831683.034 control_ren asrt
+831683.435 control_atn asrt
+-> VI_ERROR_NCIC (-1073807264): The interface associated with this session is not currently the controller in charge.
+831683.837 control_atn asrt_immediate
+-> VI_ERROR_NCIC (-1073807264): The interface associated with this session is not currently the controller in charge.
+831684.238 control_atn deassert
+-> VI_ERROR_NCIC (-1073807264): The interface associated with this session is not currently the controller in charge.
+831684.640 control_atn deassert_handshake
+-> VI_ERROR_NCIC (-1073807264): The interface associated with this session is not currently the controller in charge.
+831685.543 done

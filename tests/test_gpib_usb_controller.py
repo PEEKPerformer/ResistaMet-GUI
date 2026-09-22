@@ -389,6 +389,27 @@ class TestWrite:
     def test_empty_write_touches_nothing(self):
         controller, transport = attached([])
         assert controller.write(22, b'', timeout_s=3.0) == 0
+        assert controller.write_raw(b'', timeout_s=3.0) == 0
+        transport.assert_done()
+
+    def test_write_raw_sends_only_the_write_instruction(self):
+        controller, transport = attached([
+            ('out', h('0d fa ff fc 00 00 08 00 2a 49 44 4e 3f 0a 00 00 04 00 00 00')),
+            ('in', status_reply(0x0D), 12),
+            ('out', p.write_message(b'AB', T3S, send_eoi=False)), ('in', status_reply(0x0D)),
+        ])
+        assert controller.write_raw(b'*IDN?\n', timeout_s=3.0) == 6
+        assert controller.write_raw(b'AB', send_eoi=False, timeout_s=3.0) == 2
+        assert transport.in_timeouts_after(p.OP_WRITE) == [WAIT_3S_MS, WAIT_3S_MS]
+        transport.assert_done()
+
+    def test_write_raw_error_8_raises_no_listener(self):
+        controller, transport = attached([
+            ('out', p.write_message(b'AB', T3S, send_eoi=True)),
+            ('in', status_reply(0x0D, error=8, count=-2)),
+        ])
+        with pytest.raises(NoListener):
+            controller.write_raw(b'AB', timeout_s=3.0)
         transport.assert_done()
 
     def test_error_8_raises_no_listener(self):

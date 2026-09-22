@@ -1,0 +1,17 @@
+831545.316 RM open, scenario partial
+831545.915 viRead 10 then viRead 200
+python.exe : <python>\Lib\site-packages\pyvisa\ctwrapper\highlevel.py:227: 
+VisaIOWarning: VI_SUCCESS_MAX_CNT (1073676294): The number of bytes transferred is equal to the requested input count. 
+More data may be available.
+At <harness>\capture.ps1:7 char:1
++ & python "$D\scenario.py" $Scenario 2>&1 | Tee-Object -FilePath "$D\$ ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (<python>...y be available.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  return self.handle_return_value(session, ret_value)  # type: ignore
+b'KEITHLEY I' 1073676294
+b'NSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L\n' 0
+831546.429 viRead 200 with nothing pending (timeout)
+-> VI_ERROR_TMO (-1073807339): Timeout expired before operation completed.
+831551.126 done
