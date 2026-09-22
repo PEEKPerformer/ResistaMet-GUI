@@ -81,6 +81,30 @@ class TestRawRead:
         assert controller.read(22, max_bytes=70000, timeout_s=3.0) == (first + second, True)
         transport.assert_done()
 
+    def test_a_read_split_over_two_instructions_shares_one_deadline(self):
+        # §7.1, §10.10.2: the timeout bounds the read, not each instruction of it. 2.5 of the
+        # 3 s are gone after the first: the second carries the code for the 0.5 s left.
+        first, second = bytes(0xFFFF), b'tail\n'
+        controller, transport = attached_ni(address_talker() + [
+            ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', first, 66048, 2.5),
+            ('in', raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
+            ('out', p.read_raw_message(70000 - 0xFFFF, 0xFB)), ('raw_in', second, 4608),
+            ('in', raw_read_reply(70000 - 0xFFFF, len(second)), 512),
+        ])
+        assert controller.read(22, max_bytes=70000, timeout_s=3.0) == (first + second, True)
+        transport.assert_done()
+
+    def test_no_instruction_starts_after_the_deadline(self):
+        first = bytes(0xFFFF)
+        controller, transport = attached_ni(address_talker() + [
+            ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', first, 66048, 3.0),
+            ('in', raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.read(22, max_bytes=70000, timeout_s=3.0)
+        assert info.value.partial == first
+        transport.assert_done()
+
     def test_loop_stops_at_the_request_and_a_small_last_chunk_stays_raw(self):
         # The requested count decides the instruction once per read (§10.1.1): the 1-byte tail
         # of a 0x0b read is a 0x0b too, not a framed 0x0a in the middle of the message. The
