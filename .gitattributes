@@ -1,0 +1,4 @@
+# Generated contract files are compared byte-for-byte by CI; keep them LF on
+# every platform so a Windows checkout does not read as a contract change.
+desktop/src/generated/*.ts text eol=lf
+contracts/*.json text eol=lf

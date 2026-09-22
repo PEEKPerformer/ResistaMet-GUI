@@ -46,14 +46,24 @@ PySide6, rail collapses to icons below 1280 px.
 - `npm run build`, `npm run check:types`, `cargo check`, and the full Python
   suite (872 tests) green.
 
+## CI (2026-09-18)
+
+`desktop.yml` and `test.yml` are green on the branch. The first runs found
+three platform assumptions, all fixed: a CRLF checkout read as a stale
+contract; the results route returned `alice\file.csv` on Windows; and WiX
+refuses a non-numeric pre-release identifier (`2.0.0-dev` → `2.0.0-1`). They
+also caught a real regression — a stop landing in a settling wait was reported
+as an output fault, which opened a modal in the PySide6 app and hung the Linux
+e2e job — now fixed with tests. Windows produces msi and nsis installers with
+the frozen backend inside; macOS a dmg. The frozen backend's handshake and
+`/health` are exercised on both before the shell is built.
+
 ## Not yet
 
 - **Hardware.** Nothing here has touched the 2420. The backend's stop path,
   instrument lock and sidecar shutdown are the things to watch on the bench.
-- **Windows build.** `desktop.yml` is written, not yet run. Expect the first
-  run to surface PyInstaller hidden-import gaps (pyvisa backends, h5py) — the
-  workflow smoke-tests the frozen backend before building the shell so the
-  failure is legible.
+- **Installing the Windows build on the lab PC** and confirming pyvisa finds
+  NI-VISA from inside the frozen backend.
 - **Backend items step 2 depends on** but works around for now: the 4PP spot
   model (spots are summarised in the UI), cable null (not in the new UI yet),
   persisting the safety-silence flag from a headless client, `SessionStatus`

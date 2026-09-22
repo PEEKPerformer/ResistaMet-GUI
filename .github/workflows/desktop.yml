@@ -11,6 +11,24 @@ on:
   push:
     tags:
       - 'v*'
+    # The migration branch builds on every push so packaging problems surface
+    # while the work is fresh, not at the first tag.
+    branches:
+      - 'phase0/**'
+    paths:
+      - 'desktop/**'
+      - 'resistamet_gui/**'
+      - 'resistamet-api.spec'
+      - 'resistamet-api.py'
+      - 'requirements.txt'
+      - 'contracts/**'
+      - '.github/workflows/desktop.yml'
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'resistamet-api.spec'
+      - 'resistamet-api.py'
+      - '.github/workflows/desktop.yml'
   workflow_dispatch:
 
 jobs:

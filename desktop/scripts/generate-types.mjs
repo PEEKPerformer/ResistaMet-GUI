@@ -190,7 +190,9 @@ async function main() {
   for (const [file, content] of Object.entries(outputs)) {
     const path = join(outDir, file);
     if (check) {
-      const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+      // A Windows checkout with autocrlf hands us CRLF; the generator writes LF.
+      // Line endings are not a contract change.
+      const current = existsSync(path) ? readFileSync(path, "utf8").replace(/\r\n/g, "\n") : "";
       if (current !== content) {
         console.error(`stale: src/generated/${file} — run npm run gen:types`);
         stale = true;
