@@ -834,19 +834,20 @@ def readiness_reported(reply: bytes) -> bool:
 def timeout_code(seconds: Optional[float]) -> int:
     """The device timeout code for a timeout of ``seconds`` (§7.1, §7.3).
 
-    The smallest code under which no adapter timed in §7.3 ends an
-    instruction before ``seconds`` have passed (``tables.
-    timeout_expiry_least_s``: the shortest figure of each unit that timed
-    the code, and for the codes nobody timed the lowest of §7.3's
-    estimates). A VISA timeout is the least time to wait, and NI's rule --
-    the smallest nominal limit not below the timeout (§7.1, §10.10.1) --
-    breaks that for one code: 0xfa ends at 0.2635 s on the captured unit,
-    so NI waits less than asked for from about 264 to 300 ms. Here those
-    go out as 0xfb. Of the codes nobody timed, 0x01 may end as early as
-    268 s (§7.3's nearer power of two), so 300 s goes out as 0x02, not as
-    NI's 0x01. Most values take NI's code; some take a smaller one whose
-    expiry still covers them (2 ms: 0xf5, 2.285 ms; 5 ms: 0xf6, 5.35 ms),
-    and none waits less than asked on any unit timed.
+    The longer of two codes: NI's, the smallest nominal limit not below the
+    timeout (§7.1, §10.10.1), and the smallest code under which no adapter
+    timed in §7.3 ends an instruction before ``seconds`` have passed
+    (``tables.timeout_expiry_least_s``: the shortest figure of each unit
+    that timed the code, and for the codes nobody timed the lowest of §7.3's
+    estimates). NI's keeps the slack NI's own driver gives, which every
+    code has on some unit -- 3.001-3.75 s, 10.001-16.78 s and 30.001-33.55
+    s would otherwise go out a code shorter than NI's, and 2 ms and 5 ms as
+    0xf5 and 0xf6, whose figures come from one unit only. The second breaks
+    NI's rule where it waits less than asked: 0xfa ends at 0.2635 s on the
+    captured unit, so from about 264 to 300 ms NI's code is too short, and
+    those go out as 0xfb. Of the codes nobody timed, 0x01 may end as early
+    as 268 s (§7.3's nearer power of two), so 300 s goes out as 0x02, not
+    as NI's 0x01. Everything else takes NI's code.
 
     What the ends of the range map to:
 
@@ -861,10 +862,13 @@ def timeout_code(seconds: Optional[float]) -> int:
     """
     if seconds is None or seconds <= 0:
         return t.TIMEOUT_DISABLED_CODE
-    for _, code in t.TIMEOUT_TABLE:
-        if seconds <= t.timeout_expiry_least_s(code):
-            return code
-    return t.TIMEOUT_DISABLED_CODE
+    codes = [code for _, code in t.TIMEOUT_TABLE]
+    # A part in 10^9 of slack, so that 3000 ms through floating point is still 3 s.
+    ni = next((index for index, (limit, _) in enumerate(t.TIMEOUT_TABLE) if seconds <= limit * (1 + 1e-9)), None)
+    covered = next((index for index, code in enumerate(codes) if seconds <= t.timeout_expiry_least_s(code)), None)
+    if ni is None or covered is None:
+        return t.TIMEOUT_DISABLED_CODE
+    return codes[max(ni, covered)]
 
 
 #: §7.2: what the host waits beyond the adapter's own expiry. Nothing observed

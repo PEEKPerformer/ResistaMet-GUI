@@ -82,23 +82,24 @@ the serial poll: off, it is the IEEE-488.1 command sequence of §5.9
 Timeouts. Every operation takes a timeout in seconds, and it means what a
 VISA timeout means: the least time to wait before reporting one.
 
-- The code. A timeout becomes the smallest device code under which no
-  adapter timed in §7.3 ends an instruction sooner (``protocol.
-  timeout_code``). That is NI's code -- the smallest nominal limit not
-  below the timeout (§7.1) -- except where NI's would end early: 264 to
-  300 ms go out as 0xfb, not 0xfa, which ends at 0.2635 s on the captured
-  unit, and 300 s as 0x02, not 0x01, which nobody timed. 2 ms and 5 ms
-  take 0xf5 and 0xf6, which still cover them.
+- The code. A timeout becomes NI's code -- the smallest nominal limit not
+  below it (§7.1) -- unless that code ends sooner than the timeout on an
+  adapter timed in §7.3, when it becomes the next code that does not
+  (``protocol.timeout_code``): 264 to 300 ms go out as 0xfb, not 0xfa,
+  which ends at 0.2635 s on the captured unit, and 268 to 300 s as 0x02,
+  not 0x01, which nobody timed and may end at 268 s. So every value keeps
+  the slack NI's driver gives it: 3.001 s is 0xfd, 11 s 0xfe.
 - What the adapter then waits, measured (§7.3), captured unit 013CC9DF
-  under NI's driver / bench unit 01CEE482 under this one, by the timeout
-  asked: up to 2.285 ms, 0xf5, 2.3 ms / not timed; to 5.348 ms, 0xf6,
-  5.3-5.5 ms / not timed; to 17.719 ms, 0xf7, 17.7-17.8 ms / not timed; to
-  34.088 ms, 0xf8, 34.1 ms / not timed; to 127 ms, 0xf9, 0.132 s / 0.127 s;
-  to 263.4 ms, 0xfa, 0.2635 s / 0.375 s; to 1.0498 s, 0xfb, 1.050 s / 1.250
-  s; to 3.75 s, 0xfc, 4.196 s / 3.750 s; to 16.778 s, 0xfd, 16.778 s / 20.0
-  s; to 33.555 s, 0xfe, 33.556 s / 41.25 s. The longer codes, 0xff (to 100
-  s), 0x01 (to 268 s) and 0x02 (to 1000 s), were timed on neither. The
-  application's 5 s goes out as 0xfd.
+  under NI's driver / bench unit 01CEE482 under this one, by code and the
+  timeouts that go out as it: 0xf5 (to 1 ms), 2.3 ms / not timed; 0xf6
+  (to 3 ms), 5.3-5.5 ms / not timed; 0xf7 (to 10 ms), 17.7-17.8 ms / not
+  timed; 0xf8 (to 30 ms), 34.1 ms / not timed; 0xf9 (to 100 ms), 0.132 s /
+  0.127 s, a session total with the wire not logged; 0xfa (to 263 ms),
+  0.2635 s / 0.375 s; 0xfb (to 1 s), 1.050 s / 1.250 s; 0xfc (to 3 s),
+  4.196 s / 3.750 s; 0xfd (to 10 s), 16.778 s / 20.0 s; 0xfe (to 30 s),
+  33.556 s / 41.25 s. The longer codes, 0xff (to 100 s), 0x01 (to 268 s)
+  and 0x02 (to 1000 s), were timed on neither. The application's 5 s goes
+  out as 0xfd, a sweep's 11-16 s as 0xfe, 101 s as 0x01.
 - The host waits for the adapter to say so: the longer of the two units'
   figures plus 2 s (§7.2), plus a second per 1000 bytes of a transfer, and
   on NI's raw messages the 20 s of their addressing block's 0xfd as well.
