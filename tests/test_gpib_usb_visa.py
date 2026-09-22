@@ -822,6 +822,67 @@ class TestBoardRegistry:
         registry.release('0')
         assert sims[1].closed
 
+    @staticmethod
+    def replugging(enumeration):
+        """An opener that claims only a device on the bus now, failing for a stale one as a real
+        claim does (libusb's no such device, §11.2); returns (registry, opened, sims, plug)."""
+        live = {5}
+        opened: List[AdapterInfo] = []
+        sims: List[SimulatedAdapter] = []
+
+        def opener(info):
+            if info.address not in live:
+                raise transport.TransportGone('cannot claim interface 0: No such device')
+            opened.append(info)
+            sims.append(SimulatedAdapter({}))
+            return sims[-1]
+
+        def plug(address):
+            live.clear()
+            if address is not None:
+                live.add(address)
+            enumeration['adapters'] = [] if address is None else [fake_adapter_info(serial='AAA', address=address)]
+
+        enumeration['adapters'] = [fake_adapter_info(serial='AAA', address=5)]
+        return BoardRegistry(open_transport=opener, first_board=0), opened, sims, plug
+
+    def test_an_unplug_found_only_by_the_close_reopens_on_the_first_attempt(self, enumeration):
+        registry, opened, sims, plug = self.replugging(enumeration)
+        registry.acquire('0')
+        sims[0].unplugged = True
+        plug(7)
+        registry.release('0')   # the shutdown write finds the device gone
+        assert registry.acquire('0') is not None
+        assert [info.address for info in opened] == [5, 7]
+        registry.release('0')
+
+    def test_an_unplug_and_replug_between_sessions_reopens_on_the_first_attempt(self, enumeration):
+        # Nothing saw the unplug: the board still names the old device, whose claim fails.
+        registry, opened, sims, plug = self.replugging(enumeration)
+        registry.acquire('0')
+        registry.release('0')
+        plug(7)
+        assert registry.acquire('0') is not None
+        assert [info.address for info in opened] == [5, 7]
+        registry.release('0')
+
+    def test_an_open_before_the_replug_does_not_keep_the_board_on_the_dead_device(self, enumeration):
+        # A session is still open on the unplugged adapter, and an open (list_instruments makes
+        # one) is tried before the replug: it fails, and the first open after the replug works.
+        registry, opened, sims, plug = self.replugging(enumeration)
+        old = registry.acquire('0')
+        sims[0].unplugged = True
+        with pytest.raises(gpib_usb.AdapterGone):
+            old.status()
+        plug(None)
+        with pytest.raises(transport.TransportGone):
+            registry.acquire('0')
+        plug(7)
+        new = registry.acquire('0')
+        assert new is not old and [info.address for info in opened] == [5, 7]
+        registry.release('0')
+        registry.release('0')
+
     def test_failed_acquire_re_enumerates_next_time(self, enumeration):
         def broken(info):
             raise TransportError('busy')

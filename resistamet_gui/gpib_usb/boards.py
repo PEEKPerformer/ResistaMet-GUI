@@ -12,13 +12,16 @@ A board's Controller is opened and attached on the first ``acquire`` and
 closed on the ``release`` that brings its session count to zero. Nothing
 here knows about pyvisa; ``visa_session`` sits on top.
 
-An adapter that leaves the USB bus (``Controller.adapter_gone``) comes back,
-when it is replugged, as a new USB device with the same serial (spec §11.2,
-"Hot-unplug mid-run"). So a board whose controller found its adapter gone
-is looked up afresh before its next open: once its sessions are all closed,
-the next ``owns`` or ``acquire`` enumerates again; while sessions are still
-open on it, an ``acquire`` enumerates, takes the new device for the board
-and opens it, and the old sessions keep failing on the old controller.
+An adapter that leaves the USB bus comes back, when it is replugged, as a
+new USB device with the same serial (spec §11.2, "Hot-unplug mid-run"). A
+board whose adapter was found gone -- by an operation, by the close, or by
+an open that could not claim the old device -- is marked stale, and its
+next ``acquire`` enumerates first and opens the device found for it: with
+its sessions closed the board is rebuilt from the enumeration, with
+sessions still open on it (which keep failing on the old controller) it
+takes the new device in place. An open that finds the device gone looks at
+the bus once more and tries again, so an unplug and replug between sessions,
+which nothing saw, costs no failed open either.
 
 Locks: the registry's lock guards the board table and the session counts,
 and is held only for bookkeeping. Opening and closing an adapter happen
@@ -38,8 +41,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from . import device_ops as ops
 from . import transport
 from .controller import Controller
-from .protocol import GpibError
-from .transport import AdapterInfo, Transport, TransportError
+from .protocol import AdapterGone, GpibError
+from .transport import AdapterInfo, Transport, TransportError, TransportGone
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +105,9 @@ class _Board:
         self.sessions = 0
         #: Held while this board's adapter is being opened or closed.
         self.lock = threading.Lock()
+        #: Its adapter was found gone from the USB bus: ``info`` names a device that no
+        #: longer exists, until an enumeration hands the board the one that came back.
+        self.stale = False
 
     @property
     def busy(self) -> bool:
@@ -110,8 +116,8 @@ class _Board:
 
     @property
     def gone(self) -> bool:
-        """Its open controller found the adapter gone from the USB bus: its handle is dead."""
-        return self.controller is not None and self.controller.adapter_gone
+        """Its adapter was found gone from the USB bus: its handle is dead."""
+        return self.stale or (self.controller is not None and self.controller.adapter_gone)
 
 
 class BoardRegistry:
@@ -147,6 +153,7 @@ class BoardRegistry:
                 # the next acquire opens the new device. The old handle is released by
                 # the old controller's close, not here.
                 current.info = info
+                current.stale = False
                 boards[name] = current
             elif current.busy:
                 boards[name] = current       # in use: keep its handle, drop the duplicate
@@ -192,29 +199,45 @@ class BoardRegistry:
             return sorted(self._boards, key=int)
 
     def acquire(self, board: str) -> Controller:
-        """The attached controller for ``board``; opened on first use. KeyError if unknown."""
-        with self._lock:
-            if not self._enumerated or (board in self._boards and self._boards[board].gone):
-                self._refresh_locked()
-            entry = self._boards[board]
-            entry.sessions += 1  # counted before the open, so a refresh meanwhile keeps this handle
-        try:
-            with entry.lock:  # waits out a close of the same adapter that is still running
-                if entry.controller is not None and entry.controller.adapter_gone:
-                    # The sessions still open on it fail on the old controller; this one
-                    # gets the device the refresh above found, if the adapter is back.
-                    entry.controller.close()
-                    entry.controller = None
-                if entry.controller is None:
-                    entry.controller = self._open(entry.info)
-                    logger.info('GPIB%s: %s attached (%s)', board, entry.info.label,
-                                _instructions_label(entry.controller))
-                return entry.controller
-        except BaseException:
+        """The attached controller for ``board``; opened on first use. KeyError if unknown.
+
+        An open that finds the board's device gone marks the board stale and
+        is tried once more after an enumeration, which hands the board the
+        device that came back if the adapter was replugged.
+        """
+        for attempt in (1, 2):
             with self._lock:
-                entry.sessions -= 1
-                self._enumerated = False  # the hardware may have changed; look again next time
-            raise
+                if not self._enumerated or (board in self._boards and self._boards[board].gone):
+                    self._refresh_locked()
+                entry = self._boards[board]
+                entry.sessions += 1  # counted before the open, so a refresh meanwhile keeps this handle
+            try:
+                with entry.lock:  # waits out a close of the same adapter that is still running
+                    if entry.controller is not None and entry.controller.adapter_gone:
+                        # The sessions still open on it fail on the old controller; this one
+                        # gets the device the refresh above found, if the adapter is back.
+                        entry.controller.close()
+                        entry.controller = None
+                        entry.stale = True
+                    if entry.controller is None:
+                        entry.controller = self._open(entry.info)
+                        logger.info('GPIB%s: %s attached (%s)', board, entry.info.label,
+                                    _instructions_label(entry.controller))
+                    return entry.controller
+            except (TransportGone, AdapterGone) as exc:
+                with self._lock:
+                    entry.sessions -= 1
+                    entry.stale = True
+                    self._enumerated = False
+                if attempt == 2:
+                    raise
+                logger.info('GPIB%s: %s is gone (%s); looking at the USB bus again', board, entry.info.label, exc)
+            except BaseException:
+                with self._lock:
+                    entry.sessions -= 1
+                    self._enumerated = False  # the hardware may have changed; look again next time
+                raise
+        raise AssertionError('unreachable')  # pragma: no cover
 
     def _open(self, info: AdapterInfo) -> Controller:
         usb_transport: Optional[Transport] = None
@@ -256,6 +279,7 @@ class BoardRegistry:
             with self._lock:
                 # Its info names a USB device that no longer exists; look at the bus
                 # again before the board is next opened or owned.
+                entry.stale = True
                 self._enumerated = False
 
     def list_interfaces(self) -> List[str]:

@@ -333,6 +333,10 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
                         self._check_ni_reply(reply, 'bank-2 session close', (1, 1), strict=False)
                         self._ni_session_state = None
                     self._link.register_write(t.SHUTDOWN_WRITES, 'shutdown')
+            except TransportGone as gone:
+                # Found only now: recorded, so that the board registry knows the
+                # handle is dead and looks for the device that comes back.
+                self._adapter_gone(gone)
             except (GpibError, TransportError) as exc:
                 logger.warning('shutdown register write failed: %s', exc)
             finally:
