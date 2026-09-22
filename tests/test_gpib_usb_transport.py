@@ -403,12 +403,15 @@ class TestPyUsbTransport:
         device.write_returns = 100
         assert usb_transport.bulk_out_raw(bytes(2050), 5000) == 100
 
-    def test_short_write_is_an_error(self, monkeypatch):
+    def test_short_write_is_a_timeout(self, monkeypatch):
+        # pyusb returns a short count only when the wait ran out after some packets went: a hung
+        # adapter taking the first packets of a message (§8.17) must read as a timeout, which
+        # the controller reports as the hung adapter, not as another USB failure.
         device = HS()
         install_fake_usb(monkeypatch, [device])
         usb_transport = PyUsbTransport(device, 0x02, 0x84)
         device.write_returns = 3
-        with pytest.raises(TransportError):
+        with pytest.raises(TransportTimeout):
             usb_transport.bulk_out(b'\x06\x00\x00\x00\x04\x00\x00\x00', 2000)
 
     def test_usb_timeout_becomes_transport_timeout(self, monkeypatch):

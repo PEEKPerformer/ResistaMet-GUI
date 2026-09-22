@@ -6,8 +6,8 @@ import pytest
 from resistamet_gui.gpib_usb import protocol as p
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb.controller import SRQ_WAIT_SLICE_S, Controller
-from resistamet_gui.gpib_usb.protocol import AdapterNotReady, GpibError, GpibTimeout, ProtocolError
-from resistamet_gui.gpib_usb.transport import TransportError, TransportTimeout
+from resistamet_gui.gpib_usb.protocol import AdapterGone, AdapterNotReady, GpibError, GpibTimeout, ProtocolError
+from resistamet_gui.gpib_usb.transport import TransportError, TransportGone, TransportTimeout
 from tests.fakes.gpib_usb import (STATUS_8, T3S, ScriptedTransport, attach_script, attached, h,
                                   reattach_after_usb_fault_script, regwrite_reply, status_reply)
 
@@ -116,6 +116,28 @@ class TestWaitSrq:
         transport.assert_done()
         assert [kind for kind, _, _ in transport.timeouts if kind == 'intr'] == []
         assert controller._srq_idle.is_set()  # nothing was left half-armed
+
+    def test_a_wait_sees_the_adapter_gone_that_another_thread_found(self):
+        # The lock is released while the interrupt read blocks; an operation in between that
+        # finds the adapter gone must end the wait before its next slice touches USB.
+        class Found(ScriptedTransport):
+            controller: Controller
+
+            def interrupt_in(self, length, timeout_ms):
+                with pytest.raises(AdapterGone):
+                    self.controller.status()   # another thread, while this read blocks
+                return super().interrupt_in(length, timeout_ms)
+
+        transport = Found(attach_script() + [
+            ('ctrl', (0x21, 0x0200, 0, 8), TransportGone('the device is no longer on the USB bus')),
+            ('intr', TransportTimeout('nothing'), 64),
+        ])
+        controller = Controller(transport, t.PID_HS, sleep=lambda s: None)
+        transport.controller = controller
+        controller.attach()
+        with pytest.raises(AdapterGone):
+            controller.wait_srq(5.0)
+        transport.assert_done()   # no second interrupt read
 
     def test_only_one_wait_at_a_time(self):
         class Nested(ScriptedTransport):

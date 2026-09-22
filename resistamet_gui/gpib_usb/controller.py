@@ -398,8 +398,8 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         the write as a whole, from this call on (``_write_bytes``).
         """
         with self._guard():
-            deadline = self._deadline(timeout_s)
             self._ensure_attached()
+            deadline = self._deadline(timeout_s)  # after any re-attach, which is not the transfer's
             if not data:
                 return 0
             code = p.timeout_code(timeout_s)
@@ -416,8 +416,8 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         adapter reports error 3 or 8 when nothing is addressed to listen.
         """
         with self._guard():
-            deadline = self._deadline(timeout_s)
             self._ensure_attached()
+            deadline = self._deadline(timeout_s)  # after any re-attach, which is not the transfer's
             if not data:
                 return 0
             return self._write_bytes(data, p.timeout_code(timeout_s), send_eoi, eos_char, deadline)
@@ -441,8 +441,8 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         ``termchar``, and addresses the instrument itself.
         """
         with self._guard():
-            deadline = self._deadline(timeout_s)
             self._ensure_attached()
+            deadline = self._deadline(timeout_s)  # after any re-attach, which is not the transfer's
             if max_bytes < 1:
                 return b'', False
             code = p.timeout_code(timeout_s)
@@ -462,8 +462,8 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         false, else error 2.
         """
         with self._guard():
-            deadline = self._deadline(timeout_s)
             self._ensure_attached()
+            deadline = self._deadline(timeout_s)  # after any re-attach, which is not the transfer's
             if max_bytes < 1:
                 return b'', False
             return self._read_bytes(max_bytes, p.timeout_code(timeout_s), eos, eos_8bit, 'read', deadline)
