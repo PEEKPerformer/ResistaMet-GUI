@@ -208,12 +208,12 @@ class AdapterLink:
         The longest expiry either timed adapter showed under that code plus
         two seconds (``protocol.host_wait_s``, §7.3), so the adapter always
         gives up first and says so in its reply; this controller's infinite
-        wait for the disabled code. Every message sent here carries one
-        timed instruction, so no expiries are summed.
+        wait for the disabled code. For a message with more than one timed
+        block, NI's raw messages, ``transfer_wait_s`` adds the others.
         """
         return p.host_wait_s(code, self.infinite_wait_s)
 
-    def transfer_wait_s(self, code: int, byte_count: int) -> float:
+    def transfer_wait_s(self, code: int, byte_count: int, also: Sequence[int] = ()) -> float:
         """The host wait for a transfer of ``byte_count`` bytes that the bus paces.
 
         The reply wait for ``code``, plus the time the bytes themselves take
@@ -221,9 +221,12 @@ class AdapterLink:
         known to bound the whole instruction). Used for the reply to one framed 0x0a, which comes
         only when that instruction is over; the OUT of a 0x0d message, and its
         reply for the part the adapter buffers; the raw IN of a 0x0b; the
-        raw OUT of a 0x0e and its reply.
+        raw OUT of a 0x0e and its reply. ``also`` names the codes of the
+        message's other timed blocks, whose expiries add to the wait (§7.2:
+        NI's raw messages carry an addressing 0x0c with its own code).
         """
-        return self.reply_wait_s(code) + byte_count / BUS_MIN_RATE_BPS
+        others = sum(t.timeout_expiry_s(other) or 0.0 for other in also)
+        return self.reply_wait_s(code) + others + byte_count / BUS_MIN_RATE_BPS
 
     def resync(self) -> None:
         """§8.2: stop whatever is in flight, drain one stale reply, re-attach later.

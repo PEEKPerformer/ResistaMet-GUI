@@ -9,8 +9,9 @@ from resistamet_gui.gpib_usb.controller import RAW_WRITE_MIN_BYTES, RECOVERY_WAI
 from resistamet_gui.gpib_usb.protocol import GpibError, GpibTimeout, NoListener, ProtocolError
 from resistamet_gui.gpib_usb.transport import TransportError, TransportStall, TransportTimeout
 from tests.fakes.gpib_usb import (DRAIN, DRAIN_LENGTH, RAW_DRAIN, SHORT_MS, STOP, T3S, ScriptedTransport,
-                                  address_listener, attach_script, attached_ni, h, raw_wait_ms, raw_write_reply,
-                                  reattach_after_usb_fault_script, reattach_script, regread_reply, status_reply)
+                                  address_listener, attach_script, attached_ni, h, ni_raw_write_reply, ni_session,
+                                  ni_write, raw_wait_ms, raw_write_reply, reattach_after_usb_fault_script,
+                                  reattach_script, regread_reply, status_reply)
 
 
 class TestRawWrite:
@@ -19,12 +20,14 @@ class TestRawWrite:
     LONG = b'*CLS;' * 409 + b'*CL\r\n'  # 2050 bytes, as longwrite.pcap
 
     def test_2050_bytes_with_ni_bytes(self):
-        # longwrite.pcap 1.8914 / 1.8916 / 2.0354: code 0xfe, termination character 0x0a, EOI.
+        # longwrite.pcap 1.8914 / 1.8916 / 2.0354: code 0xfe, termination character 0x0a, EOI,
+        # in NI's 36-byte message (§10.5.2), byte for byte, after its bank-2 configuration.
         assert len(self.LONG) == 2050
-        controller, transport = attached_ni(address_listener(pad=24, code=0xFE) + [
-            ('out', h('0e 00 00 fe 00 0a 08 00 fe f7 ff ff 04 00 00 00')),
+        controller, transport = attached_ni(ni_session(pad=24, code=0xFE) + [
+            ('out', h('03 00 00 00 0c fd 00 fd 40 3f 38 00 0e 00 00 fe 00 0a 08 00 fe f7 ff ff'
+                      '09 01 00 02 03 01 00 00 04 00 00 00')),
             ('raw_out', self.LONG),
-            ('in', h('0e 00 28 00 00 00 00 00 04 00 00 00'), 512),
+            ('in', ni_raw_write_reply(2050, 2050), 512),
         ])
         assert controller.write(24, self.LONG, timeout_s=20.0, eos_char=0x0A) == 2050
         transport.assert_done()
@@ -35,9 +38,9 @@ class TestRawWrite:
         at = bytes(RAW_WRITE_MIN_BYTES)
         controller, transport = attached_ni(address_listener() + [
             ('out', p.write_message(under, T3S, True)), ('in', status_reply(0x0D)),
-        ] + address_listener() + [
-            ('out', p.write_raw_message(len(at), T3S, True)), ('raw_out', at),
-            ('in', raw_write_reply(len(at), len(at)), 512),
+        ] + ni_session() + [
+            ('out', ni_write(len(at))), ('raw_out', at),
+            ('in', ni_raw_write_reply(len(at), len(at)), 512),
         ])
         assert controller.write(22, under, timeout_s=3.0) == RAW_WRITE_MIN_BYTES - 1
         assert controller.write(22, at, timeout_s=3.0) == RAW_WRITE_MIN_BYTES
@@ -62,10 +65,10 @@ class TestRawWrite:
     def test_chunks_of_0xffff_with_eoi_on_the_last_and_a_short_tail_framed(self):
         # Per chunk, like the read loop: the 1-byte tail is below the threshold, so 0x0d.
         data = bytes(0xFFFF) + b'Z'
-        controller, transport = attached_ni(address_listener() + [
-            ('out', p.write_raw_message(0xFFFF, T3S, False)), ('raw_out', bytes(0xFFFF)),
-            ('in', raw_write_reply(0xFFFF, 0xFFFF), 512),
-            ('out', p.write_message(b'Z', T3S, True)), ('in', status_reply(0x0D)),
+        controller, transport = attached_ni(ni_session() + [
+            ('out', ni_write(0xFFFF, eoi=False)), ('raw_out', bytes(0xFFFF)),
+            ('in', ni_raw_write_reply(0xFFFF, 0xFFFF), 512),
+            ('out', p.write_message(b'Z', T3S, True)), ('in', status_reply(0x0D)),   # still addressed
         ])
         assert controller.write(22, data, timeout_s=3.0) == 0x10000
         transport.assert_done()
@@ -96,11 +99,13 @@ class TestRawWrite:
     STALL = TransportStall('raw bulk write was refused with a STALL')
 
     def refused_write(self, tail: List[Tuple[Any, ...]]) -> List[Tuple[Any, ...]]:
-        """NI's instruction and reply blocks for the refused 0x0e, in our bare message."""
-        return address_listener(pad=5) + [
-            ('out', h('0e 00 00 fc 00 0a 08 00 3a f6 ff ff 04 00 00 00')),
+        """NI's message and reply for the refused 0x0e, byte for byte (raw_errors.pcap 5.6041, 5.6057)."""
+        return ni_session(pad=5) + [
+            ('out', h('03 00 00 00 0c fd 00 fd 40 3f 25 00 0e 00 00 fc 00 0a 08 00 3a f6 ff ff'
+                      '09 01 00 02 03 01 00 00 04 00 00 00')),
             ('raw_out', self.NOBODY, self.STALL),
-            ('in', h('0e 00 28 08 3a f6 ff ff 04 00 00 00'), 512),
+            ('in', h('03 00 30 00 00 00 ff ff 0c 00 38 00 00 00 ff ff 0e 00 28 08 3a f6 ff ff'
+                     '09 00 28 00 3a f6 ff ff 01 00 00 00 04 00 00 00'), 512),
         ] + tail
 
     def test_refused_data_reads_the_reply_resets_both_out_pipes_and_carries_on(self):
@@ -127,8 +132,8 @@ class TestRawWrite:
         # The refusal came but the reply did not, so the host stopped the instruction. What the
         # alternate OUT still holds is as unknown as after a stranded write: it would lead the
         # data of the next 0x0e.
-        controller, transport = attached_ni(address_listener(pad=5) + [
-            ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY, self.STALL),
+        controller, transport = attached_ni(ni_session(pad=5) + [
+            ('out', ni_write(2502, pad=5, e=0x0A)), ('raw_out', self.NOBODY, self.STALL),
             ('in', TransportTimeout('no reply yet'), 512), STOP,
             ('in', raw_write_reply(2502, 0, error=1), 512),
             ('clear_halt', 0x06), ('clear_halt', 0x02),
@@ -141,8 +146,8 @@ class TestRawWrite:
         transport.assert_done()
 
     def test_refused_data_with_an_error_other_than_no_listener_reattaches_next(self):
-        controller, transport = attached_ni(address_listener(pad=5) + [
-            ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY, self.STALL),
+        controller, transport = attached_ni(ni_session(pad=5) + [
+            ('out', ni_write(2502, pad=5, e=0x0A)), ('raw_out', self.NOBODY, self.STALL),
             ('in', raw_write_reply(2502, 0, error=7), 512),
             ('clear_halt', 0x06), ('clear_halt', 0x02),
         ] + reattach_after_usb_fault_script(raw=True) + [
@@ -162,9 +167,9 @@ class TestRawWrite:
         # driver sends, an ordinary 0x0e with no stop request and no re-attach in between.
         controller, transport = attached_ni(self.refused_write([
             ('clear_halt', 0x06), ('clear_halt', 0x02),
-        ]) + address_listener(pad=24) + [
-            ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY),
-            ('in', raw_write_reply(2502, 2502), 512),
+        ]) + ni_session(pad=24) + [
+            ('out', ni_write(2502, pad=24, e=0x0A)), ('raw_out', self.NOBODY),
+            ('in', ni_raw_write_reply(2502, 2502), 512),
         ])
         with pytest.raises(NoListener):
             controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
@@ -186,8 +191,8 @@ class TestRawWrite:
         # How libusb on macOS reports the adapter's STALL has not been seen. Whatever it is,
         # the reply is read and the pipes are reset, or the reply stays queued and 0x06 halted.
         odd = TransportError('raw bulk write failed: [Errno 5] Input/Output Error')
-        controller, transport = attached_ni(address_listener(pad=5) + [
-            ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY, odd),
+        controller, transport = attached_ni(ni_session(pad=5) + [
+            ('out', ni_write(2502, pad=5, e=0x0A)), ('raw_out', self.NOBODY, odd),
             ('in', h('0e 00 28 08 3a f6 ff ff 04 00 00 00'), 512),
             ('clear_halt', 0x06), ('clear_halt', 0x02),
         ] + address_listener(pad=24) + [
@@ -203,8 +208,8 @@ class TestRawWrite:
     def test_the_refusal_is_logged_with_its_class_errno_and_backend_code(self, caplog):
         stall = TransportStall('raw bulk write was refused with a STALL')
         stall.errno, stall.backend_code = 32, -9
-        controller, transport = attached_ni(address_listener(pad=5) + [
-            ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY, stall),
+        controller, transport = attached_ni(ni_session(pad=5) + [
+            ('out', ni_write(2502, pad=5, e=0x0A)), ('raw_out', self.NOBODY, stall),
             ('in', h('0e 00 28 08 3a f6 ff ff 04 00 00 00'), 512),
             ('clear_halt', 0x06), ('clear_halt', 0x02),
         ])
@@ -215,8 +220,8 @@ class TestRawWrite:
         assert 'TransportStall' in line and 'errno 32' in line and 'backend code -9' in line
 
     def test_the_pipes_are_reset_and_the_refusal_raised_when_the_reply_never_comes(self):
-        controller, transport = attached_ni(address_listener(pad=5) + [
-            ('out', p.write_raw_message(2502, T3S, True, 0x0A)),
+        controller, transport = attached_ni(ni_session(pad=5) + [
+            ('out', ni_write(2502, pad=5, e=0x0A)),
             ('raw_out', self.NOBODY, self.STALL),
             ('in', TransportTimeout('no reply'), 512), STOP, ('in', TransportTimeout('still none'), 512),
             STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,   # no reply is a fault (§8.2)
@@ -230,8 +235,8 @@ class TestRawWrite:
         transport.assert_done()
 
     def test_refused_data_with_a_reply_that_reports_success_raises_the_refusal_and_reattaches(self):
-        controller, transport = attached_ni(address_listener(pad=5) + [
-            ('out', p.write_raw_message(2502, T3S, True, 0x0A)),
+        controller, transport = attached_ni(ni_session(pad=5) + [
+            ('out', ni_write(2502, pad=5, e=0x0A)),
             ('raw_out', self.NOBODY, self.STALL),
             ('in', raw_write_reply(2502, 2502), 512),
             ('clear_halt', 0x06), ('clear_halt', 0x02),
@@ -245,8 +250,8 @@ class TestRawWrite:
 
     def test_a_reply_read_that_fails_too_still_resets_the_pipes_and_raises_the_first_error(self):
         gone = TransportError('raw bulk write failed: [Errno 19] No such device')
-        controller, transport = attached_ni(address_listener(pad=5) + [
-            ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY, gone),
+        controller, transport = attached_ni(ni_session(pad=5) + [
+            ('out', ni_write(2502, pad=5, e=0x0A)), ('raw_out', self.NOBODY, gone),
             ('in', TransportError('bulk read failed: [Errno 19] No such device'), 512),
             ('clear_halt', 0x06, TransportError('no device')), ('clear_halt', 0x02, TransportError('no device')),
         ])
@@ -259,8 +264,8 @@ class TestRawWrite:
         class NoClearHalt(ScriptedTransport):
             clear_halt = None  # type: ignore[assignment]
 
-        transport = NoClearHalt(attach_script() + address_listener(pad=5) + [
-            ('out', p.write_raw_message(2502, T3S, True, 0x0A)), ('raw_out', self.NOBODY, self.STALL),
+        transport = NoClearHalt(attach_script() + ni_session(pad=5) + [
+            ('out', ni_write(2502, pad=5, e=0x0A)), ('raw_out', self.NOBODY, self.STALL),
             ('in', h('0e 00 28 08 3a f6 ff ff 04 00 00 00'), 512),
         ] + DRAIN + [RAW_DRAIN] + attach_script() + [             # the pipes cannot be trusted: re-attach
             ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),

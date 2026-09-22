@@ -254,6 +254,70 @@ class TestEncoderReproducesNi:
         assert seen[p.OP_SERIAL_POLL] >= 3 and seen[p.OP_WRITE] >= 10 and seen[p.OP_READ] >= 20
 
 
+#: The 2026-09-22 batch (§10.10), when present.
+PCAPS_2026_09_22 = (sorted(path.stem for path in CAPTURES_2026_09_22.glob('*.pcap'))
+                    if CAPTURES_2026_09_22.is_dir() else [])
+
+
+def _address_bytes(command: bytes) -> bytes:
+    return command[4:4 + (0x100 - command[1])]
+
+
+def _secondary(address: bytes, index: int) -> Optional[int]:
+    return address[index] - 0x60 if len(address) > index else None
+
+
+class TestNiMessagesReproduced:
+    """The opt-in raw paths send NI's own messages whole: every one in every capture, rebuilt
+    from the fields decoded from it (§10.1.2, §10.5.2, §10.2.4, §10.3.3)."""
+
+    def test_every_raw_and_session_message_is_rebuilt_whole(self):
+        seen: Dict[str, int] = {}
+        for name in ALL_PCAPS + PCAPS_2026_09_22:
+            for transfer in transfers(name):
+                if transfer.endpoint != EP_OUT or transfer.completion or not transfer.payload:
+                    continue
+                message = transfer.payload
+                blocks = split_host_blocks(message)
+                ids = [block[0] for block in blocks]
+                if ids == [p.OP_STATUS_SNAPSHOT, p.OP_COMMAND, p.OP_READ_RAW, p.OP_REGISTER_WRITE, p.OP_REGISTER_WRITE]:
+                    address, read = _address_bytes(blocks[1]), blocks[2]
+                    count = -int.from_bytes(read[4:8], 'little', signed=True)
+                    if count > p.MAX_RAW_TRANSFER_BYTES:
+                        seen['read above 0xffff, not built'] = seen.get('read above 0xffff, not built', 0) + 1
+                        continue
+                    built = p.ni_read_raw_message(address[1] - 0x20, address[2] - 0x40, _secondary(address, 3),
+                                                  count, read[3], **_eos_params(read[1], read[2]))  # type: ignore[arg-type]
+                    kind = 'read'
+                elif ids == [p.OP_STATUS_SNAPSHOT, p.OP_COMMAND, p.OP_WRITE_RAW, p.OP_REGISTER_WRITE]:
+                    address, write = _address_bytes(blocks[1]), blocks[2]
+                    built = p.ni_write_raw_message(address[0] - 0x40, address[2] - 0x20, _secondary(address, 3),
+                                                   -int.from_bytes(write[8:12], 'little', signed=True), write[3],
+                                                   bool(write[6] & p.WRITE_FLAG_EOI), write[5])
+                    kind = 'write'
+                elif ids[-2:] == [p.OP_REGISTER_WRITE, p.OP_REGISTER_WRITE] and blocks[-1][1] == 4:
+                    values = {blocks[-1][i + 1]: blocks[-1][i + 2] for i in range(3, 15, 3)}
+                    sad = None if values[0x06] == 0 else values[0x06] - 0x60
+                    if ids[0] == p.OP_STATUS_SNAPSHOT:
+                        built, kind = p.ni_session_open_message(values[0x05], sad, values[0x07]), 'session open'
+                    else:
+                        built, kind = p.ni_session_update_message(values[0x05], sad, values[0x07]), 'session update'
+                elif message == p.ni_session_close_message():
+                    built, kind = message, 'session close'
+                else:
+                    continue
+                if kind in ('read', 'write') and name == 'srq_poll' and blocks[1][3] == 0xFC:
+                    # §10.1.9: the one capture whose addressing carried 0xfc, after an INTFC session
+                    # had been opened and closed in the same process; meaning not established.
+                    built = built[:7] + bytes((0xFC,)) + built[8:]
+                    seen['addressing under 0xfc'] = seen.get('addressing under 0xfc', 0) + 1
+                assert built == message, '%s: %s\n  NI:    %s\n  built: %s' % (name, kind, message.hex(' '),
+                                                                          built.hex(' '))
+                seen[kind] = seen.get(kind, 0) + 1
+        assert seen['read'] >= 50 and seen['write'] >= 3
+        assert seen['session open'] >= 20 and seen['session update'] >= 20 and seen['session close'] >= 20
+
+
 # ---------------------------------------------------------------------------
 # (b) decoding
 # ---------------------------------------------------------------------------
