@@ -176,6 +176,38 @@ class ScriptedTransport:
         return found
 
 
+def _pad4(n: int) -> int:
+    return -(-n // 4) * 4
+
+
+def split_host_message(message: bytes) -> List[bytes]:
+    """The instruction blocks of a host message, each with its padding, up to the termination (§3.1)."""
+    blocks: List[bytes] = []
+    off = 0
+    while message[off] != p.OP_TERMINATION:
+        opcode = message[off]
+        if opcode in (p.OP_STATUS_SNAPSHOT, p.OP_TAKE_CONTROL, p.OP_GO_TO_STANDBY, p.OP_INTERFACE_CLEAR):
+            length = 4
+        elif opcode == p.OP_COMMAND:
+            length = _pad4(4 + (0x100 - message[off + 1]))
+        elif opcode == p.OP_WRITE:
+            length = _pad4(8 + (0x10000 - int.from_bytes(message[off + 1:off + 3], 'little')))
+        elif opcode in (p.OP_READ, p.OP_READ_RAW, p.OP_SERIAL_POLL):
+            length = 8
+        elif opcode == p.OP_WRITE_RAW:
+            length = 12
+        elif opcode == p.OP_REGISTER_WRITE:
+            length = _pad4(3 + 3 * message[off + 1])
+        elif opcode == p.OP_REGISTER_READ:
+            length = _pad4(2 + 2 * message[off + 1])
+        else:
+            raise AssertionError('unknown host opcode 0x%02x in %s' % (opcode, message.hex(' ')))
+        blocks.append(message[off:off + length])
+        off += length
+    assert message[off:] == p.TERMINATION_BLOCK, message.hex(' ')
+    return blocks
+
+
 # --- reply builders ---------------------------------------------------------
 
 def status_reply(opcode: int, error: int = 0, count: int = 0, ibsta: int = 0x0130) -> bytes:
@@ -301,6 +333,52 @@ def raw_read_reply(requested: int, transferred: int, *, end: bool = True, error:
     ibsta = 0x0064 | (t.IBSTA_END if end else 0)
     block = bytes((0x0B,)) + ibsta.to_bytes(2, 'big') + bytes((error,)) + count + bytes((0xE0 if end else 0x60, 0, 0, 0))
     return block + h('09 00 64 00') + count + h('01 00 00 00') + h('04 00 00 00')
+
+
+# --- NI's instrument-session messages (§10), the opt-in raw paths ------------
+
+def _regwrite_block(writes: int) -> bytes:
+    """The 12-byte status of a register-write block inside a batched reply (§10.2.1)."""
+    return h('09 00 64 00 00 00 ff ff') + bytes((writes, 0, 0, 0))
+
+
+def ni_session(pad: int = 22, code: int = T3S, sad: Optional[int] = None,
+               update: bool = False) -> List[Tuple[Any, ...]]:
+    """NI's bank-2 session configuration before a raw instruction (§10.2.4): the 32-byte open
+    form, or with ``update`` the 28-byte one a new timeout code sends; and its reply."""
+    if update:
+        return [('out', p.ni_session_update_message(pad, sad, code)),
+                ('in', _regwrite_block(1) + _regwrite_block(4) + p.TERMINATION_BLOCK, 512)]
+    return [('out', p.ni_session_open_message(pad, sad, code)),
+            ('in', h('03 00 30 00 00 00 ff ff') + _regwrite_block(1) + _regwrite_block(4) + p.TERMINATION_BLOCK, 512)]
+
+
+def ni_read(count: int, code: int = T3S, pad: int = 22, **kwargs: Any) -> bytes:
+    """NI's 40-byte read message (§10.1.2) from the controller at address 0."""
+    return p.ni_read_raw_message(0, pad, kwargs.pop('sad', None), count, code, **kwargs)
+
+
+def ni_write(length: int, code: int = T3S, pad: int = 22, eoi: bool = True, e: Optional[int] = None,
+             sad: Optional[int] = None) -> bytes:
+    """NI's 36-byte write message (§10.5.2) from the controller at address 0."""
+    return p.ni_write_raw_message(0, pad, sad, length, code, eoi, e)
+
+
+def ni_raw_read_reply(requested: int, transferred: int, *, end: bool = True, error: int = 0,
+                      command_error: int = 0) -> bytes:
+    """NI's 56-byte reply to its read message: snapshot, addressing, 0x0b with its tail, two writes."""
+    count = (transferred - requested).to_bytes(4, 'little', signed=True)
+    ibsta = 0x0064 | (t.IBSTA_END if end else 0)
+    block = bytes((0x0B,)) + ibsta.to_bytes(2, 'big') + bytes((error,)) + count + bytes((0xE0 if end else 0x60, 0, 0, 0))
+    return (h('03 00 28 00 00 00 ff ff') + bytes((0x0C, 0x00, 0x74, command_error)) + h('00 00 ff ff') + block
+            + _regwrite_block(1) + _regwrite_block(1) + p.TERMINATION_BLOCK)
+
+
+def ni_raw_write_reply(requested: int, transferred: int, *, error: int = 0) -> bytes:
+    """NI's 40-byte reply to its write message: snapshot, addressing, 0x0e, one write."""
+    count = (transferred - requested).to_bytes(4, 'little', signed=True)
+    return (h('03 00 30 00 00 00 ff ff 0c 00 38 00 00 00 ff ff') + bytes((0x0E, 0x00, 0x28, error)) + count
+            + _regwrite_block(1) + p.TERMINATION_BLOCK)
 
 
 def raw_wait_ms(count: int, base_ms: int = WAIT_3S_MS) -> int:
@@ -509,8 +587,11 @@ class SimulatedAdapter:
         self.reply = b''
         #: What the next bulk_in_raw returns (the data of a 0x0b), None when none is owed.
         self.raw_reply: Optional[bytes] = None
-        #: (length, EOI) of the 0x0e whose bytes the next bulk_out_raw must bring.
-        self.pending_raw_write: Optional[Tuple[int, bool]] = None
+        #: (length, EOI, replies of the blocks before it, blocks after it) of the 0x0e whose
+        #: bytes the next bulk_out_raw must bring.
+        self.pending_raw_write: Optional[Tuple[int, bool, bytes, List[bytes]]] = None
+        #: Bank-2 registers as the last writes left them (§10.2.4).
+        self.bank2: Dict[int, int] = {}
         self.raw_writes: List[bytes] = []
         #: Endpoints left halted by a STALL, and every pipe reset asked for, in order.
         self.halted: set = set()
@@ -571,48 +652,66 @@ class SimulatedAdapter:
                 + (count & 0xFFFF).to_bytes(2, 'little') + b'\x00\x00')
 
     def bulk_out(self, data: bytes, timeout_ms: int) -> None:
+        """One message, block by block in message order, one reply per block (§10.2.1)."""
         self._plugged()
         if self.fail_next is not None:
             failure, self.fail_next = self.fail_next, None
             raise failure
         self.messages.append(data)
-        opcode = data[0]
+        blocks = split_host_message(data)
+        replies: List[bytes] = []
+        for index, block in enumerate(blocks):
+            if block[0] == p.OP_WRITE_RAW:
+                # §10.5.2: the header now, the bytes on the alternate OUT next; the reply to the
+                # 0x0e and to the blocks behind it only once those have arrived.
+                length = -int.from_bytes(block[8:12], 'little', signed=True)
+                self.pending_raw_write = (length, bool(block[6] & 0x08), b''.join(replies), blocks[index + 1:])
+                return
+            replies.append(self._block(block))
+            if block[0] == p.OP_READ:
+                break  # the two writes embedded in a 0x0a draw no status on the bench unit (§5.2)
+        self.reply = b''.join(replies) + p.TERMINATION_BLOCK
+
+    def _block(self, block: bytes) -> bytes:
+        """The reply to one instruction block, without the termination block."""
+        opcode = block[0]
         if opcode in (p.OP_TAKE_CONTROL, p.OP_INTERFACE_CLEAR):
             self.atn = True
-            self.reply = self._status(opcode) + h('04 00 00 00')
-        elif opcode == p.OP_GO_TO_STANDBY:
+            return self._status(opcode)
+        if opcode == p.OP_GO_TO_STANDBY:
             self.atn = False
-            self.reply = self._status(opcode) + h('04 00 00 00')
-        elif opcode == p.OP_REGISTER_WRITE:
-            for start in range(3, 3 + 3 * data[1], 3):
-                if data[start:start + 3] == bytes(t.REN_ON_WRITE):
+            return self._status(opcode)
+        if opcode == p.OP_STATUS_SNAPSHOT:
+            return self._status(opcode, ibsta=self.ibsta())
+        if opcode == p.OP_REGISTER_WRITE:
+            for start in range(3, 3 + 3 * block[1], 3):
+                bank, addr, value = block[start:start + 3]
+                if (bank, addr, value) == t.REN_ON_WRITE:
                     self.ren = True
-                elif data[start:start + 3] == bytes(t.REN_OFF_WRITE):
+                elif (bank, addr, value) == t.REN_OFF_WRITE:
                     self.ren = False
-            self.reply = self._status(opcode) + bytes((data[1], 0, 0, 0)) + h('04 00 00 00')
-        elif opcode == p.OP_REGISTER_READ:
-            self.reply = bytes((0x34, self.bus_lines(), 0, 0, 0x35, 1, 0, 0)) + h('04 00 00 00')
-        elif opcode == p.OP_COMMAND:
-            self.reply = self._command(data)
-        elif opcode == p.OP_WRITE:
-            self.reply = self._write(data)
-        elif opcode == p.OP_READ:
-            self.reply = self._read(data)
-        elif opcode == p.OP_READ_RAW:
-            self.reply = self._read_raw(data)
-        elif opcode == p.OP_WRITE_RAW:
-            # §10.5.2: the header now, the bytes on the alternate OUT next; the reply after those.
-            self.pending_raw_write = (-int.from_bytes(data[8:12], 'little', signed=True), bool(data[6] & 0x08))
-        elif opcode == p.OP_SERIAL_POLL:
-            self.reply = self._serial_poll(data)
-        else:
-            raise AssertionError('unexpected opcode 0x%02x' % opcode)
+                elif bank == 2:
+                    self.bank2[addr] = value
+            return self._status(opcode) + bytes((block[1], 0, 0, 0))
+        if opcode == p.OP_REGISTER_READ:
+            return bytes((0x34, self.bus_lines(), 0, 0, 0x35, 1, 0, 0))
+        if opcode == p.OP_COMMAND:
+            return self._command(block)
+        if opcode == p.OP_WRITE:
+            return self._write(block)
+        if opcode == p.OP_READ:
+            return self._read(block)
+        if opcode == p.OP_READ_RAW:
+            return self._read_raw(block)
+        if opcode == p.OP_SERIAL_POLL:
+            return self._serial_poll(block)
+        raise AssertionError('unexpected opcode 0x%02x' % opcode)
 
     def _command(self, data: bytes) -> bytes:
         count = 0x100 - data[1]
         command_bytes = data[4:4 + count]
         if not self.instruments:
-            return self._status(p.OP_COMMAND, error=5, count=-count) + h('04 00 00 00')
+            return self._status(p.OP_COMMAND, error=5, count=-count)
         self.atn = True
         for byte in command_bytes:
             if byte == t.CMD_UNL:
@@ -640,16 +739,17 @@ class SimulatedAdapter:
                 for instrument in self.instruments.values():
                     instrument.cleared += 1
                     instrument.pending = b''
-        return self._status(p.OP_COMMAND) + h('04 00 00 00')
+        return self._status(p.OP_COMMAND)
 
     def _write(self, data: bytes) -> bytes:
         length = 0x10000 - int.from_bytes(data[1:3], 'little')
         payload = data[8:8 + length]
         if not self.listening:
-            return self._status(p.OP_WRITE, error=8, count=-length) + h('04 00 00 00')
+            return self._status(p.OP_WRITE, error=8, count=-length)
+        self.atn = False
         for pad in self.listening:
             self.instruments[pad].accept(payload, bool(data[6] & 0x08))
-        return self._status(p.OP_WRITE) + h('04 00 00 00')
+        return self._status(p.OP_WRITE)
 
     def _serial_poll(self, data: bytes) -> bytes:
         """0x10 (§10.5.4): ``3a P S sb`` then a 0x39 status block; the latter alone, with error
@@ -659,14 +759,15 @@ class SimulatedAdapter:
         self.atn = True  # the adapter addresses the bus itself
         if instrument is None:
             # §10.6.6: a poll that times out is answered without the 0x3a block.
-            return self._status(0x39, error=0x0A, ibsta=0x0074) + h('04 00 00 00')
-        return bytes((0x3A, pad, sad_byte, instrument.status_byte)) + self._status(0x39, ibsta=0x0074) + h('04 00 00 00')
+            return self._status(0x39, error=0x0A, ibsta=0x0074)
+        return bytes((0x3A, pad, sad_byte, instrument.status_byte)) + self._status(0x39, ibsta=0x0074)
 
     def _write_raw(self, payload: bytes, eoi: bool) -> bytes:
-        """The 0x0e reply once the bytes have arrived: an 8-byte status with a 32-bit count."""
+        """The 0x0e block's reply once the bytes have arrived: an 8-byte status with a 32-bit count."""
+        self.atn = False
         for pad in self.listening:
             self.instruments[pad].accept(payload, eoi)
-        return bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x00)) + h('00 00 00 00') + h('04 00 00 00')
+        return bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x00)) + h('00 00 00 00')
 
     def _talker_output(self, requested: int, eos_mode: int, eos_char: int) -> Optional[Tuple[bytes, bool]]:
         """What the addressed talker gives up for one read: (bytes, END), or None when nothing is pending."""
@@ -687,34 +788,32 @@ class SimulatedAdapter:
         return out, end
 
     def _read_raw(self, data: bytes) -> bytes:
-        """0x0b (§10.1.3): the bytes go to the alternate IN, a 12-byte 0x0b block and the
-        clear-END write's status come back on the primary."""
+        """0x0b (§10.1.2-10.1.3): the bytes go to the alternate IN, the 12-byte 0x0b block comes
+        back on the primary. Like NI's, it releases ATN itself: no 0x06 is needed after the 0x0c."""
         requested = -int.from_bytes(data[4:8], 'little', signed=True)
-        result = None if self.atn else self._talker_output(requested, data[1], data[2])
+        self.atn = False
+        result = self._talker_output(requested, data[1], data[2])
         if result is None:
-            out, end, error = b'', False, (2 if self.atn else 0x0A)
+            out, end, error = b'', False, 0x0A
         else:
             (out, end), error = result, 0
         self.raw_reply = out
         count = (len(out) - requested).to_bytes(4, 'little', signed=True)
         status = bytes((p.OP_READ_RAW,)) + (0x2064 if end else 0x0064).to_bytes(2, 'big') + bytes((error,))
-        return (status + count + bytes((0xE0 if end else 0x60, 0, 0, 0))
-                + h('09 00 64 00') + count + h('01 00 00 00') + h('04 00 00 00'))
+        return status + count + bytes((0xE0 if end else 0x60, 0, 0, 0))
 
     def _read(self, data: bytes) -> bytes:
+        """0x0a: data blocks and the 16-byte trailer as the bench unit sends it, less its termination."""
         requested = 0x10000 - int.from_bytes(data[4:6], 'little')
         eos_mode, eos_char = data[1], data[2]
-        # The 16-byte trailer as the real adapter sends it.
-        trailer_tail = h('04 00 00 00')
         if self.atn:
-            return self._status(0x38, error=2, count=-requested) + h('60 00 00 00') + trailer_tail
+            return self._status(0x38, error=2, count=-requested) + h('60 00 00 00')
         result = self._talker_output(requested, eos_mode, eos_char)
         if result is None:
             status = self._status(0x38, error=0x0A, count=-requested, ibsta=0x0020)
             if self.stale_timeout_block and requested <= 15:
-                return (h('36 00 20 00 aa 55 ff ff 04 00 00 00 04 00 00 00') + status
-                        + bytes((0xE0, requested, 0, 0)) + trailer_tail)
-            return status + h('e0 5e 00 00') + trailer_tail
+                return h('36 00 20 00 aa 55 ff ff 04 00 00 00 04 00 00 00') + status + bytes((0xE0, requested, 0, 0))
+            return status + h('e0 5e 00 00')
         out, end = result
         blocks = b''
         for start in range(0, len(out), 15):
@@ -723,7 +822,7 @@ class SimulatedAdapter:
         last_count = len(out) - ((len(out) - 1) // 15) * 15 if out else 0
         status = self._status(0x38, count=len(out) - requested,
                               ibsta=0x2100 if end else 0x0100)
-        return blocks + status + bytes((0xE0 if end else 0x60, last_count, 0, 0)) + trailer_tail
+        return blocks + status + bytes((0xE0 if end else 0x60, last_count, 0, 0))
 
     def bulk_in(self, length: int, timeout_ms: int) -> bytes:
         self._plugged()
@@ -739,7 +838,7 @@ class SimulatedAdapter:
         if 0x06 in self.halted:
             raise TransportStall('raw bulk write was refused with a STALL')
         assert self.pending_raw_write is not None, 'raw bulk OUT with no 0x0e outstanding'
-        length, eoi = self.pending_raw_write
+        length, eoi, before, after = self.pending_raw_write
         assert len(data) == length, 'the 0x0e announced %d bytes, %d arrived' % (length, len(data))
         self.pending_raw_write = None
         if not self.listening:
@@ -747,10 +846,12 @@ class SimulatedAdapter:
             # reset, and the reply with error 8 and the whole count comes by itself.
             self.halted.add(0x06)
             count = (-length).to_bytes(4, 'little', signed=True)
-            self.reply = bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x08)) + count + h('04 00 00 00')
+            self.reply = (before + bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x08)) + count
+                          + b''.join(self._block(block) for block in after) + p.TERMINATION_BLOCK)
             raise TransportStall('raw bulk write was refused with a STALL')
         self.raw_writes.append(data)
-        self.reply = self._write_raw(data, eoi)
+        self.reply = (before + self._write_raw(data, eoi) + b''.join(self._block(block) for block in after)
+                      + p.TERMINATION_BLOCK)
         return len(data)
 
     def clear_halt(self, endpoint: int) -> None:
@@ -776,7 +877,12 @@ class SimulatedAdapter:
         self.closed = True
 
     def instructions(self, opcode: int) -> List[bytes]:
+        """Every message whose first block is ``opcode``."""
         return [m for m in self.messages if m[0] == opcode]
+
+    def blocks(self, opcode: int) -> List[bytes]:
+        """Every block of ``opcode`` in every message, in order: NI's messages lead with 0x03."""
+        return [block for m in self.messages for block in split_host_message(m) if block[0] == opcode]
 
 
 def fake_adapter_info(serial: Optional[str] = '01234567', bus: int = 20, address: int = 5) -> AdapterInfo:

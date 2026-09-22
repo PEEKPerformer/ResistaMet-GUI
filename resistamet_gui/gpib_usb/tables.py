@@ -489,6 +489,31 @@ def serial_poll_enable_command(controller: int, pad: int, sad: Optional[int] = N
 SERIAL_POLL_DISABLE_COMMAND = bytes((CMD_SPD, CMD_UNT))
 
 
+def address_listener_command_ni(controller: int, pad: int, sad: Optional[int] = None) -> bytes:
+    """Controller talks, instrument listens, in NI's order: ``40+C 3f 20+N [60+S]`` (§10.2.3).
+
+    What NI puts before every 0x0d and 0x0e of an instrument session
+    (``40 3f 38`` for PAD 24, idn.pcap 0.5133); the talker form is the same
+    as ``address_talker_command``.
+    """
+    return bytes((talk_address(controller), CMD_UNL)) + _with_secondary(listen_address(pad), sad)
+
+
+#: The timeout code of every addressing 0x0c inside NI's instrument-session
+#: messages, whatever the session's timeout (§10.1.9: 354 of 367 blocks).
+NI_ADDRESSING_CODE = 0xFD
+#: Bank-2 register 0x03 := 1, the last block of every NI instrument-session
+#: message (§10.2.5); meaning not established.
+BANK2_SESSION_MARK_WRITE: Tuple[int, int, int] = (2, 0x03, 0x01)
+
+
+def bank2_session_writes(pad: int, sad: Optional[int], code: int) -> Tuple[Tuple[int, int, int], ...]:
+    """NI's bank-2 session configuration (§10.2.4): 0x04 := 1, 0x05 := PAD, 0x06 := SAD byte, 0x07 := code."""
+    _check_primary(pad)
+    return ((2, 0x04, 0x01), (2, 0x05, pad),
+            (2, 0x06, 0x00 if sad is None else secondary_address(sad)), (2, 0x07, code))
+
+
 def addressed_command(pad: int, command: int, sad: Optional[int] = None,
                       controller: Optional[int] = None) -> bytes:
     """``[40+C] 3f 20+N [60+S] <command>`` for SDC, GET, GTL, LLO.

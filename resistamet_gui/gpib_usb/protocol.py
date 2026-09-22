@@ -339,6 +339,64 @@ def read_raw_message(max_bytes: int, timeout_code: int,
                          register_write_block(READ_RAW_FOLLOWING_WRITES))
 
 
+# --------------------------------------------------------------------------
+# §10 NI's instrument-session messages, for the opt-in raw paths
+# --------------------------------------------------------------------------
+
+
+def ni_read_raw_message(own_address: int, pad: int, sad: Optional[int], max_bytes: int, timeout_code: int,
+                        eos: Optional[int] = None, eos_8bit: bool = False,
+                        termchar: Optional[int] = None) -> bytes:
+    """NI's 40-byte read message (§10.1.2): snapshot, addressing, 0x0b, clear END, bank-2 mark.
+
+    ``03 | 0c fd 00 fd 3f 20+C 40+N [60+S] | 0b m e t c0..c3 | 09 01 00 01
+    0a 55 | 09 01 00 02 03 01 | 04``: the addressing carries 0xfd whatever
+    the session's code, and no 0x06 stands between it and the 0x0b, which
+    releases ATN itself (§10.1.2, §10.1.9). ``m e`` as in ``read_eos_bytes``,
+    ``termchar`` being the session's character, which NI sends in ``e``
+    with the compare off (§10.1.6).
+    """
+    return build_message(
+        status_snapshot_block(),
+        command_block(t.address_talker_command(own_address, pad, sad), t.NI_ADDRESSING_CODE),
+        read_raw_block(max_bytes, timeout_code, eos, eos_8bit, termchar),
+        register_write_block(READ_RAW_FOLLOWING_WRITES),
+        register_write_block((t.BANK2_SESSION_MARK_WRITE,)))
+
+
+def ni_write_raw_message(own_address: int, pad: int, sad: Optional[int], length: int, timeout_code: int,
+                         send_eoi: bool, eos_char: Optional[int]) -> bytes:
+    """NI's 36-byte write message (§10.5.2): snapshot, addressing, 0x0e, bank-2 mark.
+
+    ``03 | 0c fd 00 fd 40+C 3f 20+N [60+S] | 0e 00 00 t 00 e f 00 c0..c3 |
+    09 01 00 02 03 01 | 04``, the data following raw on the alternate OUT;
+    ``e`` is the session's termination character (§10.5.1, §10.5.2).
+    """
+    return build_message(
+        status_snapshot_block(),
+        command_block(t.address_listener_command_ni(own_address, pad, sad), t.NI_ADDRESSING_CODE),
+        write_raw_block(length, timeout_code, send_eoi, eos_char),
+        register_write_block((t.BANK2_SESSION_MARK_WRITE,)))
+
+
+def ni_session_open_message(pad: int, sad: Optional[int], timeout_code: int) -> bytes:
+    """NI's bank-2 session configuration as an open sends it (§10.3.2, open.pcap 0.0070, 32 bytes)."""
+    return build_message(status_snapshot_block(), register_write_block((t.BANK2_SESSION_MARK_WRITE,)),
+                         register_write_block(t.bank2_session_writes(pad, sad, timeout_code)))
+
+
+def ni_session_update_message(pad: int, sad: Optional[int], timeout_code: int) -> bytes:
+    """The same without the snapshot, as a change of the timeout code sends it (§10.2.4, 28 bytes)."""
+    return build_message(register_write_block((t.BANK2_SESSION_MARK_WRITE,)),
+                         register_write_block(t.bank2_session_writes(pad, sad, timeout_code)))
+
+
+def ni_session_close_message() -> bytes:
+    """The close of the last session on an address (§10.3.3, open.pcap 1.0126, 20 bytes): 0x04 := 0."""
+    return build_message(register_write_block((t.BANK2_SESSION_MARK_WRITE,)),
+                         register_write_block(((2, 0x04, 0x00),)))
+
+
 def serial_poll_block(pad: int, timeout_code: int, sad: Optional[int] = None, flag: int = 0x00) -> bytes:
     """§10.5.4: ``10 01 00 x P S t 00``.
 
@@ -867,9 +925,11 @@ def host_wait_s(code: int, infinite_wait_s: float) -> float:
 
     This is the wait for one timed instruction. A message with two would
     need the sum of their expiries (§7.2: NI's read messages carry a 0x0c
-    and a 0x0a / 0x0b); every message this driver builds carries one, the
+    and a 0x0a / 0x0b). The framed paths send one per message, the
     addressing 0x0c being a message of its own and the register write that
-    rides with a read having no timeout code.
+    rides with a read having no timeout code; the opt-in raw paths send
+    NI's messages, and their waits add the addressing block's expiry
+    (``AdapterLink.transfer_wait_s``).
     """
     expiry = t.timeout_expiry_s(code)
     if expiry is None:

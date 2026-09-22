@@ -157,34 +157,37 @@ class TestInstrumentSession:
         inst.timeout = 5000
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         # The 20480-byte chunk is then a 0x0b with the data on the alternate endpoint, as it
-        # is under NI's driver (§10.1.1).
-        assert adapter.instructions(p.OP_READ) == []
-        read = adapter.instructions(p.OP_READ_RAW)[-1]
-        # Compare off: m 00 and e 00 (the bench-proven form under our AUXRA 0x81 init; NI
-        # sends e 0a under its 0x99 init, §10.1.6), 10 s code, -20480.
-        assert read[:8] == h('0b 00 00 fd 00 b0 ff ff')
+        # is under NI's driver (§10.1.1), in NI's 40-byte message (§10.1.2): the snapshot, the
+        # addressing with 0xfd, the 0x0b with m 00 and e 0a (the session's character with the
+        # compare off, §10.1.6), 5 s -> 0xfd, -20480, then the clear-END and bank-2 writes.
+        assert adapter.blocks(p.OP_READ) == []
+        assert adapter.messages[-1] == h('03 00 00 00 0c fd 00 fd 3f 20 58 00 0b 00 0a fd 00 b0 ff ff'
+                                         '09 01 00 01 0a 55 00 00 09 01 00 02 03 01 00 00 04 00 00 00')
+        # Before the first raw instruction, NI's bank-2 session configuration (§10.2.4).
+        assert {addr: adapter.bank2[addr] for addr in range(3, 8)} == {3: 1, 4: 1, 5: 24, 6: 0, 7: 0xFD}
         assert adapter.raw_in_timeouts[-1] == 1000  # the first slice of the 0x88 wait; the data was there
         inst.close()
+        assert adapter.bank2[0x04] == 0  # NI's close of the last session on the address (§10.3.3)
 
     def test_read_termination_selects_eos_and_is_stripped(self, rm, adapter, ni_instructions):
         inst = rm.open_resource('GPIB0::24::INSTR', read_termination='\n')
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30'
-        read = adapter.instructions(p.OP_READ_RAW)[-1]
-        assert read[1:3] == h('14 0a')
+        read = adapter.blocks(p.OP_READ_RAW)[-1]
+        assert read[1:3] == h('14 0a')   # eos.pcap 0.5172: NI's bytes with the compare on
         inst.close()
 
     def test_a_long_write_goes_raw(self, rm, adapter, ni_instructions):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 20000
         inst.write('*CLS;' * 409 + '*CL')  # 2048 + '\r\n' = 2050 bytes, as longwrite.pcap
-        assert adapter.instructions(p.OP_WRITE) == []
-        header = adapter.instructions(p.OP_WRITE_RAW)[-1]
-        # NI's header (longwrite.pcap 1.8914) with e = 0x00 in place of its 0x0a: the character
-        # goes into e only with the compare on (see _termchar_byte).
-        assert header == h('0e 00 00 fe 00 00 08 00 fe f7 ff ff 04 00 00 00')
-        inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR_EN, True)
+        assert adapter.blocks(p.OP_WRITE) == []
+        # NI's 36-byte message (longwrite.pcap 1.8914), byte for byte: e is the session's
+        # character with the compare off as on (§10.5.2).
+        assert adapter.messages[-1] == h('03 00 00 00 0c fd 00 fd 40 3f 38 00 0e 00 00 fe 00 0a 08 00 fe f7 ff ff'
+                                         '09 01 00 02 03 01 00 00 04 00 00 00')
+        inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR, 0x2C)
         inst.write('*CLS;' * 409 + '*CL')
-        assert adapter.instructions(p.OP_WRITE_RAW)[-1][5] == 0x0A
+        assert adapter.blocks(p.OP_WRITE_RAW)[-1][5] == 0x2C
         assert adapter.raw_writes[-1] == b'*CLS;' * 409 + b'*CL\r\n'
         assert adapter.instruments[24].received[-1] == adapter.raw_writes[-1]
         inst.close()
@@ -207,15 +210,18 @@ class TestInstrumentSession:
         other.close()
         inst.close()
 
-    def test_plain_reads_send_the_bench_proven_eos_bytes(self, rm, adapter, ni_instructions):
-        # The first *IDN? of a bench day, on both read forms: m 00 e 00 with the compare off,
-        # whatever VI_ATTR_TERMCHAR holds (pyvisa's default is 0x0a).
+    def test_plain_reads_send_ni_s_eos_bytes_raw_and_the_bench_proven_ones_framed(self, rm, adapter,
+                                                                                ni_instructions):
+        # The first *IDN? of a bench day, on both read forms, with the compare off: the raw read
+        # is NI's message, e = VI_ATTR_TERMCHAR (pyvisa's default 0x0a, §10.1.6; idn.pcap 0.5160
+        # but for the code); the framed read keeps the bench-proven 00 00.
         inst = rm.open_resource('GPIB0::24::INSTR')
         assert inst.get_visa_attribute(constants.VI_ATTR_TERMCHAR) == 0x0A
         assert inst.get_visa_attribute(constants.VI_ATTR_TERMCHAR_EN) is False
         inst.write('*IDN?')
         inst.read()
-        assert adapter.instructions(p.OP_READ_RAW)[-1] == h('0b 00 00 fc 00 b0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')
+        assert adapter.messages[-1] == h('03 00 00 00 0c fd 00 fd 3f 20 58 00 0b 00 0a fc 00 b0 ff ff'
+                                         '09 01 00 01 0a 55 00 00 09 01 00 02 03 01 00 00 04 00 00 00')
         inst.chunk_size = 256
         inst.write('*IDN?')
         inst.read()
@@ -223,17 +229,17 @@ class TestInstrumentSession:
             '0a 00 00 fc 00 ff 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')  # §3.6 worked example
         inst.close()
 
-    def test_changing_the_termination_character_changes_e_only_when_enabled(self, rm, adapter, ni_instructions):
-        # eosmodes.pcap: TERMCHAR 0x2c enabled -> 14 2c. Disabled, we keep 00 00 (see _termchar_byte).
+    def test_changing_the_termination_character_changes_e_either_way(self, rm, adapter, ni_instructions):
+        # eosmodes.pcap: TERMCHAR 0x2c enabled -> 14 2c; disabled NI sends 00 and the character.
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR, 0x2C)
         inst.write('*IDN?')
         assert inst.read() == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
-        assert adapter.instructions(p.OP_READ_RAW)[-1][1:3] == h('00 00')
+        assert adapter.blocks(p.OP_READ_RAW)[-1][1:3] == h('00 2c')
         inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR_EN, True)
         inst.write('*IDN?')
         assert inst.read() == 'KEITHLEY INSTRUMENTS INC.,'
-        assert adapter.instructions(p.OP_READ_RAW)[-1][1:3] == h('14 2c')
+        assert adapter.blocks(p.OP_READ_RAW)[-1][1:3] == h('14 2c')
         inst.close()
 
     @pytest.mark.parametrize('value', [None, '0'])
