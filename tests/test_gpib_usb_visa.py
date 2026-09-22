@@ -8,7 +8,7 @@ presence probe), holding one fake instrument at address 24 that answers
 """
 import sys
 import threading
-from typing import Dict, List, Optional, Tuple
+from typing import List
 
 import pytest
 
@@ -24,7 +24,7 @@ if not hasattr(pytest.importorskip('pyvisa_py.sessions'), 'OpenError'):
 import pyvisa  # noqa: E402
 from pyvisa import constants  # noqa: E402
 from pyvisa.constants import StatusCode  # noqa: E402
-from pyvisa_py.sessions import OpenError, Session  # noqa: E402
+from pyvisa_py.sessions import Session  # noqa: E402
 
 import resistamet_gui.gpib_usb as gpib_usb  # noqa: E402
 from resistamet_gui.gpib_usb import protocol as p  # noqa: E402
@@ -33,380 +33,25 @@ from resistamet_gui.gpib_usb import controller as controller_module  # noqa: E40
 from resistamet_gui.gpib_usb import transport, visa_session  # noqa: E402
 from resistamet_gui.gpib_usb import boards  # noqa: E402
 from resistamet_gui.gpib_usb.boards import BoardRegistry  # noqa: E402
-from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportError, TransportStall  # noqa: E402
-from resistamet_gui.gpib_usb.visa_intfc import NiUsbGpibIntfcDispatch  # noqa: E402
+from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportError  # noqa: E402
 from resistamet_gui.gpib_usb.visa_session import GPIB_INSTR, NiUsbGpibDispatch  # noqa: E402
-
-
-def h(text: str) -> bytes:
-    return bytes.fromhex(text.replace(' ', ''))
+from tests.fakes.gpib_usb import FakeInstrument, SimulatedAdapter, fake_adapter_info, h  # noqa: E402
+from tests.fakes.gpib_usb_visa import (Sentinel, enumeration, ni_instructions,  # noqa: E402,F401
+                                       session_registry, switch_unset)
 
 
 # ---------------------------------------------------------------------------
-# a behavioural fake adapter
+# helpers
 # ---------------------------------------------------------------------------
-
-class FakeInstrument:
-    def __init__(self, idn: str) -> None:
-        self.idn = idn
-        self.received: List[bytes] = []
-        self.pending = b''
-        self.cleared = 0
-        #: What a serial poll returns.
-        self.status_byte = 0
-
-    def accept(self, data: bytes, eoi: bool) -> None:
-        self.received.append(data)
-        if data.strip() == b'*IDN?':
-            self.pending += (self.idn + '\n').encode()
-
-
-class SimulatedAdapter:
-    """Answers protocol messages like an attached HS with instruments on the bus."""
-
-    max_packet_size = 512
-    max_packet_size_raw = 512
-
-    def __init__(self, instruments: Dict[int, FakeInstrument], serial_reply: bytes = h('41 78 56 34 12')) -> None:
-        self.instruments = instruments
-        self.serial_reply = serial_reply
-        self.listening: List[int] = []
-        self.talker: Optional[int] = None
-        #: Between SPE and SPD the addressed talker answers with its status byte (§5.9).
-        self.serial_poll_mode = False
-        self.atn = True
-        self.ren = False
-        #: The adapter's own addressed state (its address is 0).
-        self.own_talker = False
-        self.own_listener = False
-        #: Set by a test to hold the SRQ line asserted.
-        self.srq = False
-        self.reply = b''
-        #: What the next bulk_in_raw returns (the data of a 0x0b), None when none is owed.
-        self.raw_reply: Optional[bytes] = None
-        #: (length, EOI) of the 0x0e whose bytes the next bulk_out_raw must bring.
-        self.pending_raw_write: Optional[Tuple[int, bool]] = None
-        self.raw_writes: List[bytes] = []
-        #: Endpoints left halted by a STALL, and every pipe reset asked for, in order.
-        self.halted: set = set()
-        self.halts_cleared: List[int] = []
-        self.messages: List[bytes] = []
-        self.control_requests: List[int] = []
-        self.bulk_in_timeouts: List[int] = []
-        self.raw_in_timeouts: List[int] = []
-        self.closed = False
-        #: Raised by the next bulk_out, once.
-        self.fail_next: Optional[Exception] = None
-        #: Raised by the next control_in, once.
-        self.fail_next_control: Optional[Exception] = None
-        #: Answer a read that times out as GPIB-USB-HS 01CEE482 does (§5.2): one 0x36 block
-        #: of stale bytes and min(requested, 15) in the last-block count, nothing read. Off,
-        #: the form NI's captures show: no data block and a stale last-block byte.
-        self.stale_timeout_block = False
-        #: The talker's message ends without EOI on its last byte: the read that drains it
-        #: reports no END, and the next read finds nothing and times out.
-        self.withhold_eoi = False
-
-    def control_in(self, request, value, index, length, timeout_ms, request_type=0xC0) -> bytes:
-        if self.fail_next_control is not None:
-            failure, self.fail_next_control = self.fail_next_control, None
-            raise failure
-        self.control_requests.append(request)
-        if request == 0x41:
-            return self.serial_reply
-        if request == 0x40:
-            return h('40 01 00 01 30 01 02 03 00 03 96 00 00 00 00 00')
-        if request == 0x21:
-            return self._status(request, ibsta=self.ibsta())
-        return bytes((request,)) + h('01 30 00 00 00 00 00')
-
-    def ibsta(self) -> int:
-        """CMPL and CIC always; ATN, TACS, LACS and SRQI from the bus state."""
-        return (0x0120 | (0x0010 if self.atn else 0) | (0x0008 if self.own_talker else 0)
-                | (0x0004 if self.own_listener else 0) | (0x1000 if self.srq else 0))
-
-    def bus_lines(self) -> int:
-        """The BSR of §5.13 for the fake's state: a listener holds NDAC while ATN is false."""
-        ndac = 0x20 if (self.listening and not self.atn) else 0x00
-        return (ndac | (0x01 if self.ren else 0) | (0x80 if self.atn else 0)
-                | (0x04 if self.srq else 0))
-
-    def _status(self, opcode: int, error: int = 0, count: int = 0, ibsta: int = 0x0130) -> bytes:
-        return (bytes((opcode,)) + ibsta.to_bytes(2, 'big') + bytes((error,))
-                + (count & 0xFFFF).to_bytes(2, 'little') + b'\x00\x00')
-
-    def bulk_out(self, data: bytes, timeout_ms: int) -> None:
-        if self.fail_next is not None:
-            failure, self.fail_next = self.fail_next, None
-            raise failure
-        self.messages.append(data)
-        opcode = data[0]
-        if opcode in (p.OP_TAKE_CONTROL, p.OP_INTERFACE_CLEAR):
-            self.atn = True
-            self.reply = self._status(opcode) + h('04 00 00 00')
-        elif opcode == p.OP_GO_TO_STANDBY:
-            self.atn = False
-            self.reply = self._status(opcode) + h('04 00 00 00')
-        elif opcode == p.OP_REGISTER_WRITE:
-            for start in range(3, 3 + 3 * data[1], 3):
-                if data[start:start + 3] == bytes(t.REN_ON_WRITE):
-                    self.ren = True
-                elif data[start:start + 3] == bytes(t.REN_OFF_WRITE):
-                    self.ren = False
-            self.reply = self._status(opcode) + bytes((data[1], 0, 0, 0)) + h('04 00 00 00')
-        elif opcode == p.OP_REGISTER_READ:
-            self.reply = bytes((0x34, self.bus_lines(), 0, 0, 0x35, 1, 0, 0)) + h('04 00 00 00')
-        elif opcode == p.OP_COMMAND:
-            self.reply = self._command(data)
-        elif opcode == p.OP_WRITE:
-            self.reply = self._write(data)
-        elif opcode == p.OP_READ:
-            self.reply = self._read(data)
-        elif opcode == p.OP_READ_RAW:
-            self.reply = self._read_raw(data)
-        elif opcode == p.OP_WRITE_RAW:
-            # §10.5.2: the header now, the bytes on the alternate OUT next; the reply after those.
-            self.pending_raw_write = (-int.from_bytes(data[8:12], 'little', signed=True), bool(data[6] & 0x08))
-        elif opcode == p.OP_SERIAL_POLL:
-            self.reply = self._serial_poll(data)
-        else:
-            raise AssertionError('unexpected opcode 0x%02x' % opcode)
-
-    def _command(self, data: bytes) -> bytes:
-        count = 0x100 - data[1]
-        command_bytes = data[4:4 + count]
-        if not self.instruments:
-            return self._status(p.OP_COMMAND, error=5, count=-count) + h('04 00 00 00')
-        self.atn = True
-        for byte in command_bytes:
-            if byte == t.CMD_UNL:
-                self.listening = []
-                self.own_listener = False
-            elif 0x20 <= byte <= 0x3E:
-                if byte - 0x20 in self.instruments:
-                    self.listening.append(byte - 0x20)
-                self.own_listener = self.own_listener or byte == 0x20
-            elif 0x40 <= byte <= 0x5E:
-                self.talker = byte - 0x40 if byte - 0x40 in self.instruments else None
-                self.own_talker = byte == 0x40
-            elif byte == t.CMD_UNT:
-                self.talker = None
-                self.own_talker = False
-            elif byte == t.CMD_SPE:
-                self.serial_poll_mode = True
-            elif byte == t.CMD_SPD:
-                self.serial_poll_mode = False
-            elif byte == t.CMD_SDC:
-                for pad in self.listening:
-                    self.instruments[pad].cleared += 1
-                    self.instruments[pad].pending = b''
-            elif byte == t.CMD_DCL:
-                for instrument in self.instruments.values():
-                    instrument.cleared += 1
-                    instrument.pending = b''
-        return self._status(p.OP_COMMAND) + h('04 00 00 00')
-
-    def _write(self, data: bytes) -> bytes:
-        length = 0x10000 - int.from_bytes(data[1:3], 'little')
-        payload = data[8:8 + length]
-        if not self.listening:
-            return self._status(p.OP_WRITE, error=8, count=-length) + h('04 00 00 00')
-        for pad in self.listening:
-            self.instruments[pad].accept(payload, bool(data[6] & 0x08))
-        return self._status(p.OP_WRITE) + h('04 00 00 00')
-
-    def _serial_poll(self, data: bytes) -> bytes:
-        """0x10 (§10.5.4): ``3a P S sb`` then a 0x39 status block; the latter alone, with error
-        0x0a, for an absent device."""
-        pad, sad_byte = data[4], data[5]
-        instrument = self.instruments.get(pad)
-        self.atn = True  # the adapter addresses the bus itself
-        if instrument is None:
-            # §10.6.6: a poll that times out is answered without the 0x3a block.
-            return self._status(0x39, error=0x0A, ibsta=0x0074) + h('04 00 00 00')
-        return bytes((0x3A, pad, sad_byte, instrument.status_byte)) + self._status(0x39, ibsta=0x0074) + h('04 00 00 00')
-
-    def _write_raw(self, payload: bytes, eoi: bool) -> bytes:
-        """The 0x0e reply once the bytes have arrived: an 8-byte status with a 32-bit count."""
-        for pad in self.listening:
-            self.instruments[pad].accept(payload, eoi)
-        return bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x00)) + h('00 00 00 00') + h('04 00 00 00')
-
-    def _talker_output(self, requested: int, eos_mode: int, eos_char: int) -> Optional[Tuple[bytes, bool]]:
-        """What the addressed talker gives up for one read: (bytes, END), or None when nothing is pending."""
-        instrument = self.instruments.get(self.talker) if self.talker is not None else None
-        if instrument is not None and self.serial_poll_mode:
-            return bytes((instrument.status_byte,)), False
-        if instrument is None or not instrument.pending:
-            return None
-        source = instrument.pending
-        if eos_mode & 0x04 and bytes((eos_char,)) in source:
-            cut = source.index(bytes((eos_char,))) + 1
-        else:
-            cut = len(source)
-        cut = min(cut, requested)
-        out, instrument.pending = source[:cut], source[cut:]
-        end = ((not instrument.pending and not self.withhold_eoi)
-               or bool(eos_mode & 0x04 and out.endswith(bytes((eos_char,)))))
-        return out, end
-
-    def _read_raw(self, data: bytes) -> bytes:
-        """0x0b (§10.1.3): the bytes go to the alternate IN, a 12-byte 0x0b block and the
-        clear-END write's status come back on the primary."""
-        requested = -int.from_bytes(data[4:8], 'little', signed=True)
-        result = None if self.atn else self._talker_output(requested, data[1], data[2])
-        if result is None:
-            out, end, error = b'', False, (2 if self.atn else 0x0A)
-        else:
-            (out, end), error = result, 0
-        self.raw_reply = out
-        count = (len(out) - requested).to_bytes(4, 'little', signed=True)
-        status = bytes((p.OP_READ_RAW,)) + (0x2064 if end else 0x0064).to_bytes(2, 'big') + bytes((error,))
-        return (status + count + bytes((0xE0 if end else 0x60, 0, 0, 0))
-                + h('09 00 64 00') + count + h('01 00 00 00') + h('04 00 00 00'))
-
-    def _read(self, data: bytes) -> bytes:
-        requested = 0x10000 - int.from_bytes(data[4:6], 'little')
-        eos_mode, eos_char = data[1], data[2]
-        # The 16-byte trailer as the real adapter sends it.
-        trailer_tail = h('04 00 00 00')
-        if self.atn:
-            return self._status(0x38, error=2, count=-requested) + h('60 00 00 00') + trailer_tail
-        result = self._talker_output(requested, eos_mode, eos_char)
-        if result is None:
-            status = self._status(0x38, error=0x0A, count=-requested, ibsta=0x0020)
-            if self.stale_timeout_block and requested <= 15:
-                return (h('36 00 20 00 aa 55 ff ff 04 00 00 00 04 00 00 00') + status
-                        + bytes((0xE0, requested, 0, 0)) + trailer_tail)
-            return status + h('e0 5e 00 00') + trailer_tail
-        out, end = result
-        blocks = b''
-        for start in range(0, len(out), 15):
-            chunk = out[start:start + 15]
-            blocks += bytes((0x36,)) + chunk + b'\xee' * (15 - len(chunk))
-        last_count = len(out) - ((len(out) - 1) // 15) * 15 if out else 0
-        status = self._status(0x38, count=len(out) - requested,
-                              ibsta=0x2100 if end else 0x0100)
-        return blocks + status + bytes((0xE0 if end else 0x60, last_count, 0, 0)) + trailer_tail
-
-    def bulk_in(self, length: int, timeout_ms: int) -> bytes:
-        self.bulk_in_timeouts.append(timeout_ms)
-        assert len(self.reply) <= length, 'reply of %d bytes would overflow %d' % (len(self.reply), length)
-        reply, self.reply = self.reply, b''
-        return reply
-
-    # The alternate pair and the interrupt endpoint; behaviour is added with the
-    # instructions that use them.
-    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> int:
-        if 0x06 in self.halted:
-            raise TransportStall('raw bulk write was refused with a STALL')
-        assert self.pending_raw_write is not None, 'raw bulk OUT with no 0x0e outstanding'
-        length, eoi = self.pending_raw_write
-        assert len(data) == length, 'the 0x0e announced %d bytes, %d arrived' % (length, len(data))
-        self.pending_raw_write = None
-        if not self.listening:
-            # §10.6.5: the data is refused with a STALL, the endpoint stays halted until it is
-            # reset, and the reply with error 8 and the whole count comes by itself.
-            self.halted.add(0x06)
-            count = (-length).to_bytes(4, 'little', signed=True)
-            self.reply = bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x08)) + count + h('04 00 00 00')
-            raise TransportStall('raw bulk write was refused with a STALL')
-        self.raw_writes.append(data)
-        self.reply = self._write_raw(data, eoi)
-        return len(data)
-
-    def clear_halt(self, endpoint: int) -> None:
-        self.halted.discard(endpoint)
-        self.halts_cleared.append(endpoint)
-
-    def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
-        self.raw_in_timeouts.append(timeout_ms)
-        assert self.raw_reply is not None, 'raw bulk IN with no 0x0b outstanding'
-        assert len(self.raw_reply) < length, 'raw data of %d bytes needs a buffer larger than %d' % (len(self.raw_reply), length)
-        reply, self.raw_reply = self.raw_reply, None
-        return reply
-
-    def interrupt_in(self, length: int, timeout_ms: int) -> bytes:
-        raise AssertionError('unexpected interrupt read')
-
-    def control_out(self, request, value, index, data, timeout_ms, request_type=0x40) -> None:
-        raise AssertionError('unexpected control OUT 0x%02x' % request)
-
-    def close(self) -> None:
-        self.closed = True
-
-    def instructions(self, opcode: int) -> List[bytes]:
-        return [m for m in self.messages if m[0] == opcode]
-
 
 def framed_counts(adapter: SimulatedAdapter) -> List[int]:
     """The requested count of every framed 0x0a the adapter has seen, in order."""
     return [0x10000 - int.from_bytes(m[4:6], 'little') for m in adapter.instructions(p.OP_READ)]
 
 
-def fake_adapter_info(serial: Optional[str] = '01234567', bus: int = 20, address: int = 5) -> AdapterInfo:
-    return AdapterInfo(model='GPIB-USB-HS', vendor_id=t.VENDOR_ID, product_id=t.PID_HS, bus=bus,
-                       address=address, serial=serial, endpoint_out=0x02, endpoint_in=0x84,
-                       endpoint_interrupt=0x81, needs_firmware=False, device=None)
-
-
-class Sentinel(Session):
-    """Stands in for whatever pyvisa-py had registered for (gpib, INSTR)."""
-
-    calls: List[str] = []
-
-    def __init__(self, resource_manager_session, resource_name, parsed=None, open_timeout=None):
-        Sentinel.calls.append(resource_name)
-        raise OpenError(StatusCode.error_resource_not_found)
-
-    @staticmethod
-    def list_resources() -> List[str]:
-        return ['GPIB9::1::INSTR']
-
-    def _get_attribute(self, attribute):
-        raise NotImplementedError
-
-    def _set_attribute(self, attribute, state):
-        raise NotImplementedError
-
-    def close(self):
-        raise NotImplementedError
-
-
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------
-
-@pytest.fixture
-def session_registry():
-    """Restore pyvisa-py's session table and both dispatchers' memory after each test.
-
-    ``install()`` puts the INSTR and the INTFC dispatcher in place together,
-    so both ``previous`` slots are saved here.
-    """
-    saved = dict(Session._session_classes)
-    saved_previous = NiUsbGpibDispatch.previous
-    saved_intfc_previous = NiUsbGpibIntfcDispatch.previous
-    Sentinel.calls = []
-    yield Session._session_classes
-    Session._session_classes.clear()
-    Session._session_classes.update(saved)
-    NiUsbGpibDispatch.previous = saved_previous
-    NiUsbGpibIntfcDispatch.previous = saved_intfc_previous
-
-
-@pytest.fixture
-def enumeration(monkeypatch):
-    """A replaceable find_adapters that counts its calls."""
-    state = {'adapters': [fake_adapter_info()], 'calls': 0}
-
-    def find_adapters():
-        state['calls'] += 1
-        return list(state['adapters'])
-
-    monkeypatch.setattr(transport, 'find_adapters', find_adapters)
-    return state
-
 
 @pytest.fixture
 def adapter(monkeypatch, session_registry, enumeration):
@@ -419,19 +64,6 @@ def adapter(monkeypatch, session_registry, enumeration):
     session_registry[GPIB_INSTR] = Sentinel
     gpib_usb.install()
     return sim
-
-
-@pytest.fixture(autouse=True)
-def switch_unset(monkeypatch):
-    """The developer's shell must not decide which instructions these tests see."""
-    monkeypatch.delenv(boards.NI_INSTRUCTIONS_ENV, raising=False)
-    monkeypatch.delenv(boards.RAW_TRANSFERS_ENV, raising=False)
-
-
-@pytest.fixture
-def ni_instructions(monkeypatch, switch_unset):
-    """Switch NI's instructions (0x0b, 0x0e, 0x10) on for boards opened in this test; they are off by default."""
-    monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, '1')
 
 
 @pytest.fixture

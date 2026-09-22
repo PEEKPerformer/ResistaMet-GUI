@@ -31,9 +31,9 @@ from resistamet_gui.gpib_usb.transport import TransportError  # noqa: E402
 from resistamet_gui.gpib_usb.visa_intfc import (GPIB_INTFC, NiUsbGpibIntfcDispatch,  # noqa: E402
                                                 NiUsbGpibIntfcSession)
 from resistamet_gui.gpib_usb.visa_session import GPIB_INSTR, NiUsbGpibDispatch  # noqa: E402
-from tests.test_gpib_usb_visa import (FakeInstrument, Sentinel, SimulatedAdapter,  # noqa: E402,F401
-                                      enumeration, h, ni_instructions, session_registry,
-                                      switch_unset)
+from tests.fakes.gpib_usb import FakeInstrument, SimulatedAdapter, fake_adapter_info, h  # noqa: E402
+from tests.fakes.gpib_usb_visa import (Sentinel, enumeration, ni_instructions,  # noqa: E402,F401
+                                       session_registry, switch_unset)
 
 UNL, MTA0, MLA0, LAD24, TAD24, UNT = 0x3F, 0x40, 0x20, 0x38, 0x58, 0x5F
 REN, ATN = constants.RENLineOperation, constants.ATNLineOperation
@@ -137,7 +137,6 @@ class TestListResources:
         assert NiUsbGpibIntfcDispatch.list_resources() == ['GPIB0::INTFC']
 
     def test_a_second_adapter_lists_as_the_next_board(self, board, enumeration):
-        from tests.test_gpib_usb_visa import fake_adapter_info
         enumeration['adapters'].append(fake_adapter_info(serial='SECOND', address=9))
         assert NiUsbGpibIntfcSession.list_resources() == ['GPIB0::INTFC', 'GPIB1::INTFC']
 
