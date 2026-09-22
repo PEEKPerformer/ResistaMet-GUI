@@ -8,7 +8,7 @@ ResistaMet talks to the instrument through [PyVISA](https://pyvisa.readthedocs.i
 | pyvisa-py | `@py` | A pure-Python VISA, installed with ResistaMet | Serial (`ASRL…`), Ethernet (`TCPIP…`), USB-TMC, Prologix-style GPIB adapters, and, through ResistaMet's built-in driver, NI GPIB-USB adapters |
 | Automatic | `""` (default) | PyVISA's own choice: the vendor library if one is installed, otherwise pyvisa-py | |
 
-The choice is the machine-local [`visa_library`](settings.md#machine-local-settings) setting. A file path to a specific VISA library is also accepted.
+The choice is the machine-local [`visa_library`](settings.md#machine-local-settings) setting. A file path to a specific VISA library is also accepted as a stored setting; the API takes one only from the `ui` role and only if the file exists, and never as a per-request override.
 
 **When Automatic is wrong.** A vendor library can be installed and still have no GPIB driver behind it. That is the normal state of a Mac with NI-VISA: NI's last macOS GPIB driver (NI-488.2 21.5.1) has a kernel extension that does not load on macOS 13 or later, so NI-VISA opens, lists serial ports, and never shows a GPIB instrument. Automatic picks that library because it is there. Set the backend to **pyvisa-py**.
 

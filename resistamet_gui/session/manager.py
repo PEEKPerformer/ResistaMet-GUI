@@ -63,6 +63,17 @@ class MeasurementSession:
         self._mode: Optional[str] = None
         #: Whether the current run has sent its run_ended; read by _execute.
         self._run_ended_seen = False
+        #: The address of the current (or last) run, for _record.
+        self._run_address: Optional[str] = None
+        #: The address whose output the last run left in doubt (run_ended
+        #: with output_verified false), or None. The first connection back to
+        #: it turns the output off before anything else and clears this.
+        self._output_unknown_at: Optional[str] = None
+
+    @property
+    def output_unknown_at(self) -> Optional[str]:
+        """Address where the instrument output may still be on, or None."""
+        return self._output_unknown_at
 
     # --- state ------------------------------------------------------------
 
@@ -142,6 +153,10 @@ class MeasurementSession:
             # run that fails a moment later. The run releases it in cleanup.
             address = resolved.settings.get('measurement', {}).get('gpib_address', '')
             held = HeldInstrument(address)  # raises InstrumentBusy
+            # The last run at this address may have left the output on. The
+            # run's *RST turns it off before any configuration; the run says
+            # so (log output_off_recovered), and _record clears the doubt.
+            recover_output = (address == self._output_unknown_at)
             try:
                 self._run_count += 1
                 run_id = f"run-{self._run_count}"
@@ -150,12 +165,12 @@ class MeasurementSession:
                 if mode == VDP_MODE:
                     run = VdpRun(sample_name, username, resolved.settings, control, emitter,
                                   safety_ack='prompt', prompt_timeout_s=prompt_timeout_s,
-                                  instrument_lock=held)
+                                  instrument_lock=held, recover_output=recover_output)
                 else:
                     run = ContinuousRun(mode, sample_name, username, resolved.settings,
                                          control, emitter, safety_ack='prompt',
                                          prompt_timeout_s=prompt_timeout_s,
-                                         instrument_lock=held)
+                                         instrument_lock=held, recover_output=recover_output)
                 thread = threading.Thread(target=self._execute, args=(run, held, emitter),
                                            name=f"resistamet-{run_id}", daemon=True)
             except Exception:
@@ -164,6 +179,7 @@ class MeasurementSession:
             previous = (self._run_id, self._mode, self._run, self._thread)
             self._state = 'running'
             self._run_id, self._mode = run_id, mode
+            self._run_address = address
             self._control, self._run, self._thread = control, run, thread
             self._run_ended_seen = False
 
@@ -250,6 +266,19 @@ class MeasurementSession:
                                           gpib_interface=gpib_interface).connect()
                 try:
                     idn = instrument.query("*IDN?").strip()
+                    if address == self._output_unknown_at:
+                        # Identify sends no *RST, so the output the last run
+                        # left in doubt is turned off here, first thing after
+                        # *IDN?, and only once the instrument confirms it.
+                        instrument.write(":OUTP OFF")
+                        if int(float(instrument.query(":OUTP?"))) == 0:
+                            self._output_unknown_at = None
+                            self._say('output_off_recovered',
+                                      "Output turned OFF after the previous run lost its link.")
+                        else:
+                            self._say('output_unverified',
+                                      "Instrument output may still be ON — check the front panel.",
+                                      level='warning')
                     spec = instrument.detect_model()
                 finally:
                     instrument.close()
@@ -311,14 +340,26 @@ class MeasurementSession:
             emitter.emit('run_ended', {
                 'reason': 'worker_error', 'ok': False, 'samples': 0,
                 'duration_s': 0.0, 'path': getattr(run, 'filename', '') or None,
+                # Set by the cleanup _execute ran for the dead run.
+                'output_verified': getattr(run, '_output_verified', True),
             })
         except Exception:
             logger.exception("could not report the end of a run that died")
+
+    def _say(self, code: str, message: str, level: str = 'info') -> None:
+        """A log line from the session itself, outside any run (run_id None)."""
+        EventEmitter(self._sink, run_id=None, clock=self._clock).log(code, message, level=level)
 
     def _record(self, event) -> None:
         self._last_event_seq = event.seq
         if event.type == 'run_ended':
             self._run_ended_seen = True
+            if event.payload.get('output_verified') is False:
+                # Remembered until a connection back to this address turns
+                # the output off: the run's *RST, or identify's :OUTP OFF.
+                self._output_unknown_at = self._run_address
+        if event.type == 'log' and event.payload.get('code') == 'output_off_recovered':
+            self._output_unknown_at = None
         if event.type == 'instrument_connected':
             # Kept for status(): the event itself is gone for a client that
             # connects, or reloads, after it was sent.

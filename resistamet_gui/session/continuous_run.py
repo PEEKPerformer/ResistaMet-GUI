@@ -74,10 +74,15 @@ class ContinuousRun:
     """
 
     def __init__(self, mode, sample_name, username, settings, control, events,
-                  safety_ack='skip', prompt_timeout_s=None, instrument_lock=None):
+                  safety_ack='skip', prompt_timeout_s=None, instrument_lock=None,
+                  recover_output=False):
         if mode not in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             raise ValueError(f"Invalid measurement mode: {mode}")
         self.mode = mode
+        #: True when the last run at this address could not confirm its
+        #: output off. The *RST at connect turns it off before anything is
+        #: configured; this makes the run say so (log output_off_recovered).
+        self._recover_output = recover_output
         #: The mode as log messages name it; self.mode stays the internal key.
         self._mode_name = MODE_DISPLAY_NAMES[mode]
         self.sample_name = sample_name
@@ -107,6 +112,10 @@ class ContinuousRun:
         # Set when a spot's file is finalized; its map summary is written
         # once the instrument has been let go.
         self._pending_map_id = None
+        #: False once the cleanup could not confirm the output is off: the
+        #: :OUTP OFF raised, or :OUTP? did not read back 0. Reported on
+        #: run_ended, because the source may still be driving the sample.
+        self._output_verified = True
 
         # Start/stop/pause state and the marker queue, shared with whoever is
         # driving the run.
@@ -634,6 +643,13 @@ class ContinuousRun:
                     self._events.emit('line_frequency', {'hz': line_freq, 'assumed': True})
                     self._events.warn('lfr_assumed', "Warning: Could not query line frequency. Assuming 50Hz.")
                 self.keithley.write("*RST"); time.sleep(0.5)
+                if self._recover_output:
+                    # *RST is the first write of the run and leaves the
+                    # output off on this family, so the source the last run
+                    # could not turn off is off here, before anything is
+                    # configured. Said out loud so the record has it.
+                    self._events.log('output_off_recovered',
+                        "Output turned OFF after the previous run lost its link.")
                 self.keithley.write("*CLS")
                 # Auto zero: ON (accurate), ONCE (fast), OFF (fastest)
                 azer = str(measurement_settings.get('auto_zero', 'on')).upper()
@@ -1110,6 +1126,7 @@ class ContinuousRun:
                 'samples': samples,
                 'duration_s': time.time() - self.start_time if self.start_time else 0.0,
                 'path': self.filename or None,
+                'output_verified': self._output_verified,
             })
             self.running = False
 
@@ -1330,14 +1347,36 @@ class ContinuousRun:
             except Exception:
                 logger.warning("failed to release the instrument lock", exc_info=True)
 
+    def _output_off_confirmed(self) -> bool:
+        """``:OUTP OFF``, then ``:OUTP?`` read back. True only when the
+        instrument itself answered that its output is off.
+
+        Raises whatever the link raises. A handle whose cable was pulled
+        fails on the write; the caller reports the output as unknown.
+        """
+        self.keithley.write(":OUTP OFF")
+        return int(float(self.keithley.query(":OUTP?"))) == 0
+
     def _cleanup(self) -> None:
         try:
             # Re-enable system sleep
             self._sleep_inhibitor.uninhibit()
 
             if self.keithley:
+                # The output first, and confirmed. On a lost link the write
+                # raised and the only trace was a generic cleanup warning,
+                # while the instrument went on driving the sample until the
+                # next session happened to address it.
                 try:
-                    self.keithley.write(":OUTP OFF")
+                    verified = self._output_off_confirmed()
+                except Exception as e:
+                    verified = False
+                    self._events.warn('cleanup', f"Warning: Error during instrument cleanup: {str(e)}")
+                if not verified:
+                    self._output_verified = False
+                    self._events.warn('output_unverified',
+                        "Instrument output may still be ON — check the front panel.")
+                try:
                     self.keithley.close()
                     self._events.log('cleanup', "Instrument disconnected.")
                 except Exception as e:

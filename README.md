@@ -79,7 +79,9 @@ Full docs at **[bfer.land/ResistaMet-GUI](https://bfer.land/ResistaMet-GUI/)**:
 - [Quick Start](https://bfer.land/ResistaMet-GUI/quickstart/) — first-measurement walkthrough + per-mode workflows
 - [Concepts](https://bfer.land/ResistaMet-GUI/concepts/) — SMU glossary (NPLC, compliance, auto-zero, Enhanced R, F84, F76, …)
 - [Settings](https://bfer.land/ResistaMet-GUI/settings/) — Settings dialog reference + defaults
-- [Data Outputs](https://bfer.land/ResistaMet-GUI/outputs/) — CSV / HDF5 / legacy JSON format + every column for every mode
+- [Data Outputs](https://bfer.land/ResistaMet-GUI/outputs/) — CSV / HDF5 / legacy JSON format, header and footer keys, every column for every mode
+- [GPIB and VISA backends](docs/gpib.md) — backend choice, NI GPIB-USB on macOS / Linux, `--check-visa`
+- [Backend API](docs/api.md) and [Desktop app](docs/desktop.md) — headless measurement over localhost HTTP + WebSocket, and the Tauri front end (development branch)
 - [Troubleshooting](https://bfer.land/ResistaMet-GUI/troubleshooting/) — common errors and fixes
 
 ## Quick Start
@@ -96,8 +98,9 @@ See [Quick Start](https://bfer.land/ResistaMet-GUI/quickstart/) for per-mode wor
 
 ## Project Structure
 
-- `resistamet_gui/` — application package. Core modules: `calculations.py` + `calculations_vdp.py` (pure F84 / F76 math), `instrument.py` (Keithley VISA wrapper), `workers.py` (QThread measurement loop + vdP state machine), `data_export.py` (CSV / HDF5 / legacy JSON exporters), `accuracy.py` (per-range datasheet specs), `safety.py` (touch-safety check), `_simulator.py` (in-package fake), and `ui/` (main window, dialogs, canvas, widgets).
+- `resistamet_gui/` — application package. Layers: `schema/` (typed settings and the resolver), `session/` (the Qt-free run procedures, events, instrument lock), `api/` (localhost HTTP + WebSocket over a session), `ui/` (PySide6). Core modules: `calculations.py` + `calculations_vdp.py` (pure F84 / F76 math), `instrument.py` (Keithley VISA wrapper), `workers.py` (QThread measurement loop + vdP state machine), `data_export.py` (CSV / HDF5 / legacy JSON exporters), `accuracy.py` (per-range datasheet specs), `safety.py` (touch-safety check), `_simulator.py` (in-package fake), and `ui/` (main window, dialogs, canvas, widgets).
 - `tests/` — pytest suite. Unit/integration tests for every module, `test_gui_smoke.py` for Qt widget lifecycle, `test_e2e_simulator.py` for end-to-end UI-to-CSV pipeline, `test_workers.py::TestSCPIContract` for per-mode SCPI command assertions, `tests/fakes/` (the fake instrument), `tests/fixtures/scpi_traces*/` (captured hardware traces), `tests/hardware/` (real-instrument tests gated by `RESISTAMET_HARDWARE_ADDR`).
+- `desktop/` — Tauri + React desktop app over the API (see [`desktop/README.md`](desktop/README.md)); `contracts/` — JSON Schemas exported from the settings and event models.
 - `docs/` — mkdocs-material site sources (deployed to GitHub Pages via `.github/workflows/docs.yml`).
 - `scripts/community_capture.py` — self-contained tool for contributors to capture SCPI traces from other 2400-family models.
 

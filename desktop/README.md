@@ -117,9 +117,17 @@ and still have no GPIB driver behind it.
 
 Routes pyvisa-py can reach: the NI GPIB-USB-HS (`GPIB0::24::INSTR`), a
 Keithley over RS-232 (`ASRL/dev/cu.…::INSTR`), or a 2450 over Ethernet
-(`TCPIP::…::INSTR`). A Prologix GPIB-USB or AR488 adapter is supported by
-pyvisa-py too, but needs its `PRLGX-ASRL::…::INTFC` interface resource
-opened before the instrument address works; the app does not do that yet.
+(`TCPIP::…::INSTR`).
+
+A Prologix GPIB-USB / GPIB-ETHERNET or AR488 adapter answers
+`GPIB0::24::INSTR` only while its own interface resource is open. Settings ▸
+Instrument ▸ GPIB interface names it (`PRLGX-ASRL::/dev/cu.usbserial-…::INTFC`,
+`PRLGX-ASRL::5::INTFC` for COM5 on Windows, `PRLGX-TCPIP::host::INTFC`); the
+backend opens it with every ResourceManager, and `--check-visa bus` says
+whether it opened. A run does not connect through it yet: connecting still
+looks for the address in the resource list, and pyvisa-py lists nothing
+behind a Prologix adapter. Tested against a scripted stand-in only.
+
 The NI driver has been written from the protocol specification and tested
 against a scripted fake only; its first run on a real adapter is still to
 come.
