@@ -4,11 +4,11 @@ import pytest
 from resistamet_gui.gpib_usb import protocol as p
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb.controller import DRAIN_WAIT_S, Controller
-from resistamet_gui.gpib_usb.protocol import AdapterNotReady, GpibError, ProtocolError
-from resistamet_gui.gpib_usb.transport import TransportError, TransportTimeout
+from resistamet_gui.gpib_usb.protocol import AdapterGone, AdapterNotReady, GpibError, ProtocolError
+from resistamet_gui.gpib_usb.transport import TransportError, TransportGone, TransportTimeout
 from tests.fakes.gpib_usb import (CLEAR_HALTS, DRAIN, DRAIN_LENGTH, RAW_DRAIN, STOP, T3S, QueueingAdapter,
-                                  ScriptedTransport, address_listener, attach_script, attached, attached_ni, h,
-                                  reattach_after_usb_fault_script, reattach_script, regread_reply,
+                                  ScriptedTransport, address_listener, address_talker, attach_script, attached,
+                                  attached_ni, h, reattach_after_usb_fault_script, reattach_script, regread_reply,
                                   regwrite_reply, status_reply)
 
 
@@ -279,4 +279,80 @@ class TestStaleReplyAfterAUsbFault:
         with pytest.raises(TransportError):
             controller.command(b'\x14', timeout_s=3.0)
         assert controller.command(b'\x14', timeout_s=3.0) == 1
+        transport.assert_done()
+
+
+def unplugged() -> TransportGone:
+    """What the transport raises for libusb's "no such device" (errno 19 on the bench, §11.2)."""
+    return TransportGone('bulk read failed: the device is no longer on the USB bus')
+
+
+class TestAdapterGone:
+    """Spec §11.2, "Hot-unplug mid-run": the adapter is gone, so nothing is recovered."""
+
+    def test_an_unplug_mid_read_ends_the_read_at_once_with_no_recovery(self):
+        # The bench ran clear halts on four pipes, a stop request, a drain and a re-attach on a
+        # handle that no longer existed. None of them may happen: the script ends at the error.
+        controller, transport = attached(address_talker(pad=24) + [
+            ('out', p.read_message(1024, T3S)), ('in', unplugged()),
+        ])
+        with pytest.raises(AdapterGone) as info:
+            controller.read(24, max_bytes=20480, timeout_s=3.0)
+        assert 'no longer on the USB bus' in str(info.value) and 'Plug it back in' in str(info.value)
+        assert isinstance(info.value, AdapterNotReady) and isinstance(info.value.__cause__, TransportGone)
+        assert controller.adapter_gone
+        transport.assert_done()
+
+    def test_every_later_operation_fails_the_same_way_without_touching_usb(self):
+        controller, transport = attached(address_listener(pad=24) + [
+            ('out', p.write_message(b':OUTP OFF\n', T3S, True), unplugged()),
+        ])
+        with pytest.raises(AdapterGone):
+            controller.write(24, b':OUTP OFF\n', timeout_s=3.0)
+        # The run's cleanup tries the output twice; neither reaches USB (an unscripted call
+        # would fail assert_done), and neither re-attaches.
+        for operation in (lambda: controller.write(24, b':OUTP OFF\n', timeout_s=3.0),
+                          lambda: controller.read(24, max_bytes=10, timeout_s=3.0),
+                          lambda: controller.command(b'\x14'), controller.status, controller.bus_lines,
+                          controller.interface_clear, controller.attach):
+            with pytest.raises(AdapterGone):
+                operation()
+        controller.close()
+        transport.assert_done()
+        assert transport.closed  # the handle is released; no shutdown write was sent
+
+    def test_the_adapter_gone_during_the_recovery_from_another_fault_ends_it(self):
+        controller, transport = attached([
+            ('out', p.command_message(b'\x14', T3S)), ('in', TransportError('EIO')),
+            ('clear_halt', 0x06, unplugged()),
+        ])
+        with pytest.raises(TransportError):
+            controller.command(b'\x14', timeout_s=3.0)
+        with pytest.raises(AdapterGone):
+            controller.command(b'\x14', timeout_s=3.0)  # no more resets, no stop request, no attach
+        transport.assert_done()
+
+    def test_the_adapter_gone_while_draining_a_malformed_reply_is_reported_as_gone(self):
+        controller, transport = attached([
+            ('out', p.command_message(b'\x14', T3S)), ('in', h('0c 00'), 12),
+            STOP, ('in', unplugged(), DRAIN_LENGTH),
+        ])
+        with pytest.raises(AdapterGone):
+            controller.command(b'\x14', timeout_s=3.0)
+        transport.assert_done()
+
+    def test_a_raw_write_whose_data_finds_the_adapter_gone_reads_no_reply_and_resets_no_pipe(self):
+        controller, transport = attached_ni(address_listener(pad=24) + [
+            ('out', p.write_raw_message(2049, T3S, True)), ('raw_out', bytes(2049), unplugged()),
+        ])
+        with pytest.raises(AdapterGone):
+            controller.write(24, bytes(2049), timeout_s=3.0)
+        transport.assert_done()
+
+    def test_a_wait_for_a_service_request_that_finds_the_adapter_gone(self):
+        controller, transport = attached([('intr', unplugged(), 64)])
+        with pytest.raises(AdapterGone):
+            controller.wait_srq(1.0)
+        with pytest.raises(AdapterGone):
+            controller.wait_srq(1.0)
         transport.assert_done()

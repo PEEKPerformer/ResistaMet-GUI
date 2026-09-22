@@ -15,7 +15,7 @@ from . import protocol as p
 from . import tables as t
 from .link import DRAIN_WAIT_S, RECOVERY_WAIT_S, SHORT_WAIT_S
 from .protocol import GpibTimeout, ProtocolError, StatusBlock
-from .transport import TransportError, TransportTimeout
+from .transport import TransportError, TransportGone, TransportTimeout
 
 #: The controller's logger: these are its methods, and they log as it.
 logger = logging.getLogger(__name__.rpartition('.')[0] + '.controller')
@@ -117,6 +117,8 @@ class _TransferMixin:
             accepted = self._link.transport.bulk_out_raw(chunk, int(wait_s * 1000))
         except TransportTimeout:
             accepted = 0
+        except TransportGone:
+            raise  # no adapter to read a reply from or reset a pipe on
         except TransportError as refusal:
             self._refused_raw_write(refusal)
         stranded = accepted < len(chunk)
@@ -133,9 +135,14 @@ class _TransferMixin:
                 reply = self._link.reply_after_stop(p.SMALL_REPLY_BUFFER)
             else:
                 reply = self._link.reply_or_stop(p.SMALL_REPLY_BUFFER, wait_s)
-        finally:
+        except TransportGone:
+            raise
+        except BaseException:
             if stranded:
                 self._abandon_raw_out()
+            raise
+        if stranded:
+            self._abandon_raw_out()
         parsed = p.parse_raw_write_reply(reply)
         self._link.raise_for_error(parsed.status, 'write')
         return parsed.transferred(len(chunk))
@@ -181,6 +188,8 @@ class _TransferMixin:
         except ProtocolError as exc:
             logger.warning('%s: no usable reply after the refused data: %s', self._link.model.name, exc)
             self._link.resync()
+        except TransportGone:
+            raise
         except TransportError as exc:
             logger.warning('%s: reading the reply after the refused data failed: %s', self._link.model.name, exc)
         self._link.reset_out_pipes()

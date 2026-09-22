@@ -12,6 +12,14 @@ A board's Controller is opened and attached on the first ``acquire`` and
 closed on the ``release`` that brings its session count to zero. Nothing
 here knows about pyvisa; ``visa_session`` sits on top.
 
+An adapter that leaves the USB bus (``Controller.adapter_gone``) comes back,
+when it is replugged, as a new USB device with the same serial (spec §11.2,
+"Hot-unplug mid-run"). So a board whose controller found its adapter gone
+is looked up afresh before its next open: once its sessions are all closed,
+the next ``owns`` or ``acquire`` enumerates again; while sessions are still
+open on it, an ``acquire`` enumerates, takes the new device for the board
+and opens it, and the old sessions keep failing on the old controller.
+
 Locks: the registry's lock guards the board table and the session counts,
 and is held only for bookkeeping. Opening and closing an adapter happen
 under that board's own lock instead, because a close waits for whatever
@@ -100,6 +108,11 @@ class _Board:
         """Sessions hold it, or its adapter is still being closed: its handle must stay."""
         return bool(self.sessions) or self.lock.locked()
 
+    @property
+    def gone(self) -> bool:
+        """Its open controller found the adapter gone from the USB bus: its handle is dead."""
+        return self.controller is not None and self.controller.adapter_gone
+
 
 class BoardRegistry:
     """Numbers adapters ``GPIB<n>`` and shares one attached Controller per board."""
@@ -129,7 +142,13 @@ class BoardRegistry:
             if name is None:
                 continue  # new adapter, numbered below
             current = self._boards[name]
-            if current.busy:
+            if current.busy and current.gone:
+                # Replugged under open sessions: they keep counting on this board, and
+                # the next acquire opens the new device. The old handle is released by
+                # the old controller's close, not here.
+                current.info = info
+                boards[name] = current
+            elif current.busy:
                 boards[name] = current       # in use: keep its handle, drop the duplicate
                 surplus.append(info)
             else:
@@ -175,12 +194,17 @@ class BoardRegistry:
     def acquire(self, board: str) -> Controller:
         """The attached controller for ``board``; opened on first use. KeyError if unknown."""
         with self._lock:
-            if not self._enumerated:
+            if not self._enumerated or (board in self._boards and self._boards[board].gone):
                 self._refresh_locked()
             entry = self._boards[board]
             entry.sessions += 1  # counted before the open, so a refresh meanwhile keeps this handle
         try:
             with entry.lock:  # waits out a close of the same adapter that is still running
+                if entry.controller is not None and entry.controller.adapter_gone:
+                    # The sessions still open on it fail on the old controller; this one
+                    # gets the device the refresh above found, if the adapter is back.
+                    entry.controller.close()
+                    entry.controller = None
                 if entry.controller is None:
                     entry.controller = self._open(entry.info)
                     logger.info('GPIB%s: %s attached (%s)', board, entry.info.label,
@@ -219,13 +243,20 @@ class BoardRegistry:
             # first. So this does not wait, and whoever opens the board from
             # now on waits behind it until the close below is done.
             entry.lock.acquire()
+        gone = False
         try:
             controller, entry.controller = entry.controller, None
             if controller is not None:
                 controller.close()  # may wait for an operation in flight; the registry's lock is free
+                gone = controller.adapter_gone
                 logger.info('GPIB%s: closed', board)
         finally:
             entry.lock.release()
+        if gone:
+            with self._lock:
+                # Its info names a USB device that no longer exists; look at the bus
+                # again before the board is next opened or owned.
+                self._enumerated = False
 
     def list_interfaces(self) -> List[str]:
         """``GPIB<n>::INTFC`` for every board. Enumerates USB (which opens handles for
