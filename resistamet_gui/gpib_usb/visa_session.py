@@ -31,10 +31,11 @@ for the application's 5000 ms, code 0xfd, 16.78 s on the captured unit
 013CC9DF and 20.0 s on bench unit 01CEE482; for 1000 ms, 0xfb, 1.05 s and
 1.25 s; for 3000 ms, 0xfc, 4.20 s and 3.75 s (the table is in the
 ``controller`` docstring). A read is bounded as a whole, as NI's one
-instruction is, by the shortest of those expiries (16.78 s for 5000 ms),
-not by the value set: one that runs out returns the bytes read so far with
-VI_ERROR_TMO, as pyvisa-py's own sessions do. With NI's instructions switched on, a raw read on unit
-01CEE482 used to end at 20.0 s whatever its code (§11.2).
+instruction is, by the longer of those expiries (20.0 s for 5000 ms), not
+by the value set: one that runs out returns the bytes read so far with
+VI_ERROR_TMO, as pyvisa-py's own sessions do. With NI's instructions
+switched on, a raw read on unit 01CEE482 used to end at 20.0 s whatever
+its code (§11.2).
 VI_TMO_IMMEDIATE is sent as 100 ms, code 0xf9 (0.127-0.132 s); what NI
 sends for it was not captured. VI_TMO_INFINITE is code 0xf0: the adapter
 never ends the instruction, and the controller stops it after its own
