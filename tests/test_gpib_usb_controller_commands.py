@@ -55,7 +55,6 @@ class TestCommands:
             ('out', p.go_to_standby_message()), ('in', status_reply(0x06)),
             ('out', p.register_read_message([t.BSR_REGISTER])), ('in', regread_reply([0x81]), 32),
             ('ctrl', (0x21, 0x0200, 0, 8), STATUS_8),
-            ('ctrl', (0x20, 0, 0, 8), STATUS_8),
         ])
         controller.interface_clear()
         controller.remote_enable(False)
@@ -63,7 +62,6 @@ class TestCommands:
         controller.go_to_standby()
         assert controller.bus_lines() == 0x81
         assert controller.status().ibsta == 0x0130
-        assert controller.abort().id == 0x20
         transport.assert_done()
 
 

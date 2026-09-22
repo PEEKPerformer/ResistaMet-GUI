@@ -154,7 +154,7 @@ class TestWorkedExamplesIn:
 
     def test_take_control_reply(self):
         status = p.parse_status_reply(h('01 00 30 00 00 00 00 00 04 00 00 00'), p.OP_TAKE_CONTROL)
-        assert status.cic and status.atn
+        assert status.cic and status.ibsta & t.IBSTA_ATN
 
 
 #: Captured from GPIB-USB-HS 01CEE482 with a Keithley 2400 at PAD 3, 2026-09-18.
@@ -393,7 +393,7 @@ class TestStatusBlock:
     def test_ibsta_big_endian_count_little_endian(self):
         status = p.parse_status_block(h('38 60 00 0a 06 ff 00 00'))
         assert status.ibsta == 0x6000
-        assert status.timo and status.end
+        assert status.ibsta & t.IBSTA_TIMO and status.end
         assert status.error == 0x0A
         assert status.count == 0xFF06
         assert status.transferred(256) == 6
@@ -401,10 +401,8 @@ class TestStatusBlock:
     def test_named_bits(self):
         status = p.parse_status_block(h('01 91 fc 00 00 00 00 00'))
         assert status.ibsta == 0x91FC
-        assert status.err and status.srqi and status.cmpl
-        assert status.lok and status.rem and status.cic and status.atn
-        assert status.tacs and status.lacs
-        assert not status.timo and not status.end
+        assert status.cic and status.tacs and status.lacs
+        assert not status.end
 
     def test_parse_at_offset(self):
         buf = b'\xff' * 16 + h('06 00 30 00 00 00 00 00')

@@ -118,8 +118,6 @@ class TestWaitSrq:
         assert controller._srq_idle.is_set()  # nothing was left half-armed
 
     def test_only_one_wait_at_a_time(self):
-        import threading
-
         class Nested(ScriptedTransport):
             controller: Controller
             second: Optional[Exception] = None
