@@ -104,10 +104,12 @@ VISA timeout means: the least time to wait before reporting one.
   on NI's raw messages the 20 s of their addressing block's 0xfd as well.
   Only when that runs out is the stop request sent (§5.11).
 - A read is bounded as a whole, from the call on, as NI's one instruction
-  is (§7.1, §10.10.2): a framed read in pieces of 1024 gives each later
-  piece the code for the time left and starts none after it, and a read
-  that runs out raises ``GpibTimeout`` with the bytes read so far. A
-  write split into several instructions likewise.
+  is (§7.1, §10.10.2), and by what NI's is bounded by: not the timeout
+  asked but the expiry of the code it goes out as, the shortest any unit
+  was timed at (5 s: 0xfd, 16.78 s). A framed read in pieces of 1024 gives
+  each later piece the code for the time left before that and starts none
+  after it, and a read that runs out raises ``GpibTimeout`` with the bytes
+  read so far. A write split into several instructions likewise.
 - The raw path on unit 01CEE482: a 0x0b of this driver's earlier
   composition ended there at 20.0 s whatever its code (0xf9, 0xfb, 0xfc)
   with nothing to read, so a timeout on it came after 20 s whatever was
@@ -474,10 +476,23 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
             return accepted
 
     def _deadline(self, timeout_s: Optional[float]) -> Optional[float]:
-        """When a transfer asked for with ``timeout_s`` must be over, on ``_clock``; None for no timeout."""
-        if p.timeout_code(timeout_s) == t.TIMEOUT_DISABLED_CODE:
+        """When a transfer asked for with ``timeout_s`` must be over, on ``_clock``; None for no timeout.
+
+        Not ``timeout_s`` from now but the expiry of the code it goes out as:
+        NI bounds its one instruction by the adapter's expiry under that code,
+        not by the timeout asked for (§7.1, §10.10.2), and the expiry can be
+        several times the timeout (5 s -> 0xfd -> 16.78 s). The shortest
+        expiry any unit was timed at (``tables.timeout_expiry_least_s``;
+        for a code nobody timed, the lowest estimate) is never below the
+        timeout, so VISA's least wait holds, and a read in pieces ends no
+        sooner than NI's single instruction would. With the bound at the
+        timeout, an answer whose first byte came late filled one piece and
+        was cut off where NI's read would have taken all of it.
+        """
+        code = p.timeout_code(timeout_s)
+        if code == t.TIMEOUT_DISABLED_CODE:
             return None
-        return self._clock() + timeout_s
+        return self._clock() + t.timeout_expiry_least_s(code)
 
     def _address(self, direction: str, pad: int, sad: Optional[int], code: int, wait_s: float) -> None:
         """Address ``pad`` for a transfer, every time (§6).

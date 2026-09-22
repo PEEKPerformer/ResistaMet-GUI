@@ -67,22 +67,29 @@ ADAPTER_OUT_BUFFER_BYTES = 4096
 class _TransferMixin:
     """The write and read paths of ``Controller`` (see the module docstring)."""
 
-    def _code_for_the_rest(self, deadline: Optional[float], operation: str, done: int, asked: int,
+    def _code_for_the_rest(self, deadline: Optional[float], code: int, operation: str, done: int, asked: int,
                            partial: bytes = b'') -> int:
-        """The timeout code for a later piece of a transfer: the time left before ``deadline``.
+        """The timeout code for a later piece of a transfer given ``code``: the time left before ``deadline``.
 
         Rounded as every timeout is (``protocol.timeout_code``), so the piece
-        does not end before the deadline either. With the deadline passed no
-        piece is started, and the transfer ends with a timeout carrying what
-        it has, as NI's one instruction does at its code's expiry (§7.1,
-        §10.10.2). None (no timeout) keeps the disabled code.
+        does not end before the deadline either, and never a longer code
+        than the transfer's own: the deadline is that code's expiry, so the
+        time left fits it, and a hair of rounding in the clock arithmetic
+        must not step past it. With the deadline passed no piece is
+        started, and the transfer ends with a timeout carrying what it has,
+        as NI's one instruction does at its code's expiry (§7.1, §10.10.2).
+        None (no timeout) keeps the disabled code.
         """
         if deadline is None:
             return t.TIMEOUT_DISABLED_CODE
         left = deadline - self._clock()
         if left <= 0:
             raise GpibTimeout('%s: the timeout ran out after %d of %d bytes' % (operation, done, asked), partial)
-        return p.timeout_code(max(left, PIECE_TIMEOUT_MIN_S))
+        rest = p.timeout_code(max(left, PIECE_TIMEOUT_MIN_S))
+        codes = [row_code for _, row_code in t.TIMEOUT_TABLE]
+        if rest not in codes or codes.index(rest) > codes.index(code):
+            return code
+        return rest
 
     def _ni_session(self, address: Address, code: int) -> None:
         """NI's bank-2 session configuration before a raw instruction to ``address`` (§10.2.4).
@@ -147,7 +154,7 @@ class _TransferMixin:
         written = 0
         for start in range(0, len(data), step):
             if start:
-                code = self._code_for_the_rest(deadline, 'write', written, len(data))
+                code = self._code_for_the_rest(deadline, code, 'write', written, len(data))
             chunk = data[start:start + step]
             eoi = send_eoi and start + len(chunk) == len(data)
             if self._link.raw and len(chunk) >= RAW_WRITE_MIN_BYTES:
@@ -321,9 +328,10 @@ class _TransferMixin:
         The read is bounded by its timeout as a whole, as NI's is: NI sends
         one instruction whose code bounds it from its start, and a read
         still receiving data ends at the code's expiry with the bytes so
-        far and error 0x0a (§7.1, §10.10.2). Here the first piece carries
-        ``code`` and every later one the code for what is left of
-        ``deadline`` (``_code_for_the_rest``), with that code's host wait
+        far and error 0x0a (§7.1, §10.10.2). Here ``deadline`` is that
+        expiry from the start of the call (``Controller._deadline``), the
+        first piece carries ``code`` and every later one the code for what
+        is left of it (``_code_for_the_rest``), with that code's host wait
         (``transfer_wait_s`` of one piece); once the deadline has passed no
         piece starts. Either way the read ends with ``GpibTimeout``
         carrying everything read so far as its partial (§5.2: the partial
@@ -349,7 +357,7 @@ class _TransferMixin:
         while remaining > 0:
             if chunks:
                 read = b''.join(chunks)
-                code = self._code_for_the_rest(deadline, operation, len(read), max_bytes, read)
+                code = self._code_for_the_rest(deadline, code, operation, len(read), max_bytes, read)
             count = min(remaining, step)
             try:
                 if raw:
