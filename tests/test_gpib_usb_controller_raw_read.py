@@ -1,0 +1,424 @@
+"""Controller: raw reads, 0x0b with the data on the alternate bulk IN (§10.1), and the
+switch that turns the raw transfers on.
+"""
+import pytest
+
+from resistamet_gui.gpib_usb import protocol as p
+from resistamet_gui.gpib_usb import tables as t
+from resistamet_gui.gpib_usb.controller import (DRAIN_WAIT_S, RAW_READ_MIN_BYTES, BUS_MIN_RATE_BPS,
+                                                RECOVERY_WAIT_S, RAW_READ_SLICE_S, RAW_REPLY_POLL_S, Controller)
+from resistamet_gui.gpib_usb.protocol import GpibError, GpibTimeout, ProtocolError
+from resistamet_gui.gpib_usb.transport import TransportTimeout
+from tests.fakes.gpib_usb import (DRAIN_LENGTH, RAW_DRAIN, SHORT_MS, STOP, T3S, ScriptedTransport,
+                                  address_listener, address_talker, attach_script, attached, attached_ni, h,
+                                  raw_read_reply, raw_wait_slices, read_reply, regread_reply, status_reply)
+
+
+IDN_2420 = b'KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L\n'
+
+
+class TestRawRead:
+    """Reads of RAW_READ_MIN_BYTES and more: 0x0b, data on the alternate bulk IN (§10.1)."""
+
+    def test_idn_over_0x0b_with_ni_bytes(self):
+        # counts.pcap 13.4323 / 13.4419 / 13.4424: the 0x0b of 4096 with the 3 s code. Our
+        # message is the 0x0b block and the clear-END write; the reply is those two blocks.
+        controller, transport = attached_ni(address_talker(pad=24) + [
+            ('out', h('0b 00 00 fc 00 f0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),  # NI's e is 0a, ours 00
+            ('raw_in', IDN_2420, 4608),
+            ('in', h('0b 20 64 00 52 f0 ff ff e0 00 00 00 09 00 64 00 52 f0 ff ff 01 00 00 00 04 00 00 00'), 512),
+        ])
+        assert controller.read(24, max_bytes=4096, timeout_s=3.0) == (IDN_2420, True)
+        transport.assert_done()
+
+    def test_the_threshold_is_ni_s_1024_1025(self):
+        # §10.1.1: counts.pcap 12.8188 is the last 0x0a (1024), read_thresholds.pcap 0.3160 the
+        # first 0x0b (1025); the instruction blocks below are NI's bytes but for e, which NI
+        # fills with the termination character and this driver leaves 0x00 with the compare off.
+        assert RAW_READ_MIN_BYTES == 1025
+        controller, transport = attached_ni(address_talker() + [
+            ('out', h('0a 00 00 fc 00 fc 00 00') + p.read_message(1024, T3S)[8:]),
+            ('in', read_reply(b'x', 1024), p.read_reply_buffer_size(1024, 512)),
+        ] + address_talker() + [
+            ('out', h('0b 00 00 fc ff fb ff ff') + p.read_raw_message(1025, T3S)[8:]),
+            ('raw_in', b'x', p.raw_read_buffer_size(1025, 512)),
+            ('in', raw_read_reply(1025, 1), 512),
+        ])
+        assert controller.read(22, max_bytes=1024, timeout_s=3.0) == (b'x', True)
+        assert controller.read(22, max_bytes=1025, timeout_s=3.0) == (b'x', True)
+        transport.assert_done()
+
+    def test_data_is_read_before_the_reply_and_the_reply_wait_is_short(self):
+        controller, transport = attached_ni(address_talker() + [
+            ('out', p.read_raw_message(20480, T3S)),
+            ('raw_in', IDN_2420, 20992),
+            ('in', raw_read_reply(20480, 82), 512),
+        ])
+        controller.read(22, max_bytes=20480, timeout_s=3.0)
+        kinds = [kind for kind, _, _ in transport.timeouts][-3:]
+        assert kinds == ['out', 'raw_in', 'in']
+        assert transport.timeouts[-2] == ('raw_in', 20992, int(RAW_READ_SLICE_S * 1000))  # the first slice
+        assert transport.timeouts[-1] == ('in', 512, SHORT_MS)
+
+    def test_full_chunk_has_end_clear(self):
+        data = bytes(range(256)) * 80
+        controller, transport = attached_ni(address_talker() + [
+            ('out', p.read_raw_message(20480, T3S)),
+            ('raw_in', data, 20992),
+            ('in', h('0b 00 64 00 00 00 00 00 60 00 00 00 09 00 64 00 00 00 00 00 01 00 00 00 04 00 00 00'), 512),
+        ])
+        assert controller.read(22, max_bytes=20480, timeout_s=3.0) == (data, False)
+        transport.assert_done()
+
+    def test_request_above_one_instruction_loops_without_readdressing(self):
+        first, second = bytes(0xFFFF), b'tail\n'
+        controller, transport = attached_ni(address_talker() + [
+            ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', first, 66048),
+            ('in', raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
+            ('out', p.read_raw_message(70000 - 0xFFFF, T3S)), ('raw_in', second, 4608),
+            ('in', raw_read_reply(70000 - 0xFFFF, len(second)), 512),
+        ])
+        assert controller.read(22, max_bytes=70000, timeout_s=3.0) == (first + second, True)
+        transport.assert_done()
+
+    def test_loop_stops_at_the_request_and_a_small_last_chunk_stays_raw(self):
+        # The requested count decides the instruction once per read (§10.1.1): the 1-byte tail
+        # of a 0x0b read is a 0x0b too, not a framed 0x0a in the middle of the message. The
+        # odd byte arrives padded to two on the alternate IN (§10.1.3).
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', bytes(0xFFFF), 66048),
+            ('in', raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
+            ('out', p.read_raw_message(1, T3S)), ('raw_in', b'z\x00', 512),
+            ('in', raw_read_reply(1, 1, end=False), 512),
+        ])
+        data, end = controller.read_raw(0x10000, timeout_s=3.0)
+        assert len(data) == 0x10000 and data[-1:] == b'z' and not end
+        transport.assert_done()
+        assert p.OP_READ not in [message[0] for message in transport.sent]
+
+    def test_a_tail_just_under_the_threshold_stays_raw_and_a_small_request_stays_framed(self):
+        tail = RAW_READ_MIN_BYTES - 1
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', bytes(0xFFFF), 66048),
+            ('in', raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
+            ('out', p.read_raw_message(tail, T3S)), ('raw_in', b'end\n', 1536),
+            ('in', raw_read_reply(tail, 4), 512),
+            ('out', p.read_message(tail, T3S)), ('in', read_reply(b'end\n', tail)),
+        ])
+        data, end = controller.read_raw(0xFFFF + tail, timeout_s=3.0)
+        assert len(data) == 0xFFFF + 4 and end
+        assert controller.read_raw(tail, timeout_s=3.0) == (b'end\n', True)   # the same count asked alone
+        assert [message[0] for message in transport.sent[-3:]] == [p.OP_READ_RAW, p.OP_READ_RAW, p.OP_READ]
+
+    def test_zero_length_transfer_on_a_device_timeout(self):
+        # nolistener.pcap 9.8121 / 9.8126: IN88 0 B, then error 0x0a with count -20480.
+        controller, transport = attached_ni(address_talker(pad=5) + [
+            ('out', p.read_raw_message(20480, T3S)),
+            ('raw_in', b'', 20992),
+            ('in', h('0b 00 64 0a 00 b0 ff ff 60 00 00 00 09 00 64 00 00 b0 ff ff 01 00 00 00 04 00 00 00'), 512),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.read(5, max_bytes=20480, timeout_s=3.0)
+        assert info.value.partial == b'' and info.value.code == 0x0A
+        transport.assert_done()
+
+    def test_a_device_timeout_needs_no_stop_request_and_no_reattach(self):
+        # raw_errors.pcap 6.1075-10.3034: the adapter ends the 0x88 transfer itself with a
+        # zero-length packet at its timeout, the reply follows, and the next operation is
+        # ordinary (§10.6.6, §10.6.7). NI's reply blocks, in our two-block message.
+        controller, transport = attached_ni(address_talker(pad=5) + [
+            ('out', h('0b 00 00 fc 00 b0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),
+            ('raw_in', b'', 20992),
+            ('in', h('0b 00 64 0a 00 b0 ff ff 60 00 00 00 09 00 64 00 00 b0 ff ff 01 00 00 00 04 00 00 00'), 512),
+        ] + address_listener(pad=24) + [
+            ('out', p.write_message(b'*IDN?\n', T3S, True)), ('in', status_reply(0x0D)),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.read(5, max_bytes=20480, timeout_s=3.0)
+        assert info.value.code == 0x0A and info.value.partial == b''
+        assert controller.write(24, b'*IDN?\n', timeout_s=3.0) == 6
+        transport.assert_done()  # no ('ctrl', 0x20 ...) step anywhere in the script
+
+    def test_partial_data_on_a_device_timeout(self):
+        controller, transport = attached_ni(address_talker() + [
+            ('out', p.read_raw_message(4096, T3S)),
+            ('raw_in', b'PART', 4608),
+            ('in', raw_read_reply(4096, 4, end=False, error=0x0A), 512),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.read(22, max_bytes=4096, timeout_s=3.0)
+        assert info.value.partial == b'PART'
+
+    def test_timeout_in_a_later_chunk_keeps_the_earlier_ones(self):
+        controller, _ = attached_ni([
+            ('out', p.read_raw_message(0xFFFF, T3S)), ('raw_in', bytes(0xFFFF), 66048),
+            ('in', raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
+            ('out', p.read_raw_message(4096, T3S)), ('raw_in', b'AB', 4608),
+            ('in', raw_read_reply(4096, 2, end=False, error=0x0A), 512),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.read_raw(0xFFFF + 4096, timeout_s=3.0)
+        assert len(info.value.partial) == 0xFFFF + 2
+
+    def test_transfer_longer_than_the_count_is_cut_to_the_count(self):
+        # trac.pcap 13.0075 / 13.0079: 6 bytes on 0x88 for a 5-byte answer.
+        controller, transport = attached_ni(address_talker(pad=24) + [
+            ('out', p.read_raw_message(20480, T3S)),
+            ('raw_in', h('31 31 30 33 0a 00'), 20992),
+            ('in', h('0b 20 64 00 05 b0 ff ff e0 00 00 00 09 00 64 00 05 b0 ff ff 01 00 00 00 04 00 00 00'), 512),
+        ])
+        assert controller.read(24, max_bytes=20480, timeout_s=3.0) == (b'1103\n', True)
+
+    def test_fewer_bytes_than_the_count_is_a_fault_that_resyncs(self):
+        controller, transport = attached_ni(address_talker() + [
+            ('out', p.read_raw_message(4096, T3S)),
+            ('raw_in', b'SHORT', 4608),
+            ('in', raw_read_reply(4096, 82), 512),
+            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,
+        ])
+        with pytest.raises(ProtocolError):
+            controller.read(22, max_bytes=4096, timeout_s=3.0)
+        transport.assert_done()
+
+    def test_host_wait_expiry_on_the_data_stops_the_device_and_reports_a_timeout(self):
+        controller, transport = attached_ni(address_talker(code=t.TIMEOUT_DISABLED_CODE) + [
+            ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
+        ] + raw_wait_slices(4106, 4608) + [
+            STOP,
+            ('raw_in', b'', 4608),
+            ('in', raw_read_reply(4096, 0, end=False, error=1), 512),
+        ], infinite_wait_s=0.01)
+        with pytest.raises(GpibTimeout) as info:
+            controller.read(22, max_bytes=4096, timeout_s=None)
+        assert info.value.code == 1 and info.value.partial == b''
+        transport.assert_done()
+        waits = [tm for kind, _, tm in transport.timeouts if kind == 'raw_in']
+        assert waits == [1000, 1000, 1000, 1000, 106, int(RECOVERY_WAIT_S * 1000)]
+        assert sum(waits[:-1]) == int((0.01 + 4096 / BUS_MIN_RATE_BPS) * 1000)  # the whole host wait, in slices
+        looks = [tm for kind, length, tm in transport.timeouts[:-1] if kind == 'in' and length == 512]
+        assert looks == [int(RAW_REPLY_POLL_S * 1000)] * 4
+        assert transport.timeouts[-1] == ('in', 512, int(RECOVERY_WAIT_S * 1000))
+
+    def test_an_error_reply_is_seen_within_a_slice_though_the_data_transfer_never_ends(self):
+        # §10.6.7 does not show whether the adapter completes the 0x88 transfer for read errors
+        # other than the timeout. If it does not, the reply is already waiting on the primary IN:
+        # it must not take the whole transfer wait (26 s here) to find, and an instruction that
+        # has reported its error gets no stop request.
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(20480, T3S)),
+            ('raw_in', TransportTimeout('nothing'), 20992),
+            ('in', raw_read_reply(20480, 0, end=False, error=3), 512),
+            ('raw_in', TransportTimeout('nothing to collect'), 20992),
+        ])
+        with pytest.raises(GpibError) as info:
+            controller.read_raw(20480, timeout_s=3.0)
+        assert info.value.code == 3
+        transport.assert_done()
+        assert [(kind, tm) for kind, _, tm in transport.timeouts[-3:]] == [
+            ('raw_in', 1000), ('in', int(RAW_REPLY_POLL_S * 1000)), ('raw_in', int(DRAIN_WAIT_S * 1000))]
+
+    def test_normal_data_arriving_in_a_later_slice(self):
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(20480, T3S)),
+            ('raw_in', TransportTimeout('still formatting'), 20992), ('in', TransportTimeout('no reply yet'), 512),
+            ('raw_in', TransportTimeout('still formatting'), 20992), ('in', TransportTimeout('no reply yet'), 512),
+            ('raw_in', IDN_2420, 20992),
+            ('in', raw_read_reply(20480, len(IDN_2420)), 512),
+        ])
+        assert controller.read_raw(20480, timeout_s=3.0) == (IDN_2420, True)
+        transport.assert_done()
+        assert transport.timeouts[-1] == ('in', 512, SHORT_MS)
+
+    def test_data_split_over_two_slices_is_joined(self):
+        first, second = bytes(range(256)) * 2, b'tail\n\x00'
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(20480, T3S)),
+            ('raw_in', TransportTimeout('mid-transfer', partial=first), 20992),
+            ('in', TransportTimeout('no reply yet'), 512),
+            ('raw_in', second, 20992 - 512),
+            ('in', raw_read_reply(20480, 517), 512),
+        ])
+        assert controller.read_raw(20480, timeout_s=3.0) == (first + b'tail\n', True)
+        transport.assert_done()
+
+    def test_a_reply_that_overtakes_the_end_of_the_data_still_collects_it(self):
+        # A transfer that ends at the edge of a slice is reported as a timeout with everything
+        # in ``partial``; the reply then says the read was good, and nothing is lost.
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(20480, T3S)),
+            ('raw_in', TransportTimeout('at the deadline', partial=IDN_2420), 20992),
+            ('in', raw_read_reply(20480, len(IDN_2420)), 512),
+            ('raw_in', TransportTimeout('nothing more'), 20992 - len(IDN_2420)),
+        ])
+        assert controller.read_raw(20480, timeout_s=3.0) == (IDN_2420, True)
+        transport.assert_done()
+
+    def test_a_device_timeout_ended_by_the_adapter_s_zero_length_packet_in_a_later_slice(self):
+        # §10.6.7: the adapter ends a timed-out 0x0b itself, with a zero-length transfer on 0x88.
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(20480, 0xFB)),
+            ('raw_in', TransportTimeout('nothing yet'), 20992), ('in', TransportTimeout('no reply yet'), 512),
+            ('raw_in', b'', 20992),
+            ('in', raw_read_reply(20480, 0, end=False, error=0x0A), 512),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.read_raw(20480, timeout_s=1.0)
+        assert info.value.code == 0x0A
+        transport.assert_done()
+        assert 0x20 not in [step[1][0] for step in transport.script if step[0] == 'ctrl'][3:]  # no stop request
+
+    def test_partial_data_at_the_host_wait_is_kept_and_completed_after_the_stop(self):
+        # The transport received 4 bytes when its wait expired (pyusb's partial count); after the
+        # stop the device completes the transfer with 2 more and the reply counts 6.
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
+        ] + raw_wait_slices(4106, 4608, partial=b'PART') + [
+            STOP,
+            ('raw_in', b'IA', 4604),
+            ('in', raw_read_reply(4096, 6, end=False, error=1), 512),
+        ], infinite_wait_s=0.01)
+        with pytest.raises(GpibTimeout) as info:
+            controller.read_raw(4096, timeout_s=None)
+        assert info.value.partial == b'PARTIA' and info.value.code == 1
+        transport.assert_done()
+
+    def test_partial_data_with_nothing_more_after_the_stop(self):
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
+        ] + raw_wait_slices(4106, 4608, partial=b'PART') + [
+            STOP,
+            ('raw_in', TransportTimeout('nothing more'), 4604),
+            ('in', raw_read_reply(4096, 4, end=False, error=1), 512),
+        ], infinite_wait_s=0.01)
+        with pytest.raises(GpibTimeout) as info:
+            controller.read_raw(4096, timeout_s=None)
+        assert info.value.partial == b'PART'
+        transport.assert_done()
+
+    def test_stopped_read_whose_data_never_completes_is_fine_when_nothing_was_read(self):
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
+        ] + raw_wait_slices(4106, 4608) + [
+            STOP,
+            ('raw_in', TransportTimeout('still nothing'), 4608),
+            ('in', raw_read_reply(4096, 0, end=False, error=1), 512),
+        ], infinite_wait_s=0.01)
+        with pytest.raises(GpibTimeout):
+            controller.read_raw(4096, timeout_s=None)
+        transport.assert_done()
+
+    def test_stopped_read_whose_data_never_completes_but_was_read_is_a_fault(self):
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(4096, t.TIMEOUT_DISABLED_CODE)),
+        ] + raw_wait_slices(4106, 4608) + [
+            STOP,
+            ('raw_in', TransportTimeout('still nothing'), 4608),
+            ('in', raw_read_reply(4096, 40, end=False, error=1), 512),
+            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,
+        ], infinite_wait_s=0.01)
+        with pytest.raises(ProtocolError):
+            controller.read_raw(4096, timeout_s=None)
+        transport.assert_done()
+
+    def test_reply_missing_after_the_data_takes_the_stop_path(self):
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(4096, T3S)),
+            ('raw_in', b'AB', 4608),
+            ('in', TransportTimeout('no reply'), 512),
+            STOP,
+            ('in', raw_read_reply(4096, 2, end=False, error=1), 512),
+        ])
+        with pytest.raises(GpibTimeout) as info:
+            controller.read_raw(4096, timeout_s=3.0)
+        assert info.value.partial == b'AB'
+        transport.assert_done()
+
+    def test_no_reply_even_after_the_stop_is_a_fault(self):
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(4096, T3S)),
+            ('raw_in', b'', 4608),
+            ('in', TransportTimeout('no reply'), 512),
+            STOP,
+            ('in', TransportTimeout('still no reply'), 512),
+            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH), RAW_DRAIN,
+        ])
+        with pytest.raises(ProtocolError):
+            controller.read_raw(4096, timeout_s=3.0)
+        transport.assert_done()
+
+    def test_the_eos_character_reaches_the_instruction_and_plain_reads_send_00_00(self):
+        controller, transport = attached_ni([
+            ('out', h('0b 00 00 fc 00 f0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),
+            ('raw_in', b'x', 4608), ('in', raw_read_reply(4096, 1), 512),
+            ('out', h('0b 14 2c fc 00 f0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')),
+            ('raw_in', b'x', 4608), ('in', raw_read_reply(4096, 1), 512),
+        ])
+        controller.read_raw(4096, timeout_s=3.0)
+        controller.read_raw(4096, timeout_s=3.0, eos=0x2C, eos_8bit=True)
+        transport.assert_done()
+
+    def test_a_model_without_the_alternate_pair_stays_framed(self):
+        script = [
+            ('out', p.register_read_message(t.USB_B_SERIAL_REGISTERS)),
+            ('in', regread_reply([0x78, 0x56, 0x34, 0x12]), 32),
+        ] + attach_script()[2:] + [
+            ('out', p.read_message(1024, T3S)),   # pyvisa's 20480, capped at FRAMED_READ_MAX_BYTES per 0x0a
+            ('in', read_reply(b'x', 1024), p.read_reply_buffer_size(1024, 512)),
+        ]
+        transport = ScriptedTransport(script)
+        controller = Controller(transport, t.PID_USB_B, ni_instructions=True, sleep=lambda s: None)
+        controller.attach()
+        assert controller.read_raw(20480, timeout_s=3.0) == (b'x', True)
+        transport.assert_done()
+
+
+class TestRawTransfersSwitch:
+    """Controller(raw_transfers=...): off unless asked for, and only on a model with the alternate pair."""
+
+    def test_default_is_framed_even_on_a_model_with_the_pair(self):
+        controller, transport = attached(address_talker() + [
+            ('out', p.read_message(1024, T3S)),   # pyvisa's 20480, capped at FRAMED_READ_MAX_BYTES per 0x0a
+            ('in', read_reply(b'x', 1024), p.read_reply_buffer_size(1024, 512)),
+        ] + address_listener() + [
+            ('out', p.write_message(bytes(3000), T3S, True)), ('in', status_reply(0x0D)),
+        ])
+        assert controller.raw_transfers is False and controller.ni_instructions is False
+        # pyvisa's chunk is 20480 bytes: the application's first read is this one.
+        assert controller.read(22, max_bytes=20480, timeout_s=3.0) == (b'x', True)
+        assert controller.write(22, bytes(3000), timeout_s=3.0) == 3000
+        transport.assert_done()
+
+    def test_switched_on_large_transfers_go_raw(self):
+        controller, _ = attached_ni([])
+        assert controller.raw_transfers is True and controller.ni_instructions is True
+
+    def test_switched_off_reads_and_writes_stay_framed(self):
+        controller, transport = attached(address_talker() + [
+            ('out', p.read_message(1024, T3S)),   # pyvisa's 20480, capped at FRAMED_READ_MAX_BYTES per 0x0a
+            ('in', read_reply(b'x', 1024), p.read_reply_buffer_size(1024, 512)),
+        ] + address_listener() + [
+            ('out', p.write_message(bytes(3000), T3S, True)), ('in', status_reply(0x0D)),
+        ], ni_instructions=False)
+        assert controller.raw_transfers is False
+        assert controller.read(22, max_bytes=20480, timeout_s=3.0) == (b'x', True)
+        assert controller.write(22, bytes(3000), timeout_s=3.0) == 3000
+        transport.assert_done()
+
+    def test_switched_off_resync_does_not_touch_the_alternate_endpoint(self):
+        controller, transport = attached([
+            ('out', p.command_message(b'\x14', T3S)), ('in', h('0c 00'), 12),
+            STOP, ('in', TransportTimeout('drained'), DRAIN_LENGTH),
+        ], ni_instructions=False)
+        with pytest.raises(ProtocolError):
+            controller.command(b'\x14', timeout_s=3.0)
+        transport.assert_done()
+
+    def test_switched_on_without_the_pair_is_still_framed(self):
+        script = [
+            ('out', p.register_read_message(t.USB_B_SERIAL_REGISTERS)),
+            ('in', regread_reply([0x78, 0x56, 0x34, 0x12]), 32),
+        ] + attach_script()[2:]
+        controller = Controller(ScriptedTransport(script), t.PID_USB_B, ni_instructions=True, sleep=lambda s: None)
+        controller.attach()
+        assert controller.raw_transfers is False
+        assert controller.ni_instructions is True  # the serial poll needs no alternate pair
