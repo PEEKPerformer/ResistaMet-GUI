@@ -20,6 +20,8 @@ from ..data_export import AUX_LOG_MODES, splice_before_tail
 from ..instrument import Keithley2400, humanize_connection_error
 from ..sensors import aux_column_names, make_sensor, reading_to_columns
 from ..system_utils import SleepInhibitor
+from .control import RunStopped
+from .instrument_lock import InstrumentBusy, hold_instrument
 from .configure import (
     configure_four_point, configure_resistance, configure_source_i,
     configure_source_v, configure_sweep,
@@ -45,7 +47,8 @@ class ContinuousRun:
     session. No Qt here.
     """
 
-    def __init__(self, mode, sample_name, username, settings, control, events):
+    def __init__(self, mode, sample_name, username, settings, control, events,
+                  safety_ack='skip', prompt_timeout_s=None):
         if mode not in ['resistance', 'source_v', 'source_i', 'four_point', 'sweep']:
             raise ValueError(f"Invalid measurement mode: {mode}")
         self.mode = mode
@@ -53,6 +56,10 @@ class ContinuousRun:
         self.username = username
         self.settings = settings
         self._events = events
+        self._safety_ack = safety_ack
+        #: None = wait forever (the GUI has an operator at the bench).
+        self._prompt_timeout_s = prompt_timeout_s
+        self._instrument_lock = None
         # Set by the configure step: the frozen per-mode state the loop reads.
         self._mode_state = None
         # Set by each delta read: the per-polarity values the row builder logs.
@@ -278,6 +285,63 @@ class ContinuousRun:
             self._control.finish('completed')
             # Fall through to cleanup below
 
+
+    def _enter_instrument_lock(self, address):
+        """Hold the address for this run; released in _cleanup.
+
+        Taken before anything is opened, so a second process is refused rather
+        than allowed to interleave SCPI on the same bus.
+        """
+        manager = hold_instrument(address)
+        manager.__enter__()
+        return manager
+
+    def _safety_prompt_declined(self) -> bool:
+        """Ask before a hazardous voltage reaches the leads. True = cancel.
+
+        The GUI asks in its own modal before starting, so it constructs runs
+        with safety_ack='skip'; a headless client has no dialog, so the run
+        itself must raise the question rather than silently energise leads at
+        60 V.
+        """
+        if self._safety_ack != 'prompt':
+            return False
+        from ..safety import is_potentially_hazardous, warning_message
+
+        measurement = self.settings.get('measurement', {})
+        if bool(measurement.get('safety_voltage_warn_silenced', False)):
+            return False
+        check = is_potentially_hazardous(self.settings, self.mode)
+        if not check.hazardous:
+            return False
+
+        prompt = self._control.raise_prompt(
+            'safety_voltage_ack', ['acknowledge', 'cancel'], detail={
+                'voltage_v': check.voltage_v,
+                'threshold_v': check.threshold_v,
+                'reason': check.reason,
+                'message': warning_message(check),
+            })
+        self._events.emit('prompt', {
+            'prompt_id': prompt.prompt_id, 'kind': prompt.kind,
+            'options': prompt.options, 'requires_human': prompt.requires_human,
+            'detail': prompt.detail,
+        })
+        choice, fields = self._control.wait_for_prompt(self._prompt_timeout_s)
+        self._events.emit('prompt_resolved', {
+            'prompt_id': prompt.prompt_id, 'choice': choice})
+        if choice is None and not self._control.stopped():
+            self._control.finish('prompt_timeout')
+            self._events.warn('prompt_timeout',
+                               "No answer to the touch-safety warning; abandoning the run.")
+            return True
+        if fields.get('silence_for_profile'):
+            # Recorded on the event stream; persisting it belongs to whoever
+            # owns the profile file, not to a run.
+            self._events.log('safety_silenced',
+                              "Touch-safety warning silenced for this profile.")
+        return choice != 'acknowledge'
+
     def execute(self):
         self.running = True
         self.paused = False
@@ -288,6 +352,27 @@ class ContinuousRun:
             'settings': self.settings,
             'started_at': time.time(),
         })
+        address = self.settings.get('measurement', {}).get('gpib_address', '')
+        try:
+            self._instrument_lock = self._enter_instrument_lock(address)
+        except InstrumentBusy as exc:
+            self._control.finish('instrument_busy')
+            self._events.error('instrument_busy', 'smu', str(exc))
+            self._events.emit('run_ended', {
+                'reason': 'instrument_busy', 'ok': False, 'samples': 0,
+                'duration_s': 0.0, 'path': None,
+            })
+            return
+
+        if self._safety_prompt_declined():
+            self._control.finish('cancelled')
+            self._release_instrument_lock()
+            self._events.emit('run_ended', {
+                # finish() keeps the first reason, so a timeout reports as one.
+                'reason': self._control.finish_reason, 'ok': False, 'samples': 0,
+                'duration_s': 0.0, 'path': None,
+            })
+            return
         instrument_ready = False
         file_ready = False
 
@@ -426,7 +511,7 @@ class ContinuousRun:
                 try:
                     self.keithley.write(":OUTP ON")
                     self._events.log('settling', f"Waiting for settling time ({settling_time}s)...")
-                    time.sleep(settling_time)
+                    self._control.sleep(settling_time)
                 except Exception as e:
                     self._events.error('output_on_failed', 'smu', f"Error turning on output: {str(e)}")
                     self._control.finish('output_on_failed')
@@ -454,6 +539,11 @@ class ContinuousRun:
 
             # Retry configuration for transient errors (cable wiggle, etc.)
             was_paused = False
+            # Time spent paused, excluded from the duration limit: a run
+            # paused across its own deadline should still get the measuring
+            # time it was asked for.
+            paused_total = 0.0
+            pause_began = 0.0
             max_retries = 5
             consecutive_errors = 0
 
@@ -461,11 +551,13 @@ class ContinuousRun:
                 if self.paused:
                     if not was_paused:
                         was_paused = True
+                        pause_began = time.time()
                         self._events.emit('paused', {'reason': 'user'})
                     time.sleep(0.1)
                     continue
                 if was_paused:
                     was_paused = False
+                    paused_total += time.time() - pause_began
                     self._events.emit('resumed', {'reason': 'user'})
                 now = time.time()
                 if now - last_measurement_time >= sample_interval:
@@ -495,7 +587,7 @@ class ContinuousRun:
                                         f"Delta read error (retry {retry + 1}/{max_retries}): {str(e)[:50]}... "
                                         f"Retrying in {delay:.1f}s"
                                     )
-                                    time.sleep(delay)
+                                    self._control.sleep(delay)
                                     try:
                                         self.keithley.write("*CLS")
                                     except Exception:
@@ -522,7 +614,7 @@ class ContinuousRun:
                                         f"VISA error (retry {retry + 1}/{max_retries}): {str(e)[:50]}... "
                                         f"Retrying in {delay:.1f}s"
                                     )
-                                    time.sleep(delay)
+                                    self._control.sleep(delay)
                                     try:
                                         self.keithley.write("*CLS")
                                     except Exception:
@@ -535,6 +627,8 @@ class ContinuousRun:
                                 self._events.error('read_error', 'smu', f"Unexpected Read Error: {str(e)}. Stopping.")
                                 break
 
+                    if self._control.stopped():
+                        break
                     if not read_success:
                         self._control.finish('read_error')
                         break
@@ -737,7 +831,7 @@ class ContinuousRun:
 
                 time.sleep(0.01 if sample_interval <= 0.001 else max(0.001, sample_interval / 10.0))
 
-                if end_time is not None and time.time() >= end_time:
+                if end_time is not None and time.time() - paused_total >= end_time:
                     self._events.log('duration_reached', "Reached configured duration. Stopping.")
                     self._control.finish('duration')
 
@@ -768,6 +862,9 @@ class ContinuousRun:
 
         except Exception as e:
             self._events.error('worker_error', 'run', f"Unexpected Worker Error ({self.mode}): {str(e)}")
+        except RunStopped:
+            # A stop landed during a settle; the normal shutdown path follows.
+            pass
         except Exception:
             self._control.finish('worker_error')
             raise
@@ -818,9 +915,20 @@ class ContinuousRun:
         self._events.log('stopping', f"Stopping measurement ({self.mode})...")
         self._control.finish('user_stop')
 
+    def _release_instrument_lock(self) -> None:
+        manager = getattr(self, '_instrument_lock', None)
+        if manager is not None:
+            self._instrument_lock = None
+            try:
+                manager.__exit__(None, None, None)
+            except Exception:
+                logger.warning("failed to release the instrument lock", exc_info=True)
+
     def _cleanup(self) -> None:
         # Re-enable system sleep
         self._sleep_inhibitor.uninhibit()
+        # Released last, after the instrument and aux ports are closed.
+        self._release_instrument_lock()
 
         if self.keithley:
             try:
@@ -899,7 +1007,7 @@ class ContinuousRun:
 
         # +I reading
         self.keithley.write(f":SOUR:CURR {i_mag}")
-        time.sleep(settling)
+        self._control.sleep(settling)
         raw_plus = self.keithley.query(":READ?").strip()
         parts_plus = [p.strip() for p in raw_plus.split(',')]
         v_plus = float(parts_plus[0])
@@ -907,7 +1015,7 @@ class ContinuousRun:
 
         # -I reading
         self.keithley.write(f":SOUR:CURR {-i_mag}")
-        time.sleep(settling)
+        self._control.sleep(settling)
         raw_minus = self.keithley.query(":READ?").strip()
         parts_minus = [p.strip() for p in raw_minus.split(',')]
         v_minus = float(parts_minus[0])
