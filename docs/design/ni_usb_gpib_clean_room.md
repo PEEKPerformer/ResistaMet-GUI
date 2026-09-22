@@ -150,14 +150,25 @@ What the captures corrected: reads over 1024 bytes do not use the framed
 path at all (0x0b, data raw, one instruction per chunk); writes over 2048
 bytes likewise (0x0e); serial poll is its own instruction; NI never sends
 go-to-standby in an instrument session, and never the stop request; the
-"error 4 on `e` without `m`" rule was wrong; the timeout table was right
-and the timeout bounds a handshake, not a transfer; the initialisation
+"error 4 on `e` without `m`" rule was wrong; the timeout table was right;
+the initialisation
 matched ours except two register values. A second batch of five captures
 settled the two thresholds exactly and the error paths: a long write nobody
 listens to is refused with a STALL on the alternate OUT pipe, answered with
 two pipe resets; a raw read that times out ends itself with a zero-length
 packet; a serial poll that times out replies without its status-byte block.
 The complete list is §10 of the specification.
+
+This record said at first that the timeout bounds a handshake rather than
+a transfer. That was an inference from reads that ended inside a code's
+expiry, and the fourth batch (2026-09-22, `captures/ni_usb_gpib_2026-09-22/`)
+showed the opposite: a long read under a short code is cut off at the
+code's expiry with bytes still arriving, so the code bounds the whole
+instruction (spec §7.1, §10.10.2). The same batch captured NI's mapping
+from VISA timeouts to codes down to 1 ms and the 32-bit count of the raw
+read. It was decoded by a fresh Reader under the same rules; its
+transcript shows only the repository, its own `mktemp` directory, and no
+network access.
 
 ## What it has not had
 
