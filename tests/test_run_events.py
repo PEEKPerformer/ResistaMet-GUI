@@ -235,10 +235,18 @@ class TestDerivedValues:
                                    vsource_current_range_auto=True,
                                    vsource_duration_hours=0.0)
         import threading
-        stopper = threading.Timer(0.6, lambda: control.finish('user_stop'))
+        import time
+
+        def stop_after_two_samples():
+            deadline = time.monotonic() + 15.0
+            while len(sink.of_type('sample')) < 2 and time.monotonic() < deadline:
+                time.sleep(0.02)
+            control.finish('user_stop')
+
+        stopper = threading.Thread(target=stop_after_two_samples, daemon=True)
         stopper.start()
         run.execute()
-        stopper.cancel()
+        stopper.join(1.0)
 
         samples = sink.of_type('sample')
         assert samples, "no samples"
