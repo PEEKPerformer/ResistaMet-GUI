@@ -1,0 +1,36 @@
+1106025.307 RM open, scenario timeout_map
+1106025.785 timeout 1 ms: viRead 100 with nothing pending
+-> VisaIOError after 0.002 s
+1106026.189 timeout 2 ms: viRead 100 with nothing pending
+-> VisaIOError after 0.006 s
+1106026.597 timeout 3 ms: viRead 100 with nothing pending
+-> VisaIOError after 0.006 s
+1106027.004 timeout 5 ms: viRead 100 with nothing pending
+-> VisaIOError after 0.018 s
+1106027.424 timeout 10 ms: viRead 100 with nothing pending
+-> VisaIOError after 0.018 s
+1106027.845 timeout 20 ms: viRead 100 with nothing pending
+-> VisaIOError after 0.035 s
+1106028.282 timeout 30 ms: viRead 100 with nothing pending
+-> VisaIOError after 0.035 s
+1106028.719 timeout 50 ms: viRead 100 with nothing pending
+-> VisaIOError after 0.133 s
+1106029.254 timeout 60 ms: viRead 100 with nothing pending
+-> VisaIOError after 0.133 s
+1106029.788 timeout 150 ms: viRead 100 with nothing pending
+-> VisaIOError after 0.264 s
+1106030.454 timeout 200 ms: viRead 100 with nothing pending
+-> VisaIOError after 0.268 s
+1106031.124 timeout 250 ms: viRead 100 with nothing pending
+-> VisaIOError after 0.264 s
+1106031.790 timeout 500 ms: viRead 100 with nothing pending
+-> VisaIOError after 1.050 s
+1106033.243 timeout 2000 ms: viRead 100 with nothing pending
+-> VisaIOError after 4.196 s
+1106037.842 timeout 5000 ms: viRead 100 with nothing pending
+-> VisaIOError after 16.779 s
+1106055.024 timeout 20000 ms: viRead 100 with nothing pending
+-> VisaIOError after 33.556 s
+1106088.983 *CLS; *IDN?
+82
+1106089.502 done

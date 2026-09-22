@@ -1,0 +1,10 @@
+1106110.728 RM open, scenario count_width
+1106111.139 viRead count 65535
+65535 -> 82 0
+1106111.656 viRead count 65536
+65536 -> 82 0
+1106112.173 viRead count 70000
+70000 -> 82 0
+1106112.692 viRead count 200000
+200000 -> 82 0
+1106113.407 done
