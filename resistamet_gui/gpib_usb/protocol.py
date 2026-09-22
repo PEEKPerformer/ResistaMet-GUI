@@ -137,6 +137,14 @@ class AdapterNotReady(GpibError):
     """The adapter did not come up, or cannot be driven (firmware missing, not attached)."""
 
 
+class AdapterGone(AdapterNotReady):
+    """The adapter left the USB bus (unplugged, or its power lost); replug it.
+
+    Raised by the operation that found it gone and by every later one on the
+    same controller, which then touch no USB at all.
+    """
+
+
 class ProtocolError(GpibError):
     """A reply did not have the shape the specification gives it."""
 

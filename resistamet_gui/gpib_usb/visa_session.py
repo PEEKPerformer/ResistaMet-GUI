@@ -41,7 +41,7 @@ from . import protocol as p
 from . import tables as t
 from .boards import BoardRegistry
 from .controller import Controller
-from .protocol import GpibError, GpibTimeout, NoListener
+from .protocol import AdapterGone, GpibError, GpibTimeout, NoListener
 from .transport import TransportError
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,9 @@ def registry() -> BoardRegistry:
 
 
 def status_for(exc: Exception) -> StatusCode:
+    if isinstance(exc, AdapterGone):
+        # The adapter left the USB bus: VISA's "connection lost", not a bus error.
+        return StatusCode.error_connection_lost
     if isinstance(exc, GpibTimeout):
         return StatusCode.error_timeout
     if isinstance(exc, NoListener):

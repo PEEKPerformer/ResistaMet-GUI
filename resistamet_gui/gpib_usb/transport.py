@@ -74,17 +74,38 @@ class TransportStall(TransportError):
     """
 
 
+class TransportGone(TransportError):
+    """The adapter has left the USB bus: unplugged, or its power lost.
+
+    Nothing sent on the handle can arrive any more, so there is nothing to
+    recover: every pipe reset, stop request and drain fails the same way
+    (spec §11.2, "Hot-unplug mid-run"). A replugged adapter comes back as a
+    new USB device, reached through a fresh enumeration, not through this
+    handle.
+    """
+
+
 #: libusb's code for a pipe error, which is how it reports a STALL. The
 #: installed pyusb libusb-1.0 backend raises every negative libusb return but
 #: a timeout as ``USBError(strerror, ret, _libusb_errno[ret])`` (its
 #: ``_check``), so a pipe error arrives with ``backend_error_code`` -9 and
 #: ``errno`` EPIPE, both filled.
 LIBUSB_ERROR_PIPE = -9
+#: libusb's code for a device that is no longer there. The same ``_check``
+#: raises it as ``USBError('No such device (it may have been disconnected)',
+#: -4, ENODEV)``; pyusb's libusb-0.1 backend passes the negative errno itself
+#: as the backend code (-ENODEV) and no errno.
+LIBUSB_ERROR_NO_DEVICE = -4
 
 
 def _is_stall(exc: Exception) -> bool:
     return (getattr(exc, 'backend_error_code', None) == LIBUSB_ERROR_PIPE
             or getattr(exc, 'errno', None) == errno.EPIPE)
+
+
+def _is_gone(exc: Exception) -> bool:
+    return (getattr(exc, 'errno', None) == errno.ENODEV
+            or getattr(exc, 'backend_error_code', None) in (LIBUSB_ERROR_NO_DEVICE, -errno.ENODEV))
 
 
 def _carrying_codes(error: TransportError, exc: Exception) -> TransportError:
@@ -117,7 +138,8 @@ class Transport(Protocol):
 
     A STALL on any endpoint raises ``TransportStall``. ``clear_halt`` takes
     the endpoint address (``tables.Model`` has them) and resets that pipe,
-    which is what NI's driver does after a refused 0x0e (§10.6.5).
+    which is what NI's driver does after a refused 0x0e (§10.6.5). A device
+    that is no longer on the bus raises ``TransportGone`` from any call.
     """
 
     #: wMaxPacketSize of the primary bulk IN endpoint, for sizing read buffers (§8.6).
@@ -333,7 +355,8 @@ class PyUsbTransport:
             usb.util.claim_interface(device, interface)
         except usb.core.USBError as exc:
             _dispose(usb, device)
-            raise TransportError('cannot claim interface %d: %s' % (interface, exc)) from exc
+            kind = TransportGone if _is_gone(exc) else TransportError
+            raise _carrying_codes(kind('cannot claim interface %d: %s' % (interface, exc)), exc) from exc
         self.max_packet_size = self._in_packet_size(self._in)
         if self._in_raw is not None:
             self.max_packet_size_raw = self._in_packet_size(self._in_raw)
@@ -373,6 +396,9 @@ class PyUsbTransport:
         except self._usb.core.USBTimeoutError as exc:
             raise _carrying_codes(TransportTimeout('%s timed out' % what), exc) from exc
         except self._usb.core.USBError as exc:
+            if _is_gone(exc):
+                raise _carrying_codes(TransportGone('%s failed: the device is no longer on the USB bus (%s)'
+                                                    % (what, exc)), exc) from exc
             if _is_stall(exc):
                 raise _carrying_codes(TransportStall('%s was refused with a STALL' % what), exc) from exc
             raise _carrying_codes(TransportError('%s failed: %s' % (what, exc)), exc) from exc

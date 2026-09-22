@@ -17,8 +17,8 @@ import pytest
 import resistamet_gui.gpib_usb as gpib_usb
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb import transport
-from resistamet_gui.gpib_usb.transport import (AdapterInfo, PyUsbTransport, TransportError, TransportStall,
-                                                TransportTimeout)
+from resistamet_gui.gpib_usb.transport import (AdapterInfo, PyUsbTransport, TransportError, TransportGone,
+                                                TransportStall, TransportTimeout)
 
 
 class FakeEndpoint:
@@ -440,12 +440,40 @@ class TestPyUsbTransport:
         device = HS()
         fake = install_fake_usb(monkeypatch, [device])
         usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
-        device.write_error = fake['core'].USBError('No such device', -4, errno.ENODEV)
+        device.write_error = fake['core'].USBError('Input/output error', -1, errno.EIO)
         with pytest.raises(TransportError) as info:
             usb_transport.bulk_out_raw(bytes(2502), 5000)
-        assert not isinstance(info.value, TransportStall)
+        assert not isinstance(info.value, (TransportStall, TransportGone))
         # What the controller logs when the raw OUT of a 0x0e fails.
-        assert (info.value.errno, info.value.backend_code) == (errno.ENODEV, -4)
+        assert (info.value.errno, info.value.backend_code) == (errno.EIO, -1)
+
+    def test_no_such_device_is_its_own_error_whichever_way_pyusb_marks_it(self, monkeypatch):
+        # pyusb's libusb1 backend: USBError('No such device (it may have been disconnected)',
+        # -4, ENODEV) for LIBUSB_ERROR_NO_DEVICE; its libusb0 backend passes -ENODEV as the
+        # backend code and no errno. The bench saw errno 19 on every call after an unplug (§11.2).
+        device = HS()
+        fake = install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
+        for error in (fake['core'].USBError('No such device (it may have been disconnected)', -4, errno.ENODEV),
+                      fake['core'].USBError('No such device', -4, None),
+                      fake['core'].USBError('No such device', -errno.ENODEV, None),
+                      fake['core'].USBError('No such device', None, errno.ENODEV)):
+            device.next_read = error
+            with pytest.raises(TransportGone) as info:
+                usb_transport.bulk_in(12, 100)
+            assert 'no longer on the USB bus' in str(info.value)
+            device.clear_halt_error = error
+            with pytest.raises(TransportGone):
+                usb_transport.clear_halt(0x88)
+        assert issubclass(TransportGone, TransportError) and not issubclass(TransportGone, TransportTimeout)
+
+    def test_a_device_gone_before_the_claim_is_reported_as_gone(self, monkeypatch):
+        device = HS()
+        fake = install_fake_usb(monkeypatch, [device])
+        device.claim_error = fake['core'].USBError('No such device', -4, errno.ENODEV)
+        with pytest.raises(TransportGone):
+            PyUsbTransport(device, 0x02, 0x84)
+        assert fake['calls']['dispose'] == [device]
 
     def test_a_stall_carries_the_errno_and_backend_code_it_came_with(self, monkeypatch):
         device = HS()

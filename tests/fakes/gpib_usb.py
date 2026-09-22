@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from resistamet_gui.gpib_usb import protocol as p
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb.controller import BUS_MIN_RATE_BPS, RAW_READ_SLICE_S, SHORT_WAIT_S, Controller
-from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportStall, TransportTimeout
+from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportGone, TransportStall, TransportTimeout
 
 
 def h(text: str) -> bytes:
@@ -513,8 +513,18 @@ class SimulatedAdapter:
         #: The talker's message ends without EOI on its last byte: the read that drains it
         #: reports no END, and the next read finds nothing and times out.
         self.withhold_eoi = False
+        #: Set by a test to pull the cable: every USB call from then on raises TransportGone,
+        #: as libusb's "no such device" does (§11.2), and is counted here.
+        self.unplugged = False
+        self.calls_while_unplugged = 0
+
+    def _plugged(self) -> None:
+        if self.unplugged:
+            self.calls_while_unplugged += 1
+            raise TransportGone('the device is no longer on the USB bus')
 
     def control_in(self, request, value, index, length, timeout_ms, request_type=0xC0) -> bytes:
+        self._plugged()
         if self.fail_next_control is not None:
             failure, self.fail_next_control = self.fail_next_control, None
             raise failure
@@ -543,6 +553,7 @@ class SimulatedAdapter:
                 + (count & 0xFFFF).to_bytes(2, 'little') + b'\x00\x00')
 
     def bulk_out(self, data: bytes, timeout_ms: int) -> None:
+        self._plugged()
         if self.fail_next is not None:
             failure, self.fail_next = self.fail_next, None
             raise failure
@@ -697,6 +708,7 @@ class SimulatedAdapter:
         return blocks + status + bytes((0xE0 if end else 0x60, last_count, 0, 0)) + trailer_tail
 
     def bulk_in(self, length: int, timeout_ms: int) -> bytes:
+        self._plugged()
         self.bulk_in_timeouts.append(timeout_ms)
         assert len(self.reply) <= length, 'reply of %d bytes would overflow %d' % (len(self.reply), length)
         reply, self.reply = self.reply, b''
@@ -705,6 +717,7 @@ class SimulatedAdapter:
     # The alternate pair and the interrupt endpoint; behaviour is added with the
     # instructions that use them.
     def bulk_out_raw(self, data: bytes, timeout_ms: int) -> int:
+        self._plugged()
         if 0x06 in self.halted:
             raise TransportStall('raw bulk write was refused with a STALL')
         assert self.pending_raw_write is not None, 'raw bulk OUT with no 0x0e outstanding'
@@ -723,10 +736,12 @@ class SimulatedAdapter:
         return len(data)
 
     def clear_halt(self, endpoint: int) -> None:
+        self._plugged()
         self.halted.discard(endpoint)
         self.halts_cleared.append(endpoint)
 
     def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
+        self._plugged()
         self.raw_in_timeouts.append(timeout_ms)
         assert self.raw_reply is not None, 'raw bulk IN with no 0x0b outstanding'
         assert len(self.raw_reply) < length, 'raw data of %d bytes needs a buffer larger than %d' % (len(self.raw_reply), length)
