@@ -214,3 +214,20 @@ class TestPromptAuthorization:
     def test_answering_with_no_prompt_is_a_conflict(self, client):
         response = client.post('/session/prompt', json={'prompt_id': 'x', 'choice': 'y'})
         assert response.status_code == 409
+
+
+class TestCors:
+    """The webview is a different origin from the backend; others are refused."""
+
+    def test_desktop_origin_is_allowed(self, client):
+        response = client.options('/session', headers={
+            'Origin': 'tauri://localhost',
+            'Access-Control-Request-Method': 'GET',
+            'Access-Control-Request-Headers': 'authorization',
+        })
+        assert response.status_code == 200
+        assert response.headers.get('access-control-allow-origin') == 'tauri://localhost'
+
+    def test_unknown_origin_gets_no_allowance(self, client):
+        response = client.get('/session', headers={'Origin': 'https://example.com'})
+        assert 'access-control-allow-origin' not in response.headers

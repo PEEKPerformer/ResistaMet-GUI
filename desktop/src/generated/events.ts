@@ -1,0 +1,300 @@
+/* eslint-disable */
+// GENERATED from contracts/*.schema.json by desktop/scripts/generate-types.mjs.
+// Do not edit. Regenerate with `npm run gen:types`.
+
+/**
+ * One thing that happened during a run.
+ */
+export interface EventEnvelope {
+  payload?: {
+    [k: string]: unknown | undefined;
+  };
+  run_id?: string | null;
+  seq: number;
+  t: number;
+  type: string;
+  v?: number;
+}
+
+/**
+ * The acquisition loop ended; cleanup and finalize still follow.
+ */
+export interface AcquisitionFinishedPayload {
+  mode: string;
+}
+
+/**
+ * The auxiliary sensor is open and has declared its channels.
+ */
+export interface AuxConnectedPayload {
+  address: string;
+  channels?: {
+    [k: string]: unknown | undefined;
+  }[];
+  driver: string;
+}
+
+/**
+ * The source is in compliance on this sample.
+ */
+export interface CompliancePayload {
+  kind: "Voltage" | "Current";
+  stop_on_compliance?: boolean;
+}
+
+/**
+ * Something failed. ``source`` says which subsystem.
+ *
+ * ``source`` replaces the substring matching the UI does today to decide
+ * whether an error came from the instrument, the aux sensor or the file.
+ * ``fatal`` marks the errors that end the run.
+ */
+export interface ErrorPayload {
+  code: string;
+  fatal?: boolean;
+  message: string;
+  source: "smu" | "aux" | "file" | "run";
+}
+
+/**
+ * The run's file is closed, with its end metadata written.
+ */
+export interface FileFinalizedPayload {
+  end_metadata?: {
+    [k: string]: unknown | undefined;
+  };
+  path: string;
+}
+
+/**
+ * The run's output file exists and its column schema is fixed.
+ */
+export interface FileOpenedPayload {
+  columns?: string[];
+  path: string;
+  units?: string[];
+}
+
+/**
+ * The SMU answered *IDN? and its limits are known.
+ */
+export interface InstrumentConnectedPayload {
+  address: string;
+  idn: string;
+  max_power_w?: number | null;
+  max_source_i?: number | null;
+  max_source_v?: number | null;
+  model: string;
+}
+
+/**
+ * Mains frequency, queried or assumed. Continuous modes only.
+ */
+export interface LineFrequencyPayload {
+  assumed?: boolean;
+  hz: number;
+}
+
+/**
+ * Human-readable progress, one per current ``status_update`` site.
+ *
+ * ``code`` is a short closed set so a client can act on an event without
+ * parsing prose; ``message`` stays the exact text the GUI shows today.
+ */
+export interface LogPayload {
+  code: string;
+  level?: "info" | "warning" | "error";
+  message: string;
+}
+
+/**
+ * Measured V*I crossed the 4PP probe-safety hard stop.
+ */
+export interface OverpowerPayload {
+  measured_w: number;
+  stop_w: number;
+}
+
+/**
+ * Paused, resumed or stopping, as observed by the acquisition thread.
+ */
+export interface RunStatePayload {
+  reason?: string | null;
+}
+
+/**
+ * The run is blocked until someone answers.
+ */
+export interface PromptPayload {
+  detail?: {
+    [k: string]: unknown | undefined;
+  };
+  kind: "vdp_geometry" | "safety_voltage_ack" | "cable_null_shorted";
+  options?: string[];
+  prompt_id: string;
+  requires_human?: boolean;
+}
+
+/**
+ * How a prompt ended: answered, or released by a stop.
+ */
+export interface PromptResolvedPayload {
+  answered_by?: string | null;
+  choice?: string | null;
+  prompt_id: string;
+}
+
+/**
+ * Paused, resumed or stopping, as observed by the acquisition thread.
+ */
+export interface RunEndedPayload {
+  duration_s?: number;
+  ok?: boolean;
+  path?: string | null;
+  reason: string;
+  samples?: number;
+}
+
+/**
+ * A run is beginning; the settings are exactly what it will use.
+ */
+export interface RunStartedPayload {
+  mode: string;
+  sample_name: string;
+  settings?: {
+    [k: string]: unknown | undefined;
+  };
+  started_at: number;
+  username: string;
+}
+
+/**
+ * One acquired point.
+ *
+ * ``values`` is the mode's data dict exactly as the parse produced it, with
+ * no coercion — the aux-fault column is a string, and a client that wants
+ * numbers must say which key it means.
+ */
+export interface SamplePayload {
+  compliance?: "OK" | "V_COMP" | "I_COMP";
+  delta?: DeltaPayload | null;
+  derived?: DerivedPayload | null;
+  elapsed_s: number;
+  event_marker?: string;
+  t_unix: number;
+  values?: {
+    [k: string]: unknown | undefined;
+  };
+}
+/**
+ * Per-polarity values from a current-reversal (delta) reading.
+ */
+export interface DeltaPayload {
+  r_f: number;
+  r_r: number;
+  v_minus: number;
+  v_plus: number;
+}
+/**
+ * The 4PP quantities computed for this sample, as written to the row.
+ *
+ * ``method`` says which correction path produced them: the ASTM F84
+ * decomposition or the legacy K*alpha form.
+ */
+export interface DerivedPayload {
+  i_unc: number;
+  method: "f84" | "legacy";
+  ratio: number;
+  rho: number;
+  rs: number;
+  sigma: number;
+  v_unc: number;
+}
+
+/**
+ * Paused, resumed or stopping, as observed by the acquisition thread.
+ */
+export interface SweepSegmentPayload {
+  compliance?: string[];
+  currents?: number[];
+  direction?: "forward" | "reverse";
+  voltages?: number[];
+}
+
+/**
+ * One F76 geometry measured: the +I and -I voltages at this wiring.
+ */
+export interface VdpGeometryCompletePayload {
+  current_a: number;
+  group: string;
+  index: number;
+  label_neg: string;
+  label_pos: string;
+  name: string;
+  v_neg: number;
+  v_pos: number;
+}
+
+/**
+ * The finished van der Pauw result, ASTM F76.
+ *
+ * Field for field what the GUI result panel has always received, including
+ * the f(Q) homogeneity check and the combined uncertainties, so the panel
+ * reads the same numbers the CSV metadata carries.
+ */
+export interface VdpResultPayload {
+  asymmetry_pct: number;
+  current_a: number;
+  f_a: number;
+  f_b: number;
+  homogeneous: boolean;
+  q_a: number;
+  q_b: number;
+  rho_a: number;
+  rho_avg: number;
+  rho_avg_uncertainty?: number | null;
+  rho_b: number;
+  sheet_resistance: number;
+  sheet_resistance_uncertainty?: number | null;
+  thickness_cm: number;
+  voltages?: {
+    [k: string]: number | undefined;
+  };
+}
+
+export const EVENT_SCHEMA_VERSION = 1;
+
+/** Event type -> payload. Events not listed here carry an untyped payload. */
+export interface EventPayloadMap {
+  acquisition_finished: AcquisitionFinishedPayload;
+  aux_connected: AuxConnectedPayload;
+  compliance: CompliancePayload;
+  error: ErrorPayload;
+  file_finalized: FileFinalizedPayload;
+  file_opened: FileOpenedPayload;
+  instrument_connected: InstrumentConnectedPayload;
+  line_frequency: LineFrequencyPayload;
+  log: LogPayload;
+  overpower_trip: OverpowerPayload;
+  paused: RunStatePayload;
+  prompt: PromptPayload;
+  prompt_resolved: PromptResolvedPayload;
+  resumed: RunStatePayload;
+  run_ended: RunEndedPayload;
+  run_started: RunStartedPayload;
+  sample: SamplePayload;
+  stopping: RunStatePayload;
+  sweep_segment: SweepSegmentPayload;
+  vdp_geometry_complete: VdpGeometryCompletePayload;
+  vdp_result: VdpResultPayload;
+}
+
+export type EventType = keyof EventPayloadMap;
+
+/** A typed event: the envelope with its payload narrowed by `type`. */
+export type Event<T extends EventType = EventType> = Omit<EventEnvelope, "type" | "payload"> & {
+  type: T;
+  payload: EventPayloadMap[T];
+};
+
+export type AnyEvent = { [T in EventType]: Event<T> }[EventType];
