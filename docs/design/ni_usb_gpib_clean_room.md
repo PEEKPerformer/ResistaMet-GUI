@@ -194,9 +194,10 @@ bench. pyvisa reads in 20480-byte chunks, so with 0x0b on by default the
 application's first `*IDN?` would have been the first 0x0b ever sent to
 our adapter, in a message sequence no capture shows (0x0c, 0x06 and 0x0b
 as separate messages, under AUXRA 0x81, without NI's bank-2 session
-configuration). `RESISTAMET_GPIB_NI_INSTRUCTIONS=1` switches on 0x0b and
-0x0e for large transfers and 0x10 for the serial poll
-(`RESISTAMET_GPIB_RAW_TRANSFERS`, the switch's first name, is still read);
-the attach log line says which set a board uses. Plain reads send the
+configuration). `NI_GPIB_USB_INSTRUCTIONS=1` switches on 0x0b and 0x0e
+for large transfers and 0x10 for the serial poll
+(`RESISTAMET_GPIB_NI_INSTRUCTIONS` and `RESISTAMET_GPIB_RAW_TRANSFERS`,
+the switch's earlier names, are read as aliases); the attach log line
+says which set a board uses. Plain reads send the
 bench-proven `m e` = `00 00` on both read instructions; the termination
 character goes out only when the session enables it.
