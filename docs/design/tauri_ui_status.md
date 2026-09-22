@@ -137,7 +137,8 @@ instructions the GPL-derived spec did not know, with the data raw on the
 adapter's second bulk endpoint pair; serial poll is its own instruction;
 the timeout table was right. The implementer built those paths from §10
 alone. After a whole-package review they were made opt-in
-(`RESISTAMET_GPIB_NI_INSTRUCTIONS=1`): the framed paths and the serial-poll
+(`NI_GPIB_USB_INSTRUCTIONS=1`, or its alias
+`RESISTAMET_GPIB_NI_INSTRUCTIONS=1`): the framed paths and the serial-poll
 sequence that ran on the bench stay the default until the new instructions
 have met the adapter; the `GPIB0::INTFC` board resource
 landed the same day. None of it has met the adapter yet — that is Monday's

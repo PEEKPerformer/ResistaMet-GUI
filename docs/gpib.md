@@ -70,7 +70,7 @@ Reading it: `ni_usb.available: false` means libusb or pyusb is missing. `adapter
 
 ## NI GPIB-USB-HS on macOS and Linux
 
-ResistaMet contains its own user-space driver for the NI GPIB-USB-HS family (`resistamet_gui/gpib_usb`). It talks to the adapter over libusb and registers itself with pyvisa-py, so with the **pyvisa-py** backend the instrument appears under the usual name, `GPIB0::24::INSTR`, and the board as `GPIB0::INTFC`. No NI software and no kernel driver are involved. The driver is MIT-licensed and was written from a protocol description, not from the GPL drivers.
+ResistaMet contains its own user-space driver for the NI GPIB-USB-HS family (`resistamet_gui/gpib_usb`). It talks to the adapter over libusb and registers itself with pyvisa-py, so with the **pyvisa-py** backend the instrument appears under the usual name, `GPIB0::24::INSTR`, and the board as `GPIB0::INTFC`. No NI software and no kernel driver are involved. The driver is MIT-licensed and was written from a protocol description, not from the GPL drivers. It imports nothing else from ResistaMet; its own [README](../resistamet_gui/gpib_usb/README.md) describes it for use without ResistaMet.
 
 ### Requirements
 
@@ -98,10 +98,10 @@ The default matters because of how reads are sized. Which read instruction goes 
 To try NI's instructions, set
 
 ```bash
-export RESISTAMET_GPIB_NI_INSTRUCTIONS=1
+export NI_GPIB_USB_INSTRUCTIONS=1
 ```
 
-before starting ResistaMet (`1`, `true`, `yes` or `on`; unset or anything else keeps the framed paths). The variable is read each time a board is opened, and the driver's attach log line names the mode in force. The switch was first called `RESISTAMET_GPIB_RAW_TRANSFERS`; that name is still read, with the same meaning, when the new one is not set. While the raw paths were the default, `RESISTAMET_GPIB_RAW_TRANSFERS=0` was the way back to the framed ones; it still selects them, and is no longer needed.
+before starting ResistaMet (`1`, `true`, `yes` or `on`; unset or anything else keeps the framed paths). The variable is read each time a board is opened, and the driver's attach log line names the mode in force. Two older names are read as aliases, with the same meaning: `RESISTAMET_GPIB_NI_INSTRUCTIONS`, and the switch's first name, `RESISTAMET_GPIB_RAW_TRANSFERS`. If more than one is set, the first of `NI_GPIB_USB_INSTRUCTIONS`, `RESISTAMET_GPIB_NI_INSTRUCTIONS`, `RESISTAMET_GPIB_RAW_TRANSFERS` that is set decides. While the raw paths were the default, `RESISTAMET_GPIB_RAW_TRANSFERS=0` was the way back to the framed ones; it still selects them, and is no longer needed.
 
 `RESISTAMET_DISABLE_NI_USB=1` keeps the driver from registering at all, so pyvisa-py behaves as shipped. It exists for tests and for bug reports.
 
