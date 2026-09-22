@@ -11,7 +11,8 @@ from resistamet_gui.gpib_usb.protocol import GpibError, GpibTimeout, NoListener,
 from resistamet_gui.gpib_usb.transport import TransportTimeout
 from tests.fakes.gpib_usb import (DRAIN_LENGTH, RAW_DRAIN, SHORT_MS, STOP, T3S, ScriptedTransport,
                                   address_listener, address_talker, attach_script, attached, attached_ni, h,
-                                  ni_raw_read_reply, ni_read, ni_session, raw_read_reply, raw_wait_slices,
+                                  NI_SESSION_CLOSE, ni_raw_read_reply, ni_read, ni_session, raw_read_reply,
+                                  raw_wait_slices,
                                   read_reply, regread_reply, regwrite_reply, status_reply)
 
 
@@ -37,14 +38,15 @@ class TestRawRead:
         transport.assert_done()
 
     def test_the_session_configuration_follows_the_address_and_the_code(self):
-        # §10.2.4: the 32-byte form for a new address, the 28-byte update for a new code on the
-        # same one, nothing when both repeat; NI's close of the last session at the close.
+        # §10.2.4, §10.10.1, §10.3.3: the 32-byte form for a new address, after NI's close of
+        # the session on the old one; the 12-byte bank-2 write and the 28-byte update for a new
+        # code on the same one; nothing when both repeat; NI's close at the close.
         controller, transport = attached_ni(ni_session(pad=24) + [
             ('out', ni_read(4096, pad=24)), ('raw_in', b'a\n', 4608), ('in', ni_raw_read_reply(4096, 2), 512),
             ('out', ni_read(4096, pad=24)), ('raw_in', b'b\n', 4608), ('in', ni_raw_read_reply(4096, 2), 512),
         ] + ni_session(pad=24, code=0xFB, update=True) + [
             ('out', ni_read(4096, 0xFB, pad=24)), ('raw_in', b'c\n', 4608), ('in', ni_raw_read_reply(4096, 2), 512),
-        ] + ni_session(pad=5, code=0xFB) + [
+        ] + NI_SESSION_CLOSE + ni_session(pad=5, code=0xFB) + [
             ('out', ni_read(4096, 0xFB, pad=5)), ('raw_in', b'd\n', 4608), ('in', ni_raw_read_reply(4096, 2), 512),
             ('out', p.ni_session_close_message()),
             ('in', h('09 00 64 00 00 00 ff ff 01 00 00 00 09 00 64 00 00 00 ff ff 01 00 00 00 04 00 00 00'), 512),
