@@ -144,11 +144,12 @@ class TestRawRead:
         transport.assert_done()
 
     def test_a_read_split_over_two_instructions_shares_one_deadline(self):
-        # §7.1, §10.10.2: the timeout bounds the read, not each instruction of it. 2.5 of the
-        # 3 s are gone after the first: the second carries the code for the 0.5 s left.
+        # §7.1, §10.10.2: the code's expiry bounds the read, not each instruction of it. 3 s go
+        # out as 0xfc, shortest expiry 3.75 s; after 3.2 s the second carries the code for the
+        # 0.55 s left.
         first, second = bytes(0xFFFF), b'tail\n'
         controller, transport = attached_ni(ni_session() + [
-            ('out', ni_read(0xFFFF)), ('raw_in', first, 66048, 2.5),
+            ('out', ni_read(0xFFFF)), ('raw_in', first, 66048, 3.2),
             ('in', ni_raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
         ] + ni_session(code=0xFB, update=True) + [
             ('out', ni_read(70000 - 0xFFFF, 0xFB)), ('raw_in', second, 4608),
@@ -160,7 +161,7 @@ class TestRawRead:
     def test_no_instruction_starts_after_the_deadline(self):
         first = bytes(0xFFFF)
         controller, transport = attached_ni(ni_session() + [
-            ('out', ni_read(0xFFFF)), ('raw_in', first, 66048, 3.0),
+            ('out', ni_read(0xFFFF)), ('raw_in', first, 66048, 3.75),
             ('in', ni_raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
         ])
         with pytest.raises(GpibTimeout) as info:
