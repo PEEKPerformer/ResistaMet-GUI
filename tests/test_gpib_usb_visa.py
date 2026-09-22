@@ -331,7 +331,7 @@ class TestInstrumentSession:
 
     def test_timeout_attribute_reaches_the_instruction(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
-        inst.timeout = 300
+        inst.timeout = 250
         inst.write('*IDN?')
         assert adapter.instructions(p.OP_WRITE)[-1][3] == 0xFA
         inst.timeout = 20000
@@ -339,12 +339,25 @@ class TestInstrumentSession:
         assert adapter.instructions(p.OP_WRITE)[-1][3] == 0xFE
         inst.close()
 
-    def test_timeout_is_rounded_to_the_device_table(self, rm, adapter):
+    def test_300_ms_goes_out_as_the_one_second_code_because_0xfa_ends_early(self, rm, adapter):
+        # §7.3: NI sends 300 ms as 0xfa, which the captured unit ends after 0.2635 s, so NI
+        # reports a timeout before the time asked for. The least time 0xfb runs is 1.0498 s.
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        for asked, code in ((263, 0xFA), (264, 0xFB), (300, 0xFB)):
+            inst.timeout = asked
+            inst.write('*IDN?')
+            assert adapter.instructions(p.OP_WRITE)[-1][3] == code, asked
+            assert adapter.instructions(p.OP_COMMAND)[-1][3] == code, asked
+        inst.close()
+
+    def test_the_timeout_reads_back_as_set_up_to_the_longest_the_table_offers(self, rm, adapter):
+        # The value is the least time to wait; rounding it up to a nominal limit (5000 to
+        # 10 000) would read back a wait the code does not promise either.
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 5000
-        assert inst.timeout == 10000
+        assert inst.timeout == 5000
         inst.timeout = 2000
-        assert inst.timeout == 3000
+        assert inst.timeout == 2000
         inst.timeout = 2_000_000
         assert inst.timeout == 1_000_000
         inst.write('*IDN?')
@@ -459,7 +472,7 @@ class TestInstrumentSession:
 
     def test_clear_sends_selected_device_clear_with_the_session_timeout(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
-        inst.timeout = 300
+        inst.timeout = 250
         inst.clear()
         last = adapter.instructions(p.OP_COMMAND)[-1]
         assert last[4:7] == bytes((0x3F, 0x38, 0x04))
@@ -547,7 +560,7 @@ class TestInstrumentSession:
 
     def test_ifc_ren_and_raw_command(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
-        inst.timeout = 300
+        inst.timeout = 250
         # pyvisa puts send_ifc on GPIBInterface only; the INSTR session still answers it.
         assert inst.visalib.gpib_send_ifc(inst.session) == StatusCode.success
         assert adapter.messages[-1] == p.interface_clear_message()
@@ -580,7 +593,7 @@ class TestInstrumentSession:
     ])
     def test_every_ren_mode_on_an_instrument_session(self, rm, adapter, mode, expected):
         inst = rm.open_resource('GPIB0::24::INSTR')
-        inst.timeout = 300
+        inst.timeout = 250
         before = len(adapter.messages)
         inst.control_ren(mode)
         assert adapter.messages[before:] == [getattr(self, name) for name in expected]

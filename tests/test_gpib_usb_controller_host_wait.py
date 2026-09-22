@@ -71,12 +71,12 @@ class TestHostWait:
         assert {tm for opcode, tm in outs if opcode != 0x0D} == {SHORT_MS}
         assert [tm for opcode, tm in outs if opcode == 0x0D] == [raw_wait_ms(1)]
 
-    @pytest.mark.parametrize('timeout_s, base_ms', [(3.0, WAIT_3S_MS), (20.0, WAIT_30S_MS), (0.3, 2375)])
+    @pytest.mark.parametrize('timeout_s, base_ms', [(3.0, WAIT_3S_MS), (20.0, WAIT_30S_MS), (0.25, 2375)])
     def test_the_out_of_a_framed_write_follows_the_device_timeout_and_the_length(self, timeout_s, base_ms):
         # §7.2, §10.5.2: the tail of NI's 2080-byte 0x0d message took 103 ms on 0x02 with a
         # fast listener; the 1 s of the §7.2 table is too short for a slow one.
         data = bytes(2048)  # the longest framed write on a model with the alternate pair
-        code, _ = p.effective_timeout(timeout_s)
+        code = p.timeout_code(timeout_s)
         controller, transport = attached([
             ('out', p.write_message(data, code, True)), ('in', status_reply(0x0D)),
         ])
@@ -115,17 +115,25 @@ class TestHostWait:
     #: §7.3 as the specification prints it, (code, measured expiry in seconds), every timed
     #: case on GPIB-USB-HS 013CC9DF under NI's driver: written out here so the test does not
     #: read the figures it checks from the code.
-    MEASURED = [(0xF9, 0.132272), (0xFA, 0.263541), (0xFB, 1.049837),
-                (0xFC, 4.195609), (0xFC, 4.195640), (0xFC, 4.195316), (0xFC, 4.196156),
+    MEASURED = [(0xF5, 0.002285), (0xF6, 0.005348), (0xF6, 0.005465), (0xF7, 0.017785), (0xF7, 0.017719),
+                (0xF8, 0.034088), (0xF8, 0.034093),
+                (0xF9, 0.132455), (0xF9, 0.132417), (0xF9, 0.132272),
+                (0xFA, 0.263436), (0xFA, 0.263575), (0xFA, 0.263476), (0xFA, 0.263541), (0xFA, 0.263887),
+                (0xFB, 1.049948), (0xFB, 1.049837), (0xFB, 1.050232),
+                (0xFC, 4.195593), (0xFC, 4.195609), (0xFC, 4.195640), (0xFC, 4.195316), (0xFC, 4.196156),
                 (0xFC, 4.195943), (0xFC, 4.195767),
-                (0xFD, 16.778423), (0xFE, 33.555345), (0xFE, 33.555258)]
+                (0xFD, 16.778260), (0xFD, 16.778423),
+                (0xFE, 33.555262), (0xFE, 33.555345), (0xFE, 33.555506), (0xFE, 33.555258)]
     #: §7.3, "A second unit expires at other times": GPIB-USB-HS 01CEE482 under this driver's
     #: messages (bench 2026-09-21), (code, expiry in seconds): 1.25 times 0.1, 0.3, 1, 3, 16
     #: and 33 s.
     BENCH = [(0xF9, 0.127), (0xFA, 0.375), (0xFB, 1.250), (0xFC, 3.750), (0xFD, 20.000), (0xFE, 41.250)]
     #: §7.3's inference column, the larger candidate: (code, power of two in microseconds).
-    INFERRED = [(0xF1, 4), (0xF2, 5), (0xF3, 7), (0xF4, 9), (0xF5, 10), (0xF6, 12), (0xF7, 14),
-                (0xF8, 15), (0xFF, 27), (0x01, 29), (0x02, 30)]
+    INFERRED = [(0xF1, 4), (0xF2, 5), (0xF3, 7), (0xF4, 9), (0xFF, 27), (0x01, 29), (0x02, 30)]
+    #: The same column, the smaller candidate (the nearest power of two on a log scale).
+    INFERRED_NEAREST = [(0xF1, 3), (0xF2, 5), (0xF3, 7), (0xF4, 8), (0xFF, 27), (0x01, 28), (0x02, 30)]
+    #: §7.3's power of two for the codes timed on 013CC9DF only, which it predicted.
+    ONE_UNIT = [(0xF5, 10), (0xF6, 12), (0xF7, 14), (0xF8, 15)]
     #: The same column for the six timed codes, to back-test the rule for the untimed ones.
     INFERRED_FOR_TIMED = [(0xF9, 17), (0xFA, 19), (0xFB, 20), (0xFC, 22), (0xFD, 24), (0xFE, 25)]
 
@@ -167,11 +175,38 @@ class TestHostWait:
             assert 1.25 * max(nominal[code], power_of_two) >= longest[code], hex(code)
         assert 2 ** 24 / 1e6 < longest[0xFD] and 1.25 * nominal[0xFD] < longest[0xFD]
 
+    @pytest.mark.parametrize('code, exponent', ONE_UNIT)
+    def test_a_code_timed_on_one_unit_only_allows_for_the_other_s_factor(self, code, exponent):
+        # 01CEE482 was not timed under 0xf5-0xf8: the §7.2 estimate stands in for it, and the
+        # host outlasts whichever is longer, that or 013CC9DF's figure.
+        nominal = dict((c, limit) for limit, c in t.TIMEOUT_TABLE)[code]
+        longest = max(seconds for timed, seconds in self.MEASURED if timed == code)
+        estimate = 1.25 * max(nominal, 2 ** exponent / 1e6)
+        assert t.timeout_expiry_s(code) == pytest.approx(max(longest, estimate), rel=1e-12)
+
+    def test_the_least_expiry_is_the_shortest_either_unit_was_timed_at(self):
+        # For choosing a code (``protocol.timeout_code``): 0xfa is 013CC9DF's 0.263436 s, 0xfc
+        # 01CEE482's 3.750 s, 0xf9 01CEE482's 0.127 s.
+        shortest = {}
+        for code, seconds in self.MEASURED + self.BENCH:
+            shortest[code] = min(shortest.get(code, float('inf')), seconds)
+        for code, seconds in shortest.items():
+            assert t.timeout_expiry_least_s(code) == pytest.approx(seconds, rel=1e-12), hex(code)
+        assert t.timeout_expiry_least_s(0xF0) is None
+
+    @pytest.mark.parametrize('code, exponent', INFERRED_NEAREST)
+    def test_an_untimed_code_is_trusted_for_the_least_of_nominal_and_both_powers_of_two(self, code, exponent):
+        # §7.2's estimate, the larger power of two, is for host waits; 0xfa, the one code
+        # that ends early, ended near the smaller candidate, below its nominal limit.
+        nominal = dict((c, limit) for limit, c in t.TIMEOUT_TABLE)[code]
+        assert t.timeout_expiry_least_s(code) == pytest.approx(min(nominal, 2 ** exponent / 1e6), rel=1e-12)
+
     def test_every_row_of_the_timeout_table_has_an_expiry_the_host_outlasts(self):
         nominal = dict((code, limit) for limit, code in t.TIMEOUT_TABLE)
         assert set(nominal) == set(t.TIMEOUT_EXPIRY_MEASURED_S) | set(t.TIMEOUT_EXPIRY_INFERRED_S)
         assert not set(t.TIMEOUT_EXPIRY_MEASURED_S) & set(t.TIMEOUT_EXPIRY_INFERRED_S)
-        assert set(t.TIMEOUT_EXPIRY_BENCH_S) == set(t.TIMEOUT_EXPIRY_MEASURED_S)
+        assert set(t.TIMEOUT_EXPIRY_MEASURED_SHORTEST_S) == set(t.TIMEOUT_EXPIRY_MEASURED_S)
+        assert set(t.TIMEOUT_EXPIRY_BENCH_S) < set(t.TIMEOUT_EXPIRY_MEASURED_S)
         assert t.TIMEOUT_EXPIRY_BENCH_S == dict(self.BENCH)
         for code, limit in nominal.items():
             expiry = t.timeout_expiry_s(code)

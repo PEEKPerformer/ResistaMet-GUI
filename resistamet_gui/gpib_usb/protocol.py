@@ -805,26 +805,40 @@ def readiness_reported(reply: bytes) -> bool:
 # --------------------------------------------------------------------------
 
 
-def effective_timeout(seconds: Optional[float]) -> Tuple[int, Optional[float]]:
-    """The device timeout code for ``seconds`` and the nominal limit of that code (§7.1).
+def timeout_code(seconds: Optional[float]) -> int:
+    """The device timeout code for a timeout of ``seconds`` (§7.1, §7.3).
 
-    The code is the smallest table row with ``seconds`` <= limit. The limit
-    is the row's nominal value, not what the adapter waits: that is the
-    expiry of §7.3 (``tables.timeout_expiry_s``), which is what a host wait
-    is derived from. None or 0 disables the timeout; so does anything past
-    1000 s.
+    The smallest code under which no adapter timed in §7.3 ends an
+    instruction before ``seconds`` have passed (``tables.
+    timeout_expiry_least_s``: the shortest figure of each unit that timed
+    the code, and for the codes nobody timed the lowest of §7.3's
+    estimates). A VISA timeout is the least time to wait, and NI's rule --
+    the smallest nominal limit not below the timeout (§7.1, §10.10.1) --
+    breaks that for one code: 0xfa ends at 0.2635 s on the captured unit,
+    so NI waits less than asked for from about 264 to 300 ms. Here those
+    go out as 0xfb. Of the codes nobody timed, 0x01 may end as early as
+    268 s (§7.3's nearer power of two), so 300 s goes out as 0x02, not as
+    NI's 0x01. Most values take NI's code; some take a smaller one whose
+    expiry still covers them (2 ms: 0xf5, 2.285 ms; 5 ms: 0xf6, 5.35 ms),
+    and none waits less than asked on any unit timed.
+
+    What the ends of the range map to:
+
+    - None and anything <= 0 (at this level "no timeout"): 0xf0, the
+      disabled code; the host then waits the controller's infinite wait.
+      The pyvisa-py session sends VI_TMO_INFINITE this way and turns
+      VI_TMO_IMMEDIATE into 0.1 s before it gets here, which is 0xf9
+      (``visa_session.IMMEDIATE_TIMEOUT_S``).
+    - Above the least expiry of 0x02 (1000 s): 0xf0 as well, the fall-back
+      §7.1 gives for requests above 1000 s. The session caps VISA
+      timeouts at 1000 s, so from VISA the longest code is 0x02.
     """
     if seconds is None or seconds <= 0:
-        return t.TIMEOUT_DISABLED_CODE, None
-    for limit, code in t.TIMEOUT_TABLE:
-        # A hair of slack so 3.0 s rounded through milliseconds still lands on 0xfc.
-        if seconds <= limit * 1.001:
-            return code, limit
-    return t.TIMEOUT_DISABLED_CODE, None
-
-
-def timeout_code(seconds: Optional[float]) -> int:
-    return effective_timeout(seconds)[0]
+        return t.TIMEOUT_DISABLED_CODE
+    for _, code in t.TIMEOUT_TABLE:
+        if seconds <= t.timeout_expiry_least_s(code):
+            return code
+    return t.TIMEOUT_DISABLED_CODE
 
 
 #: §7.2: what the host waits beyond the adapter's own expiry. Nothing observed
@@ -845,8 +859,9 @@ def host_wait_s(code: int, infinite_wait_s: float) -> float:
     0xfd, which one unit runs for 16.78 s and the other for 20.0 s. A wait
     sized by the first unit alone, 18.78 s, reached the stop request on
     the second 1.2 s before its own error 0x0a reply, and a timeout was
-    reported as an I/O error. For a code nobody timed the expiry is 1.25
-    times the larger of the nominal limit and the inferred power of two.
+    reported as an I/O error. Where the second unit was not timed (0xf5-
+    0xf8, and the codes nobody timed) its expiry is taken as 1.25 times
+    the larger of the nominal limit and the power of two of §7.3 (§7.2).
     ``infinite_wait_s`` is returned for the disabled code 0xf0, where only
     the host can end the wait.
 

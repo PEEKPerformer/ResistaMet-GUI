@@ -35,6 +35,8 @@ from resistamet_gui.gpib_usb.controller import RAW_READ_MIN_BYTES, RAW_WRITE_MIN
 from tests.fakes.gpib_usb import AnsweringAdapter
 
 CAPTURES = Path(__file__).resolve().parents[1] / 'docs' / 'design' / 'captures' / 'ni_usb_gpib_2026-09-19'
+#: The fourth batch (§10.10): same PC, adapter, instrument and NI stack.
+CAPTURES_2026_09_22 = CAPTURES.parent / 'ni_usb_gpib_2026-09-22'
 ADAPTER_DEVICE_ADDRESS = 2
 EP_OUT, EP_IN, EP_OUT_RAW, EP_IN_RAW, EP_INTR = 0x02, 0x84, 0x06, 0x88, 0x81
 
@@ -56,6 +58,12 @@ class Transfer:
         self.usbd_status = usbd_status
         #: The URB function: 0x09 a bulk or interrupt transfer, 0x1e a pipe reset.
         self.function = function
+
+
+def _pcap(name: str) -> Path:
+    """``name.pcap`` from the 2026-09-19 batch, or from the 2026-09-22 one if it is not there."""
+    path = CAPTURES / (name + '.pcap')
+    return path if path.exists() else CAPTURES_2026_09_22 / (name + '.pcap')
 
 
 def _packets(path: Path) -> Iterator[Tuple[float, bytes]]:
@@ -83,7 +91,7 @@ def transfers(name: str) -> List[Transfer]:
     """
     out: List[Transfer] = []
     head: Optional[Transfer] = None  # an OUT on 0x02 that is not yet a whole message
-    for ts, pkt in _packets(CAPTURES / (name + '.pcap')):
+    for ts, pkt in _packets(_pcap(name)):
         hdr_len, _irp, status, function, info, _bus, device, endpoint, _transfer, data_len = (
             struct.unpack_from('<HQIHBHHBBI', pkt, 0))
         if device != ADAPTER_DEVICE_ADDRESS:
@@ -105,7 +113,7 @@ def transfers(name: str) -> List[Transfer]:
 def control_requests(name: str) -> List[Tuple[int, int]]:
     """(bmRequestType, bRequest) of every control request to the adapter in ``name.pcap``."""
     out: List[Tuple[int, int]] = []
-    for _ts, pkt in _packets(CAPTURES / (name + '.pcap')):
+    for _ts, pkt in _packets(_pcap(name)):
         hdr_len, _irp, _status, _function, info, _bus, device, _endpoint, transfer, data_len = (
             struct.unpack_from('<HQIHBHHBBI', pkt, 0))
         # Transfer type 2 is control; its header carries the stage in byte 27, 0 = SETUP.
@@ -505,7 +513,8 @@ class TestErrorPaths:
                        and x.payload and any(b[0] == opcode for b in split_host_blocks(x.payload)))
             reply = next(x for x in transfers('raw_errors') if x.endpoint == EP_IN and x.completion and x.ts > out.ts)
             waits.append(reply.ts - out.ts)
-        code, limit = p.effective_timeout(2.0)  # the scenario's VI_ATTR_TMO_VALUE
+        code = p.timeout_code(2.0)  # the scenario's VI_ATTR_TMO_VALUE
+        limit = t.TIMEOUT_NOMINAL_S[code]
         assert code == 0xFC and limit == 3.0
         assert all(limit < wait < p.host_wait_s(code, 600.0) for wait in waits), waits
         assert all(abs(wait - 4.196) < 0.01 for wait in waits), waits
@@ -535,6 +544,35 @@ class TestErrorPaths:
             assert p.host_wait_s(code, 600.0) > seen + 1.9e-3
         # What nominal + max(2 s, 50 %) would have been for 0xfd: shorter than the adapter ran.
         assert 10.0 + 5.0 < timed[0xFD] < p.host_wait_s(0xFD, 600.0)
+
+    @pytest.mark.skipif(not CAPTURES_2026_09_22.is_dir(), reason='2026-09-22 capture directory not present')
+    def test_no_timed_read_ended_before_the_least_expiry_the_driver_chooses_its_code_by(self):
+        # §7.3, §10.10.1, §10.10.2: every read that NI's adapter ended with error 0x0a in the
+        # three timing captures, idle and with data still arriving, timed from the OUT to the
+        # reply. The code for a timeout is picked so that it never ends before the time asked
+        # (``protocol.timeout_code``), which rests on no code ending sooner than this.
+        seen: Dict[int, List[float]] = {}
+        for name in ('timeout_map', 'timeout_expiry', 'timeout_bound'):
+            everything = transfers(name)
+            for out in everything:
+                if out.endpoint != EP_OUT or out.completion or not out.payload:
+                    continue
+                read = next((b for b in split_host_blocks(out.payload) if b[0] in (p.OP_READ, p.OP_READ_RAW)), None)
+                if read is None:
+                    continue
+                reply = next(x for x in everything if x.endpoint == EP_IN and x.completion and x.payload
+                             and x.ts > out.ts)
+                status_id = p.BLOCK_READ_STATUS if read[0] == p.OP_READ else p.OP_READ_RAW
+                status = next(b for i, b in p.split_reply_blocks(reply.payload) if i == status_id)
+                if p.parse_status_block(status).error == t.ERR_TIMEOUT:
+                    seen.setdefault(read[3], []).append(reply.ts - out.ts)
+        assert sorted(seen) == [0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE]
+        for code, waits in seen.items():
+            assert t.timeout_expiry_least_s(code) <= min(waits) + 2e-6, (hex(code), waits)
+            assert t.TIMEOUT_EXPIRY_MEASURED_SHORTEST_S[code] < min(waits) + 2e-6, (hex(code), waits)
+            assert max(waits) < t.TIMEOUT_EXPIRY_MEASURED_S[code] + 2e-6, (hex(code), waits)
+        # The one code that ends before its nominal value: NI sends 300 ms as 0xfa.
+        assert max(seen[0xFA]) < 0.300 and p.timeout_code(0.300) == 0xFB
 
     def test_serial_poll_that_timed_out_has_no_result_block(self):
         exchange = next(e for e in exchanges('raw_errors') if e.block(p.OP_SERIAL_POLL) is not None)

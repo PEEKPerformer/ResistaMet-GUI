@@ -188,25 +188,23 @@ class NiUsbGpibSession(Session):
     def _set_timeout(self, attribute: ResourceAttribute, value: int) -> StatusCode:
         status = super()._set_timeout(attribute, value)
         if self.timeout:
-            # Round to the device's table (§7.1) so the attribute reads back as
-            # the row whose code goes out; above the table, the longest row.
-            # That is the nominal limit. What the adapter then waits is the
-            # expiry of §7.3 (16.78 s or 20.0 s for the 10 s row, by unit),
-            # and the controller derives the host wait from the longer of
-            # those, not from this value.
-            _, limit = p.effective_timeout(min(self.timeout, t.TIMEOUT_MAX_S))
-            self.timeout = limit
+            # The attribute reads back as set, capped at the longest finite
+            # timeout the device table offers (1000 s, §7.1): the value is the
+            # least time to wait, and the controller picks the code for it
+            # (``protocol.timeout_code``), which may run longer. Rounding it up
+            # to a code's nominal limit, as before, stood for the wrong wait:
+            # 0xfa's 300 ms ends at 0.2635 s on one unit (§7.3).
+            self.timeout = min(self.timeout, t.TIMEOUT_MAX_S)
         return status
 
     def _device_timeout(self) -> Optional[float]:
-        # VISA "immediate" (0) has no device analogue. The table's shortest
-        # row (10 us, code 0xf1) would go into every instruction of the
-        # operation, the addressing included, and no handshake completes in
-        # it: everything would time out. So immediate means the shortest
-        # timeout known to let a handshake finish: 100 ms, code 0xf9, the
-        # shortest code NI's driver was captured sending and the shortest
-        # whose expiry was timed (§7.1, §7.3). The codes below it are
-        # inherited, never seen on the wire. None stays infinite.
+        # VISA "immediate" (0) has no device analogue, and what NI sends for
+        # it was not captured (§7.1). The table's shortest row (10 us, code
+        # 0xf1) would go into every instruction of the operation, the
+        # addressing included, and no handshake completes in it: everything
+        # would time out. So immediate is sent as 100 ms, code 0xf9, which
+        # both timed units end at 0.127-0.132 s (§7.3). None stays infinite:
+        # code 0xf0, and the controller's own host wait.
         if self.timeout == 0:
             return IMMEDIATE_TIMEOUT_S
         return self.timeout
