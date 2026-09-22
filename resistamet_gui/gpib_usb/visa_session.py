@@ -184,6 +184,22 @@ class NiUsbGpibSession(Session):
         """The addressed device, for the REN modes that need one. None for an interface."""
         return None
 
+    def _termchar_byte(self) -> Optional[int]:
+        """VI_ATTR_TERMCHAR as a byte when VI_ATTR_TERMCHAR_EN is on, else None.
+
+        NI fills the ``e`` byte of every read and write with the character
+        even with the compare off (§10.1.6, §10.5.1), but that was seen only
+        under NI's AUXRA 0x99 initialisation; ours is 0x81 (§2.6 row 3), under
+        which §5.2 still says error 4. With the compare off the byte does
+        nothing useful, so the bench-proven 0x00 is sent until hardware says
+        otherwise; the codec can send either.
+        """
+        enabled, _ = self.get_attribute(ResourceAttribute.termchar_enabled)
+        if not enabled:
+            return None
+        termchar, _ = self.get_attribute(ResourceAttribute.termchar)
+        return termchar if isinstance(termchar, int) and 0 <= termchar <= 0xFF else None
+
     def _label(self) -> str:
         return 'GPIB%s' % self.parsed.board
 
@@ -289,11 +305,14 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
         termchar, _ = self.get_attribute(ResourceAttribute.termchar)
         if termchar_enabled and not 0 <= termchar <= 0xFF:
             return b'', StatusCode.error_nonsupported_attribute_state
+        # With the character enabled the instruction compares on it (m = 0x14,
+        # §10.1.6); disabled, the proven ``00 00`` goes (see _termchar_byte).
         eos = termchar if termchar_enabled else None
         try:
             data, ended = controller.read(self._pad, sad=self._sad, max_bytes=count,
                                           timeout_s=self._device_timeout(), eos=eos,
-                                          eos_8bit=True, readdress=self._readdress())
+                                          eos_8bit=True, termchar=self._termchar_byte(),
+                                          readdress=self._readdress())
         except GpibTimeout as exc:
             return exc.partial, StatusCode.error_timeout
         except (GpibError, TransportError) as exc:
@@ -312,7 +331,7 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
         send_end, _ = self.get_attribute(ResourceAttribute.send_end_enabled)
         try:
             written = controller.write(self._pad, data, sad=self._sad, send_eoi=bool(send_end),
-                                       timeout_s=self._device_timeout(),
+                                       timeout_s=self._device_timeout(), eos_char=self._termchar_byte(),
                                        readdress=self._readdress())
         except (GpibError, TransportError) as exc:
             logger.debug('%s write: %s', self._label(), exc)
@@ -330,8 +349,7 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
     def read_stb(self) -> Tuple[int, StatusCode]:
         controller = self._controller()
         try:
-            return ops.serial_poll(controller, self._pad, self._sad,
-                                   self._device_timeout()), StatusCode.success
+            return controller.serial_poll(self._pad, self._sad, self._device_timeout()), StatusCode.success
         except (GpibError, TransportError) as exc:
             logger.debug('%s serial poll: %s', self._label(), exc)
             return 0, status_for(exc)

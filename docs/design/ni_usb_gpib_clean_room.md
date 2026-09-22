@@ -101,14 +101,58 @@ register initialisation, IEEE-488 command bytes, the timeout table),
 `protocol.py` (message builders, reply parsers, exceptions),
 `transport.py` (pyusb), `controller.py` (sequencing over one adapter),
 `device_ops.py` (device clear, trigger, serial poll, presence probe),
-`boards.py` (board registry), `visa_session.py` (pyvisa-py session and
-dispatcher). 236 tests over scripted and fake transports; every worked hex
-example in the specification is asserted byte for byte in both directions.
+`boards.py` (board registry), `visa_session.py` (pyvisa-py instrument
+session and dispatcher), `visa_intfc.py` (the board as `GPIB<n>::INTFC`).
+465 driver tests over scripted and fake transports; every worked hex
+example in the specification is asserted byte for byte in both directions,
+and `test_gpib_usb_captures.py` replays the NI captures (below) through the
+codec.
+
+## The second round: NI's driver as the oracle (2026-09-19)
+
+The first bench day (`tauri_ui_status.md`) found
+two specification errors on the wire. To find the rest without touching
+GPL text again, the lab desktop — NI-488.2 driving the same adapter model —
+was captured with USBPcap, one VISA operation per scenario, 22 scenarios,
+stored with checksums in `captures/ni_usb_gpib_2026-09-19/`. Before the
+capture filter could be attached, Windows USB ETW gave URB headers without
+payloads; that method (`trace.bat`, `etw_urbs.py`) is kept beside the
+captures. Observing the bytes between one's own PC and one's own adapter is
+the classic interoperability path; the captures are facts, not anyone's
+expression.
+
+Roles, same wall:
+
+1. **Reader** (a fresh agent, no access to the GPL sources) decoded the
+   captures into §10 of the specification and 35 "Observed 2026-09-19"
+   notes in §§1–9, every fact with its packet as provenance. Its transcript
+   was checked: 54 shell commands, all inside the repository, nothing
+   fetched, the implementer's code never opened.
+2. **Implementer** (fresh agent, specification and captures only) added the
+   0x0b raw read on the alternate bulk IN endpoint, the 0x0e raw write on
+   the alternate bulk OUT, the 0x10 serial poll, the termination character
+   in reads, and a service-request wait on the interrupt endpoint, plus the
+   `INTFC` resource earlier the same day. Transcripts checked as before.
+3. **Code reviewer** reviewed each batch against the specification and the
+   captures.
+
+What the captures corrected: reads over 1 KB do not use the framed path
+at all (0x0b, data raw, one instruction per chunk); long writes likewise
+(0x0e); serial poll is its own instruction; NI never sends go-to-standby
+in an instrument session; the "error 4 on `e` without `m`" rule was wrong;
+the timeout table was right and the timeout bounds a handshake, not a
+transfer; the initialisation matched ours except two register values. The
+complete list is §10 of the specification.
 
 ## What it has not had
 
-A real adapter. The lab's GPIB-USB-HS (USB id 3923:709b, the model the
-specification is best evidenced for) is on laptop2 in the lab. The first
-run on a Mac decides whether the six `# spec gap:` points in the code are
-right; they are listed in the specification's "uncertain" notes and in the
-code where each conservative choice was made.
+The new paths on a real adapter. The framed paths and the attach sequence
+ran on a GPIB-USB-HS with a Keithley 2400 on 2026-09-18 (identify, runs,
+stop, restart, shutdown, compliance). The 0x0b/0x0e/0x10 paths and the SRQ
+wait were written on 2026-09-19 against the captures alone; the Monday
+checklist in the implementer's report (long reads, chunked reads, long
+writes, serial poll, SRQ on `*OPC`, timeouts) is the first thing to run
+when the adapter is back on the Mac. One proven byte changed on purpose:
+the read instruction now carries the termination character in `e` as NI
+does; if the adapter answers error 4, the fallback is one argument in each
+session's `read`.

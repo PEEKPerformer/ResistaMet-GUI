@@ -7,16 +7,26 @@ bytes and a read (the ATN rule at the top of §5), 16-byte command chunks
 (§5.3), and turning a nonzero error code into an exception in exactly one
 place. Everything is synchronous and serialised behind one re-entrant lock;
 there are no background threads. Sequences built from these primitives
-(device clear, serial poll, the presence probe) live in ``device_ops``.
+(device clear, trigger, the presence probe) live in ``device_ops``.
 
 Faults: a malformed reply or a USB error means the bulk pipes may be out of
 step (§8.2). The offending operation raises, the adapter is sent a stop
 request and its pipe drained, and the next operation re-runs the attach
 sequence before doing anything else.
 
-The interrupt endpoint is not used (§2.5 calls it optional and operation
-without it reliable), so attach skips the interrupt-monitor-mask steps 4 and
-6 of §2.8 and ``status()`` polls the control endpoint instead.
+The interrupt endpoint is not armed at attach (§2.5 calls it optional and
+operation without it reliable), so attach skips the interrupt-monitor-mask
+steps 4 and 6 of §2.8 and ``status()`` polls the control endpoint instead.
+``wait_srq`` reads it on demand: the adapter pushes one 8-byte packet there
+when an instrument asserts SRQ, having serial-polled it itself (§10.4.2).
+
+Large transfers take the instructions NI's own driver uses (§10): a read of
+``RAW_READ_MIN_BYTES`` or more is a 0x0b whose bytes arrive unframed on the
+alternate bulk IN endpoint, and a write of ``RAW_WRITE_MIN_BYTES`` or more
+is a 0x0e whose bytes go out unframed on the alternate bulk OUT. Smaller
+transfers keep the bench-proven framed 0x0a / 0x0d paths, as do models
+without the alternate pair. The raw paths were written from the captures
+alone and have not run against an adapter of ours yet.
 
 Bench notes (GPIB-USB-HS 01CEE482, Keithley 2400 at PAD 3, 2026-09-18): the
 attach sequence, addressing, write, read, serial poll and the presence probe
@@ -28,10 +38,13 @@ specification derived (see ``protocol``). The count field of a status reply
 is only meaningful after 0x0a/0x0c/0x0d; other replies carry stale or marker
 bytes there, which is why nothing here reads it elsewhere.
 
-Size: this module runs a little over the 400-line guideline even with the
-device-level sequences moved out. What remains is the attach sequence, the
-three transfer primitives and the exchange/fault machinery they share; the
-fault rule is only correct if it wraps every exchange, so it stays with them.
+Size: this module is well past the 400-line guideline. It holds the attach
+sequence, the framed and raw transfer paths, the serial poll, the SRQ wait
+and the exchange/fault machinery they all share; the fault rule is only
+correct if it wraps every exchange, which is why the transfers have not
+been moved out yet. Once the raw paths have run on hardware, the data
+transfers (``write*``, ``read*`` and their ``_raw_*`` helpers) are the
+natural piece to lift into a module of their own.
 """
 import logging
 import threading
@@ -66,6 +79,30 @@ IFC_SETTLE_S = 0.1
 #: host wait to the application. Ten minutes; on expiry the operation is
 #: stopped (§5.11) and reported as a timeout.
 DEFAULT_INFINITE_WAIT_S = 600.0
+#: Reads of at least this many bytes use the 0x0b instruction with the data
+#: on the alternate bulk IN (§10.1.1). NI was observed using 0x0a for every
+#: count up to 1024 and 0x0b from 4096 up; no count in between was captured,
+#: so where NI switches is not established. 4096 is the smallest count NI was
+#: seen use 0x0b for.
+RAW_READ_MIN_BYTES = 4096
+#: Writes of at least this many bytes use the 0x0e instruction with the data
+#: on the alternate bulk OUT (§10.5.2), i.e. writes longer than 2048 bytes. NI
+#: was observed using 0x0d up to 17 bytes and 0x0e at 2050; the boundary in
+#: between is not established. Same reading as RAW_READ_MIN_BYTES: the
+#: smallest transfer that goes raw.
+RAW_WRITE_MIN_BYTES = 2049
+#: The interrupt read of ``wait_srq`` is issued in slices of this length so a
+#: ``close`` is noticed between them; the only cost is one extra interrupt
+#: read per slice while nothing is pending.
+SRQ_WAIT_SLICE_S = 1.0
+#: The device timeout code bounds a handshake interval, not the whole
+#: instruction (§10.1.8: 20480-byte chunks took 4.0 s each under the 3 s code
+#: and completed with error 0), so the host wait for a raw transfer must also
+#: cover the transfer itself. This is the slowest instrument pace assumed: the
+#: host wait grows by one second per this many bytes. The 2420 formats at
+#: about 5000 bytes per second (§10.1.4). This is a driver choice, not a
+#: specification value.
+RAW_TRANSFER_MIN_RATE_BPS = 1000
 
 _LISTEN = 'listen'
 _TALK = 'talk'
@@ -77,7 +114,11 @@ class Controller:
     def __init__(self, transport: Transport, product_id: int, *,
                  own_address: int = 0, t1_ns: int = 2000,
                  infinite_wait_s: float = DEFAULT_INFINITE_WAIT_S,
+                 raw_transfers: bool = True,
                  sleep: Callable[[float], None] = time.sleep) -> None:
+        """``raw_transfers`` False keeps every transfer on the framed 0x0a / 0x0d
+        paths even on a model with the alternate pair, for a like-for-like
+        comparison on the bench; the serial poll and the SRQ wait are unaffected."""
         model = t.MODELS.get(product_id)
         if model is None:
             raise ValueError('unsupported product id 0x%04x' % product_id)
@@ -88,6 +129,9 @@ class Controller:
             raise ValueError('own address %d outside 0..30' % own_address)
         self._transport = transport
         self._model = model
+        #: Whether 0x0b / 0x0e are used: the model must have the alternate pair and
+        #: the caller must not have switched them off.
+        self._raw = bool(raw_transfers) and model.raw_endpoints
         self._own_address = own_address
         self._t1_ns = t1_ns
         self._infinite_wait_s = infinite_wait_s
@@ -107,6 +151,10 @@ class Controller:
         self._addressed: Optional[Tuple[str, int, Optional[int]]] = None
         #: Set by the last exchange when the host had to stop the device (§5.11).
         self._host_stopped = False
+        #: Clear while a ``wait_srq`` has an interrupt read in flight; ``close``
+        #: waits for it so the transport is not released under a pending transfer.
+        self._srq_idle = threading.Event()
+        self._srq_idle.set()
         #: From the serial-number query (or the USB-B register read).
         self.serial_number: Optional[int] = None
 
@@ -117,6 +165,11 @@ class Controller:
     @property
     def own_address(self) -> int:
         return self._own_address
+
+    @property
+    def raw_transfers(self) -> bool:
+        """Whether large transfers take the 0x0b / 0x0e instructions (§10)."""
+        return self._raw
 
     @property
     def system_controller(self) -> bool:
@@ -204,11 +257,20 @@ class Controller:
         return int.from_bytes(bytes(values), 'little')
 
     def close(self) -> None:
-        """§2.9: chip reset, the device-level register, release the interface."""
+        """§2.9: chip reset, the device-level register, release the interface.
+
+        A ``wait_srq`` in progress sees ``_closed`` at its next slice and
+        leaves; this waits for that before touching the transport, since
+        releasing the interface under a pending transfer is undefined.
+        """
         with self._lock:
             if self._closed:
                 return
             self._closed = True
+        if not self._srq_idle.wait(SRQ_WAIT_SLICE_S + SHORT_WAIT_S):
+            logger.warning('%s: a wait for a service request did not end; releasing the adapter anyway',
+                           self._model.name)
+        with self._lock:
             try:
                 if self._attached and not self._resync_pending:
                     self._register_write(t.SHUTDOWN_WRITES, 'shutdown')
@@ -260,8 +322,15 @@ class Controller:
 
     def write(self, pad: int, data: bytes, *, sad: Optional[int] = None,
               send_eoi: bool = True, timeout_s: Optional[float],
-              readdress: bool = True) -> int:
-        """Address ``pad`` to listen, then 0x0d in chunks of at most 0xffff (§5.1)."""
+              eos_char: Optional[int] = None, readdress: bool = True) -> int:
+        """Address ``pad`` to listen, then write ``data`` (§5.1, §10.5).
+
+        Writes of ``RAW_WRITE_MIN_BYTES`` and more go as 0x0e instructions
+        with the bytes on the alternate bulk OUT; shorter ones as framed
+        0x0d. ``eos_char`` fills the 0x0e header's ``e`` byte, which NI sets
+        to the session's termination character (§10.5.2); the framed 0x0d
+        keeps its bench-proven 0x00 there.
+        """
         with self._guard():
             self._ensure_attached()
             if not data:
@@ -269,11 +338,11 @@ class Controller:
             code, limit = p.effective_timeout(timeout_s)
             wait = p.host_wait_s(limit, self._infinite_wait_s)
             self._address(_LISTEN, pad, sad, code, wait, readdress)
-            return self._write_instruction(data, code, wait, send_eoi)
+            return self._write_bytes(data, code, limit, send_eoi, eos_char)
 
     def write_raw(self, data: bytes, *, send_eoi: bool = True,
-                  timeout_s: Optional[float]) -> int:
-        """0x0d with the bus as it stands: no addressing (§5.1).
+                  timeout_s: Optional[float], eos_char: Optional[int] = None) -> int:
+        """Write with the bus as it stands: no addressing.
 
         For callers that addressed the bus themselves with command bytes. The
         adapter reports error 3 or 8 when nothing is addressed to listen.
@@ -283,27 +352,75 @@ class Controller:
             if not data:
                 return 0
             code, limit = p.effective_timeout(timeout_s)
-            wait = p.host_wait_s(limit, self._infinite_wait_s)
-            return self._write_instruction(data, code, wait, send_eoi)
+            return self._write_bytes(data, code, limit, send_eoi, eos_char)
 
-    def _write_instruction(self, data: bytes, code: int, wait_s: float, send_eoi: bool) -> int:
+    def _write_bytes(self, data: bytes, code: int, limit: Optional[float], send_eoi: bool,
+                     eos_char: Optional[int]) -> int:
+        """Write instructions of at most 0xffff bytes each, EOI only with the last (§5.1).
+
+        Framed or raw is decided per chunk, like the read loop, so a short
+        tail after a raw chunk goes framed.
+        """
+        # Both instructions carry at most 0xffff bytes, so one chunk size serves.
+        step = min(p.MAX_TRANSFER_BYTES, p.MAX_RAW_TRANSFER_BYTES)
         written = 0
-        for start in range(0, len(data), p.MAX_TRANSFER_BYTES):
-            chunk = data[start:start + p.MAX_TRANSFER_BYTES]
-            last = start + len(chunk) == len(data)
-            status, _ = self._exchange(p.write_message(chunk, code, send_eoi and last),
-                                       p.STATUS_REPLY_LENGTH, wait_s, 'write')
-            written += status.transferred(len(chunk))
+        for start in range(0, len(data), step):
+            chunk = data[start:start + step]
+            eoi = send_eoi and start + len(chunk) == len(data)
+            if self._raw and len(chunk) >= RAW_WRITE_MIN_BYTES:
+                written += self._raw_write_instruction(chunk, code, limit, eoi, eos_char)
+            else:
+                wait = p.host_wait_s(limit, self._infinite_wait_s)
+                status, _ = self._exchange(p.write_message(chunk, code, eoi), p.STATUS_REPLY_LENGTH,
+                                           wait, 'write')
+                written += status.transferred(len(chunk))
         return written
+
+    def _raw_write_instruction(self, chunk: bytes, code: int, limit: Optional[float], send_eoi: bool,
+                               eos_char: Optional[int]) -> int:
+        """One 0x0e (§10.5.2): the header on the primary OUT, the bytes raw on the alternate OUT.
+
+        The device consumes the raw transfer as it writes to the bus (NI's
+        2050 bytes took 0.1 s to be accepted), so that transfer, not only the
+        reply, gets the host wait. What remains buffered when the transfer
+        completes still has to reach the instrument, so the reply gets the
+        same wait.
+        """
+        message = p.write_raw_message(len(chunk), code, send_eoi, eos_char)
+        wait_s = p.host_wait_s(limit, self._infinite_wait_s) + len(chunk) / RAW_TRANSFER_MIN_RATE_BPS
+        self._host_stopped = False
+        self._transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
+        try:
+            accepted = self._transport.bulk_out_raw(chunk, int(wait_s * 1000))
+        except TransportTimeout:
+            accepted = 0
+        if accepted < len(chunk):
+            # The instrument stopped accepting mid-transfer (or never started:
+            # nothing listens and the device did not take the bytes). The
+            # transport reports the first as a short count, the second as a
+            # timeout; either way the device is mid-instruction and §5.11
+            # makes it finish, so the reply can say how much reached the bus.
+            self._host_stopped = True
+            self._control(t.STOP_REQUEST)
+            reply_wait = RECOVERY_WAIT_S
+        else:
+            reply_wait = wait_s
+        reply = self._reply_or_stop(p.SMALL_REPLY_BUFFER, reply_wait)
+        parsed = p.parse_raw_write_reply(reply)
+        self._raise_for_error(parsed.status, 'write')
+        return parsed.transferred(len(chunk))
 
     def read(self, pad: int, *, sad: Optional[int] = None, max_bytes: int,
              timeout_s: Optional[float], eos: Optional[int] = None,
-             eos_8bit: bool = False, readdress: bool = True) -> Tuple[bytes, bool]:
-        """Address ``pad`` to talk, go to standby, then one 0x0a (§5.2).
+             eos_8bit: bool = False, termchar: Optional[int] = None,
+             readdress: bool = True) -> Tuple[bytes, bool]:
+        """Address ``pad`` to talk, go to standby, then read up to ``max_bytes`` (§5.2, §10.1).
 
         Returns the data and whether END (EOI, or the EOS character when
         ``eos`` is given) ended it. False means the count was reached. A
         device-side timeout raises ``GpibTimeout`` carrying the partial data.
+        ``termchar`` fills the instruction's ``e`` byte when ``eos`` is None,
+        as NI does (§10.1.6); None sends the bench-proven 0x00.
         """
         with self._guard():
             self._ensure_attached()
@@ -312,35 +429,109 @@ class Controller:
             code, limit = p.effective_timeout(timeout_s)
             wait = p.host_wait_s(limit, self._infinite_wait_s)
             self._address(_TALK, pad, sad, code, wait, readdress)
-            # ATN rule (§5): a 0x06 between the addressing 0x0c and the 0x0a.
+            # ATN rule (§5): a 0x06 between the addressing 0x0c and the read.
             self._go_to_standby()
-            return self._read_instruction(min(max_bytes, p.MAX_TRANSFER_BYTES), code, wait,
-                                          eos, eos_8bit, 'read')
+            return self._read_bytes(max_bytes, code, limit, eos, eos_8bit, termchar, 'read')
 
     def read_raw(self, max_bytes: int, timeout_s: Optional[float],
-                 eos: Optional[int] = None, eos_8bit: bool = False) -> Tuple[bytes, bool]:
-        """One 0x0a with the bus as it stands: no addressing, no standby.
+                 eos: Optional[int] = None, eos_8bit: bool = False,
+                 termchar: Optional[int] = None) -> Tuple[bytes, bool]:
+        """Read with the bus as it stands: no addressing, no standby.
 
-        For callers that addressed the bus themselves (a serial poll sends its
-        own SPE sequence and standby). ATN must already be false, else error 2.
+        For callers that addressed the bus themselves. ATN must already be
+        false, else error 2.
         """
         with self._guard():
             self._ensure_attached()
             if max_bytes < 1:
                 return b'', False
             code, limit = p.effective_timeout(timeout_s)
-            wait = p.host_wait_s(limit, self._infinite_wait_s)
-            return self._read_instruction(min(max_bytes, p.MAX_TRANSFER_BYTES), code, wait,
-                                          eos, eos_8bit, 'read')
+            return self._read_bytes(max_bytes, code, limit, eos, eos_8bit, termchar, 'read')
+
+    def _read_bytes(self, max_bytes: int, code: int, limit: Optional[float], eos: Optional[int],
+                    eos_8bit: bool, termchar: Optional[int], operation: str) -> Tuple[bytes, bool]:
+        """Read instructions until END, the count, or a short result; framed or raw by size.
+
+        One instruction carries at most 0xffff bytes on either path, so a
+        larger request loops; the instrument stays addressed between chunks
+        (§10.1.7 shows re-addressing is harmless, and none is needed). A
+        timeout mid-loop raises with everything read so far as its partial.
+        """
+        chunks: List[bytes] = []
+        remaining = max_bytes
+        while remaining > 0:
+            count = min(remaining, p.MAX_TRANSFER_BYTES)
+            try:
+                if self._raw and count >= RAW_READ_MIN_BYTES:
+                    data, end = self._raw_read_instruction(count, code, limit, eos, eos_8bit, termchar,
+                                                           operation)
+                else:
+                    wait = p.host_wait_s(limit, self._infinite_wait_s)
+                    data, end = self._read_instruction(count, code, wait, eos, eos_8bit, termchar, operation)
+            except GpibTimeout as exc:
+                exc.partial = b''.join(chunks) + exc.partial
+                raise
+            chunks.append(data)
+            remaining -= len(data)
+            if end or len(data) < count:
+                return b''.join(chunks), end
+        return b''.join(chunks), False
 
     def _read_instruction(self, count: int, code: int, wait_s: float, eos: Optional[int],
-                          eos_8bit: bool, operation: str) -> Tuple[bytes, bool]:
+                          eos_8bit: bool, termchar: Optional[int], operation: str) -> Tuple[bytes, bool]:
+        """One framed 0x0a (§5.2): the data comes back in blocks on the primary bulk IN."""
         buffer = p.read_reply_buffer_size(count, self._transport.max_packet_size)
-        _, reply = self._exchange(p.read_message(count, code, eos, eos_8bit), buffer, wait_s,
+        _, reply = self._exchange(p.read_message(count, code, eos, eos_8bit, termchar), buffer, wait_s,
                                   operation, tolerate=(t.ERR_TIMEOUT, t.ERR_STOPPED))
         parsed = p.parse_read_reply(reply, count)
         self._raise_for_error(parsed.status, operation, partial=parsed.data)
         return parsed.data, parsed.end
+
+    def _raw_read_instruction(self, count: int, code: int, limit: Optional[float], eos: Optional[int],
+                              eos_8bit: bool, termchar: Optional[int], operation: str) -> Tuple[bytes, bool]:
+        """One 0x0b (§10.1.2-10.1.3): the data arrives raw on the alternate bulk IN, the status on the primary."""
+        message = p.read_raw_message(count, code, eos, eos_8bit, termchar)
+        buffer = p.raw_read_buffer_size(count, self._transport.max_packet_size_raw)
+        wait_s = p.host_wait_s(limit, self._infinite_wait_s) + count / RAW_TRANSFER_MIN_RATE_BPS
+        data, reply = self._raw_read_transact(message, buffer, wait_s)
+        parsed = p.parse_raw_read_reply(reply, count, data)
+        self._raise_for_error(parsed.status, operation, partial=parsed.data)
+        return parsed.data, parsed.end
+
+    def _raw_read_transact(self, message: bytes, data_buffer: int, wait_s: float) -> Tuple[bytes, bytes]:
+        """Send a 0x0b message; collect its data on the alternate IN, then its reply on the primary IN.
+
+        The data is read first because the device sends it first: in every
+        capture the alternate-endpoint transfer completed 0.4-0.5 ms before
+        the 0x84 reply, and for a read that timed out it completed with zero
+        bytes (§10.1.3, §7.2). NI keeps both IN transfers posted before the
+        OUT completes; with a synchronous transport the same order of events
+        is obtained by issuing the two reads in the order the device fills
+        them. The device holds its data in the endpoint until the host reads,
+        so the microseconds between the OUT and the first IN cost nothing,
+        and the reply cannot arrive before the data on the wire.
+        """
+        self._host_stopped = False
+        self._transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
+        try:
+            data = self._transport.bulk_in_raw(data_buffer, int(wait_s * 1000))
+            reply_wait = SHORT_WAIT_S  # the reply follows the data within a millisecond
+        except TransportTimeout as expired:
+            # §5.11: the device still owes both transfers; make it finish now.
+            # What the transport had received before its wait ran out (the
+            # transport reports a partial transfer this way) stays.
+            self._host_stopped = True
+            self._control(t.STOP_REQUEST)
+            reply_wait = RECOVERY_WAIT_S
+            try:
+                data = expired.partial + self._transport.bulk_in_raw(data_buffer - len(expired.partial),
+                                                                     int(RECOVERY_WAIT_S * 1000))
+            except TransportTimeout as still:
+                # Whether a stopped 0x0b completes its data transfer is not
+                # established (a timed-out one does, with zero bytes). The
+                # reply's count decides whether anything was lost.
+                data = expired.partial + still.partial
+        return data, self._reply_or_stop(p.SMALL_REPLY_BUFFER, reply_wait)
 
     def command(self, command_bytes: bytes,
                 timeout_s: Optional[float] = DEFAULT_TIMEOUT_S) -> int:
@@ -370,6 +561,96 @@ class Controller:
             command = t.address_talker_command(self._own_address, pad, sad)
         self._status_exchange(p.command_message(command, code), wait_s, 'address to %s' % direction)
         self._addressed = target
+
+    def serial_poll(self, pad: int, sad: Optional[int] = None,
+                    timeout_s: Optional[float] = DEFAULT_TIMEOUT_S) -> int:
+        """The status byte of device ``pad`` through the 0x10 instruction (§10.5.4).
+
+        NI's driver polls this way rather than with the IEEE-488.1 command
+        sequence of §5.9. The adapter addresses the bus itself for the poll,
+        so whoever was addressed before is forgotten here.
+        """
+        with self._guard():
+            self._ensure_attached()
+            self._addressed = None
+            code, limit = p.effective_timeout(timeout_s)
+            wait = p.host_wait_s(limit, self._infinite_wait_s)
+            reply = self._transact(p.serial_poll_message(pad, code, sad), p.SMALL_REPLY_BUFFER, wait)
+            parsed = p.parse_serial_poll_reply(reply)
+            if parsed.pad != pad:
+                raise ProtocolError('serial poll answered for address %d, asked %d: %s'
+                                    % (parsed.pad, pad, reply.hex()))
+            self._raise_for_error(parsed.status, 'serial poll')
+            return parsed.status_byte
+
+    # ------------------------------------------------------------------
+    # service request
+    # ------------------------------------------------------------------
+
+    def wait_srq(self, timeout_s: Optional[float]) -> int:
+        """Block until an instrument requests service; return its status byte (§10.4.2).
+
+        The adapter answers an SRQ by polling the requesting device itself
+        and pushing ``30 18 00 sb ..`` on the interrupt endpoint, ``sb``
+        being the status byte with RQS set; a later explicit poll finds RQS
+        clear (§10.4.2, §10.9). NI's driver then sends control request 0x3b
+        and re-arms its interrupt read; this does the same, the re-arm being
+        the next call.
+
+        The interrupt read is issued only here, and the controller lock is
+        released while it blocks: a permanently pending read would need a
+        thread of its own, and every other operation would have to wait for
+        this one otherwise. The read runs in slices of ``SRQ_WAIT_SLICE_S``
+        so a ``close`` from another thread is noticed between them. The cost
+        is that a push arriving while nobody waits sits in the adapter until
+        the next call (which then returns at once); whether the adapter
+        keeps more than one is not established. One wait at a time.
+        ``timeout_s`` None waits the controller's infinite wait; it must
+        otherwise be positive (``ValueError``): a zero wait would mean "is
+        a push already queued?", which the interrupt endpoint cannot be
+        asked without blocking -- libusb reads a timeout of 0 as no timeout
+        at all -- so pretending to answer it would be wrong either way. A
+        ``GpibTimeout`` means no request arrived in time.
+        """
+        if timeout_s is not None and not timeout_s > 0:
+            raise ValueError('wait_srq needs a positive timeout or None, not %r' % (timeout_s,))
+        with self._lock:
+            self._ensure_attached()
+            if not self._srq_idle.is_set():
+                raise GpibError('a wait for a service request is already in progress')
+            self._srq_idle.clear()
+            transport = self._transport
+        try:
+            push = self._interrupt_read_in_slices(transport, timeout_s)
+        finally:
+            self._srq_idle.set()
+        parsed = p.parse_srq_push(push)  # a malformed push does not put the bulk pipes out of step
+        with self._guard():
+            if self._closed:
+                raise AdapterNotReady('controller is closed')
+            transport.control_out(t.SRQ_ACKNOWLEDGE.request, t.SRQ_ACKNOWLEDGE.value,
+                                  t.SRQ_ACKNOWLEDGE.index, b'', t.CONTROL_TIMEOUT_MS,
+                                  request_type=t.SRQ_ACKNOWLEDGE.request_type)
+        return parsed.status_byte
+
+    def _interrupt_read_in_slices(self, transport: Transport, timeout_s: Optional[float]) -> bytes:
+        """The next interrupt push, waited for in slices; called with the lock released."""
+        remaining = self._infinite_wait_s if timeout_s is None else timeout_s
+        while True:
+            if self._closed:
+                raise AdapterNotReady('controller is closed')
+            slice_s = min(SRQ_WAIT_SLICE_S, remaining)
+            try:
+                return transport.interrupt_in(t.INTERRUPT_READ_LENGTH, int(slice_s * 1000))
+            except TransportTimeout as exc:
+                remaining -= slice_s
+                if remaining <= 0:
+                    raise GpibTimeout('no service request within %.3g s'
+                                      % (self._infinite_wait_s if timeout_s is None else timeout_s)) from exc
+            except TransportError:
+                with self._lock:
+                    self._resync_pending = True
+                raise
 
     # ------------------------------------------------------------------
     # adapter state
@@ -427,6 +708,17 @@ class Controller:
             logger.debug('nothing to drain')
         except TransportError as exc:
             logger.debug('drain after a malformed reply failed: %s', exc)
+        if self._raw:
+            # Data of an interrupted 0x0b, or the zero-length packet that ends
+            # a full-length one, may still sit on the alternate IN (§10.1.4).
+            try:
+                self._transport.bulk_in_raw(
+                    p.raw_read_buffer_size(p.MAX_RAW_TRANSFER_BYTES, self._transport.max_packet_size_raw),
+                    int(DRAIN_WAIT_S * 1000))
+            except TransportTimeout:
+                logger.debug('nothing to drain on the alternate endpoint')
+            except TransportError as exc:
+                logger.debug('alternate-endpoint drain failed: %s', exc)
 
     def _ensure_attached(self) -> None:
         if self._closed:
@@ -448,16 +740,25 @@ class Controller:
         """One message out, its one reply in (§3.1); stop and collect on a host timeout."""
         self._host_stopped = False
         self._transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
+        return self._reply_or_stop(reply_length, wait_s)
+
+    def _reply_or_stop(self, reply_length: int, wait_s: float) -> bytes:
+        """The reply on the primary IN; on a host timeout, §5.11: stop the device and collect.
+
+        After a stop request already sent for this exchange the wait is the
+        recovery wait, and a second miss is ``NoReply``.
+        """
         try:
             return self._transport.bulk_in(reply_length, int(wait_s * 1000))
-        except TransportTimeout:
-            # §5.11: the device still owes the reply; make it finish now.
+        except TransportTimeout as exc:
+            if self._host_stopped:
+                raise NoReply('adapter did not answer after a stop request') from exc
             self._host_stopped = True
             self._control(t.STOP_REQUEST)
             try:
                 return self._transport.bulk_in(reply_length, int(RECOVERY_WAIT_S * 1000))
-            except TransportTimeout as exc:
-                raise NoReply('adapter did not answer after a stop request') from exc
+            except TransportTimeout as exc2:
+                raise NoReply('adapter did not answer after a stop request') from exc2
 
     def _exchange(self, message: bytes, reply_length: int, wait_s: float, operation: str,
                   tolerate: Sequence[int] = ()) -> Tuple[StatusBlock, bytes]:

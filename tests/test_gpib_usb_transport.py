@@ -60,6 +60,7 @@ class FakeDevice:
         self.next_read: Any = b''
         self.ctrl_reply: bytes = b'\x40' + bytes(15)
         self.write_returns: Optional[int] = None
+        self.raw_packet = 512
 
     @property
     def serial_number(self):
@@ -71,7 +72,9 @@ class FakeDevice:
     def get_active_configuration(self):
         if not self.configured:
             raise FAKE['core'].USBError('Configuration not set')
-        return FakeConfiguration(FakeInterface([FakeEndpoint(0x02, 512), FakeEndpoint(0x84, 512)]))
+        return FakeConfiguration(FakeInterface([FakeEndpoint(0x02, 512), FakeEndpoint(0x84, 512),
+                                                FakeEndpoint(0x06, 512), FakeEndpoint(0x88, self.raw_packet),
+                                                FakeEndpoint(0x81, 64)]))
 
     def set_configuration(self):
         self.set_configuration_calls += 1
@@ -82,6 +85,8 @@ class FakeDevice:
 
     def ctrl_transfer(self, bmRequestType, bRequest, wValue, wIndex, data_or_wLength, timeout):
         self.ctrl_calls.append((bmRequestType, bRequest, wValue, wIndex, data_or_wLength, timeout))
+        if bmRequestType & 0x80 == 0:
+            return len(data_or_wLength)  # host-to-device: pyusb returns the bytes written
         return array.array('B', self.ctrl_reply[:data_or_wLength])
 
     def write(self, endpoint, data, timeout):
@@ -171,6 +176,9 @@ class TestFindAdapters:
             ('GPIB-USB-B (no firmware)', 1, 3, 'B1'), ('GPIB-USB-HS', 2, 7, 'HS1')]
         assert adapters[0].needs_firmware and not adapters[1].needs_firmware
         assert adapters[1].endpoint_out == 0x02 and adapters[1].endpoint_in == 0x84
+        assert adapters[1].endpoint_out_raw == 0x06 and adapters[1].endpoint_in_raw == 0x88
+        assert adapters[1].endpoint_interrupt == 0x81
+        assert adapters[0].endpoint_out_raw is None and adapters[0].endpoint_in_raw is None
         assert adapters[1].device is hs
         assert fake['calls']['find'] == [('backend', {'idVendor': t.VENDOR_ID})]
 
@@ -293,6 +301,81 @@ class TestPyUsbTransport:
         assert usb_transport.bulk_in(12, 5000) == device.next_read
         assert device.reads == [(0x84, 12, 5000)]
 
+    def test_raw_in_packet_size_is_read_from_its_own_descriptor(self, monkeypatch):
+        device = HS()
+        device.raw_packet = 64
+        install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
+        assert usb_transport.max_packet_size == 512 and usb_transport.max_packet_size_raw == 64
+        without = PyUsbTransport(device, 0x02, 0x84)
+        assert without.max_packet_size_raw == transport.DEFAULT_MAX_PACKET_SIZE
+
+    def test_raw_endpoints_and_interrupt(self, monkeypatch):
+        device = HS()
+        install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88,
+                                       endpoint_interrupt=0x81)
+        assert usb_transport.max_packet_size_raw == 512
+        usb_transport.bulk_out_raw(b'*CLS;' * 410, 5000)
+        assert device.writes == [(0x06, b'*CLS;' * 410, 5000)]
+        device.next_read = b'KEITHLEY'
+        assert usb_transport.bulk_in_raw(20992, 5000) == b'KEITHLEY'
+        assert device.reads[-1] == (0x88, 20992, 5000)
+        device.next_read = b''
+        assert usb_transport.bulk_in_raw(4608, 100) == b''   # a zero-length transfer (§10.1.3)
+        device.next_read = bytes.fromhex('30 18 00 60 31 a1 01 00')
+        assert usb_transport.interrupt_in(64, 1000) == device.next_read
+        assert device.reads[-1] == (0x81, 64, 1000)
+
+    def test_short_raw_read_that_used_the_whole_wait_is_a_timeout_with_the_partial_bytes(self, monkeypatch):
+        device = HS()
+        install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
+        clock = iter([0.0, 0.05, 0.0, 5.0])  # first read: 50 ms of a 5 s wait; second: the full 5 s
+        monkeypatch.setattr(transport.time, 'monotonic', lambda: next(clock))
+        device.next_read = b'short packet'
+        assert usb_transport.bulk_in_raw(4608, 5000) == b'short packet'      # the device's short packet
+        device.next_read = b'PART'
+        with pytest.raises(TransportTimeout) as info:                          # pyusb's partial count
+            usb_transport.bulk_in_raw(4608, 5000)
+        assert info.value.partial == b'PART'
+
+    def test_full_raw_read_at_the_deadline_is_not_a_timeout(self, monkeypatch):
+        device = HS()
+        install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
+        monkeypatch.setattr(transport.time, 'monotonic', iter([0.0, 9.0]).__next__)
+        device.next_read = bytes(512)
+        assert usb_transport.bulk_in_raw(512, 5000) == bytes(512)
+
+    def test_control_out_uses_the_host_to_device_vendor_type(self, monkeypatch):
+        device = HS()
+        install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84)
+        usb_transport.control_out(0x3B, 0, 0, b'', 1000)
+        assert device.ctrl_calls[-1] == (0x40, 0x3B, 0, 0, b'', 1000)
+
+    def test_models_without_the_alternate_pair_refuse_raw_transfers(self, monkeypatch):
+        device = FakeDevice(t.VENDOR_ID, t.PID_USB_B)
+        install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x82)
+        with pytest.raises(TransportError):
+            usb_transport.bulk_out_raw(b'x', 1000)
+        with pytest.raises(TransportError):
+            usb_transport.bulk_in_raw(512, 1000)
+        with pytest.raises(TransportError):
+            usb_transport.interrupt_in(64, 1000)
+        assert device.writes == [] and device.reads == []
+
+    def test_short_raw_write_returns_the_count_accepted(self, monkeypatch):
+        # pyusb hands back the partial count when the wait expires after some bytes moved.
+        device = HS()
+        install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
+        assert usb_transport.bulk_out_raw(bytes(2050), 5000) == 2050
+        device.write_returns = 100
+        assert usb_transport.bulk_out_raw(bytes(2050), 5000) == 100
+
     def test_short_write_is_an_error(self, monkeypatch):
         device = HS()
         install_fake_usb(monkeypatch, [device])
@@ -333,3 +416,9 @@ class TestPyUsbTransport:
         usb_transport = transport.open_transport(info)
         assert isinstance(usb_transport, PyUsbTransport)
         assert fake['calls']['claim'] == [(device, 0)]
+        # The raw pair and the interrupt endpoint come from the enumerated model.
+        usb_transport.bulk_out_raw(b'x', 100)
+        device.next_read = b''
+        usb_transport.bulk_in_raw(512, 100)
+        usb_transport.interrupt_in(64, 100)
+        assert [w[0] for w in device.writes] == [0x06] and [r[0] for r in device.reads] == [0x88, 0x81]

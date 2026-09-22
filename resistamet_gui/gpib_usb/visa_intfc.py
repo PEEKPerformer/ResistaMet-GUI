@@ -94,7 +94,7 @@ class NiUsbGpibIntfcSession(NiUsbGpibSession):
                 # ATN rule (§5): a 0x06 before the 0x0a; a no-op if ATN is already false.
                 controller.go_to_standby()
                 data, ended = controller.read_raw(count, self._device_timeout(), eos=eos,
-                                                  eos_8bit=True)
+                                                  eos_8bit=True, termchar=self._termchar_byte())
         except GpibTimeout as exc:
             return exc.partial, StatusCode.error_timeout
         except (GpibError, TransportError) as exc:
@@ -112,7 +112,7 @@ class NiUsbGpibIntfcSession(NiUsbGpibSession):
         send_end, _ = self.get_attribute(ResourceAttribute.send_end_enabled)
         try:
             written = controller.write_raw(data, send_eoi=bool(send_end),
-                                           timeout_s=self._device_timeout())
+                                           timeout_s=self._device_timeout(), eos_char=self._termchar_byte())
         except (GpibError, TransportError) as exc:
             logger.debug('%s write: %s', self._label(), exc)
             return 0, status_for(exc)

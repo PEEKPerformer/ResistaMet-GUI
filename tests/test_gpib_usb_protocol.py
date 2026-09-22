@@ -278,6 +278,17 @@ class TestMessageShape:
         with pytest.raises(ValueError):
             p.read_message(10, 0xFC, eos=256)
 
+    def test_read_eos_bytes_as_ni_sends_them(self):
+        # §10.1.6: compare disabled -> m = 0x00 with e = the session's termination
+        # character; enabled -> m = 0x14 with it. The enabled character wins over termchar.
+        assert p.read_eos_bytes(None, True, 0x0A) == h('00 0a')
+        assert p.read_eos_bytes(0x0A, True, 0x0A) == h('14 0a')
+        assert p.read_eos_bytes(0x2C, True, 0x0A) == h('14 2c')
+        assert p.read_eos_bytes(None, True, None) == h('00 00')
+        assert p.read_message(200, 0xFC, termchar=0x0A)[1:3] == h('00 0a')
+        with pytest.raises(ValueError):
+            p.read_eos_bytes(None, True, 300)
+
     def test_register_read_of_four(self):
         assert p.register_read_message(t.USB_B_SERIAL_REGISTERS) == h(
             '08 04 03 0b 03 0a 03 09 03 08 00 00 04 00 00 00')
@@ -368,8 +379,8 @@ class TestStatusBlock:
     @pytest.mark.parametrize('code, label', [
         (0, 'success'), (1, 'cut short by a stop request'), (2, 'read attempted while ATN true'),
         (3, 'not addressed'), (4, 'EOS configuration rejected / command chunk too long'),
-        (5, 'no acceptor on the bus'), (8, 'no listener addressed'), (10, 'device-side timeout'),
-        (6, 'unknown'), (7, 'unknown'), (11, 'unknown'),
+        (5, 'no acceptor on the bus'), (7, 'not controller in charge'), (8, 'no listener addressed'),
+        (10, 'device-side timeout'), (6, 'unknown'), (11, 'unknown'),
     ])
     def test_error_labels(self, code, label):
         assert t.error_label(code) == label
@@ -574,6 +585,20 @@ class TestAttachData:
         assert last.request_type == 0xC1 and last.index == 1 and last.length == 9
         assert expected == h('f8 01 00 00 00 01 00 00 00')
 
+    def test_raw_endpoint_pairs(self):
+        # §1.2: the alternate pair on the HS family and the HS+; the USB-B has only an alternate IN.
+        for pid in (t.PID_HS, t.PID_KUSB_488A, t.PID_MC_USB_488):
+            assert (t.MODELS[pid].endpoint_out_raw, t.MODELS[pid].endpoint_in_raw) == (0x06, 0x88)
+            assert t.MODELS[pid].raw_endpoints
+        assert (t.MODELS[t.PID_HS_PLUS].endpoint_out_raw, t.MODELS[t.PID_HS_PLUS].endpoint_in_raw) == (0x04, 0x85)
+        assert not t.MODELS[t.PID_USB_B].raw_endpoints and t.MODELS[t.PID_USB_B].endpoint_in_raw is None
+
+    def test_srq_acknowledge_request(self):
+        # §10.4.2: bmRequestType 0x40, bRequest 0x3b, wValue 0, wIndex 0, wLength 0.
+        assert (t.SRQ_ACKNOWLEDGE.request_type, t.SRQ_ACKNOWLEDGE.request, t.SRQ_ACKNOWLEDGE.value,
+                t.SRQ_ACKNOWLEDGE.index, t.SRQ_ACKNOWLEDGE.length) == (0x40, 0x3B, 0, 0, 0)
+        assert t.INTERRUPT_READ_LENGTH == 64
+
     def test_models_and_endpoints(self):
         assert t.MODELS[t.PID_HS].endpoint_out == 0x02 and t.MODELS[t.PID_HS].endpoint_in == 0x84
         assert t.MODELS[t.PID_HS_PLUS].endpoint_out == 0x01 and t.MODELS[t.PID_HS_PLUS].endpoint_in == 0x82
@@ -581,3 +606,276 @@ class TestAttachData:
         assert t.MODELS[t.PID_USB_B_PRE_FIRMWARE].needs_firmware
         assert t.MODELS[t.PID_KUSB_488A].endpoint_in == t.MODELS[t.PID_MC_USB_488].endpoint_in == 0x84
         assert t.MODELS[t.PID_HS_PLUS].hs_plus_extras and not t.MODELS[t.PID_HS].hs_plus_extras
+
+
+# ---------------------------------------------------------------------------
+# §10: the instructions NI's driver uses, with NI's literal bytes
+# ---------------------------------------------------------------------------
+
+class TestRawReadInstruction:
+    def test_0x0b_block_of_20480_as_ni_sends_it(self):
+        # idn.pcap 0.5160: termination character disabled (m 00, e 0a), code 0xfe.
+        assert p.read_raw_block(20480, 0xFE, termchar=0x0A) == h('0b 00 0a fe 00 b0 ff ff')
+
+    def test_0x0b_block_of_4096_with_the_3_s_code(self):
+        # counts.pcap 13.4323
+        assert p.read_raw_block(4096, 0xFC, termchar=0x0A) == h('0b 00 0a fc 00 f0 ff ff')
+
+    def test_0x0b_block_with_the_termination_character_enabled(self):
+        # eos.pcap 0.5172: read_termination = '\n' -> m 14
+        assert p.read_raw_block(20480, 0xFE, eos=0x0A, eos_8bit=True, termchar=0x0A) == h('0b 14 0a fe 00 b0 ff ff')
+
+    def test_0x0b_message_is_the_block_plus_the_clear_end_write(self):
+        # The two blocks NI puts after its addressing 0x0c (idn.pcap 0.5160), then termination.
+        assert p.read_raw_message(20480, 0xFE, termchar=0x0A) == h(
+            '0b 00 0a fe 00 b0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')
+
+    def test_count32_encoding_and_limits(self):
+        assert p.encode_count32(20480) == h('00 b0 ff ff')
+        assert p.encode_count32(2050) == h('fe f7 ff ff')
+        assert p.encode_count32(1) == h('ff ff ff ff')
+        # Up to 0xffff the 32-bit and the 16-bit-plus-ffff readings of the field agree.
+        assert p.encode_count32(0xFFFF) == p.encode_count16(0xFFFF) + h('ff ff')
+        for bad in (0, 0x10000):
+            with pytest.raises(ValueError):
+                p.encode_count32(bad)
+
+    def test_decode_count32(self):
+        assert p.decode_count32(h('0b 20 64 00 52 b0 ff ff e0 00 00 00'), 4) == -20398
+        assert p.decode_count32(h('0b 00 64 00 00 00 00 00 60 00 00 00'), 4) == 0
+        assert p.decode_count32(h('0b 00 64 0a 00 b0 ff ff 60 00 00 00'), 4) == -20480
+
+
+#: idn.pcap 0.5259: the 56-byte reply to NI's five-block read message.
+IDN_RAW_REPLY = h(
+    '03 00 28 00 00 00 ff ff'
+    '0c 00 74 00 00 00 ff ff'
+    '0b 20 64 00 52 b0 ff ff e0 00 00 00'
+    '09 00 64 00 52 b0 ff ff 01 00 00 00'
+    '09 00 64 00 52 b0 ff ff 01 00 00 00'
+    '04 00 00 00')
+IDN_2420 = b'KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L\n'
+
+
+class TestRawReadReply:
+    def test_idn_reply_as_ni_received_it(self):
+        assert len(IDN_2420) == 82
+        parsed = p.parse_raw_read_reply(IDN_RAW_REPLY, 20480, IDN_2420)
+        assert parsed.data == IDN_2420
+        assert parsed.count32 == -20398 == 82 - 20480
+        assert parsed.end and parsed.eoi
+        assert parsed.status.ibsta == 0x2064 and parsed.status.error == 0
+
+    def test_full_chunk_has_end_clear_and_count_zero(self):
+        # trac.pcap 4.5344: 20480 of 20480, more to come.
+        reply = h('03 00 28 00 00 00 ff ff 0c 00 74 00 00 00 ff ff'
+                  '0b 00 64 00 00 00 00 00 60 00 00 00'
+                  '09 00 64 00 00 00 00 00 01 00 00 00 09 00 64 00 00 00 00 00 01 00 00 00 04 00 00 00')
+        parsed = p.parse_raw_read_reply(reply, 20480, bytes(20480))
+        assert len(parsed.data) == 20480 and parsed.count32 == 0
+        assert not parsed.end and not parsed.eoi
+
+    def test_last_chunk_of_the_trace_buffer(self):
+        # trac.pcap 12.5002: 328 bytes, END, EOI.
+        reply = h('03 00 64 00 00 00 00 00 0c 00 74 00 00 00 00 00'
+                  '0b 20 64 00 48 b1 ff ff e0 00 00 00'
+                  '09 00 64 00 48 b1 ff ff 01 00 00 00 09 00 64 00 48 b1 ff ff 01 00 00 00 04 00 00 00')
+        parsed = p.parse_raw_read_reply(reply, 20480, b'x' * 328)
+        assert len(parsed.data) == 328 and parsed.count32 == -20152 and parsed.end
+
+    def test_timeout_with_nothing_read(self):
+        # nolistener.pcap 9.8126: error 0x0a, count -20480, tail 0x60; the 0x88 transfer was empty.
+        reply = h('03 00 28 00 f9 ff ff ff 0c 00 74 00 00 00 ff ff'
+                  '0b 00 64 0a 00 b0 ff ff 60 00 00 00'
+                  '09 00 64 00 00 b0 ff ff 01 00 00 00 09 00 64 00 00 b0 ff ff 01 00 00 00 04 00 00 00')
+        parsed = p.parse_raw_read_reply(reply, 20480, b'')
+        assert parsed.data == b'' and parsed.status.error == 0x0A and not parsed.end and not parsed.eoi
+
+    def test_transfer_longer_than_the_count_is_truncated(self):
+        # trac.pcap 13.0075 / 13.0079: 6 bytes on 0x88, count says 5.
+        reply = h('03 00 68 00 00 00 00 00 0c 00 74 00 00 00 00 00'
+                  '0b 20 64 00 05 b0 ff ff e0 00 00 00'
+                  '09 00 64 00 05 b0 ff ff 01 00 00 00 09 00 64 00 05 b0 ff ff 01 00 00 00 04 00 00 00')
+        parsed = p.parse_raw_read_reply(reply, 20480, h('31 31 30 33 0a 00'))
+        assert parsed.data == b'1103\n'
+
+    def test_our_own_two_block_reply(self):
+        reply = h('0b 20 64 00 52 b0 ff ff e0 00 00 00 09 00 64 00 52 b0 ff ff 01 00 00 00 04 00 00 00')
+        assert p.parse_raw_read_reply(reply, 20480, IDN_2420).data == IDN_2420
+
+    def test_fewer_bytes_than_the_count_raises(self):
+        with pytest.raises(p.ProtocolError):
+            p.parse_raw_read_reply(IDN_RAW_REPLY, 20480, IDN_2420[:-1])
+
+    def test_count_outside_the_request_raises(self):
+        with pytest.raises(p.ProtocolError):
+            p.parse_raw_read_reply(IDN_RAW_REPLY, 50, IDN_2420)  # 50 - 20398 < 0
+
+    def test_missing_or_duplicate_0x0b_block_raises(self):
+        with pytest.raises(p.ProtocolError):
+            p.parse_raw_read_reply(h('03 00 28 00 00 00 ff ff 04 00 00 00'), 8, b'')
+        twice = h('0b 00 64 00 00 00 00 00 60 00 00 00') * 2 + h('04 00 00 00')
+        with pytest.raises(p.ProtocolError):
+            p.parse_raw_read_reply(twice, 8, bytes(8))
+
+    @pytest.mark.parametrize('requested, expected', [
+        (4096, 4608), (20480, 20992), (4097, 4608),
+        # One below a packet boundary: a full answer is padded to the boundary (128 full
+        # packets for 65535), so the buffer must still have a packet to spare for the ZLP.
+        (20479, 20992), (0xFFFF, 66048), (8191, 8704), (511, 1024),
+    ])
+    def test_raw_buffer_exceeds_the_even_padded_request_by_at_least_a_packet(self, requested, expected):
+        assert p.raw_read_buffer_size(requested, 512) == expected
+        # Whole packets, and strictly larger than the padded transfer, so a full answer never
+        # fills the buffer exactly and the ZLP that ends it is consumed by this read.
+        assert expected % 512 == 0 and expected > requested + requested % 2
+
+
+class TestSplitReplyBlocks:
+    def test_ni_five_block_reply(self):
+        ids = [block_id for block_id, _ in p.split_reply_blocks(IDN_RAW_REPLY)]
+        assert ids == [0x03, 0x0C, 0x0B, 0x09, 0x09]
+
+    def test_pad_blocks_and_extended_data_blocks(self):
+        # counts.pcap 2.9767: count 16, four 0x11 blocks before the 0x37 block.
+        reply = h('03 00 68 00 00 00 ff ff 0c 00 74 00 00 00 ff ff'
+                  '11 00 00 00 11 00 00 00 11 00 00 00 11 00 00 00'
+                  '37 00 4b 45 49 54 48 4c 45 59 20 49 4e 53 54 52 55 4d 00 00 00 00 00 00 00 00 00 00 00 00 00 00'
+                  '38 00 64 00 00 00 ff ff 60 10 00 00'
+                  '09 00 64 00 00 00 ff ff 01 00 00 00 04 00 00 00')
+        blocks = p.split_reply_blocks(reply)
+        assert [block_id for block_id, _ in blocks] == [0x03, 0x0C, 0x11, 0x11, 0x11, 0x11, 0x37, 0x38, 0x09]
+        assert sum(len(block) for _, block in blocks) == len(reply) - 4
+
+    def test_stops_at_the_termination_block(self):
+        assert p.split_reply_blocks(h('04 00 00 00 ff ff')) == []
+
+    def test_missing_termination_raises(self):
+        with pytest.raises(p.ProtocolError):
+            p.split_reply_blocks(h('03 00 28 00 00 00 ff ff'))
+
+    def test_unknown_id_raises(self):
+        with pytest.raises(p.ProtocolError):
+            p.split_reply_blocks(h('7f 00 00 00 04 00 00 00'))
+
+    def test_cut_short_block_raises(self):
+        with pytest.raises(p.ProtocolError):
+            p.split_reply_blocks(h('0b 20 64 00 52 b0'))
+
+
+class TestFramedReadReplyWithPadBlocks:
+    def test_pad_blocks_before_the_data_are_skipped(self):
+        # counts.pcap 2.9767 minus the leading 0x03 / 0x0c blocks (ours are never batched).
+        reply = h('11 00 00 00 11 00 00 00 11 00 00 00 11 00 00 00'
+                  '37 00 4b 45 49 54 48 4c 45 59 20 49 4e 53 54 52 55 4d 00 00 00 00 00 00 00 00 00 00 00 00 00 00'
+                  '38 00 64 00 00 00 ff ff 60 10 00 00 04 00 00 00')
+        assert p.read_status_offset(reply) == 48
+        parsed = p.parse_read_reply(reply, 16)
+        assert parsed.data == b'KEITHLEY INSTRUM' and not parsed.end
+
+    def test_timed_out_0x37_read_carries_only_pad_blocks(self):
+        # partial.pcap 5.2418, without the batched 0x03 / 0x0c / 0x09 blocks.
+        reply = h('11 00 00 00 11 00 00 00 11 00 00 00 11 00 00 00'
+                  '38 00 64 0a 38 ff ff ff e0 1e 00 00 04 00 00 00')
+        parsed = p.parse_read_reply(reply, 200)
+        assert parsed.data == b'' and parsed.status.error == 0x0A
+
+    def test_timed_out_0x36_read_carries_one_zero_block(self):
+        # eos.pcap 35.1236: count 10, error 0x0a, one zero-filled 0x36 block, 0 valid.
+        reply = h('36 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00'
+                  '38 00 64 0a f6 ff ff ff e0 00 00 00 04 00 00 00')
+        parsed = p.parse_read_reply(reply, 10)
+        assert parsed.data == b'' and parsed.status.error == 0x0A
+
+
+class TestRawWriteInstruction:
+    def test_0x0e_block_of_2050_as_ni_sends_it(self):
+        # longwrite.pcap 1.8914: code 0xfe, termination character 0x0a, EOI.
+        assert p.write_raw_block(2050, 0xFE, True, eos_char=0x0A) == h('0e 00 00 fe 00 0a 08 00 fe f7 ff ff')
+
+    def test_0x0e_without_eoi_and_without_a_termination_character(self):
+        assert p.write_raw_block(2050, 0xFC, False) == h('0e 00 00 fc 00 00 00 00 fe f7 ff ff')
+
+    def test_0x0e_message_is_the_block_plus_termination(self):
+        assert p.write_raw_message(2050, 0xFE, True, 0x0A) == h('0e 00 00 fe 00 0a 08 00 fe f7 ff ff 04 00 00 00')
+
+    def test_0x0d_block_with_the_termination_character_as_ni_sends_it(self):
+        # idn.pcap 0.5133: ``*IDN?\r\n``, code 0xfe, e = 0x0a, EOI.
+        assert p.write_block(b'*IDN?\r\n', 0xFE, True, eos_char=0x0A) == h(
+            '0d f9 ff fe 00 0a 08 00 2a 49 44 4e 3f 0d 0a')
+        # The bench-proven form keeps byte 5 at zero.
+        assert p.write_block(b'*IDN?\n', 0xFC, True) == h('0d fa ff fc 00 00 08 00 2a 49 44 4e 3f 0a')
+
+    def test_0x0e_reply(self):
+        # longwrite.pcap 2.0354
+        reply = h('03 00 30 00 00 00 ff ff 0c 00 38 00 00 00 ff ff'
+                  '0e 00 28 00 00 00 00 00 09 00 28 00 00 00 00 00 01 00 00 00 04 00 00 00')
+        parsed = p.parse_raw_write_reply(reply)
+        assert parsed.count32 == 0 and parsed.transferred(2050) == 2050
+        assert parsed.status.ibsta == 0x0028 and parsed.status.error == 0
+
+    def test_0x0e_reply_with_a_short_count(self):
+        reply = h('0e 00 28 08 f9 ff ff ff 04 00 00 00')
+        parsed = p.parse_raw_write_reply(reply)
+        assert parsed.status.error == 8 and parsed.transferred(7) == 0
+
+
+class TestSerialPollInstruction:
+    def test_0x10_message_as_ni_sends_it(self):
+        # stb.pcap 0.5134: primary 24, no secondary, code 0xfe, x = 0.
+        assert p.serial_poll_block(24, 0xFE) == h('10 01 00 00 18 00 fe 00')
+        assert p.serial_poll_message(24, 0xFE) == h('10 01 00 00 18 00 fe 00 04 00 00 00')
+
+    def test_flag_and_secondary_address(self):
+        # srq_poll.pcap 2.5361 carried x = 1; the secondary byte follows the 0x02 probe's form.
+        assert p.serial_poll_block(24, 0xFE, flag=1) == h('10 01 00 01 18 00 fe 00')
+        assert p.serial_poll_block(24, 0xFC, sad=1) == h('10 01 00 00 18 61 fc 00')
+        with pytest.raises(ValueError):
+            p.serial_poll_block(31, 0xFE)
+        with pytest.raises(ValueError):
+            p.serial_poll_block(24, 0xFE, flag=2)
+
+    def test_0x10_reply_with_status_byte_32(self):
+        # srq_poll.pcap 2.5379
+        reply = h('03 00 74 00 00 00 ff ff 3a 18 00 20 39 00 74 00 00 00 ff ff'
+                  '09 00 74 00 00 00 ff ff 01 00 00 00 04 00 00 00')
+        parsed = p.parse_serial_poll_reply(reply)
+        assert parsed.status_byte == 0x20 and parsed.pad == 24 and parsed.sad_byte == 0
+        assert parsed.status.id == 0x39 and parsed.status.ibsta == 0x0074 and parsed.status.error == 0
+
+    def test_0x10_reply_with_status_byte_0_and_our_bare_form(self):
+        # stb.pcap 0.5151 carries ``3a 18 00 00``; a bare 0x10 gets the two blocks and termination.
+        parsed = p.parse_serial_poll_reply(h('3a 18 00 00 39 00 74 00 00 00 ff ff 04 00 00 00'))
+        assert parsed.status_byte == 0
+
+    def test_0x10_reply_missing_a_block_raises(self):
+        with pytest.raises(p.ProtocolError):
+            p.parse_serial_poll_reply(h('3a 18 00 00 04 00 00 00'))
+        with pytest.raises(p.ProtocolError):
+            p.parse_serial_poll_reply(h('39 00 74 00 00 00 ff ff 04 00 00 00'))
+
+
+class TestSrqPush:
+    def test_push_as_captured(self):
+        # srq.pcap 1.5266 and srq_poll.pcap 1.0308: status byte 0x60 = RQS | ESB.
+        push = p.parse_srq_push(h('30 18 00 60 31 a1 01 00'))
+        assert push.ibsta == 0x1800 and push.srqi and push.status_byte == 0x60
+        assert push.raw == h('30 18 00 60 31 a1 01 00')
+
+    def test_a_64_byte_read_that_returned_more_is_cut_to_the_push(self):
+        assert p.parse_srq_push(h('30 18 00 40 31 a1 01 00') + bytes(56)).status_byte == 0x40
+
+    def test_short_push_raises(self):
+        with pytest.raises(p.ProtocolError):
+            p.parse_srq_push(h('30 18 00'))
+
+
+class TestStatusSnapshotBlock:
+    def test_bytes(self):
+        assert p.status_snapshot_block() == h('03 00 00 00')
+        assert p.build_message(p.status_snapshot_block(), p.command_block(bytes((0x3F, 0x20, 0x58)), 0xFD),
+                               p.read_raw_block(20480, 0xFE, termchar=0x0A),
+                               p.register_write_block(p.READ_RAW_FOLLOWING_WRITES),
+                               p.register_write_block([(2, 0x03, 0x01)])) == h(
+            '03 00 00 00 0c fd 00 fd 3f 20 58 00 0b 00 0a fe 00 b0 ff ff'
+            '09 01 00 01 0a 55 00 00 09 01 00 02 03 01 00 00 04 00 00 00')  # idn.pcap 0.5160, all 40 bytes
