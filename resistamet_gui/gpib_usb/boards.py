@@ -55,17 +55,28 @@ PROBE_ADDRESSES = tuple(range(31))
 #: poll as the §5.9 command sequence. NI's instructions have not run on an
 #: adapter of ours, and every read the application makes is large enough to
 #: take 0x0b. Read once per board open, here and nowhere else.
+INSTRUCTIONS_ENV = 'NI_GPIB_USB_INSTRUCTIONS'
+#: Aliases of ``INSTRUCTIONS_ENV``, with the same spellings: the name the
+#: switch had inside ResistaMet, and its first name, from when it covered
+#: the transfers only.
 NI_INSTRUCTIONS_ENV = 'RESISTAMET_GPIB_NI_INSTRUCTIONS'
-#: The switch's first name, from when it covered the transfers only. Still
-#: read, with the same spellings, when ``NI_INSTRUCTIONS_ENV`` is not set.
 RAW_TRANSFERS_ENV = 'RESISTAMET_GPIB_RAW_TRANSFERS'
+#: The names in the order they are looked up.
+INSTRUCTIONS_ENVS = (INSTRUCTIONS_ENV, NI_INSTRUCTIONS_ENV, RAW_TRANSFERS_ENV)
 
 
 def ni_instructions_enabled() -> bool:
-    value = os.environ.get(NI_INSTRUCTIONS_ENV)
-    if value is None:
-        value = os.environ.get(RAW_TRANSFERS_ENV, '0')
-    return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    """Whether the switch is on.
+
+    The first of ``INSTRUCTIONS_ENVS`` that is set decides, whatever its
+    value, so the neutral name wins over both aliases and an explicit 0
+    under it keeps the framed paths even when an alias says 1.
+    """
+    for name in INSTRUCTIONS_ENVS:
+        value = os.environ.get(name)
+        if value is not None:
+            return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return False
 
 
 def _instructions_label(controller: Controller) -> str:
