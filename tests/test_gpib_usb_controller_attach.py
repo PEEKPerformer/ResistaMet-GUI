@@ -84,6 +84,20 @@ class TestAttach:
         transport.assert_done()
         assert [tm for kind, _, tm in transport.timeouts if kind == 'in'] == [SHORT_MS, int(RECOVERY_WAIT_S * 1000)]
 
+    def test_a_hung_adapter_whose_fifo_is_full_is_reported_with_the_replug_message_too(self):
+        # §8.17: once about 4 KB are queued the adapter NAKs every packet, so the initialisation
+        # message itself is not taken. That was a bare TransportTimeout.
+        script = attach_script()[:2] + [
+            ('out', p.register_write_message(t.register_init_writes()), TransportTimeout('NAKed')),
+        ]
+        transport = ScriptedTransport(script)
+        controller = Controller(transport, t.PID_HS, sleep=lambda s: None)
+        with pytest.raises(AdapterNotReady) as info:
+            controller.attach()
+        assert 'the adapter is hung. Unplug it and plug it back in.' in str(info.value)
+        assert isinstance(info.value.__cause__, TransportTimeout)
+        transport.assert_done()
+
     def test_never_ready_raises_after_50_polls(self):
         script = [('ctrl', (0x41, 0, 0, 16), SERIAL_REPLY)]
         script += [('ctrl', (0x40, 0, 0, 16), NOT_READY)] * 50
