@@ -7,6 +7,7 @@ presence probe), holding one fake instrument at address 24 that answers
 ``list_resources``, ``open_resource``, ``query``.
 """
 import sys
+import threading
 from typing import Dict, List, Optional, Tuple
 
 import pytest
@@ -32,7 +33,7 @@ from resistamet_gui.gpib_usb import controller as controller_module  # noqa: E40
 from resistamet_gui.gpib_usb import transport, visa_session  # noqa: E402
 from resistamet_gui.gpib_usb import boards  # noqa: E402
 from resistamet_gui.gpib_usb.boards import BoardRegistry  # noqa: E402
-from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportError  # noqa: E402
+from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportError, TransportStall  # noqa: E402
 from resistamet_gui.gpib_usb.visa_intfc import NiUsbGpibIntfcDispatch  # noqa: E402
 from resistamet_gui.gpib_usb.visa_session import GPIB_INSTR, NiUsbGpibDispatch  # noqa: E402
 
@@ -71,6 +72,8 @@ class SimulatedAdapter:
         self.serial_reply = serial_reply
         self.listening: List[int] = []
         self.talker: Optional[int] = None
+        #: Between SPE and SPD the addressed talker answers with its status byte (§5.9).
+        self.serial_poll_mode = False
         self.atn = True
         self.ren = False
         #: The adapter's own addressed state (its address is 0).
@@ -84,6 +87,9 @@ class SimulatedAdapter:
         #: (length, EOI) of the 0x0e whose bytes the next bulk_out_raw must bring.
         self.pending_raw_write: Optional[Tuple[int, bool]] = None
         self.raw_writes: List[bytes] = []
+        #: Endpoints left halted by a STALL, and every pipe reset asked for, in order.
+        self.halted: set = set()
+        self.halts_cleared: List[int] = []
         self.messages: List[bytes] = []
         self.control_requests: List[int] = []
         self.bulk_in_timeouts: List[int] = []
@@ -93,6 +99,13 @@ class SimulatedAdapter:
         self.fail_next: Optional[Exception] = None
         #: Raised by the next control_in, once.
         self.fail_next_control: Optional[Exception] = None
+        #: Answer a read that times out as GPIB-USB-HS 01CEE482 does (§5.2): one 0x36 block
+        #: of stale bytes and min(requested, 15) in the last-block count, nothing read. Off,
+        #: the form NI's captures show: no data block and a stale last-block byte.
+        self.stale_timeout_block = False
+        #: The talker's message ends without EOI on its last byte: the read that drains it
+        #: reports no END, and the next read finds nothing and times out.
+        self.withhold_eoi = False
 
     def control_in(self, request, value, index, length, timeout_ms, request_type=0xC0) -> bytes:
         if self.fail_next_control is not None:
@@ -179,6 +192,10 @@ class SimulatedAdapter:
             elif byte == t.CMD_UNT:
                 self.talker = None
                 self.own_talker = False
+            elif byte == t.CMD_SPE:
+                self.serial_poll_mode = True
+            elif byte == t.CMD_SPD:
+                self.serial_poll_mode = False
             elif byte == t.CMD_SDC:
                 for pad in self.listening:
                     self.instruments[pad].cleared += 1
@@ -199,19 +216,18 @@ class SimulatedAdapter:
         return self._status(p.OP_WRITE) + h('04 00 00 00')
 
     def _serial_poll(self, data: bytes) -> bytes:
-        """0x10 (§10.5.4): ``3a P S sb`` then a 0x39 status block; error 0x0a for an absent device."""
+        """0x10 (§10.5.4): ``3a P S sb`` then a 0x39 status block; the latter alone, with error
+        0x0a, for an absent device."""
         pad, sad_byte = data[4], data[5]
         instrument = self.instruments.get(pad)
         self.atn = True  # the adapter addresses the bus itself
         if instrument is None:
-            return bytes((0x3A, pad, sad_byte, 0x00)) + self._status(0x39, error=0x0A, count=-1) + h('04 00 00 00')
+            # §10.6.6: a poll that times out is answered without the 0x3a block.
+            return self._status(0x39, error=0x0A, ibsta=0x0074) + h('04 00 00 00')
         return bytes((0x3A, pad, sad_byte, instrument.status_byte)) + self._status(0x39, ibsta=0x0074) + h('04 00 00 00')
 
     def _write_raw(self, payload: bytes, eoi: bool) -> bytes:
         """The 0x0e reply once the bytes have arrived: an 8-byte status with a 32-bit count."""
-        if not self.listening:
-            count = (-len(payload)).to_bytes(4, 'little', signed=True)
-            return bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x08)) + count + h('04 00 00 00')
         for pad in self.listening:
             self.instruments[pad].accept(payload, eoi)
         return bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x00)) + h('00 00 00 00') + h('04 00 00 00')
@@ -219,6 +235,8 @@ class SimulatedAdapter:
     def _talker_output(self, requested: int, eos_mode: int, eos_char: int) -> Optional[Tuple[bytes, bool]]:
         """What the addressed talker gives up for one read: (bytes, END), or None when nothing is pending."""
         instrument = self.instruments.get(self.talker) if self.talker is not None else None
+        if instrument is not None and self.serial_poll_mode:
+            return bytes((instrument.status_byte,)), False
         if instrument is None or not instrument.pending:
             return None
         source = instrument.pending
@@ -228,7 +246,8 @@ class SimulatedAdapter:
             cut = len(source)
         cut = min(cut, requested)
         out, instrument.pending = source[:cut], source[cut:]
-        end = not instrument.pending or bool(eos_mode & 0x04 and out.endswith(bytes((eos_char,))))
+        end = ((not instrument.pending and not self.withhold_eoi)
+               or bool(eos_mode & 0x04 and out.endswith(bytes((eos_char,)))))
         return out, end
 
     def _read_raw(self, data: bytes) -> bytes:
@@ -255,8 +274,11 @@ class SimulatedAdapter:
             return self._status(0x38, error=2, count=-requested) + h('60 00 00 00') + trailer_tail
         result = self._talker_output(requested, eos_mode, eos_char)
         if result is None:
-            return (self._status(0x38, error=0x0A, count=-requested, ibsta=0x0020)
-                    + h('e0 5e 00 00') + trailer_tail)
+            status = self._status(0x38, error=0x0A, count=-requested, ibsta=0x0020)
+            if self.stale_timeout_block and requested <= 15:
+                return (h('36 00 20 00 aa 55 ff ff 04 00 00 00 04 00 00 00') + status
+                        + bytes((0xE0, requested, 0, 0)) + trailer_tail)
+            return status + h('e0 5e 00 00') + trailer_tail
         out, end = result
         blocks = b''
         for start in range(0, len(out), 15):
@@ -276,13 +298,26 @@ class SimulatedAdapter:
     # The alternate pair and the interrupt endpoint; behaviour is added with the
     # instructions that use them.
     def bulk_out_raw(self, data: bytes, timeout_ms: int) -> int:
+        if 0x06 in self.halted:
+            raise TransportStall('raw bulk write was refused with a STALL')
         assert self.pending_raw_write is not None, 'raw bulk OUT with no 0x0e outstanding'
         length, eoi = self.pending_raw_write
         assert len(data) == length, 'the 0x0e announced %d bytes, %d arrived' % (length, len(data))
         self.pending_raw_write = None
+        if not self.listening:
+            # §10.6.5: the data is refused with a STALL, the endpoint stays halted until it is
+            # reset, and the reply with error 8 and the whole count comes by itself.
+            self.halted.add(0x06)
+            count = (-length).to_bytes(4, 'little', signed=True)
+            self.reply = bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x08)) + count + h('04 00 00 00')
+            raise TransportStall('raw bulk write was refused with a STALL')
         self.raw_writes.append(data)
         self.reply = self._write_raw(data, eoi)
         return len(data)
+
+    def clear_halt(self, endpoint: int) -> None:
+        self.halted.discard(endpoint)
+        self.halts_cleared.append(endpoint)
 
     def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
         self.raw_in_timeouts.append(timeout_ms)
@@ -302,6 +337,11 @@ class SimulatedAdapter:
 
     def instructions(self, opcode: int) -> List[bytes]:
         return [m for m in self.messages if m[0] == opcode]
+
+
+def framed_counts(adapter: SimulatedAdapter) -> List[int]:
+    """The requested count of every framed 0x0a the adapter has seen, in order."""
+    return [0x10000 - int.from_bytes(m[4:6], 'little') for m in adapter.instructions(p.OP_READ)]
 
 
 def fake_adapter_info(serial: Optional[str] = '01234567', bus: int = 20, address: int = 5) -> AdapterInfo:
@@ -381,6 +421,19 @@ def adapter(monkeypatch, session_registry, enumeration):
     return sim
 
 
+@pytest.fixture(autouse=True)
+def switch_unset(monkeypatch):
+    """The developer's shell must not decide which instructions these tests see."""
+    monkeypatch.delenv(boards.NI_INSTRUCTIONS_ENV, raising=False)
+    monkeypatch.delenv(boards.RAW_TRANSFERS_ENV, raising=False)
+
+
+@pytest.fixture
+def ni_instructions(monkeypatch, switch_unset):
+    """Switch NI's instructions (0x0b, 0x0e, 0x10) on for boards opened in this test; they are off by default."""
+    monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, '1')
+
+
 @pytest.fixture
 def rm(adapter):
     # The class itself, not the ``pyvisa.ResourceManager`` name: the --simulate
@@ -451,28 +504,43 @@ class TestInstrumentSession:
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         write = adapter.instructions(p.OP_WRITE)[-1]
         assert write == p.write_message(b'*IDN?\r\n', 0xFD, send_eoi=True)
-        # pyvisa reads in 20480-byte chunks, so the read is a 0x0b with the data on the
-        # alternate endpoint, as it is under NI's driver (§10.1.1).
-        assert adapter.instructions(p.OP_READ) == []
-        read = adapter.instructions(p.OP_READ_RAW)[-1]
-        # Compare off: m 00 and e 00 (the bench-proven form under our AUXRA 0x81 init; NI
-        # sends e 0a under its 0x99 init, §10.1.6), 10 s code, -20480.
-        assert read[:8] == h('0b 00 00 fd 00 b0 ff ff')
-        assert adapter.raw_in_timeouts[-1] == 15000 + 20480  # host wait + 20480 B at 1000 B/s
+        # pyvisa reads in 20480-byte chunks. Unless the raw paths are switched on, that is the
+        # framed 0x0a the bench has run, not the 0x0b NI's driver would send (§10.1.1), asking
+        # for 1024 at a time, the most a framed read ever asks for (§11.2); the 82-byte answer
+        # ends the first piece with END.
+        assert adapter.instructions(p.OP_READ_RAW) == []
+        assert len(adapter.instructions(p.OP_READ)) == 1
+        read = adapter.instructions(p.OP_READ)[-1]
+        # Compare off: m 00 and e 00, 10 s code, -1024, then the embedded two-write block.
+        assert read == h('0a 00 00 fd 00 fc 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')
         # Addressing: controller talks / instrument listens, then instrument talks.
         commands = adapter.instructions(p.OP_COMMAND)[-2:]
         assert commands[0][4:7] == bytes((0x3F, 0x40, 0x38))
         assert commands[1][4:7] == bytes((0x3F, 0x20, 0x58))
         inst.close()
 
-    def test_read_termination_selects_eos_and_is_stripped(self, rm, adapter):
+    def test_query_with_ni_instructions_on_reads_through_0x0b(self, rm, adapter, ni_instructions):
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 5000
+        assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
+        # The 20480-byte chunk is then a 0x0b with the data on the alternate endpoint, as it
+        # is under NI's driver (§10.1.1).
+        assert adapter.instructions(p.OP_READ) == []
+        read = adapter.instructions(p.OP_READ_RAW)[-1]
+        # Compare off: m 00 and e 00 (the bench-proven form under our AUXRA 0x81 init; NI
+        # sends e 0a under its 0x99 init, §10.1.6), 10 s code, -20480.
+        assert read[:8] == h('0b 00 00 fd 00 b0 ff ff')
+        assert adapter.raw_in_timeouts[-1] == 1000  # the first slice of the 0x88 wait; the data was there
+        inst.close()
+
+    def test_read_termination_selects_eos_and_is_stripped(self, rm, adapter, ni_instructions):
         inst = rm.open_resource('GPIB0::24::INSTR', read_termination='\n')
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30'
         read = adapter.instructions(p.OP_READ_RAW)[-1]
         assert read[1:3] == h('14 0a')
         inst.close()
 
-    def test_a_long_write_goes_raw(self, rm, adapter):
+    def test_a_long_write_goes_raw(self, rm, adapter, ni_instructions):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 20000
         inst.write('*CLS;' * 409 + '*CL')  # 2048 + '\r\n' = 2050 bytes, as longwrite.pcap
@@ -488,14 +556,25 @@ class TestInstrumentSession:
         assert adapter.instruments[24].received[-1] == adapter.raw_writes[-1]
         inst.close()
 
-    def test_a_long_write_to_an_empty_address_reports_no_listeners(self, rm, adapter):
+    def test_a_long_write_to_an_empty_address_reports_no_listeners(self, rm, adapter, ni_instructions):
+        # §10.6.5: the data is refused with a STALL; NI resets 0x06, then 0x02, and carries on.
         inst = rm.open_resource('GPIB0::5::INSTR')
         with pytest.raises(pyvisa.errors.VisaIOError) as info:
             inst.write('x' * 3000)
         assert info.value.error_code == StatusCode.error_no_listeners
+        assert adapter.halts_cleared == [0x06, 0x02] and not adapter.halted
+        assert 0x20 not in adapter.control_requests  # no stop request
+        other = rm.open_resource('GPIB0::24::INSTR')  # same board, still attached
+        # Expected, not observed: the fake un-halts 0x06 on the reset, but no capture has a second
+        # 0x0e after a refused one (§10.6.7) and the raw paths have not run on our adapter. What
+        # is pinned is the driver's side: an ordinary 0x0e, with no re-attach in between.
+        other.write('y' * 3000)
+        assert adapter.raw_writes[-1] == b'y' * 3000 + b'\r\n'
+        assert len(adapter.instructions(p.OP_INTERFACE_CLEAR)) == 1
+        other.close()
         inst.close()
 
-    def test_plain_reads_send_the_bench_proven_eos_bytes(self, rm, adapter):
+    def test_plain_reads_send_the_bench_proven_eos_bytes(self, rm, adapter, ni_instructions):
         # The first *IDN? of a bench day, on both read forms: m 00 e 00 with the compare off,
         # whatever VI_ATTR_TERMCHAR holds (pyvisa's default is 0x0a).
         inst = rm.open_resource('GPIB0::24::INSTR')
@@ -511,7 +590,7 @@ class TestInstrumentSession:
             '0a 00 00 fc 00 ff 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')  # §3.6 worked example
         inst.close()
 
-    def test_changing_the_termination_character_changes_e_only_when_enabled(self, rm, adapter):
+    def test_changing_the_termination_character_changes_e_only_when_enabled(self, rm, adapter, ni_instructions):
         # eosmodes.pcap: TERMCHAR 0x2c enabled -> 14 2c. Disabled, we keep 00 00 (see _termchar_byte).
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR, 0x2C)
@@ -524,25 +603,48 @@ class TestInstrumentSession:
         assert adapter.instructions(p.OP_READ_RAW)[-1][1:3] == h('14 2c')
         inst.close()
 
-    def test_the_environment_switch_keeps_every_transfer_framed(self, rm, adapter, monkeypatch):
-        monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '0')
+    @pytest.mark.parametrize('value', [None, '0'])
+    def test_without_the_environment_switch_every_transfer_is_framed(self, rm, adapter, monkeypatch, value):
+        if value is not None:
+            monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, value)
         inst = rm.open_resource('GPIB0::24::INSTR')
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         inst.write('*CLS;' * 500)
         assert adapter.instructions(p.OP_READ_RAW) == [] and adapter.instructions(p.OP_WRITE_RAW) == []
-        assert adapter.instructions(p.OP_READ)[-1][4:6] == h('00 b0')     # the 20480-byte chunk, framed
+        assert adapter.instructions(p.OP_READ)[-1][4:6] == h('00 fc')     # pyvisa's 20480-byte chunk, framed: 1024 per 0x0a
         assert len(adapter.instructions(p.OP_WRITE)[-1]) == 8 + 2502 + 2 + 4
         inst.close()
 
     def test_the_environment_switch_spellings(self, monkeypatch):
-        for value in ('0', 'false', 'No', ' off '):
-            monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, value)
-            assert boards.raw_transfers_enabled() is False, value
-        for value in ('1', 'true', 'yes', ''):
-            monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, value)
-            assert boards.raw_transfers_enabled() is True, value
-        monkeypatch.delenv(boards.RAW_TRANSFERS_ENV)
-        assert boards.raw_transfers_enabled() is True
+        for value in ('1', 'true', 'Yes', ' on '):
+            monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, value)
+            assert boards.ni_instructions_enabled() is True, value
+        for value in ('0', 'false', 'no', 'off', '', 'raw'):
+            monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, value)
+            assert boards.ni_instructions_enabled() is False, value
+        monkeypatch.delenv(boards.NI_INSTRUCTIONS_ENV)
+        assert boards.ni_instructions_enabled() is False
+
+    def test_the_switch_s_first_name_still_works_and_the_new_name_wins(self, monkeypatch):
+        assert boards.RAW_TRANSFERS_ENV == 'RESISTAMET_GPIB_RAW_TRANSFERS'
+        assert boards.NI_INSTRUCTIONS_ENV == 'RESISTAMET_GPIB_NI_INSTRUCTIONS'
+        monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '1')
+        assert boards.ni_instructions_enabled() is True
+        monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, '0')
+        assert boards.ni_instructions_enabled() is False
+        monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '0')
+        monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, '1')
+        assert boards.ni_instructions_enabled() is True
+
+    def test_the_attach_log_line_says_which_instructions(self, rm, adapter, monkeypatch, caplog):
+        with caplog.at_level('INFO', logger='resistamet_gui.gpib_usb.boards'):
+            rm.open_resource('GPIB0::24::INSTR').close()
+            monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, '1')
+            rm.open_resource('GPIB0::24::INSTR').close()
+        attached = [record.getMessage() for record in caplog.records if 'attached' in record.getMessage()]
+        assert len(attached) == 2
+        assert 'framed transfers' in attached[0] and '0x10' not in attached[0]
+        assert 'raw transfers' in attached[1] and '0x10' in attached[1]
 
     def test_a_small_chunk_size_reads_through_the_framed_instruction(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
@@ -551,6 +653,48 @@ class TestInstrumentSession:
         assert adapter.instructions(p.OP_READ_RAW) == []
         read = adapter.instructions(p.OP_READ)[-1]
         assert read[1:6] == h('00 00 fc 00 ff')  # compare off: 00 00; 3 s default timeout, -256
+        inst.close()
+
+    def test_a_3000_byte_answer_through_pyvisa_s_chunk_is_three_framed_pieces(self, rm, adapter):
+        # §11.2: a 20480-byte 0x0a whose answer ran long wedged the bench adapter. The framed
+        # path asks for 1024 per instruction (§10.1.1) and loops inside the controller, so
+        # pyvisa's one 20480-byte chunk is three 0x0a after one addressing, and pyvisa sees
+        # one read ending on END.
+        answer = bytes(range(256)) * 11 + b'\n' * 184
+        adapter.instruments[24].pending = answer
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        commands = len(adapter.instructions(p.OP_COMMAND))
+        assert inst.read_raw() == answer
+        assert framed_counts(adapter) == [1024, 1024, 1024]
+        assert adapter.instructions(p.OP_READ_RAW) == []
+        assert len(adapter.instructions(p.OP_COMMAND)) == commands + 1   # addressed to talk once, not per piece
+        inst.close()
+
+    def test_read_bytes_of_3000_asks_for_1024_1024_and_952(self, rm, adapter):
+        answer = bytes(range(256)) * 11 + bytes(range(184))
+        adapter.instruments[24].pending = answer
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        assert inst.read_bytes(3000) == answer
+        assert framed_counts(adapter) == [1024, 1024, 952]
+        # Compare off, 3 s default code, -952 = 0xfc48, the embedded two-write block.
+        assert adapter.instructions(p.OP_READ)[-1] == h('0a 00 00 fc 48 fc 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')
+        inst.close()
+
+    def test_a_timeout_on_the_second_piece_is_error_timeout_with_the_first_piece_at_the_session(self, rm, adapter):
+        first = bytes(range(256)) * 4
+        adapter.instruments[24].pending = first
+        adapter.withhold_eoi = True   # exactly one piece, and no EOI with its last byte
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 100
+        session = inst.visalib.sessions[inst.session]
+        assert session.read(3000) == (first, StatusCode.error_timeout)
+        assert framed_counts(adapter) == [1024, 1024]
+        # Through pyvisa the same read is VI_ERROR_TMO, as any timed-out read is.
+        adapter.instruments[24].pending = first
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            inst.read_bytes(3000)
+        assert info.value.error_code == StatusCode.error_timeout
+        assert framed_counts(adapter) == [1024, 1024] * 2
         inst.close()
 
     def test_timeout_attribute_reaches_the_instruction(self, rm, adapter):
@@ -573,15 +717,30 @@ class TestInstrumentSession:
         assert inst.timeout == 1_000_000
         inst.write('*IDN?')
         assert adapter.instructions(p.OP_WRITE)[-1][3] == 0x02
-        # The host waited for the 1000 s row plus 50 %.
-        assert adapter.bulk_in_timeouts[-1] == 1_500_000
+        # The host waited 1.25 times the expiry inferred for the 1000 s code, 2^30 us (§7.3:
+        # the second unit's factor over the larger of nominal and the power of two), plus 2 s,
+        # plus 1 ms for each of the 7 bytes of the write.
+        assert adapter.bulk_in_timeouts[-1] == 1_344_177 + 7
         inst.close()
 
-    def test_host_wait_follows_the_effective_device_timeout(self, rm, adapter):
+    def test_an_immediate_timeout_goes_out_as_the_shortest_code_seen_on_the_wire(self, rm, adapter):
+        # VI_TMO_IMMEDIATE has no device analogue. The table's shortest row, 10 us, goes into
+        # the addressing as well, where no handshake can finish in it: every operation would
+        # time out. 0xf9 (100 ms) is the shortest code captured and the shortest one timed.
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 0
+        assert inst.write('*IDN?') == 7
+        assert adapter.instructions(p.OP_COMMAND)[-1][3] == 0xF9
+        assert adapter.instructions(p.OP_WRITE)[-1][3] == 0xF9
+        inst.close()
+
+    def test_host_wait_outlasts_the_expiry_of_the_code_sent(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 5000
         inst.write('*IDN?')
-        assert adapter.bulk_in_timeouts[-1] == 15000  # 10 s row + max(2, 5)
+        assert adapter.instructions(p.OP_WRITE)[-1][3] == 0xFD
+        # 20.0 s measured for 0xfd on the bench unit (§7.3; 16.778 s on the captured one) + 2 s, + 7 bytes
+        assert adapter.bulk_in_timeouts[-1] == 22000 + 7
         inst.close()
 
     def test_no_response_is_a_visa_timeout(self, rm, adapter):
@@ -592,11 +751,44 @@ class TestInstrumentSession:
         assert info.value.error_code == StatusCode.error_timeout
         inst.close()
 
+    def test_no_response_with_the_bench_units_stale_block_is_a_visa_timeout(self, rm, adapter):
+        # The 10-byte reply of §5.2 (GPIB-USB-HS 01CEE482), through pyvisa: VI_ERROR_TMO with no
+        # stop request and no re-attach, where sizing the data by the last-block byte gave
+        # VI_ERROR_IO after a resync.
+        adapter.stale_timeout_block = True
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 100
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            inst.read_bytes(10)
+        assert info.value.error_code == StatusCode.error_timeout
+        assert adapter.instructions(p.OP_READ)[-1][4:6] == h('f6 ff')   # the count the reply answers
+        assert 0x20 not in adapter.control_requests
+        assert len(adapter.instructions(p.OP_INTERFACE_CLEAR)) == 1   # the one attach; no re-attach
+        inst.close()
+
     def test_read_stb_of_an_absent_device_is_a_timeout(self, rm, adapter):
         inst = rm.open_resource('GPIB0::5::INSTR')
         with pytest.raises(pyvisa.errors.VisaIOError) as info:
             inst.read_stb()
         assert info.value.error_code == StatusCode.error_timeout
+        assert not adapter.serial_poll_mode  # SPD went out although the read failed
+        inst.close()
+
+    def test_read_stb_with_ni_instructions_on_is_one_0x10(self, rm, adapter, ni_instructions):
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 1000
+        adapter.instruments[24].status_byte = 0x40
+        commands_before = len(adapter.instructions(p.OP_COMMAND))
+        assert inst.read_stb() == 0x40
+        # One 0x10 instruction (§10.5.4), no SPE / SPD command bytes and no read.
+        assert adapter.instructions(p.OP_SERIAL_POLL)[-1] == h('10 01 00 00 18 00 fb 00 04 00 00 00')
+        assert len(adapter.instructions(p.OP_COMMAND)) == commands_before
+        assert adapter.instructions(p.OP_READ) == [] and adapter.instructions(p.OP_READ_RAW) == []
+        absent = rm.open_resource('GPIB0::5::INSTR')
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            absent.read_stb()
+        assert info.value.error_code == StatusCode.error_timeout
+        absent.close()
         inst.close()
 
     def test_write_to_an_empty_address_reports_no_listeners(self, rm, adapter):
@@ -690,12 +882,15 @@ class TestInstrumentSession:
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 1000
         adapter.instruments[24].status_byte = 0x40
-        commands_before = len(adapter.instructions(p.OP_COMMAND))
         assert inst.read_stb() == 0x40
-        # One 0x10 instruction (§10.5.4), no SPE / SPD command bytes and no read.
-        assert adapter.instructions(p.OP_SERIAL_POLL)[-1] == h('10 01 00 00 18 00 fb 00 04 00 00 00')
-        assert len(adapter.instructions(p.OP_COMMAND)) == commands_before
-        assert adapter.instructions(p.OP_READ) == [] and adapter.instructions(p.OP_READ_RAW) == []
+        # The IEEE-488.1 sequence of §5.9, the poll that ran on the bench: SPE with the
+        # addressing, a one-byte framed read, SPD UNT; the session's code in each.
+        commands = adapter.instructions(p.OP_COMMAND)
+        assert commands[-2][3:8] == bytes((0xFB, 0x3F, 0x20, 0x18, 0x58))
+        assert commands[-1][4:6] == bytes((0x19, 0x5F)) and commands[-1][3] == 0xFB
+        assert adapter.instructions(p.OP_READ)[-1][1:6] == h('00 00 fb ff ff')
+        assert adapter.instructions(p.OP_SERIAL_POLL) == []
+        assert not adapter.serial_poll_mode
         inst.assert_trigger()
         assert adapter.instructions(p.OP_COMMAND)[-1][4:7] == bytes((0x3F, 0x38, 0x08))
         assert adapter.instructions(p.OP_COMMAND)[-1][3] == 0xFB
@@ -710,11 +905,42 @@ class TestInstrumentSession:
         inst.control_ren(constants.RENLineOperation.deassert)
         assert adapter.messages[-1] == p.register_write_message([t.REN_OFF_WRITE])
         inst.control_ren(constants.RENLineOperation.address_gtl)
-        assert adapter.instructions(p.OP_COMMAND)[-1][4:7] == bytes((0x3F, 0x38, 0x01))
+        assert adapter.instructions(p.OP_COMMAND)[-1][4:8] == bytes((0x40, 0x3F, 0x38, 0x01))
         assert adapter.instructions(p.OP_COMMAND)[-1][3] == 0xFA
         inst.visalib.gpib_command(inst.session, b'\x14')
         assert adapter.instructions(p.OP_COMMAND)[-1][4:5] == b'\x14'
         assert adapter.instructions(p.OP_COMMAND)[-1][3] == 0xFA
+        inst.close()
+
+    REN_ON = p.register_write_message([t.REN_ON_WRITE])     # 09 01 00 01 0a 1f ..
+    REN_OFF = p.register_write_message([t.REN_OFF_WRITE])   # 09 01 00 01 0a 17 ..
+    LLO = p.command_message(bytes((0x11,)), 0xFA)           # NI: 0c ff 00 fd 11 00 00 00
+    LISTEN_24 = p.command_message(bytes((0x3F, 0x40, 0x38)), 0xFA)
+    GTL_24 = p.command_message(bytes((0x40, 0x3F, 0x38, 0x01)), 0xFA)  # NI: 0c fc 00 fd 40 3f 38 01
+
+    @pytest.mark.parametrize('mode, expected', [
+        # ren_device.pcap, §10.7.4. NI's 0x0c timeout byte is always 0xfd; ours is the session's.
+        (constants.RENLineOperation.asrt, ['REN_ON']),
+        (constants.RENLineOperation.asrt_llo, ['REN_ON', 'LLO']),
+        # NI's "address" step is the 0x02 probe; ours is the listen addressing (see ren_operation).
+        (constants.RENLineOperation.asrt_address, ['REN_ON', 'LISTEN_24']),
+        (constants.RENLineOperation.asrt_address_llo, ['REN_ON', 'LISTEN_24', 'LLO']),
+        (constants.RENLineOperation.address_gtl, ['GTL_24']),
+        (constants.RENLineOperation.deassert_gtl, ['GTL_24', 'REN_OFF']),
+        (constants.RENLineOperation.deassert, ['REN_OFF']),
+    ])
+    def test_every_ren_mode_on_an_instrument_session(self, rm, adapter, mode, expected):
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 300
+        before = len(adapter.messages)
+        inst.control_ren(mode)
+        assert adapter.messages[before:] == [getattr(self, name) for name in expected]
+        inst.close()
+
+    def test_go_to_local_through_a_secondary_address(self, rm, adapter):
+        inst = rm.open_resource('GPIB0::24::1::INSTR')
+        inst.control_ren(constants.RENLineOperation.address_gtl)
+        assert adapter.instructions(p.OP_COMMAND)[-1][4:9] == bytes((0x40, 0x3F, 0x38, 0x61, 0x01))
         inst.close()
 
     def test_unknown_board_is_not_found(self, rm):
@@ -860,6 +1086,107 @@ class TestBoardRegistry:
         calls = enumeration['calls']
         registry.owns('0')
         assert enumeration['calls'] == calls + 1
+
+
+class SlowCloseAdapter(SimulatedAdapter):
+    """The shutdown write blocks until the test lets it go, like a close behind an operation in flight."""
+
+    def __init__(self) -> None:
+        super().__init__({})
+        self.closing = threading.Event()
+        self.may_close = threading.Event()
+
+    def bulk_out(self, data: bytes, timeout_ms: int) -> None:
+        if data == p.register_write_message(t.SHUTDOWN_WRITES):
+            self.closing.set()
+            assert self.may_close.wait(10)
+        super().bulk_out(data, timeout_ms)
+
+
+class TestBoardRegistryLocking:
+    @pytest.fixture
+    def quiet(self, enumeration, monkeypatch):
+        monkeypatch.setattr(controller_module, 'IFC_SETTLE_S', 0.0)
+        monkeypatch.setattr(transport, 'dispose_adapter', lambda info: None)
+
+    def test_a_slow_close_does_not_hold_up_the_rest_of_the_registry(self, quiet):
+        slow = SlowCloseAdapter()
+        registry = BoardRegistry(open_transport=lambda i: slow, first_board=0)
+        registry.acquire('0')
+        closer = threading.Thread(target=registry.release, args=('0',), daemon=True)
+        closer.start()
+        assert slow.closing.wait(5)
+        names: List[List[str]] = []
+        asker = threading.Thread(target=lambda: names.append(registry.board_names()), daemon=True)
+        asker.start()
+        asker.join(2)
+        blocked = asker.is_alive()
+        slow.may_close.set()
+        closer.join(5)
+        asker.join(5)
+        assert not blocked and names == [['0']]
+        assert slow.closed
+
+    def test_opening_a_board_that_is_closing_waits_for_the_close(self, quiet):
+        slow = SlowCloseAdapter()
+        opened: List[SimulatedAdapter] = []
+
+        def opener(info):
+            if opened:
+                assert slow.closed, 'the adapter was opened again before its close had finished'
+            opened.append(slow if not opened else SimulatedAdapter({}))
+            return opened[-1]
+
+        registry = BoardRegistry(open_transport=opener, first_board=0)
+        first = registry.acquire('0')
+        closer = threading.Thread(target=registry.release, args=('0',), daemon=True)
+        closer.start()
+        assert slow.closing.wait(5)
+        registry.refresh()               # must not hand the closing board a fresh, unlocked entry
+        second: List[object] = []
+        again = threading.Thread(target=lambda: second.append(registry.acquire('0')), daemon=True)
+        again.start()
+        again.join(0.3)
+        assert again.is_alive()          # waiting for the close, not opening beside it
+        slow.may_close.set()
+        closer.join(5)
+        again.join(5)
+        assert len(opened) == 2 and second and second[0] is not first
+
+    def test_a_release_run_by_the_garbage_collector_inside_an_open_does_not_deadlock(self, quiet, enumeration):
+        # Resource.__del__ closes a forgotten session wherever the collector happens to run,
+        # which can be on this thread in the middle of acquire().
+        enumeration['adapters'] = [fake_adapter_info(serial='AAA'), fake_adapter_info(serial='BBB', address=6)]
+        registry = BoardRegistry(open_transport=lambda i: SimulatedAdapter({}), first_board=0)
+        registry.acquire('1')
+        released: List[str] = []
+
+        def opener(info):
+            registry.release('1')            # as a finaliser would, under the registry's lock
+            released.append(registry.board_names()[0])
+            return SimulatedAdapter({})
+
+        registry._open_transport = opener
+        worker = threading.Thread(target=registry.acquire, args=('0',), daemon=True)
+        worker.start()
+        worker.join(5)
+        assert not worker.is_alive() and released == ['0']
+
+    def test_a_failed_open_leaves_no_session_behind(self, quiet):
+        attempts: List[int] = []
+
+        def opener(info):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise TransportError('claimed by another process')
+            return SimulatedAdapter({})
+
+        registry = BoardRegistry(open_transport=opener, first_board=0)
+        with pytest.raises(TransportError):
+            registry.acquire('0')
+        controller = registry.acquire('0')
+        registry.release('0')
+        assert controller._closed  # one session, so one release closes it
 
 
 class TestAvailability:

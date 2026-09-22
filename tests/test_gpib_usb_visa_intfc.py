@@ -32,7 +32,8 @@ from resistamet_gui.gpib_usb.visa_intfc import (GPIB_INTFC, NiUsbGpibIntfcDispat
                                                 NiUsbGpibIntfcSession)
 from resistamet_gui.gpib_usb.visa_session import GPIB_INSTR, NiUsbGpibDispatch  # noqa: E402
 from tests.test_gpib_usb_visa import (FakeInstrument, Sentinel, SimulatedAdapter,  # noqa: E402,F401
-                                      enumeration, h, session_registry)
+                                      enumeration, h, ni_instructions, session_registry,
+                                      switch_unset)
 
 UNL, MTA0, MLA0, LAD24, TAD24, UNT = 0x3F, 0x40, 0x20, 0x38, 0x58, 0x5F
 REN, ATN = constants.RENLineOperation, constants.ATNLineOperation
@@ -343,17 +344,31 @@ class TestData:
         assert intf.read() == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         assert len(board.instructions(p.OP_COMMAND)) == commands
         opcodes = [m[0] for m in board.messages[-2:]]
+        assert opcodes == [p.OP_GO_TO_STANDBY, p.OP_READ]  # pyvisa's 20480-byte chunk, framed by default
+        read = board.instructions(p.OP_READ)[-1]
+        assert read[1:6] == h('00 00 fb 00 fc')  # compare off: the bench-proven 00 00; 1024 per 0x0a (§11.2)
+
+    def test_read_with_ni_instructions_on_is_a_0x0b_after_standby(self, ni_instructions, intf, board):
+        intf.send_command(bytes((UNL, MTA0, LAD24)))
+        intf.write('*IDN?')
+        intf.send_command(bytes((UNL, MLA0, TAD24)))
+        intf.timeout = 1000
+        assert intf.read() == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
+        opcodes = [m[0] for m in board.messages[-2:]]
         assert opcodes == [p.OP_GO_TO_STANDBY, p.OP_READ_RAW]  # pyvisa's 20480-byte chunk: 0x0b
         read = board.instructions(p.OP_READ_RAW)[-1]
         assert read[1:4] == h('00 00 fb')  # compare off: the bench-proven 00 00
 
-    def test_read_termination_selects_eos(self, rm, board):
+    @pytest.mark.parametrize('opcode', [p.OP_READ, p.OP_READ_RAW])
+    def test_read_termination_selects_eos(self, rm, board, monkeypatch, opcode):
+        if opcode == p.OP_READ_RAW:
+            monkeypatch.setenv('RESISTAMET_GPIB_NI_INSTRUCTIONS', '1')
         intf = rm.open_resource('GPIB0::INTFC', read_termination='\n')
         intf.send_command(bytes((UNL, MTA0, LAD24)))
         intf.write('*IDN?')
         intf.send_command(bytes((UNL, MLA0, TAD24)))
         assert intf.read() == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30'
-        assert board.instructions(p.OP_READ_RAW)[-1][1:3] == h('14 0a')
+        assert board.instructions(opcode)[-1][1:3] == h('14 0a')
         intf.close()
 
     def test_read_with_nothing_to_say_is_a_timeout(self, intf, board):

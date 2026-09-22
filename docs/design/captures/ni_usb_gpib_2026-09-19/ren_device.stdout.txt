@@ -1,0 +1,10 @@
+854955.994 RM open, scenario ren_device
+854956.583 control_ren asrt_address
+854956.987 control_ren asrt_llo
+854957.390 control_ren asrt_address_llo
+854957.795 control_ren address_gtl
+854958.197 control_ren deassert_gtl
+854958.600 control_ren asrt
+854959.001 *IDN? afterwards
+82
+854959.522 done

@@ -53,6 +53,9 @@ class TestWorkedExamplesOut:
         assert t.SERIAL_POLL_DISABLE_COMMAND == bytes((0x19, 0x5F))
         assert t.addressed_command(24, t.CMD_SDC) == bytes((0x3F, 0x38, 0x04))
         assert t.addressed_command(24, t.CMD_GET, sad=1) == bytes((0x3F, 0x38, 0x61, 0x08))
+        # NI's order, talk address first: ren_device.pcap 1.7255, sad_poll.pcap 0.9178.
+        assert t.addressed_command(24, t.CMD_GTL, controller=0) == bytes((0x40, 0x3F, 0x38, 0x01))
+        assert t.addressed_command(24, t.CMD_SDC, sad=1, controller=0) == bytes((0x40, 0x3F, 0x38, 0x61, 0x04))
 
     def test_addresses_are_range_checked(self):
         with pytest.raises(ValueError):
@@ -169,6 +172,13 @@ KEITH_REPLY_5 = h('36 4b 45 49 54 48 ff ff 04 00 00 00 04 00 00 00'
                   '38 00 20 00 00 00 01 00 60 05 00 00 04 00 00 00')
 #: Read of up to 64 bytes with nothing to read: device-side timeout, no data blocks.
 TIMEOUT_REPLY_64 = h('38 00 20 0a c0 ff ff ff e0 5e 00 00 04 00 00 00')
+#: Timed-out reads of 1 and 10 bytes as the same unit sent them on 2026-09-21 (§5.2):
+#: one 0x36 block of stale bytes, and min(requested, 15) in the last-block count
+#: while the count field says nothing was read.
+TIMEOUT_REPLY_1_STALE_BLOCK = h('36 00 20 00 aa 55 ff ff 04 00 00 00 4e 53 54 52'
+                                '38 00 20 0a ff ff ff ff e0 01 00 00 04 00 00 00')
+TIMEOUT_REPLY_10_STALE_BLOCK = h('36 00 20 00 aa 55 ff ff 04 00 00 00 04 00 00 00'
+                                 '38 00 20 0a f6 ff ff ff e0 0a 00 00 04 00 00 00')
 
 
 class TestObservedReplies:
@@ -183,6 +193,7 @@ class TestObservedReplies:
         assert parsed.status.error == 0
         assert parsed.status.count == 0xFF52 and parsed.status.transferred(256) == 82
         assert parsed.adr1 == 0xE0  # EOI seen
+        assert parsed.last_block_count == 0x16  # 82 - 60: reported, and here it agrees
         assert parsed.embedded_status is None
         assert p.read_status_offset(IDN_REPLY_256) == 96
 
@@ -202,6 +213,22 @@ class TestObservedReplies:
         assert parsed.status.error == t.ERR_TIMEOUT
         assert parsed.status.transferred(64) == 0
         assert p.read_status_offset(TIMEOUT_REPLY_64) == 0
+
+    @pytest.mark.parametrize('reply, requested, stale_count', [
+        (TIMEOUT_REPLY_1_STALE_BLOCK, 1, 0x01), (TIMEOUT_REPLY_10_STALE_BLOCK, 10, 0x0A),
+    ])
+    def test_timeout_reply_with_a_stale_block_and_last_block_count(self, reply, requested, stale_count):
+        # §5.2: the count field is the authority. Sizing the data by the last-block count and
+        # then checking it against the field made each of these a ProtocolError, and the
+        # timeout the adapter reported became an I/O error behind a resync.
+        parsed = p.parse_read_reply(reply, requested)
+        assert parsed.data == b''
+        assert parsed.status.error == t.ERR_TIMEOUT
+        assert parsed.status.transferred(requested) == 0
+        assert parsed.last_block_count == stale_count
+        assert parsed.adr1 == 0xE0 and parsed.end is False
+        assert p.read_status_offset(reply) == 16
+        assert isinstance(p.error_for_code(parsed.status.error, 'read'), p.GpibTimeout)
 
     def test_trailer_must_end_in_a_termination_block(self):
         broken = bytearray(TIMEOUT_REPLY_64)
@@ -319,17 +346,22 @@ class TestTimeouts:
         (150.0, 0x01, 300.0), (1000.0, 0x02, 1000.0), (None, 0xF0, None), (0, 0xF0, None),
         (5000.0, 0xF0, None),
     ])
-    def test_effective_timeout_reports_the_limit_the_device_enforces(self, seconds, code, limit):
+    def test_effective_timeout_reports_the_nominal_limit_of_the_code(self, seconds, code, limit):
         assert p.effective_timeout(seconds) == (code, limit)
 
-    def test_host_wait_is_derived_from_the_effective_limit(self):
-        assert p.host_wait_s(1.0, 600) == 3.0
-        assert p.host_wait_s(3.0, 600) == 5.0
-        assert p.host_wait_s(10.0, 600) == 15.0
-        assert p.host_wait_s(None, 600) == 600
-        # A 5 s request runs on the 10 s row, so the host waits 15 s, not 7.
-        _, limit = p.effective_timeout(5.0)
-        assert p.host_wait_s(limit, 600) == 15.0
+    def test_host_wait_is_the_larger_expiry_of_the_two_units_plus_two_seconds(self):
+        # §7.2, §7.3: not the nominal limit, and not one unit's figure. 013CC9DF under NI's
+        # driver against 01CEE482 under this one (bench 2026-09-21); the larger, plus 2 s.
+        assert p.host_wait_s(0xF9, 600) == pytest.approx(0.132272 + 2.0)  # 0.132 against 0.127
+        assert p.host_wait_s(0xFA, 600) == pytest.approx(0.375 + 2.0)     # 0.264 against 0.375
+        assert p.host_wait_s(0xFB, 600) == pytest.approx(1.250 + 2.0)     # 1.050 against 1.250
+        assert p.host_wait_s(0xFC, 600) == pytest.approx(4.196156 + 2.0)  # 4.196 against 3.750
+        assert p.host_wait_s(0xFE, 600) == pytest.approx(41.250 + 2.0)    # 33.555 against 41.250
+        assert p.host_wait_s(0xF0, 600) == 600
+        # A 5 s request goes out as 0xfd, which one unit runs for 16.78 s and the other for
+        # 20.0 s: the host waits 22 s, not the 18.78 s of the first unit alone and not the
+        # 15 s of nominal + 50 %.
+        assert p.host_wait_s(p.timeout_code(5.0), 600) == pytest.approx(20.0 + 2.0)
 
     def test_timeout_max(self):
         assert t.TIMEOUT_MAX_S == 1000.0
@@ -464,11 +496,26 @@ class TestReadReplyReassembly:
         parsed = p.parse_read_reply(read_reply(b'ABC', 256, end=False, error=t.ERR_TIMEOUT), 256)
         assert parsed.data == b'ABC'
 
-    def test_count_field_must_agree_with_blocks(self):
+    def test_count_field_wins_over_the_last_block_count(self):
+        # §5.2: the field is the authority; the last-block byte is reported and not used.
         reply = bytearray(read_reply(b'ABCDE', 256))
-        reply[16 + 4:16 + 6] = (0x0004 - 256 & 0xFFFF).to_bytes(2, 'little')  # says 4, blocks say 5
+        reply[16 + 4:16 + 6] = ((4 - 256) & 0xFFFF).to_bytes(2, 'little')  # says 4, the block byte says 5
+        parsed = p.parse_read_reply(bytes(reply), 256)
+        assert parsed.data == b'ABCD' and parsed.last_block_count == 5
+
+    def test_count_field_claiming_more_than_the_blocks_hold_raises(self):
+        reply = bytearray(read_reply(b'ABCDE', 256))                        # one 15-byte block
+        reply[16 + 4:16 + 6] = ((16 - 256) & 0xFFFF).to_bytes(2, 'little')  # says 16
         with pytest.raises(p.ProtocolError):
             p.parse_read_reply(bytes(reply), 256)
+        no_blocks = bytearray(read_reply(b'', 256, end=False, error=t.ERR_TIMEOUT))
+        no_blocks[4:6] = ((3 - 256) & 0xFFFF).to_bytes(2, 'little')         # says 3 with no block
+        with pytest.raises(p.ProtocolError):
+            p.parse_read_reply(bytes(no_blocks), 256)
+        garbage = bytearray(read_reply(b'ABCDE', 256))
+        garbage[16 + 4:16 + 6] = b'\x00\x80'                                # 32768 short of 256
+        with pytest.raises(p.ProtocolError):
+            p.parse_read_reply(bytes(garbage), 256)
 
     def test_missing_trailer_raises(self):
         with pytest.raises(p.ProtocolError):
@@ -827,7 +874,7 @@ class TestSerialPollInstruction:
         assert p.serial_poll_message(24, 0xFE) == h('10 01 00 00 18 00 fe 00 04 00 00 00')
 
     def test_flag_and_secondary_address(self):
-        # srq_poll.pcap 2.5361 carried x = 1; the secondary byte follows the 0x02 probe's form.
+        # srq_poll.pcap 2.5361 carried x = 1; sad_poll.pcap 0.5152 is the secondary-address form.
         assert p.serial_poll_block(24, 0xFE, flag=1) == h('10 01 00 01 18 00 fe 00')
         assert p.serial_poll_block(24, 0xFC, sad=1) == h('10 01 00 00 18 61 fc 00')
         with pytest.raises(ValueError):
@@ -848,11 +895,32 @@ class TestSerialPollInstruction:
         parsed = p.parse_serial_poll_reply(h('3a 18 00 00 39 00 74 00 00 00 ff ff 04 00 00 00'))
         assert parsed.status_byte == 0
 
+    def test_0x10_reply_through_a_secondary_address_echoes_both_bytes(self):
+        # sad_poll.pcap 0.5170: ``3a 18 61 04``, status byte 4.
+        parsed = p.parse_serial_poll_reply(h('3a 18 61 04 39 00 74 00 00 00 ff ff 04 00 00 00'))
+        assert (parsed.pad, parsed.sad_byte, parsed.status_byte) == (24, 0x61, 4)
+
+    def test_0x10_reply_to_a_poll_that_timed_out_has_no_0x3a_block(self):
+        # raw_errors.pcap 15.0003, all 32 bytes: nothing at address 5, error 0x0a after 4.2 s.
+        reply = h('03 00 64 00 00 b0 ff ff 39 00 74 0a 00 00 00 00'
+                  '09 00 74 00 00 00 00 00 01 00 00 00 04 00 00 00')
+        parsed = p.parse_serial_poll_reply(reply)
+        assert parsed.status.id == 0x39 and parsed.status.error == 0x0A and parsed.status.ibsta == 0x0074
+        assert parsed.status_byte is None and parsed.pad is None and parsed.sad_byte is None
+        assert isinstance(p.error_for_code(parsed.status.error, 'serial poll'), p.GpibTimeout)
+
+    def test_0x10_reply_with_an_error_and_a_0x3a_block_is_still_parsed(self):
+        parsed = p.parse_serial_poll_reply(h('3a 18 00 00 39 00 74 0a 00 00 00 00 04 00 00 00'))
+        assert parsed.status.error == 0x0A and parsed.pad == 24
+
     def test_0x10_reply_missing_a_block_raises(self):
         with pytest.raises(p.ProtocolError):
             p.parse_serial_poll_reply(h('3a 18 00 00 04 00 00 00'))
+        # No 0x3a block is only an answer when the status block carries an error.
         with pytest.raises(p.ProtocolError):
             p.parse_serial_poll_reply(h('39 00 74 00 00 00 ff ff 04 00 00 00'))
+        with pytest.raises(p.ProtocolError):
+            p.parse_serial_poll_reply(h('3a 18 00 00 3a 18 00 00 39 00 74 00 00 00 ff ff 04 00 00 00'))
 
 
 class TestSrqPush:
