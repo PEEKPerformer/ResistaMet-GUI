@@ -232,15 +232,42 @@ class TestStaleReplyAfterAUsbFault:
         assert controller.command(b'\x14', timeout_s=3.0) == 1
         transport.assert_done()
 
-    def test_a_message_the_adapter_did_not_take_in_time_is_a_fault(self):
+    def test_a_message_the_adapter_did_not_take_in_time_is_the_hung_adapter(self):
+        # §8.17: a working adapter takes a message at once, the reply to the one before having
+        # been read; one whose OUT FIFO is full NAKs it. Reported with the replug advice, and the
+        # next operation re-attaches, which finds the state again or, here, an adapter that works.
         controller, transport = attached([
             ('out', p.command_message(b'\x14', T3S), TransportTimeout('OUT not accepted')),
         ] + reattach_after_usb_fault_script() + [
             ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
         ])
-        with pytest.raises(TransportTimeout):
+        with pytest.raises(AdapterNotReady) as info:
             controller.command(b'\x14', timeout_s=3.0)
+        assert 'the adapter is hung. Unplug it and plug it back in.' in str(info.value)
         assert controller.command(b'\x14', timeout_s=3.0) == 1
+        transport.assert_done()
+
+    def test_the_raw_instructions_header_not_taken_is_the_hung_adapter_too(self):
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(20480, T3S), TransportTimeout('OUT not accepted')),
+        ])
+        with pytest.raises(AdapterNotReady) as info:
+            controller.read_raw(20480, timeout_s=3.0)
+        assert 'hung' in str(info.value)
+        transport.assert_done()
+
+    def test_a_write_whose_data_the_bus_does_not_take_stays_a_transfer_timeout(self):
+        # The 0x0d carries its data, and the adapter takes the message only as fast as the
+        # instrument takes the bytes (§10.5.2): a timeout there is the transfer's, not a hang.
+        controller, transport = attached([
+            ('out', p.write_message(b'A', T3S, True), TransportTimeout('listener stopped')),
+        ] + reattach_after_usb_fault_script() + [
+            ('out', p.write_message(b'A', T3S, True)), ('in', status_reply(0x0D)),
+        ])
+        with pytest.raises(TransportTimeout) as info:
+            controller.write_raw(b'A', timeout_s=3.0)
+        assert not isinstance(info.value, AdapterNotReady)
+        assert controller.write_raw(b'A', timeout_s=3.0) == 1   # a fault: re-attached first
         transport.assert_done()
 
     def test_with_ni_instructions_on_the_alternate_in_is_drained_too(self):

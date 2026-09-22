@@ -10,11 +10,11 @@ the infinite wait, and the fault and stop flags. The constants are
 re-exported by ``controller``.
 """
 import logging
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from . import protocol as p
 from . import tables as t
-from .protocol import GpibTimeout, NoReply, ProtocolError, StatusBlock
+from .protocol import AdapterNotReady, GpibTimeout, NoReply, ProtocolError, StatusBlock
 from .transport import Transport, TransportError, TransportGone, TransportTimeout
 
 #: The controller's logger: these are its methods, and they log as it.
@@ -72,7 +72,7 @@ class AdapterLink:
         elif isinstance(exc, TransportError):
             # A USB timeout that gets this far was not a reply the host
             # gave up on (that becomes ``NoReply``): the stop request
-            # itself failed, or the adapter did not take a message.
+            # itself failed, or the bus did not take a write's data.
             # Either way a reply may be queued that nobody will read;
             # the re-attach drains it (``_ensure_attached``).
             self.resync_pending = True
@@ -83,15 +83,39 @@ class AdapterLink:
                                          request.length, timeout_ms,
                                          request_type=request.request_type)
 
-    def transact(self, message: bytes, reply_length: int, wait_s: float,
-                 out_wait_s: float = SHORT_WAIT_S) -> bytes:
-        """One message out, its one reply in (§3.1); stop and collect on a host timeout.
+    def hung(self, what: str) -> AdapterNotReady:
+        """The error for the hung adapter of §8.17, which only a power cycle clears."""
+        return AdapterNotReady('%s %s: the adapter is hung. Unplug it and plug it back in.'
+                               % (self.model.name, what))
 
-        ``out_wait_s`` is for the one message the bus paces, the 0x0d with
-        its data inline; every other message is taken at once.
+    def send(self, message: bytes, paced_wait_s: Optional[float] = None) -> None:
+        """Put one message on the primary OUT (§3.1).
+
+        ``paced_wait_s`` is for the one message the bus paces, the 0x0d with
+        its data inline, which the adapter takes only as fast as the
+        instrument takes the data (§10.5.2); a timeout of that is the
+        transfer's. Every other message is taken at once by an adapter that
+        works, since the reply to the one before it has been read (§8.2):
+        not taken within ``SHORT_WAIT_S``, the adapter is in the state of
+        §8.17 -- it had taken about 4 KB, then NAKed every packet and never
+        answered -- and is reported so, with the advice to replug it, which
+        is all that cleared it on the bench. The next operation re-attaches
+        first, which finds the state again if it persists.
         """
+        if paced_wait_s is not None:
+            self.transport.bulk_out(message, int(paced_wait_s * 1000))
+            return
+        try:
+            self.transport.bulk_out(message, int(SHORT_WAIT_S * 1000))
+        except TransportTimeout as exc:
+            self.resync_pending = True
+            raise self.hung('did not take a %d-byte message within %.0f s' % (len(message), SHORT_WAIT_S)) from exc
+
+    def transact(self, message: bytes, reply_length: int, wait_s: float,
+                 paced_wait_s: Optional[float] = None) -> bytes:
+        """One message out (``send``), its one reply in (§3.1); stop and collect on a host timeout."""
         self.host_stopped = False
-        self.transport.bulk_out(message, int(out_wait_s * 1000))
+        self.send(message, paced_wait_s)
         return self.reply_or_stop(reply_length, wait_s)
 
     def reply_or_stop(self, reply_length: int, wait_s: float) -> bytes:
@@ -122,14 +146,14 @@ class AdapterLink:
             raise NoReply('adapter did not answer after a stop request') from exc
 
     def exchange(self, message: bytes, reply_length: int, wait_s: float, operation: str,
-                 tolerate: Sequence[int] = (), out_wait_s: float = SHORT_WAIT_S) -> Tuple[StatusBlock, bytes]:
+                 tolerate: Sequence[int] = (), paced_wait_s: Optional[float] = None) -> Tuple[StatusBlock, bytes]:
         """Send, receive, check the echoed id, and raise for a nonzero error code.
 
         Every bulk instruction with a status block goes through here, so the
         error-code mapping of §4.3 lives in ``raise_for_error`` alone. The
         register read (0x08) has no status block and uses ``transact`` directly.
         """
-        reply = self.transact(message, reply_length, wait_s, out_wait_s)
+        reply = self.transact(message, reply_length, wait_s, paced_wait_s)
         opcode = message[0]
         if opcode == p.OP_READ:
             offset, expected_id = p.read_status_offset(reply), p.BLOCK_READ_STATUS
