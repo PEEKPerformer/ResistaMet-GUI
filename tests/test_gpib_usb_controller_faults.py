@@ -383,3 +383,17 @@ class TestAdapterGone:
         with pytest.raises(AdapterGone):
             controller.wait_srq(1.0)
         transport.assert_done()
+
+    def test_a_close_that_finds_the_adapter_gone_records_it(self):
+        # Nothing before the close saw the unplug; its shutdown write does. The controller must
+        # say so, for the board registry to look for the device that comes back, and a later
+        # call must fail as gone without a USB call (an unscripted one fails assert_done).
+        controller, transport = attached([
+            ('out', p.register_write_message(t.SHUTDOWN_WRITES), unplugged()),
+        ])
+        assert not controller.adapter_gone
+        controller.close()
+        assert controller.adapter_gone and transport.closed
+        with pytest.raises(AdapterGone):
+            controller.status()
+        transport.assert_done()
