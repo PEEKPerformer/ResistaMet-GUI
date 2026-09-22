@@ -112,6 +112,8 @@ class NiUsbGpibIntfcSession(NiUsbGpibSession):
         try:
             written = controller.write_raw(data, send_eoi=bool(send_end),
                                            timeout_s=self._device_timeout(), eos_char=self._termchar_byte())
+        except GpibTimeout as exc:
+            return len(exc.partial), StatusCode.error_timeout  # as on the INSTR session
         except (GpibError, TransportError) as exc:
             logger.debug('%s write: %s', self._label(), exc)
             return 0, status_for(exc)

@@ -375,6 +375,9 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
         try:
             written = controller.write(self._pad, data, sad=self._sad, send_eoi=bool(send_end),
                                        timeout_s=self._device_timeout(), eos_char=self._termchar_byte())
+        except GpibTimeout as exc:
+            # What crossed before the timeout: whole chunks of a write that was split.
+            return len(exc.partial), StatusCode.error_timeout
         except (GpibError, TransportError) as exc:
             logger.debug('%s write: %s', self._label(), exc)
             return 0, status_for(exc)
