@@ -49,11 +49,6 @@ RAW_WRITE_MIN_BYTES = 2049
 #: read would sit out the whole transfer wait with the error reply queued.
 RAW_READ_SLICE_S = 1.0
 RAW_REPLY_POLL_S = 0.01
-#: The shortest timeout a later piece of a transfer is given when little of
-#: its deadline is left: a millisecond, VISA's own unit, which goes out as
-#: 0xf5, the shortest code captured (§7.1, §10.10.1). Below it are the codes
-#: 0xf1-0xf4, which no capture shows.
-PIECE_TIMEOUT_MIN_S = 1e-3
 #: A device address, (primary, secondary or None), for NI's messages that
 #: address the instrument themselves.
 Address = Tuple[int, Optional[int]]
@@ -67,29 +62,22 @@ ADAPTER_OUT_BUFFER_BYTES = 4096
 class _TransferMixin:
     """The write and read paths of ``Controller`` (see the module docstring)."""
 
-    def _code_for_the_rest(self, deadline: Optional[float], code: int, operation: str, done: int, asked: int,
-                           partial: bytes = b'') -> int:
-        """The timeout code for a later piece of a transfer given ``code``: the time left before ``deadline``.
+    def _refuse_after_deadline(self, deadline: Optional[float], operation: str, done: int, asked: int,
+                               partial: bytes = b'') -> None:
+        """Before a later piece of a transfer: once ``deadline`` has passed, end with a timeout.
 
-        Rounded as every timeout is (``protocol.timeout_code``), so the piece
-        does not end before the deadline either, and never a longer code
-        than the transfer's own: the deadline is that code's expiry, so the
-        time left fits it, and a hair of rounding in the clock arithmetic
-        must not step past it. With the deadline passed no piece is
-        started, and the transfer ends with a timeout carrying what it has,
-        as NI's one instruction does at its code's expiry (§7.1, §10.10.2).
-        None (no timeout) keeps the disabled code.
+        The piece is not started, and the transfer ends with ``GpibTimeout``
+        carrying what it has, as NI's one instruction ends at its code's
+        expiry (§7.1, §10.10.2). A piece that does start carries the
+        transfer's own code, never a shorter one for the time left: a framed
+        0x0a cut off by its code while data is arriving has never been seen
+        (§7.3, §10.10.2), 0xf5-0xf8 were never timed on unit 01CEE482, and
+        that unit has wedged under another framed condition nobody had seen
+        (§11.2). The last piece may therefore run up to one piece past the
+        deadline. None (no timeout) never refuses.
         """
-        if deadline is None:
-            return t.TIMEOUT_DISABLED_CODE
-        left = deadline - self._clock()
-        if left <= 0:
+        if deadline is not None and self._clock() >= deadline:
             raise GpibTimeout('%s: the timeout ran out after %d of %d bytes' % (operation, done, asked), partial)
-        rest = p.timeout_code(max(left, PIECE_TIMEOUT_MIN_S))
-        codes = [row_code for _, row_code in t.TIMEOUT_TABLE]
-        if rest not in codes or codes.index(rest) > codes.index(code):
-            return code
-        return rest
 
     def _ni_session(self, address: Address, code: int) -> None:
         """NI's bank-2 session configuration before a raw instruction to ``address`` (§10.2.4).
@@ -141,10 +129,9 @@ class _TransferMixin:
 
         Framed or raw is decided per chunk, so a short tail after a raw
         chunk goes framed: each write instruction is complete in itself, its
-        data with it. (The read loop decides once per call instead.) The
-        first chunk carries ``code``; a later one the code for what is left
-        of ``deadline``, and none starts once it has passed
-        (``_code_for_the_rest``): the timeout bounds the write as a whole.
+        data with it. (The read loop decides once per call instead.) Every
+        chunk carries ``code``, and none starts once ``deadline`` has passed
+        (``_refuse_after_deadline``): the timeout bounds the write as a whole.
         With ``address`` a raw chunk is NI's message, which addresses the
         instrument itself (``_raw_write_instruction``); a framed tail after
         it finds the instrument still addressed to listen.
@@ -154,7 +141,7 @@ class _TransferMixin:
         written = 0
         for start in range(0, len(data), step):
             if start:
-                code = self._code_for_the_rest(deadline, code, 'write', written, len(data))
+                self._refuse_after_deadline(deadline, 'write', written, len(data))
             chunk = data[start:start + step]
             eoi = send_eoi and start + len(chunk) == len(data)
             if self._link.raw and len(chunk) >= RAW_WRITE_MIN_BYTES:
@@ -329,11 +316,10 @@ class _TransferMixin:
         one instruction whose code bounds it from its start, and a read
         still receiving data ends at the code's expiry with the bytes so
         far and error 0x0a (§7.1, §10.10.2). Here ``deadline`` is that
-        expiry from the start of the call (``Controller._deadline``), the
-        first piece carries ``code`` and every later one the code for what
-        is left of it (``_code_for_the_rest``), with that code's host wait
-        (``transfer_wait_s`` of one piece); once the deadline has passed no
-        piece starts. Either way the read ends with ``GpibTimeout``
+        expiry from the start of the call (``Controller._deadline``); every
+        piece carries ``code``, with its host wait (``transfer_wait_s`` of
+        one piece), and once the deadline has passed no piece starts
+        (``_refuse_after_deadline``). Either way the read ends with ``GpibTimeout``
         carrying everything read so far as its partial (§5.2: the partial
         data of a timed-out read is valid), which the pyvisa-py session
         returns with VI_ERROR_TMO as pyvisa-py's own sessions return a
@@ -357,7 +343,7 @@ class _TransferMixin:
         while remaining > 0:
             if chunks:
                 read = b''.join(chunks)
-                code = self._code_for_the_rest(deadline, code, operation, len(read), max_bytes, read)
+                self._refuse_after_deadline(deadline, operation, len(read), max_bytes, read)
             count = min(remaining, step)
             try:
                 if raw:
