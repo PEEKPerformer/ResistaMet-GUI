@@ -358,7 +358,7 @@ class TestInstrumentSession:
         session = inst.visalib.sessions[inst.session]
         assert session.read(20480) == (bytes(range(256)) * 16, StatusCode.error_timeout)
         assert framed_counts(adapter) == [1024, 1024, 1024, 1024]
-        assert [m[3] for m in adapter.instructions(p.OP_READ)] == [0xFB, 0xFB, 0xFB, 0xF9]
+        assert [m[3] for m in adapter.instructions(p.OP_READ)] == [0xFB] * 4   # the session's code on each
         inst.close()
 
     def test_timeout_attribute_reaches_the_instruction(self, rm, adapter):

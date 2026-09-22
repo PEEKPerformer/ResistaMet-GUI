@@ -145,14 +145,13 @@ class TestRawRead:
 
     def test_a_read_split_over_two_instructions_shares_one_deadline(self):
         # §7.1, §10.10.2: the code's expiry bounds the read, not each instruction of it. 3 s go
-        # out as 0xfc, longest expiry 4.196 s; after 3.2 s the second carries the code for the
-        # 1.0 s left.
+        # out as 0xfc, longest expiry 4.196 s; after 3.2 s the second still starts, under 0xfc.
         first, second = bytes(0xFFFF), b'tail\n'
         controller, transport = attached_ni(ni_session() + [
             ('out', ni_read(0xFFFF)), ('raw_in', first, 66048, 3.2),
             ('in', ni_raw_read_reply(0xFFFF, 0xFFFF, end=False), 512),
-        ] + ni_session(code=0xFB, update=True) + [
-            ('out', ni_read(70000 - 0xFFFF, 0xFB)), ('raw_in', second, 4608),
+        ] + [
+            ('out', ni_read(70000 - 0xFFFF)), ('raw_in', second, 4608),
             ('in', ni_raw_read_reply(70000 - 0xFFFF, len(second)), 512),
         ])
         assert controller.read(22, max_bytes=70000, timeout_s=3.0) == (first + second, True)
