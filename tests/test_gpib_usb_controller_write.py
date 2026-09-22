@@ -108,6 +108,24 @@ class TestWrite:
         assert controller.write(22, data, timeout_s=3.0) == 0x10000
         transport.assert_done()
 
+    def test_a_split_write_is_bounded_by_its_timeout_as_a_whole(self):
+        # Like a read (§7.1, §10.10.2): the second chunk gets the code for the time left, and
+        # none starts once the timeout has run out.
+        script = [
+            ('out', p.register_read_message(t.USB_B_SERIAL_REGISTERS)),
+            ('in', regread_reply([0x78, 0x56, 0x34, 0x12]), 32),
+        ] + attach_script()[2:] + address_listener(code=0xFD) + [
+            ('out', p.write_message(bytes(0xFFFF), 0xFD, send_eoi=False)), ('in', status_reply(0x0D), None, 3.5),
+            ('out', p.write_message(bytes(0xFFFF), 0xFC, send_eoi=False)), ('in', status_reply(0x0D), None, 1.5),
+        ]
+        transport = ScriptedTransport(script)
+        controller = Controller(transport, t.PID_USB_B, sleep=lambda s: None, clock=transport.clock)
+        controller.attach()
+        with pytest.raises(GpibTimeout) as info:
+            controller.write(22, bytes(3 * 0xFFFF), timeout_s=5.0)
+        assert 'timeout ran out after 131070 of 196605 bytes' in str(info.value)
+        transport.assert_done()   # no third chunk
+
     def test_host_wait_expiry_on_a_write_takes_the_stop_path(self):
         controller, transport = attached(address_listener() + [
             ('out', p.write_message(b'A', T3S, True)), ('in', TransportTimeout('host wait')),

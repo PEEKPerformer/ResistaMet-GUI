@@ -6,6 +6,7 @@ presence probe), holding one fake instrument at address 24 that answers
 ``*IDN?``. That lets pyvisa drive the whole stack: ``ResourceManager("@py")``,
 ``list_resources``, ``open_resource``, ``query``.
 """
+import functools
 import sys
 import threading
 from typing import List
@@ -35,7 +36,7 @@ from resistamet_gui.gpib_usb import boards  # noqa: E402
 from resistamet_gui.gpib_usb.boards import BoardRegistry  # noqa: E402
 from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportError  # noqa: E402
 from resistamet_gui.gpib_usb.visa_session import GPIB_INSTR, NiUsbGpibDispatch  # noqa: E402
-from tests.fakes.gpib_usb import FakeInstrument, SimulatedAdapter, fake_adapter_info, h  # noqa: E402
+from tests.fakes.gpib_usb import FakeClock, FakeInstrument, SimulatedAdapter, fake_adapter_info, h  # noqa: E402
 from tests.fakes.gpib_usb_visa import (Sentinel, enumeration, ni_instructions,  # noqa: E402,F401
                                        session_registry, switch_unset)
 
@@ -327,6 +328,30 @@ class TestInstrumentSession:
             inst.read_bytes(3000)
         assert info.value.error_code == StatusCode.error_timeout
         assert framed_counts(adapter) == [1024, 1024] * 2
+        inst.close()
+
+    def test_a_read_that_outlasts_its_timeout_returns_what_it_has_with_error_timeout(self, rm, adapter,
+                                                                                    monkeypatch):
+        # §7.1, §10.10.2: NI's read ends at its code's expiry with the bytes so far and a timeout;
+        # pyvisa-py's own sessions return a timed-out read's bytes with VI_ERROR_TMO. A talker
+        # giving 1024 bytes each 0.4 s under a 1 s timeout: three pieces, then no fourth.
+        clock = FakeClock()
+        monkeypatch.setattr(boards, 'Controller', functools.partial(controller_module.Controller, clock=clock))
+        slow_reply = adapter.bulk_in
+
+        def bulk_in(length, timeout_ms):
+            if adapter.messages[-1][0] == p.OP_READ:
+                clock.advance(0.4)
+            return slow_reply(length, timeout_ms)
+
+        monkeypatch.setattr(adapter, 'bulk_in', bulk_in)
+        adapter.instruments[24].pending = bytes(range(256)) * 20
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 1000
+        session = inst.visalib.sessions[inst.session]
+        assert session.read(20480) == (bytes(range(256)) * 12, StatusCode.error_timeout)
+        assert framed_counts(adapter) == [1024, 1024, 1024]
+        assert [m[3] for m in adapter.instructions(p.OP_READ)] == [0xFB, 0xFB, 0xFA]
         inst.close()
 
     def test_timeout_attribute_reaches_the_instruction(self, rm, adapter):

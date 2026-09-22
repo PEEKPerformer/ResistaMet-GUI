@@ -127,7 +127,8 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
                  own_address: int = 0, t1_ns: int = 2000,
                  infinite_wait_s: float = DEFAULT_INFINITE_WAIT_S,
                  ni_instructions: bool = False,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+                 sleep: Callable[[float], None] = time.sleep,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         """``ni_instructions`` True uses the instructions NI's driver was captured
         sending and our bench has not run: 0x0b / 0x0e for large transfers, on a
         model with the alternate pair, and 0x10 for the serial poll (see the
@@ -151,6 +152,8 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         self._own_address = own_address
         self._t1_ns = t1_ns
         self._sleep = sleep
+        #: Seconds, monotonic: what a transfer's deadline is counted on.
+        self._clock = clock
         self._lock = threading.RLock()
         self._attached = False
         self._closed = False
@@ -318,15 +321,17 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         with the bytes on the alternate bulk OUT; shorter ones as framed
         0x0d. ``eos_char`` fills the 0x0e header's ``e`` byte, which NI sets
         to the session's termination character (§10.5.2); the framed 0x0d
-        keeps its bench-proven 0x00 there.
+        keeps its bench-proven 0x00 there. ``timeout_s`` bounds the write
+        as a whole, from this call on (``_write_bytes``).
         """
         with self._guard():
+            deadline = self._deadline(timeout_s)
             self._ensure_attached()
             if not data:
                 return 0
             code = p.timeout_code(timeout_s)
             self._address(_LISTEN, pad, sad, code, self._link.reply_wait_s(code), readdress)
-            return self._write_bytes(data, code, send_eoi, eos_char)
+            return self._write_bytes(data, code, send_eoi, eos_char, deadline)
 
     def write_raw(self, data: bytes, *, send_eoi: bool = True,
                   timeout_s: Optional[float], eos_char: Optional[int] = None) -> int:
@@ -336,10 +341,11 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         adapter reports error 3 or 8 when nothing is addressed to listen.
         """
         with self._guard():
+            deadline = self._deadline(timeout_s)
             self._ensure_attached()
             if not data:
                 return 0
-            return self._write_bytes(data, p.timeout_code(timeout_s), send_eoi, eos_char)
+            return self._write_bytes(data, p.timeout_code(timeout_s), send_eoi, eos_char, deadline)
 
     def read(self, pad: int, *, sad: Optional[int] = None, max_bytes: int,
              timeout_s: Optional[float], eos: Optional[int] = None,
@@ -348,16 +354,18 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
 
         Returns the data and whether END (EOI, or the EOS character when
         ``eos`` is given) ended it. False means the count was reached. A
-        device-side timeout raises ``GpibTimeout`` carrying the partial data.
-        On the framed path no single 0x0a asks for more than
-        ``FRAMED_READ_MAX_BYTES``; a larger request is read in pieces after
-        the one addressing (``_read_bytes``).
+        timeout raises ``GpibTimeout`` carrying the partial data; it bounds
+        the read as a whole, from this call on, as NI's code bounds its one
+        instruction (§7.1, §10.10.2). On the framed path no single 0x0a asks
+        for more than ``FRAMED_READ_MAX_BYTES``; a larger request is read in
+        pieces after the one addressing (``_read_bytes``).
         Without ``eos`` the instruction's ``m e`` bytes are the bench-proven
         ``00 00``. NI puts the session's termination character into ``e``
         even then (§10.1.6), under its own AUXRA value; the codec can build
         that form, this controller does not send it.
         """
         with self._guard():
+            deadline = self._deadline(timeout_s)
             self._ensure_attached()
             if max_bytes < 1:
                 return b'', False
@@ -365,7 +373,7 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
             self._address(_TALK, pad, sad, code, self._link.reply_wait_s(code), readdress)
             # ATN rule (§5): a 0x06 between the addressing 0x0c and the read.
             self._go_to_standby()
-            return self._read_bytes(max_bytes, code, eos, eos_8bit, 'read')
+            return self._read_bytes(max_bytes, code, eos, eos_8bit, 'read', deadline)
 
     def read_raw(self, max_bytes: int, timeout_s: Optional[float],
                  eos: Optional[int] = None, eos_8bit: bool = False) -> Tuple[bytes, bool]:
@@ -375,10 +383,11 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         false, else error 2.
         """
         with self._guard():
+            deadline = self._deadline(timeout_s)
             self._ensure_attached()
             if max_bytes < 1:
                 return b'', False
-            return self._read_bytes(max_bytes, p.timeout_code(timeout_s), eos, eos_8bit, 'read')
+            return self._read_bytes(max_bytes, p.timeout_code(timeout_s), eos, eos_8bit, 'read', deadline)
 
     def command(self, command_bytes: bytes,
                 timeout_s: Optional[float] = DEFAULT_TIMEOUT_S) -> int:
@@ -395,6 +404,12 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
                 status = self._link.status_exchange(p.command_message(chunk, code), wait, 'command')
                 accepted += status.transferred(len(chunk))
             return accepted
+
+    def _deadline(self, timeout_s: Optional[float]) -> Optional[float]:
+        """When a transfer asked for with ``timeout_s`` must be over, on ``_clock``; None for no timeout."""
+        if p.timeout_code(timeout_s) == t.TIMEOUT_DISABLED_CODE:
+            return None
+        return self._clock() + timeout_s
 
     def _address(self, direction: str, pad: int, sad: Optional[int], code: int,
                  wait_s: float, readdress: bool) -> None:
