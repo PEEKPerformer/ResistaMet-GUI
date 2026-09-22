@@ -21,6 +21,25 @@ listing does the same.
 (the board handle, timeouts, IFC, raw command bytes, the REN and ATN line
 operations); ``NiUsbGpibInstrSession`` adds the addressed device on top.
 
+Timeouts. VI_ATTR_TMO_VALUE is the least time to wait, and reads back as
+set (capped at 1000 s, the longest the device table offers). It goes into
+every instruction of an operation as the smallest device code under which
+no adapter timed in §7.3 ends sooner: NI's code, except that 264 to 300 ms
+go out as 0xfb (NI's 0xfa ends at 0.2635 s on the captured unit) and 300 s
+as 0x02. The adapter then waits the code's expiry, which differs by unit:
+for the application's 5000 ms, code 0xfd, 16.78 s on the captured unit
+013CC9DF and 20.0 s on bench unit 01CEE482; for 1000 ms, 0xfb, 1.05 s and
+1.25 s; for 3000 ms, 0xfc, 4.20 s and 3.75 s (the table is in the
+``controller`` docstring). A read is bounded as a whole: one that runs out
+returns the bytes read so far with VI_ERROR_TMO, as pyvisa-py's own
+sessions do. With NI's instructions switched on, a raw read on unit
+01CEE482 used to end at 20.0 s whatever its code (§11.2).
+VI_TMO_IMMEDIATE is sent as 100 ms, code 0xf9 (0.127-0.132 s); what NI
+sends for it was not captured. VI_TMO_INFINITE is code 0xf0: the adapter
+never ends the instruction, and the controller stops it after its own
+wait, 600 s, and reports a timeout. An adapter that leaves the USB bus is
+VI_ERROR_CONN_LOST on that operation and every later one.
+
 The board itself, ``GPIB<n>::INTFC``, is ``visa_intfc``; ``install()``
 here installs both. Not supported on the INSTR session:
 ``gpib_pass_control`` (§5.17 leaves the adapter's report of the hand-over

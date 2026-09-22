@@ -53,7 +53,7 @@ have run on our bench, and the application's every read is a large one
 (pyvisa asks for 20480 bytes at a time). A framed read asks for at most
 ``FRAMED_READ_MAX_BYTES`` (1024) in one 0x0a: a larger request is a sequence
 of 0x0a instructions of that count or less, after one addressing, until END,
-the count or an error. NI's driver sends no framed read above 1024 -- from
+the count, an error or the timeout (below). NI's driver sends no framed read above 1024 -- from
 1025 up it uses 0x0b (§10.1.1, §10.1.8) -- so a bigger 0x0a is unobserved on
 the wire, and on bench unit 01CEE482 a 20480-byte 0x0a was fatal once the
 answer outgrew a ceiling: answers up to 4200 bytes came back whole in one
@@ -63,8 +63,9 @@ transfers take the instructions NI's own driver uses (§10): a read of
 ``RAW_READ_MIN_BYTES`` or more is a 0x0b whose bytes arrive unframed on the
 alternate bulk IN endpoint, and a write of ``RAW_WRITE_MIN_BYTES`` or more
 is a 0x0e whose bytes go out unframed on the alternate bulk OUT; smaller
-transfers stay framed, as does everything on a model without the alternate
-pair. The raw paths were written from the captures alone. On an
+transfers stay framed. The switch is honoured on the GPIB-USB-HS alone, the
+one model NI's driver was captured on; any other model stays framed. The
+raw paths were written from the captures alone. On an
 instrument session they send NI's messages byte for byte -- the snapshot,
 the addressing 0x0c under 0xfd, the 0x0b or 0x0e, the register writes,
 all in one message, after NI's bank-2 session configuration (§10.1.2,
@@ -73,9 +74,50 @@ earlier composition (a 0x0c, a 0x06 and the 0x0b as three messages, with
 no bank-2 configuration) is why unit 01CEE482 ended a 0x0b at 20.0 s
 whatever its code (§11.2). What still differs from NI is the
 initialisation (AUXRA 0x81 against NI's 0x99, §10.3.1). They stay off
-until they have run against an adapter of ours. The same switch selects the serial poll: off, it is the
-IEEE-488.1 command sequence of §5.9 (``device_ops.serial_poll``); on, NI's
-0x10 instruction (``serial_poll_instruction``).
+until they have run against an adapter of ours. The same switch selects
+the serial poll: off, it is the IEEE-488.1 command sequence of §5.9
+(``device_ops.serial_poll``); on, NI's 0x10 instruction
+(``serial_poll_instruction``).
+
+Timeouts. Every operation takes a timeout in seconds, and it means what a
+VISA timeout means: the least time to wait before reporting one.
+
+- The code. A timeout becomes the smallest device code under which no
+  adapter timed in §7.3 ends an instruction sooner (``protocol.
+  timeout_code``). That is NI's code -- the smallest nominal limit not
+  below the timeout (§7.1) -- except where NI's would end early: 264 to
+  300 ms go out as 0xfb, not 0xfa, which ends at 0.2635 s on the captured
+  unit, and 300 s as 0x02, not 0x01, which nobody timed. 2 ms and 5 ms
+  take 0xf5 and 0xf6, which still cover them.
+- What the adapter then waits, measured (§7.3), captured unit 013CC9DF
+  under NI's driver / bench unit 01CEE482 under this one, by the timeout
+  asked: up to 2.285 ms, 0xf5, 2.3 ms / not timed; to 5.348 ms, 0xf6,
+  5.3-5.5 ms / not timed; to 17.719 ms, 0xf7, 17.7-17.8 ms / not timed; to
+  34.088 ms, 0xf8, 34.1 ms / not timed; to 127 ms, 0xf9, 0.132 s / 0.127 s;
+  to 263.4 ms, 0xfa, 0.2635 s / 0.375 s; to 1.0498 s, 0xfb, 1.050 s / 1.250
+  s; to 3.75 s, 0xfc, 4.196 s / 3.750 s; to 16.778 s, 0xfd, 16.778 s / 20.0
+  s; to 33.555 s, 0xfe, 33.556 s / 41.25 s. The longer codes, 0xff (to 100
+  s), 0x01 (to 268 s) and 0x02 (to 1000 s), were timed on neither. The
+  application's 5 s goes out as 0xfd.
+- The host waits for the adapter to say so: the longer of the two units'
+  figures plus 2 s (§7.2), plus a second per 1000 bytes of a transfer, and
+  on NI's raw messages the 20 s of their addressing block's 0xfd as well.
+  Only when that runs out is the stop request sent (§5.11).
+- A read is bounded as a whole, from the call on, as NI's one instruction
+  is (§7.1, §10.10.2): a framed read in pieces of 1024 gives each later
+  piece the code for the time left and starts none after it, and a read
+  that runs out raises ``GpibTimeout`` with the bytes read so far. A
+  write split into several instructions likewise.
+- The raw path on unit 01CEE482: a 0x0b of this driver's earlier
+  composition ended there at 20.0 s whatever its code (0xf9, 0xfb, 0xfc)
+  with nothing to read, so a timeout on it came after 20 s whatever was
+  asked (§11.2); reads that returned data were not affected. Whether NI's
+  message, now sent, changes that is not yet known.
+- 0 and None mean no timeout here: code 0xf0, under which the adapter
+  never ends an instruction; the host waits ``infinite_wait_s`` (600 s by
+  default), then stops the instruction and reports a timeout. The VISA
+  session sends VI_TMO_INFINITE this way; VI_TMO_IMMEDIATE it sends as
+  100 ms, 0xf9, since no instruction completes under the shortest codes.
 
 Bench notes (GPIB-USB-HS 01CEE482, Keithley 2400 at PAD 3, 2026-09-18): the
 attach sequence, addressing, the framed write and read and the presence
