@@ -15,7 +15,7 @@ from typing import List, Optional, Sequence, Tuple
 from . import protocol as p
 from . import tables as t
 from .protocol import AdapterNotReady, GpibTimeout, NoReply, ProtocolError, StatusBlock
-from .transport import Transport, TransportError, TransportGone, TransportTimeout
+from .transport import Transport, TransportError, TransportGone, TransportStall, TransportTimeout
 
 #: The controller's logger: these are its methods, and they log as it.
 logger = logging.getLogger(__name__.rpartition('.')[0] + '.controller')
@@ -76,6 +76,37 @@ class AdapterLink:
             # Either way a reply may be queued that nobody will read;
             # the re-attach drains it (``_ensure_attached``).
             self.resync_pending = True
+
+    def device_present(self) -> Optional[bool]:
+        """The transport's answer to whether the adapter is still on the USB bus; None: it cannot tell."""
+        probe = getattr(self.transport, 'device_present', None)
+        if probe is None:
+            return None
+        try:
+            return probe()
+        except Exception as exc:  # noqa: BLE001 - a check that fails cannot tell
+            logger.debug('%s: the presence check failed: %s', self.model.name, exc)
+            return None
+
+    def gone_instead(self, exc: TransportError) -> Optional[TransportGone]:
+        """For a USB error that does not say the device is gone: whether it is, as ``TransportGone``.
+
+        On macOS an unplugged adapter's handle reports errno 5 and then
+        "Other error", never "no such device" (§10.11), so the error alone
+        cannot tell an unplug from a transfer fault. This looks at the bus,
+        before anything is sent to recover: None when the adapter is still
+        there or the transport cannot tell, and recovery goes ahead as for
+        any fault. A timeout or a STALL is an answer from a device that is
+        there, and is not looked into.
+        """
+        if isinstance(exc, (TransportGone, TransportTimeout, TransportStall)):
+            return None
+        if self.device_present() is not False:
+            return None
+        gone = TransportGone('%s; the adapter is no longer on the USB bus' % exc)
+        gone.errno, gone.backend_code = exc.errno, exc.backend_code
+        gone.__cause__ = exc
+        return gone
 
     def control(self, request: t.ControlRequest,
                 timeout_ms: int = t.CONTROL_TIMEOUT_MS) -> bytes:

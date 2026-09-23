@@ -548,6 +548,22 @@ class TestInstrumentSession:
         inst.close()
         assert adapter.closed
 
+    def test_an_adapter_unplugged_on_macos_is_connection_lost_at_the_first_failed_call(self, rm, adapter):
+        # §10.11: on macOS the query fails with errno 5, not "no such device"; the controller
+        # finds the adapter gone from the bus before any recovery and reports it at once.
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        adapter.unplug_like_macos = True
+        adapter.unplugged = True
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            inst.query('*IDN?')
+        assert info.value.error_code == StatusCode.error_connection_lost
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            inst.write(':OUTP OFF')
+        assert info.value.error_code == StatusCode.error_connection_lost
+        assert adapter.calls_while_unplugged == 1
+        inst.close()
+        assert adapter.closed
+
     def test_clear_sends_selected_device_clear_with_the_session_timeout(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 250
