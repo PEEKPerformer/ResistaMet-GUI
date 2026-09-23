@@ -533,22 +533,21 @@ class TestThicknessCorrection:
         # w/S = 0.39
         assert f_thickness_correction(thickness_cm=0.039, spacing_cm=0.1) == 1.000
 
-    @pytest.mark.parametrize("w_over_s,expected", [
-        (0.5, 0.997),
-        (0.6, 0.992),
-        (0.7, 0.982),
-        (0.8, 0.966),
-        (0.9, 0.944),
-        (1.0, 0.921),
+    @pytest.mark.parametrize("w_over_s,expected,tol", [
+        (0.5, 0.997, 1e-3),
+        (0.6, 0.992, 1e-3),
+        (0.7, 0.982, 1e-3),
+        (0.8, 0.966, 1e-3),
+        (0.9, 0.944, 2.5e-3),
+        (1.0, 0.921, 1e-3),
     ])
-    def test_against_table_4(self, w_over_s, expected):
+    def test_against_table_4(self, w_over_s, expected, tol):
         s = 0.1
         w = w_over_s * s
-        # 5e-3 tolerance: Appendix X1 notes the table itself is interpolated
-        # between Smits 1958 values to <= 2 parts in 1e4, and the X1.1 closed
-        # form agrees with the table to 6 parts in 1e4 except at w/S = 0.9
-        # and 1.0 where the table is +2e-4 off the closed form.
-        assert f_thickness_correction(w, s) == pytest.approx(expected, abs=5e-3)
+        # The X1.1 closed form agrees with the printed table to 6 parts in
+        # 1e4 except at w/S = 0.9, where it gives 0.9460 against the
+        # printed 0.944.
+        assert f_thickness_correction(w, s) == pytest.approx(expected, abs=tol)
 
     def test_invalid_inputs_return_nan(self):
         import math
