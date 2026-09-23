@@ -34,7 +34,7 @@ def test_no_gui_or_visa_import():
 
 
 def test_defaults_come_from_default_settings():
-    """Every default is DEFAULT_SETTINGS by reference, not a re-typed literal.
+    """Every default equals its DEFAULT_SETTINGS entry.
 
     A copied literal would drift the day a default changes, and the drift
     would be invisible. Comparing the model's default against the dict is the

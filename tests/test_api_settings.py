@@ -288,7 +288,7 @@ class TestInstruments:
     def test_resources_are_listed_when_idle(self, client, fake_rm):
         response = client.get('/instruments/resources')
         assert response.status_code == 200
-        assert isinstance(response.json()['resources'], list)
+        assert 'GPIB0::24::INSTR' in response.json()['resources']
 
     def test_resources_are_refused_during_a_run(self, client, fake_rm):
         client.post('/session/start', json={'mode': 'four_point', 'sample_name': 'w',
@@ -301,7 +301,7 @@ class TestInstruments:
         response = client.post('/instruments/identify',
                                 json={'address': 'GPIB0::24::INSTR'})
         assert response.status_code == 200
-        assert response.json()['model']
+        assert response.json()['model'] == '2420'
 
     def test_resources_say_which_backend_answered(self, client, fake_rm):
         body = client.get('/instruments/resources').json()
@@ -516,10 +516,12 @@ class TestAddUser:
         assert client.get('/profiles/bob').status_code == 200
 
     def test_existing_user_is_just_selected(self, client):
+        client.post('/users', json={'username': 'bob'})
         before = client.get('/users').json()['users']
         response = client.post('/users', json={'username': 'alice'})
         assert response.status_code == 201
         assert response.json()['users'] == before
+        assert response.json()['last_user'] == 'alice'
 
     def test_blank_name_is_rejected(self, client):
         assert client.post('/users', json={'username': '   '}).status_code == 422
