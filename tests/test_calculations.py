@@ -475,13 +475,28 @@ class TestGeometryCorrectionNonCircular:
     def test_rectangle_4_against_table(self, d_over_s, expected):
         self._check('rectangle_4', 4.0, d_over_s, expected)
 
-    def test_infinite_sample_all_geometries_agree(self):
+    WIDE_TABLE_GAP = pytest.mark.xfail(strict=True, reason=(
+        "_SMITS_GEOMETRY_CF jumps from D/s = 40 to a 1e9 sentinel row and "
+        "_linear_interp draws a straight line between them, so a square or "
+        "rectangle 1e4 spacings wide gets the D/s = 40 value (4.5120 / "
+        "4.5129) instead of about 4.532. calculations.py, "
+        "f2_finite_diameter; also pinned in test_property_calculations.py."))
+
+    @pytest.mark.parametrize("d_over_s", [
+        1e4, 1e10,
+    ])
+    @pytest.mark.parametrize("geom", [
+        'circle', 'square', 'rectangle_2', 'rectangle_3', 'rectangle_4',
+    ])
+    def test_infinite_sample_all_geometries_agree(self, request, geom, d_over_s):
         # In the infinite-sample limit every geometry → 4.5324 (= pi/ln(2)).
-        # F84 Table 3 rounds this to 4.532; we accept either rounding.
-        for geom in ('circle', 'square', 'rectangle_2',
-                     'rectangle_3', 'rectangle_4'):
-            assert f2_finite_diameter(0.1, None, geom) == \
-                   pytest.approx(4.5324, abs=5e-4)
+        # F84 Table 3 rounds this to 4.532; we accept either rounding. A
+        # finite D goes through each geometry's own lookup (diameter=None
+        # returns 4.532 before the geometry is looked at).
+        if geom != 'circle' and d_over_s == 1e4:
+            request.applymarker(self.WIDE_TABLE_GAP)
+        assert f2_finite_diameter(0.1, 0.1 * d_over_s, geom) == \
+               pytest.approx(4.5324, abs=5e-4)
 
     def test_default_geometry_is_circle(self):
         # Backward compat: no geometry kwarg must match circle.
