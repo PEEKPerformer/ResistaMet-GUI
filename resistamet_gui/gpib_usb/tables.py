@@ -506,7 +506,8 @@ def address_listener_command_ni(controller: int, pad: int, sad: Optional[int] = 
 #: messages, whatever the session's timeout (§10.1.9: 354 of 367 blocks).
 NI_ADDRESSING_CODE = 0xFD
 #: Bank-2 register 0x03 := 1, the last block of every NI instrument-session
-#: message (§10.2.5); meaning not established.
+#: message (§10.2.5). Sent alone, it arms one interrupt push for a service
+#: request (§10.11); what else it means is not established.
 BANK2_SESSION_MARK_WRITE: Tuple[int, int, int] = (2, 0x03, 0x01)
 
 

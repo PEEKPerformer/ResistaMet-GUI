@@ -9,7 +9,7 @@ from resistamet_gui.gpib_usb.transport import TransportError, TransportGone, Tra
 from tests.fakes.gpib_usb import (CLEAR_HALTS, DRAIN, DRAIN_LENGTH, RAW_DRAIN, STOP, T3S, QueueingAdapter,
                                   ScriptedTransport, address_listener, address_talker, attach_script, attached,
                                   attached_ni, h, ni_session, ni_write, reattach_after_usb_fault_script,
-                                  reattach_script, regread_reply, regwrite_reply, status_reply)
+                                  reattach_script, regread_reply, regwrite_reply, srq_arm, status_reply)
 
 
 class TestFaults:
@@ -377,7 +377,7 @@ class TestAdapterGone:
         transport.assert_done()
 
     def test_a_wait_for_a_service_request_that_finds_the_adapter_gone(self):
-        controller, transport = attached([('intr', unplugged(), 64)])
+        controller, transport = attached(srq_arm() + [('intr', unplugged(), 64)])
         with pytest.raises(AdapterGone):
             controller.wait_srq(1.0)
         with pytest.raises(AdapterGone):

@@ -39,13 +39,15 @@ re-attach, and every later operation on the controller raises the same
 without touching USB. A replugged adapter is a new USB device, which the
 board registry opens afresh (spec §11.2, "Hot-unplug mid-run").
 
-The interrupt endpoint is not armed at attach (§2.5 calls it optional and
+The interrupt endpoint is not used at attach (§2.5 calls it optional and
 operation without it reliable), so attach skips the interrupt-monitor-mask
-steps 4 and 6 of §2.8 and ``status()`` polls the control endpoint instead.
-``wait_srq`` reads it on demand: the adapter pushes one 8-byte packet there
-when an instrument asserts SRQ, having serial-polled it itself (§10.4.2).
-That wait has no caller in the application and has not run on hardware; see
-the note at the top of its class in ``srq``.
+steps 4 and 6 of §2.8 and ``status()`` polls the control endpoint instead;
+the bench needed no mask for the push (§10.11). ``wait_srq`` reads it on
+demand: once armed by the 12-byte bank-2 0x03 write, which it sends at the
+start and every 15 ms, the adapter pushes one 8-byte packet there when an
+instrument asserts SRQ, having serial-polled it itself (§10.4.2, §10.11).
+That wait has no caller in the application; see the note at the top of its
+class in ``srq`` for what has run on hardware.
 
 Transfers of every size take the framed 0x0a / 0x0d instructions unless the
 controller is built with ``ni_instructions=True``: those are the paths that

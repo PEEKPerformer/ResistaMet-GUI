@@ -215,8 +215,8 @@ def status_reply(opcode: int, error: int = 0, count: int = 0, ibsta: int = 0x013
             + (count & 0xFFFF).to_bytes(2, 'little') + b'\x00\x00' + h('04 00 00 00'))
 
 
-def regwrite_reply(completed: int, error: int = 0) -> bytes:
-    return (h('09 01 30') + bytes((error,)) + h('00 00 00 00') + bytes((completed, 0, 0, 0))
+def regwrite_reply(completed: int, error: int = 0, ibsta: int = 0x0130) -> bytes:
+    return (h('09') + ibsta.to_bytes(2, 'big') + bytes((error,)) + h('00 00 00 00') + bytes((completed, 0, 0, 0))
             + h('04 00 00 00'))
 
 
@@ -297,6 +297,14 @@ def reattach_after_usb_fault_script(stale: Any = None, take_control_error: int =
     found = TransportTimeout('nothing to drain') if stale is None else stale
     return (CLEAR_HALTS + [STOP, ('in', found, DRAIN_LENGTH)] + ([RAW_DRAIN] if raw else [])
             + attach_script(take_control_error))
+
+
+def srq_arm(ibsta: int = 0x0064) -> List[Tuple[Any, ...]]:
+    """The 12-byte bank-2 0x03 write that arms the service-request push, and its reply (§10.11).
+
+    The reply's ibsta carries SRQI when SRQ is already asserted: 0x1068 on the bench.
+    """
+    return [('out', p.ni_session_mark_message()), ('in', regwrite_reply(1, ibsta=ibsta), 16)]
 
 
 def address_listener(pad: int = 22, code: int = T3S) -> List[Tuple[Any, ...]]:
