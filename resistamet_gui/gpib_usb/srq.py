@@ -44,9 +44,16 @@ class _SrqMixin:
     # request after it completed, and a write sent while SRQ was asserted
     # replied with SRQI in its ibsta and the push followed at once. Without
     # the write no push came in 5 s. The wait as written here -- the write
-    # at the start and every 15 ms, SRQI taken as the request -- has not run
-    # on an adapter as a whole. Nothing in the application calls it:
-    # pyvisa-py 0.8.1 has no enable_event / wait_on_event.
+    # at the start and every 15 ms, SRQI taken as the request -- then ran on
+    # the same unit on macOS the same day: five service requests in one
+    # session, each seen in 7-8 ms with status byte 96 and the next serial
+    # poll returning 32 (the adapter had polled the device itself); waits
+    # with nothing pending timed out at 1.14-1.16 s for 1 s; status() and
+    # queries from another thread went through during a wait; close ended a
+    # wait in 0.5 s. Whether any request came by SRQI in a write's reply,
+    # and SRQI with no push after it, are not recorded. Nothing in the
+    # application calls it: pyvisa-py 0.8.1 has no enable_event /
+    # wait_on_event.
     # ------------------------------------------------------------------
 
     def wait_srq(self, timeout_s: Optional[float]) -> Optional[int]:
