@@ -15,10 +15,12 @@ pytest.importorskip("PySide6")
 pytestmark = pytest.mark.e2e
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from .conftest import E2E_SIM_TEMP_C  # noqa: E402
 from .e2e_utils import (  # noqa: E402
     csv_header,
     newest_csv,
     pump_for,
+    read_csv_data,
     switch_to,
     wait_until,
 )
@@ -31,6 +33,10 @@ def _run_resistance(window, app, seconds=2.0):
     app.processEvents()
     assert window.measurement_running, "resistance run did not start"
     pump_for(seconds, app)
+    assert wait_until(
+        lambda: len(list(window.data_buffers["resistance"].timestamps)) >= 2,
+        timeout=15.0, app=app,
+    ), "fewer than 2 resistance points within 15 s"
     window.stop_current_measurement()
     assert wait_until(lambda: not window.measurement_running, timeout=3.0, app=app)
 
@@ -45,6 +51,16 @@ def test_resistance_run_co_logs_aux_columns(sim_window, app):
     assert "aux_fault" in header, f"aux_fault missing on resistance run: {header}"
     assert header.index("aux_t_sample") < header.index("compliance")
     assert header.index("aux_fault") < header.index("compliance")
+
+    # The columns carry the simulated sensor's readings, not blanks.
+    data = read_csv_data(newest_csv())[1:]
+    assert data, "no resistance rows written"
+    ti, fi = header.index("aux_t_sample"), header.index("aux_fault")
+    temps = [float(r[ti]) for r in data if r[ti] not in ("", "nan", "NaN")]
+    assert temps, "no aux temperature values recorded"
+    bad = [t for t in temps if abs(t - E2E_SIM_TEMP_C) > 2.0]
+    assert not bad, f"aux temps implausible (expected ~{E2E_SIM_TEMP_C}): {bad[:3]}"
+    assert {r[fi] for r in data} == {"0"}, "expected a clean aux_fault column"
 
 
 def test_resistance_schema_unchanged_with_aux_off(sim_window, app):
