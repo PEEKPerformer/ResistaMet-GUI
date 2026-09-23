@@ -480,8 +480,13 @@ class TestRawTransfersSwitch:
         transport.assert_done()
 
     def test_switched_on_large_transfers_go_raw(self):
-        controller, _ = attached_ni([])
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(RAW_READ_MIN_BYTES, T3S)), ('raw_in', b'end\n', 1536),
+            ('in', raw_read_reply(RAW_READ_MIN_BYTES, 4), 512),
+        ])
         assert controller.raw_transfers is True and controller.ni_instructions is True
+        assert controller.read_raw(RAW_READ_MIN_BYTES, timeout_s=3.0) == (b'end\n', True)
+        transport.assert_done()
 
     def test_switched_off_reads_and_writes_stay_framed(self):
         controller, transport = attached(address_talker() + [
