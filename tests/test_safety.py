@@ -79,9 +79,17 @@ class TestFourPointAndVdp:
         assert check.voltage_v == 50.0
 
     def test_vdp_uses_vdp_voltage_compliance(self):
-        s = _settings({'vdp_voltage_compliance': 5.0})
+        # An unknown mode is also "not hazardous", so only a hazardous
+        # value and the voltage read back show the vdp key was used.
+        s = _settings({'vdp_voltage_compliance': 50.0})
         check = is_potentially_hazardous(s, 'vdp')
+        assert check.hazardous
+        assert check.voltage_v == 50.0
+        assert check.reason == 'V compliance'
+
+        check = is_potentially_hazardous(_settings({'vdp_voltage_compliance': 5.0}), 'vdp')
         assert not check.hazardous
+        assert check.voltage_v == 5.0
 
 
 class TestSweep:
