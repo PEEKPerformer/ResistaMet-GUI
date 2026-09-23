@@ -22,6 +22,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from resistamet_gui import calculations as calc
+from resistamet_gui.accuracy import voltage_uncertainty
 from resistamet_gui import calculations_geometry as geo
 from resistamet_gui import calculations_vdp as vdp
 
@@ -531,7 +532,13 @@ class TestCombinedUncertainty:
         volts = _readings(r, r * q, r * q, r, current)
         result = vdp.calculate_van_der_pauw(volts, current, thickness)
         out = vdp.vdp_combined_uncertainty(volts, current, result.sheet_resistance, result.rho_avg, model)
-        assert out.u_inst_R > 0 and out.u_stat_R >= 0
+        # A geometry reading +/-I*R_k gives R_k = (V_p - V_n) / (2I), whose
+        # spread from the two readings is sqrt(2) * sigma_V(I*R_k) / (2I).
+        # The instrument term is the mean of the four.
+        per_geometry = [math.sqrt(2.0) * voltage_uncertainty(current * r_k, model=model) / (2.0 * current)
+                        for r_k in (r, r * q, r * q, r)]
+        assert out.u_inst_R == pytest.approx(sum(per_geometry) / 4.0, rel=1e-9)
+        assert out.u_stat_R >= 0
         assert out.u_total_R == pytest.approx(math.hypot(out.u_inst_R, out.u_stat_R), rel=1e-12)
         # The same relative uncertainty lands on Rs and on rho.
         assert out.u_rs / result.sheet_resistance == pytest.approx(out.u_rho / result.rho_avg, rel=1e-9)
