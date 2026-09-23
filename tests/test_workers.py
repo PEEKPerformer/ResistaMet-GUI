@@ -648,9 +648,10 @@ class TestOutputIntegrity:
         lines = csv_files[0].read_text().strip().splitlines()
         # CSV has header line + N data lines
         data_lines = [l for l in lines if not l.startswith("#")]
-        # Skip the header — data lines = N samples
-        assert len(data_lines) >= len(spies.data_point), (
-            f"CSV ({len(data_lines)} rows) lost data vs signals ({len(spies.data_point)})"
+        assert len(spies.data_point) == 4
+        # One header row, then one row per sample signalled.
+        assert len(data_lines) - 1 == len(spies.data_point), (
+            f"CSV ({len(data_lines) - 1} rows) vs signals ({len(spies.data_point)})"
         )
 
 
