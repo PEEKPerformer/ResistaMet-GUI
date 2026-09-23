@@ -177,8 +177,8 @@ def _eos_params(m: int, e: int) -> Dict[str, object]:
     return {'eos': e, 'eos_8bit': bool(m & p.EOS_MODE_BIN), 'termchar': e}
 
 
-def rebuild(block: bytes) -> bytes:
-    """Our encoder's bytes for the parameters decoded from NI's ``block``."""
+def rebuild(block: bytes) -> Optional[bytes]:
+    """Our encoder's bytes for the parameters decoded from NI's ``block``; None for one it does not build."""
     opcode = block[0]
     if opcode == p.OP_STATUS_SNAPSHOT:
         return p.status_snapshot_block()
@@ -216,10 +216,15 @@ def rebuild(block: bytes) -> bytes:
     if opcode == p.OP_TAKE_CONTROL:
         return p.take_control_message(bool(block[1]))[:4]
     if opcode == p.OP_GO_TO_STANDBY:
-        # NI's byte 3 is 0x0a (§10.7.1), meaning not established; ours is 0x00.
-        return block
+        # NI's byte 3 is 0x0a (§10.7.1), meaning not established; ours is 0x00. The rest is ours,
+        # but for byte 1 = 1, NI's handshake variant, which this driver does not build (§5.4).
+        if block[1]:
+            return None
+        built = p.go_to_standby_message()[:4]
+        assert built[3] == 0x00 and block[3] == 0x0A, block.hex(' ')
+        return built[:3] + block[3:]
     if opcode == p.OP_PRESENCE_PROBE:
-        return block  # not built by this driver
+        return None  # not built by this driver
     raise AssertionError('no builder for 0x%02x' % opcode)
 
 
@@ -239,7 +244,11 @@ class TestEncoderReproducesNi:
             if transfer.endpoint != EP_OUT or transfer.completion or not transfer.payload:
                 continue
             for block in split_host_blocks(transfer.payload):
-                assert rebuild(block) == block, '%s: 0x%02x block %s' % (name, block[0], block.hex(' '))
+                built = rebuild(block)
+                if built is None:
+                    assert block[0] == p.OP_PRESENCE_PROBE or block[:2] == b'\x06\x01', block.hex(' ')
+                    continue
+                assert built == block, '%s: 0x%02x block %s' % (name, block[0], block.hex(' '))
                 seen[block[0]] = seen.get(block[0], 0) + 1
         assert seen, name
 
