@@ -18,7 +18,7 @@ import logging
 
 from . import transport as _transport
 from .protocol import AdapterGone, AdapterNotReady, GpibError, GpibTimeout, NoListener, NoReply, ProtocolError
-from .transport import AdapterInfo, TransportError, TransportTimeout, find_adapters
+from .transport import AdapterInfo, TransportAccessDenied, TransportError, TransportTimeout, find_adapters
 
 __all__ = [
     'AdapterGone',
@@ -29,6 +29,7 @@ __all__ = [
     'NoListener',
     'NoReply',
     'ProtocolError',
+    'TransportAccessDenied',
     'TransportError',
     'TransportTimeout',
     'available',
