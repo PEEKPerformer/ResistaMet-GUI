@@ -734,9 +734,12 @@ class TestFramedReadRoundTrip:
             assert parsed.data == data and parsed.end is end, reply.hex()
             assert p.parse_status_block(reply, p.read_status_offset(reply)).id == p.BLOCK_READ_STATUS
 
-    def test_a_framed_reply_is_never_a_whole_number_of_packets_short_of_its_buffer(self):
-        # The reply must end in a short packet for the host read to complete: it always fits
-        # the buffer with room to spare, so the transfer can never fill the buffer exactly.
+    def test_a_framed_reply_never_fills_its_buffer(self):
+        # The longest reply fits the buffer with room to spare, so the transfer never fills it
+        # and the device's short packet ends the read (§5.2, §8.6). Not checked here: a reply
+        # of whole packets, such as 31 0x36 blocks and the 16-byte trailer (512 bytes, 451-465
+        # requested), needs the zero-length packet §5.2 implies and no capture of a framed
+        # read shows.
         rng = random.Random(SEED + 5)
         for _ in range(500):
             requested = rng.randint(1, 3000)
