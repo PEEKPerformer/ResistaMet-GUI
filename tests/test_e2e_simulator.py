@@ -347,10 +347,10 @@ def test_csv_headers_match_documented_schema(sim_window, app):
 # --------------------------------------------------------------------------
 
 def test_voltage_compliance_clamps_and_flags(sim_window, app):
-    """When V_compliance is set below what the sourced current × DUT would
-    produce, the instrument clamps voltage and sets STAT bit 3. The worker
-    parses that into ``compliance_status='V_COMP'`` and the buffer records
-    it on every clamped point.
+    """When the current compliance is set below what the sourced voltage
+    into the DUT would draw, the instrument clamps the current and sets
+    STAT bit 3. The worker records ``compliance_status='I_COMP'`` on every
+    clamped point.
     """
     # 10kΩ DUT + 1 mA sourced → V would naturally be 10 V; clamp to 1 V.
     _reset_simulator(ohms=10_000.0)
@@ -372,16 +372,55 @@ def test_voltage_compliance_clamps_and_flags(sim_window, app):
     buf = sim_window.data_buffers["source_v"]
     statuses = list(buf.compliance_status)
     assert statuses, "no compliance status recorded"
-    # The fake sets the compliance bit when output × R exceeds the compliance
-    # limit; at least one point should flag I_COMP (we capped current).
-    flagged = [s for s in statuses if s != "OK"]
-    assert flagged, (
-        f"expected compliance-flagged points; got all OK ({len(statuses)} pts)"
+    # Every point is clamped from the first, and source-V compliance is a
+    # current limit: each one is I_COMP, no other label.
+    assert set(statuses) == {"I_COMP"}, (
+        f"expected I_COMP on all {len(statuses)} points; got {set(statuses)}"
     )
     # And the recorded current shouldn't exceed compliance by more than rounding.
     currents = [i for i in list(buf.current) if i is not None]
     assert all(abs(i) <= 1.1e-4 for i in currents), (
         f"current exceeded compliance: max={max(map(abs, currents))}"
+    )
+
+
+def test_source_v_compliance_is_read_from_the_status_bit(sim_window, app, monkeypatch):
+    """The instrument's compliance bit alone flags a point I_COMP.
+
+    The fake here sets STAT bit 3 while the measured current stays at
+    10 mA, a tenth of the 100 mA limit, so the worker's software check on
+    the current (>= 0.99 x limit) cannot fire: only the parsed bit can.
+    """
+    from resistamet_gui._simulator import FakeKeithley
+
+    real = FakeKeithley._compute_one_point
+
+    def always_in_compliance(self, source_value):
+        v, i, r, _ = real(self, source_value)
+        return v, i, r, True
+
+    monkeypatch.setattr(FakeKeithley, "_compute_one_point", always_in_compliance)
+
+    _switch_to(sim_window, "Voltage Source", app)
+    w = sim_window.tab_voltage_source
+    w.vsource_voltage.setValue(1.0)               # 1 V into 100 Ω → 10 mA
+    w.vsource_current_compliance.setValue(0.1)    # limit 100 mA
+    w.start_button.click()
+    app.processEvents()
+    assert _wait_until(
+        lambda: _points(sim_window, "source_v") >= 2, timeout=15.0, app=app,
+    ), "no source_v points landed"
+    sim_window.stop_current_measurement()
+    assert _wait_until(
+        lambda: not sim_window.measurement_running, timeout=3.0, app=app
+    )
+
+    buf = sim_window.data_buffers["source_v"]
+    currents = _finite(buf.current, len(buf.timestamps), "I")
+    assert all(abs(i - 0.01) < 1e-5 for i in currents), currents[:3]
+    statuses = list(buf.compliance_status)
+    assert set(statuses) == {"I_COMP"}, (
+        f"STAT bit 3 set on every point, but statuses were {set(statuses)}"
     )
 
 
