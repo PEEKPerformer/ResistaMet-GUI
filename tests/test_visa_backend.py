@@ -553,7 +553,9 @@ class TestNiUsbExtensionDegrades:
         monkeypatch.delenv(visa_backend.DISABLE_NI_USB_ENV, raising=False)
         monkeypatch.setattr(gpib_usb, 'available', lambda: True)
         # None in sys.modules makes the import inside install() raise ImportError,
-        # which is what an old pyvisa-py looks like.
+        # which is what an old pyvisa-py looks like; the package attribute an earlier
+        # import left would satisfy ``from . import visa_session`` first.
+        monkeypatch.delattr(gpib_usb, 'visa_session', raising=False)
         monkeypatch.setitem(sys.modules, 'resistamet_gui.gpib_usb.visa_session', None)
         visa_backend._install_ni_usb()
         assert table == before
@@ -564,6 +566,7 @@ class TestNiUsbExtensionDegrades:
         monkeypatch.delenv(visa_backend.DISABLE_NI_USB_ENV, raising=False)
         monkeypatch.setattr(gpib_usb, 'available', lambda: False)
         called = []
+        monkeypatch.delattr(gpib_usb, 'visa_session', raising=False)
         monkeypatch.setitem(sys.modules, 'resistamet_gui.gpib_usb.visa_session',
                             type(sys)('stub'))
         sys.modules['resistamet_gui.gpib_usb.visa_session'].install = lambda: called.append(1)
@@ -585,6 +588,7 @@ class TestNiUsbExtensionDegrades:
 
         monkeypatch.delenv(visa_backend.DISABLE_NI_USB_ENV, raising=False)
         monkeypatch.setattr(gpib_usb, 'available', lambda: True)
+        monkeypatch.delattr(gpib_usb, 'visa_session', raising=False)
         monkeypatch.setitem(sys.modules, 'resistamet_gui.gpib_usb.visa_session', None)
         with caplog.at_level(logging.WARNING, logger=visa_backend.logger.name):
             rm = visa_backend.resource_manager(visa_backend.PY)
