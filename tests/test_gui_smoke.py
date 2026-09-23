@@ -277,10 +277,28 @@ class TestGatherSettings:
         assert 'nplc' in m
 
     def test_source_v_continuous_duration(self, main_window):
-        """When run_continuous is checked, duration should be 0."""
-        main_window.tab_voltage_source.vsource_run_continuous.setChecked(True)
+        """When run_continuous is checked, duration should be 0; unchecked,
+        the duration entered."""
+        w = main_window.tab_voltage_source
+        w.vsource_duration.setValue(2.0)
+        w.vsource_run_continuous.setChecked(True)
         s = main_window.gather_settings_for_mode('source_v')
         assert s['measurement']['vsource_duration_hours'] == 0.0
+        w.vsource_run_continuous.setChecked(False)
+        s = main_window.gather_settings_for_mode('source_v')
+        assert s['measurement']['vsource_duration_hours'] == 2.0
+
+    def test_source_i_continuous_duration(self, main_window):
+        """When run_continuous is checked, duration should be 0; unchecked,
+        the duration entered."""
+        w = main_window.tab_current_source
+        w.isource_duration.setValue(2.0)
+        w.isource_run_continuous.setChecked(True)
+        s = main_window.gather_settings_for_mode('source_i')
+        assert s['measurement']['isource_duration_hours'] == 0.0
+        w.isource_run_continuous.setChecked(False)
+        s = main_window.gather_settings_for_mode('source_i')
+        assert s['measurement']['isource_duration_hours'] == 2.0
 
     def test_source_i_settings(self, main_window):
         s = main_window.gather_settings_for_mode('source_i')
