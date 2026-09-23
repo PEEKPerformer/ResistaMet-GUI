@@ -70,7 +70,7 @@ class TestFaults:
         # re-attach after a fault alone. An unscripted clear_halt would fail assert_done.
         _, transport = attached([])
         transport.assert_done()
-        assert not [step for step in transport.script if step[0] == 'clear_halt']
+        assert transport.halts_cleared == []
 
     def test_a_pipe_reset_that_fails_before_the_reattach_is_logged_and_the_attach_goes_ahead(self, caplog):
         resets = [('clear_halt', 0x06, TransportError('clear halt failed')), ('clear_halt', 0x02),
