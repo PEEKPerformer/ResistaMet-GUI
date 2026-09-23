@@ -78,12 +78,15 @@ raw paths were written from the captures alone. On an
 instrument session they send NI's messages byte for byte -- the snapshot,
 the addressing 0x0c under 0xfd, the 0x0b or 0x0e, the register writes,
 all in one message, after NI's bank-2 session configuration (§10.1.2,
-§10.2.4, §10.5.2) -- so that the bench can tell whether this driver's
-earlier composition (a 0x0c, a 0x06 and the 0x0b as three messages, with
-no bank-2 configuration) is why unit 01CEE482 ended a 0x0b at 20.0 s
-whatever its code (§11.2). What still differs from NI is the
-initialisation (AUXRA 0x81 against NI's 0x99, §10.3.1). They stay off
-until they have run against an adapter of ours. The same switch selects
+§10.2.4, §10.5.2). In that form they ran on unit 01CEE482 on
+2026-09-23 (§10.11): a 0x0b ended at its code's expiry, answers of 1536
+and 35 000 bytes arrived whole, 0x0e wrote up to 6000 bytes, and a 0x0e
+to an empty address failed at once with no listeners. The 20.0 s whatever
+the code of §11.2 came from this driver's earlier composition (a 0x0c, a
+0x06 and the 0x0b as three messages, with no bank-2 configuration). What
+still differs from NI is the initialisation (AUXRA 0x81 against NI's
+0x99, §10.3.1). They stay off by default: the framed paths have far more
+bench time behind them. The same switch selects
 the serial poll: off, it is the IEEE-488.1 command sequence of §5.9
 (``device_ops.serial_poll``); on, NI's 0x10 instruction
 (``serial_poll_instruction``).
@@ -100,15 +103,20 @@ VISA timeout means: the least time to wait before reporting one.
   the slack NI's driver gives it: 3.001 s is 0xfd, 11 s 0xfe.
 - What the adapter then waits, measured (§7.3), captured unit 013CC9DF
   under NI's driver / bench unit 01CEE482 under this one, by code and the
-  timeouts that go out as it: 0xf5 (to 1 ms), 2.3 ms / not timed; 0xf6
-  (to 3 ms), 5.3-5.5 ms / not timed; 0xf7 (to 10 ms), 17.7-17.8 ms / not
-  timed; 0xf8 (to 30 ms), 34.1 ms / not timed; 0xf9 (to 100 ms), 0.132 s /
-  0.127 s, a session total with the wire not logged; 0xfa (to 263 ms),
-  0.2635 s / 0.375 s; 0xfb (to 1 s), 1.050 s / 1.250 s; 0xfc (to 3 s),
-  4.196 s / 3.750 s; 0xfd (to 10 s), 16.778 s / 20.0 s; 0xfe (to 30 s),
+  timeouts that go out as it: 0xf5 (to 1 ms), 2.3 ms / 1.0 ms at a 1 ms
+  resolution; 0xf6 (to 3 ms), 5.3-5.5 ms / 4.0 ms; 0xf7 (to 10 ms),
+  17.7-17.8 ms / 13.0 ms; 0xf8 (to 30 ms), 34.1 ms / 38.0 ms; 0xf9 (to
+  100 ms), 0.132 s / 0.125 s; 0xfa (to 263 ms), 0.2635 s / 0.375 s; 0xfb
+  (to 1 s), 1.050 s / 1.250 s; 0xfc (to 3 s), 4.196 s / 3.750-3.838 s;
+  0xfd (to 10 s), 16.778 s / 20.0 s; 0xfe (to 30 s),
   33.556 s / 41.25 s. The longer codes, 0xff (to 100 s), 0x01 (to 268 s)
   and 0x02 (to 1000 s), were timed on neither. The application's 5 s goes
-  out as 0xfd, a sweep's 11-16 s as 0xfe, 101 s as 0x01.
+  out as 0xfd, a sweep's 11-16 s as 0xfe, 101 s as 0x01. The second
+  unit's 0xf5-0xf8, and its 0xf9 on the wire, were timed on 2026-09-23
+  (§10.11). ``tables`` carries neither: for 0xf5-0xf8 the host waits
+  rest on an estimate for that unit which is above each figure
+  (``tables.timeout_expiry_s``), and 0xf9 keeps the earlier session
+  total, 0.127 s.
 - The host waits for the adapter to say so: the longer of the two units'
   figures plus 2 s (§7.2), plus a second per 1000 bytes of a transfer, and
   on NI's raw messages the 20 s of their addressing block's 0xfd as well.
@@ -123,10 +131,9 @@ VISA timeout means: the least time to wait before reporting one.
   runs out raises ``GpibTimeout`` with the bytes read so far. A write
   split into several instructions likewise.
 - The raw path on unit 01CEE482: a 0x0b of this driver's earlier
-  composition ended there at 20.0 s whatever its code (0xf9, 0xfb, 0xfc)
-  with nothing to read, so a timeout on it came after 20 s whatever was
-  asked (§11.2); reads that returned data were not affected. Whether NI's
-  message, now sent, changes that is not yet known.
+  composition ended there at 20.0 s whatever its code (§11.2). NI's
+  message, which the raw path now sends, ends at the code's expiry there:
+  1.25 s under 0xfb, 3.75 s under 0xfc (§10.11).
 - 0 and None mean no timeout here: code 0xf0, under which the adapter
   never ends an instruction; the host waits ``infinite_wait_s`` (600 s by
   default), then stops the instruction and reports a timeout. The VISA
@@ -140,8 +147,10 @@ probe all work as written. The serial poll that ran that day was the
 IEEE-488.1 command sequence of §5.9, which is still the default. The 0x10
 instruction ran on the same unit on 2026-09-21 (§11.2): its status byte
 agreed with ``*STB?``, and at an empty address it returned error 5 after
-1.252 s, where NI's timed-out poll returned error 0x0a (§10.6.6).
-Instruments need a moment after IFC and REN before the
+1.252 s, where NI's timed-out poll returned error 0x0a (§10.6.6). On
+2026-09-23 (§10.11) the unit ran NI's raw messages, the SRQ push, the
+INTFC line operations, device clear and trigger, on macOS and in a Linux
+virtual machine. Instruments need a moment after IFC and REN before the
 first addressed command (``IFC_SETTLE_S``); without it the 2400 silently
 dropped the first query after a close-then-attach, and the adapter hung once
 under the backend at exactly that point. The read reply's trailer is 16 bytes, not the 28 the
@@ -198,13 +207,13 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
                  sleep: Callable[[float], None] = time.sleep,
                  clock: Callable[[], float] = time.monotonic) -> None:
         """``ni_instructions`` True uses the instructions NI's driver was captured
-        sending, which our bench has run only in part (§11.2): 0x0b / 0x0e for
+        sending, which have run on bench unit 01CEE482 (§10.11): 0x0b / 0x0e for
         large transfers and 0x10 for the serial poll (see the module
         docstring), on the one model
         NI's driver was captured on, the GPIB-USB-HS; on any other it is logged
         and ignored. The default keeps every transfer on the framed 0x0a /
         0x0d paths and the serial poll on the §5.9 command sequence, the ones
-        proven on the bench. The SRQ wait is unaffected."""
+        with the most bench time. The SRQ wait is unaffected."""
         model = t.MODELS.get(product_id)
         if model is None:
             raise ValueError('unsupported product id 0x%04x' % product_id)

@@ -38,8 +38,9 @@ DEFAULT_INFINITE_WAIT_S = 600.0
 #: whole instruction, data moving or not (§7.1, §10.10.2), and expiry + 2 s
 #: covers it (§7.2); the allowance stays as margin for what no capture shows:
 #: a framed 0x0a cut off while data arrives, the expiry of a 0x0d or 0x0e
-#: (§7.3), and unit 01CEE482, whose 0x0b of this driver's ran to 20.0 s
-#: whatever its code (§11.2). The host wait is only the backstop for an
+#: (§7.3), and unit 01CEE482, whose 0x0b in this driver's earlier message
+#: ran to 20.0 s whatever its code (§11.2; NI's message ends at the code's
+#: expiry there, §10.11). The host wait is only the backstop for an
 #: instruction the adapter does not end itself; a longer one costs nothing
 #: when it does. 1000 bytes a second is below the 2420's pace (about 5000
 #: formatting, §10.1.4; about 5600 taking write data, §10.5.2). A driver
