@@ -227,10 +227,8 @@ class TestCalculateFourPointProbe:
             voltage=0.001, current=0.001,
             spacing_cm=0.1016, thickness_um=100
         )
-        assert hasattr(result, 'ratio')
-        assert hasattr(result, 'sheet_resistance')
-        assert hasattr(result, 'resistivity')
-        assert hasattr(result, 'conductivity')
+        assert result._fields == ('ratio', 'sheet_resistance', 'resistivity', 'conductivity')
+        assert all(math.isfinite(x) and x > 0 for x in result)
 
     def test_thin_film_calculation(self):
         """Test complete thin film calculation."""
