@@ -249,7 +249,7 @@ class TestSettingsDialog:
         model_item = dialog.output_format.model().item(1)
         if not model_item.isEnabled():
             dialog.close()
-            return
+            pytest.skip("h5py not installed: HDF5 output is not selectable")
         dialog.output_format.setCurrentIndex(1)
         assert not dialog.output_compression.isEnabled()
         assert not dialog.output_compression_threshold.isEnabled()
