@@ -249,6 +249,18 @@ class TestParseMetadataTextKeys:
 # --------------------------------- All six modes ----------------------------
 
 
+#: Per mode, a column no other mode writes and a param with a value only that
+#: mode records from ``_settings_for``.
+_MODE_MARKERS = {
+    'resistance': ('R_ohm', 'params.test_current_A', 1e-3),
+    'source_v': ('V_set', 'params.source_voltage_V', 1.0),
+    'source_i': ('I_set', 'params.source_current_A', 2e-3),
+    'four_point': ('Rs_ohm_sq', 'params.probe_spacing_cm', 0.1016),
+    'sweep': ('V_source', 'params.step', 0.05),
+    'vdp': ('geometry', 'params.thickness_cm', 1e-4),
+}
+
+
 @pytest.mark.parametrize("mode", [
     'resistance', 'source_v', 'source_i', 'four_point', 'sweep', 'vdp',
 ])
@@ -265,7 +277,7 @@ class TestAllModesMetadata:
                 'vsource_voltage': 1.0, 'vsource_current_compliance': 0.1,
                 'vsource_duration_hours': 1.0,
                 # source_i
-                'isource_current': 1e-3, 'isource_voltage_compliance': 5.0,
+                'isource_current': 2e-3, 'isource_voltage_compliance': 5.0,
                 'isource_duration_hours': 1.0,
                 # four_point
                 'fpp_current': 1e-4, 'fpp_voltage_compliance': 5.0,
@@ -296,9 +308,14 @@ class TestAllModesMetadata:
         assert parsed['mode'] == mode
         assert parsed['user'] == 'brenden'
         assert parsed['sample'] == 'sample_A'
-        # Each mode contributes its own params block.
-        param_keys = [k for k in parsed if k.startswith('params.')]
-        assert param_keys, f"no params.* metadata for mode={mode}"
+        text = exp.output_paths[0].read_text(encoding='utf-8')
+        header = [ln for ln in text.splitlines() if ln and not ln.startswith('#')][0]
+        assert header.split(',') == columns
+        column, param, value = _MODE_MARKERS[mode]
+        assert column in columns
+        others = {m: c for m, (c, _, _) in _MODE_MARKERS.items() if m != mode}
+        assert not set(others.values()) & set(columns), others
+        assert parsed[param] == value
 
 
 # --------------------------------- HDF5 -------------------------------------
