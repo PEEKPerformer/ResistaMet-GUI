@@ -29,6 +29,7 @@ from resistamet_gui.calculations import (
     F84ResistivityResult,
     DEFAULT_K_FACTOR,
 )
+from resistamet_gui.calculations_geometry import rectangle_factor
 
 
 class TestCalculateRatio:
@@ -420,49 +421,59 @@ class TestGeometryCorrectionNonCircular:
 
     F84 only tabulates circular wafers. Most non-Si materials labs measure
     on cut squares or rectangles, so the broader Smits table matters. These
-    tests pin values directly from the Adamson group 4PP manual.
+    tests pin values directly from the Adamson group 4PP manual, and where
+    the probe fits on the sample (length > 3 s) check each against the
+    closed-form image series of calculations_geometry, which is derived
+    independently of any table.
     """
+
+    #: Rows where the manual's value and the image series disagree by more
+    #: than the 0.06 % they agree to everywhere else. Which is right is open
+    #: until the original table has been checked, so they are not asserted
+    #: here; see SMITS_DISAGREEMENTS and SMITS_LOW_DISAGREEMENTS in
+    #: tests/test_calculations_geometry.py.
+    DISPUTED = pytest.mark.skip(reason=(
+        "disputed table entry: the image series disagrees, see "
+        "SMITS_DISAGREEMENTS / SMITS_LOW_DISAGREEMENTS in "
+        "tests/test_calculations_geometry.py"))
+
+    @staticmethod
+    def _check(geometry, aspect_ratio, d_over_s, expected):
+        s = 0.1
+        value = f2_finite_diameter(s, d_over_s * s, geometry=geometry)
+        assert value == pytest.approx(expected, abs=5e-4)
+        if aspect_ratio * d_over_s > 3.0:
+            series = rectangle_factor(d_over_s, aspect_ratio * d_over_s, 1.0)
+            assert value == pytest.approx(series, rel=6e-4)
 
     @pytest.mark.parametrize("d_over_s,expected", [
         (3.0, 2.4575), (4.0, 3.1127), (5.0, 3.5098), (7.5, 4.0095),
         (10.0, 4.2209), (15.0, 4.3882), (20.0, 4.4516),
-        (32.0, 4.4878), (40.0, 4.5120),
+        pytest.param(32.0, 4.4878, marks=DISPUTED), (40.0, 4.5120),
     ])
     def test_square_against_table(self, d_over_s, expected):
-        s = 0.1
-        d = d_over_s * s
-        assert f2_finite_diameter(s, d, geometry='square') == \
-               pytest.approx(expected, abs=5e-4)
+        self._check('square', 1.0, d_over_s, expected)
 
     @pytest.mark.parametrize("d_over_s,expected", [
-        (1.5, 1.4788), (2.0, 1.9475), (3.0, 2.7000),
+        (1.5, 1.4788), pytest.param(2.0, 1.9475, marks=DISPUTED), (3.0, 2.7000),
         (5.0, 3.5749), (10.0, 4.2357), (40.0, 4.5129),
     ])
     def test_rectangle_2_against_table(self, d_over_s, expected):
-        s = 0.1
-        d = d_over_s * s
-        assert f2_finite_diameter(s, d, geometry='rectangle_2') == \
-               pytest.approx(expected, abs=5e-4)
+        self._check('rectangle_2', 2.0, d_over_s, expected)
 
     @pytest.mark.parametrize("d_over_s,expected", [
         (1.0, 0.9988), (1.5, 1.4893), (3.0, 2.7005),
         (10.0, 4.2357), (40.0, 4.5129),
     ])
     def test_rectangle_3_against_table(self, d_over_s, expected):
-        s = 0.1
-        d = d_over_s * s
-        assert f2_finite_diameter(s, d, geometry='rectangle_3') == \
-               pytest.approx(expected, abs=5e-4)
+        self._check('rectangle_3', 3.0, d_over_s, expected)
 
     @pytest.mark.parametrize("d_over_s,expected", [
         (1.0, 0.9994), (1.5, 1.4893), (3.0, 2.7005),
         (10.0, 4.2357), (40.0, 4.5129),
     ])
     def test_rectangle_4_against_table(self, d_over_s, expected):
-        s = 0.1
-        d = d_over_s * s
-        assert f2_finite_diameter(s, d, geometry='rectangle_4') == \
-               pytest.approx(expected, abs=5e-4)
+        self._check('rectangle_4', 4.0, d_over_s, expected)
 
     def test_infinite_sample_all_geometries_agree(self):
         # In the infinite-sample limit every geometry → 4.5324 (= pi/ln(2)).
