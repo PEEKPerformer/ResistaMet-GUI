@@ -15,6 +15,7 @@ import os
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 # Skip if PySide6 missing
@@ -838,16 +839,49 @@ class TestSCPIContract:
 
 
 class TestFourPointF84Path:
-    """Exercise the F84 calculation branch end-to-end through the worker."""
+    """Exercise the F84 calculation branch end-to-end through the worker.
 
-    def test_legacy_path_when_defaults(self, qapp, fake_rm, tmp_path):
-        # All F84-only inputs at defaults → legacy path. Should produce
-        # the same numbers as before this refactor.
-        settings = _four_point_settings(tmp_path, samples=2)
-        worker = MeasurementWorker("four_point", "legacy", "alice", settings)
+    Each test checks the method the sample was derived by and its numbers
+    against the formula for that path, from the V and I the sample read.
+    """
+
+    @staticmethod
+    def _run(qapp, settings, name, finite=('ratio', 'rs', 'rho', 'sigma')):
+        worker = MeasurementWorker("four_point", name, "alice", settings)
+        derived = []
+        worker.sample_derived.connect(lambda _t, d: derived.append(dict(d)))
         spies = _drive_worker(qapp, worker, timeout_s=10.0)
         assert spies.error_occurred == []
         assert len(spies.data_point) == 2
+        assert len(derived) == 2
+        for d in derived:
+            for key in finite:
+                assert np.isfinite(d[key]), f"{key} is not finite: {d}"
+        return spies, derived
+
+    @staticmethod
+    def _f84(spies, settings):
+        from resistamet_gui.calculations import calculate_four_point_probe_f84
+        m = settings["measurement"]
+        _ts, values, _c, _e = spies.data_point[0]
+        return calculate_four_point_probe_f84(
+            voltage=values["voltage"], current=values["current"],
+            spacing_cm=m["fpp_spacing_cm"], thickness_um=m["fpp_thickness_um"],
+            diameter_cm=m.get("fpp_diameter_cm"),
+            geometry=m.get("fpp_geometry", "circle"),
+            temperature_c=m.get("fpp_temperature_c"),
+            dopant_type=m.get("fpp_dopant_type"),
+        )
+
+    def test_legacy_path_when_defaults(self, qapp, fake_rm, tmp_path):
+        # All F84-only inputs at defaults → legacy path: Rs = K·alpha·V/I.
+        # No thickness, so no rho or sigma.
+        settings = _four_point_settings(tmp_path, samples=2)
+        spies, derived = self._run(qapp, settings, "legacy", finite=('ratio', 'rs'))
+        assert {d['method'] for d in derived} == {'legacy'}
+        _ts, values, _c, _e = spies.data_point[0]
+        assert derived[0]['rs'] == pytest.approx(
+            4.532 * 1.0 * values["voltage"] / values["current"])
 
     def test_f84_path_with_diameter(self, qapp, fake_rm, tmp_path):
         # Setting a finite diameter should trigger F84 path and produce a
@@ -855,32 +889,36 @@ class TestFourPointF84Path:
         settings = _four_point_settings(tmp_path, samples=2)
         settings["measurement"]["fpp_diameter_cm"] = 1.0  # D=1cm, S/D=0.1016
         settings["measurement"]["fpp_thickness_um"] = 100.0  # 100 um film
-        worker = MeasurementWorker("four_point", "f84_d", "alice", settings)
-        spies = _drive_worker(qapp, worker, timeout_s=10.0)
-        assert spies.error_occurred == []
-        assert len(spies.data_point) == 2
+        spies, derived = self._run(qapp, settings, "f84_d")
+        assert {d['method'] for d in derived} == {'f84'}
+        assert derived[0]['rs'] < 4.532 * derived[0]['ratio']
+        expected = self._f84(spies, settings)
+        assert derived[0]['rs'] == pytest.approx(expected.rho_T / 100e-4)
 
     def test_f84_path_with_geometry_square(self, qapp, fake_rm, tmp_path):
         settings = _four_point_settings(tmp_path, samples=2)
         settings["measurement"]["fpp_geometry"] = "square"
         settings["measurement"]["fpp_diameter_cm"] = 2.0
         settings["measurement"]["fpp_thickness_um"] = 100.0
-        worker = MeasurementWorker("four_point", "f84_sq", "alice", settings)
-        spies = _drive_worker(qapp, worker, timeout_s=10.0)
-        assert spies.error_occurred == []
-        assert len(spies.data_point) == 2
+        spies, derived = self._run(qapp, settings, "f84_sq")
+        assert {d['method'] for d in derived} == {'f84'}
+        expected = self._f84(spies, settings)
+        assert derived[0]['rs'] == pytest.approx(expected.rho_T / 100e-4)
 
     def test_f84_path_with_temperature_correction(self, qapp, fake_rm, tmp_path):
-        # T + dopant should activate F_T branch and produce finite numbers.
+        # T + dopant should activate the F_T branch: the reported rho is
+        # rho(23), which differs from rho(T) = Rs·t at 25 °C.
         settings = _four_point_settings(tmp_path, samples=2)
         settings["measurement"]["fpp_diameter_cm"] = 1.0
         settings["measurement"]["fpp_thickness_um"] = 100.0
         settings["measurement"]["fpp_temperature_c"] = 25.0
         settings["measurement"]["fpp_dopant_type"] = "n"
-        worker = MeasurementWorker("four_point", "f84_t", "alice", settings)
-        spies = _drive_worker(qapp, worker, timeout_s=10.0)
-        assert spies.error_occurred == []
-        assert len(spies.data_point) == 2
+        spies, derived = self._run(qapp, settings, "f84_t")
+        assert {d['method'] for d in derived} == {'f84'}
+        expected = self._f84(spies, settings)
+        assert expected.rho_23 is not None
+        assert derived[0]['rho'] == pytest.approx(expected.rho_23)
+        assert derived[0]['rho'] != pytest.approx(derived[0]['rs'] * 100e-4)
 
 
 class TestFourPointDeltaPerPolarity:
