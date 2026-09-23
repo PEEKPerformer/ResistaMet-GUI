@@ -231,7 +231,11 @@ TIMEOUT_EXPIRY_MEASURED_SHORTEST_S: Dict[int, float] = {
 #: logged. Whether the unit, its firmware or the message differs is not
 #: established, so a host wait outlasts both tables and a code is chosen
 #: from the shorter of the two. The comment on each row is the ratio to the
-#: 013CC9DF figure above. The codes below 0xf9 were not timed on this unit.
+#: 013CC9DF figure above. The codes below 0xf9 were timed on this unit on
+#: 2026-09-23 (§10.11), at 1.0 (the log's resolution), 4.0, 13.0 and 38.0
+#: ms, and are not in the table; the estimate ``timeout_expiry_s`` makes
+#: for them in its place is above each. The same day's 0xf9 on the wire,
+#: 0.125 s, is below the session total kept here.
 TIMEOUT_EXPIRY_BENCH_S: Dict[int, float] = {
     0xF9: 0.127,       # nominal 100 ms; 0.96; a session total, the wire not logged
     0xFA: 0.375,       # nominal 300 ms; 1.42
@@ -284,8 +288,9 @@ def timeout_expiry_s(code: int) -> Optional[float]:
     (``TIMEOUT_EXPIRY_MEASURED_S``) and 01CEE482 under this one
     (``TIMEOUT_EXPIRY_BENCH_S``). §7.3 says a host wait must outlast both
     until the cause is established, so for a code both were timed under
-    this is the larger figure. Where 01CEE482 was not timed -- 0xf5-0xf8,
-    timed on 013CC9DF only, and the codes nobody timed -- its figure is
+    this is the larger figure. Where the 01CEE482 table has no figure --
+    0xf5-0xf8, whose times on that unit are not entered, and the codes
+    nobody timed -- its figure is
     estimated as 1.25 times the larger of the nominal limit (§7.1) and
     the power of two of §7.3's inference column, the rule §7.2 gives, and
     the larger of that and any measured figure is returned. That rule is
@@ -312,8 +317,8 @@ def timeout_expiry_least_s(code: int) -> Optional[float]:
 
     For choosing a code: a VISA timeout is the least time to wait before
     reporting one, so the code for a timeout must not expire before it.
-    For a code that was timed, the shortest figure of every unit timed
-    under it (0xf5-0xf8 were timed on 013CC9DF only). For a code nobody
+    For a code that was timed, the shortest figure entered here of every
+    unit timed under it (for 0xf5-0xf8, 013CC9DF's). For a code nobody
     timed, the smallest of its nominal limit and the two powers of two of
     §7.3's inference table: §7.2's estimate, the larger power of two, is
     an upper figure for host waits, and the one measured code that ends

@@ -19,15 +19,18 @@ imports anything but itself, the standard library, `usb`, `pyvisa` and
 
 ## What has run on hardware
 
-Two GPIB-USB-HS units have been used. This driver has run on one of them.
+Two GPIB-USB-HS units have been used. This driver has run on one of them,
+on macOS and in a Linux virtual machine.
 
 | | Status |
 |---|---|
 | Attach, addressing, the framed read and write instructions (0x0a, 0x0d), command bytes, the presence probe, shutdown | Run on GPIB-USB-HS serial 01CEE482 with a Keithley 2400, macOS, pyusb and libusb, 2026-09-18: identify, resistance runs, stop, restart, shutdown mid-run, compliance detection. **This is what the driver does by default.** |
-| Timeout expiries, long answers read as framed pieces of 1024 bytes, writes of a multiple of 512 bytes, unplug and replug mid-run | The same unit, 2026-09-21 (spec §7.3, §11.2) |
-| NI's own instructions: raw reads and writes on the second endpoint pair (0x0b, 0x0e), the serial poll as one instruction (0x10) | Written from USB captures of NI-488.2 on Windows driving the second unit, serial 013CC9DF, with a Keithley 2420 (spec §10). A 0x0b and a 0x10 were tried on 01CEE482 on 2026-09-21 (spec §11.2). The raw read and write have since been changed to send NI's messages byte for byte, and have not run on an adapter in that form. **Off by default.** |
-| The `GPIB0::INTFC` board resource | Not run on an adapter |
-| The service-request wait | Not run on an adapter, and not reachable through pyvisa-py 0.8.1, which has no event API |
+| Timeout expiries, long answers read as framed pieces of 1024 bytes, writes of a multiple of 512 bytes | The same unit, 2026-09-21 (spec §7.3, §11.2); the short codes' expiries again on 2026-09-23 (spec §10.11) |
+| NI's own instructions: raw reads and writes on the second endpoint pair (0x0b, 0x0e), the serial poll as one instruction (0x10) | Written from USB captures of NI-488.2 on Windows driving the second unit, serial 013CC9DF, with a Keithley 2420 (spec §10). Run on 01CEE482 in their present form, NI's messages byte for byte, on 2026-09-23 (spec §10.11): a 0x0b with nothing to read ended at its code's expiry, answers of 1536 and 35 000 bytes arrived whole, the 0x0e wrote 2049, 3000 and 6000 bytes, and a 2500-byte write to an empty address failed at once with no listeners, the next query answering. The 0x10 ran on 2026-09-21 (spec §11.2). **Off by default.** |
+| The `GPIB0::INTFC` board resource | Run on 01CEE482, 2026-09-23 (spec §10.11): IFC, controller-in-charge afterwards, REN on and off with `VI_ATTR_GPIB_REN_STATE` following, command bytes, and an instrument session on the same board answering with the board open and after it closed. No run of its data transfers is recorded. |
+| Device clear, trigger | Run on 01CEE482, 2026-09-23 (spec §10.11): a clear with an answer pending left one fresh answer for the next query; a trigger reached the 2400 |
+| The service-request wait | The write that arms the adapter and the push it arms ran on 01CEE482, 2026-09-23 (spec §10.11). The wait as written now, which sends that write when it starts and every 15 ms, has not run as a whole. pyvisa-py 0.8.1 has no event API, so nothing reaches it through pyvisa. |
+| Unplugging mid-run | 01CEE482, 2026-09-21 and 2026-09-23 (spec §11.2, §10.11). On Linux libusb reports "no such device" at the first failed call. On macOS it never does on the open handle: the transfer in flight fails with an I/O error and every later request with "Other error". The driver now looks at the bus after such an error to tell an unplug from a fault; that check has not run on an adapter. After a replug a new session in the same process opened the adapter. |
 
 ## What it supports
 
@@ -54,7 +57,7 @@ keeps the framed paths.
 | | Status |
 |---|---|
 | macOS | Run on hardware (above) |
-| Linux | The same code. Never run on hardware. See [Linux](#linux). |
+| Linux | Run in an Ubuntu 26.04 arm64 virtual machine with the adapter passed through, 2026-09-23 (spec §10.11): the timeout expiries, NI's instructions and the service-request push came out as on macOS. Not run on a Linux machine of its own. See [Linux](#linux). |
 | Windows | Out of scope. NI-488.2 owns the device there; use NI-VISA. |
 
 **Operations.** On `GPIB<n>::<pad>[::<sad>]::INSTR`: read, write, device
@@ -128,13 +131,18 @@ without sending them anything.
   attached controller, opened with the first session and closed with the
   last. Each call is atomic on the board; a sequence of calls is not.
 - **An unplugged adapter** is `VI_ERROR_CONN_LOST` on that operation and
-  every later one on the session. After a replug the next open finds it
+  every later one on the session, with nothing retried. On Linux libusb
+  says the device is gone; on macOS the driver finds it missing from the
+  bus after the first failed call. After a replug the next open finds it
   again with no restart.
+- **No permission on the device** (Linux without the udev rule below) is
+  `VI_ERROR_SYSTEM_ERROR` at open, with a message naming the device node
+  and the rule.
 
 ## NI's instructions
 
-By default every transfer uses the framed instructions that ran on the
-bench, in pieces of at most 1024 bytes, and the serial poll is the
+By default every transfer uses the framed instructions that have the most
+bench time, in pieces of at most 1024 bytes, and the serial poll is the
 IEEE-488.1 command sequence (spec §5.9). To use the instructions NI's driver
 was captured sending instead (0x0b and 0x0e for large transfers, 0x10 for
 the serial poll), set
@@ -155,8 +163,8 @@ first of `NI_GPIB_USB_INSTRUCTIONS`, `RESISTAMET_GPIB_NI_INSTRUCTIONS`,
 
 Which read instruction goes out depends on how many bytes the caller asks
 for, not on how many arrive, and pyvisa asks for 20 480 at a time. With the
-switch on, every read, a one-line reply included, takes the raw path that
-has not run on an adapter.
+switch on, every read, a one-line reply included, takes the raw path, which
+in its present form has run on one adapter, on 2026-09-23 (spec §10.11).
 
 ## What a timeout means
 
@@ -174,14 +182,21 @@ What the adapter then waits differs by unit (spec §7.3):
 
 | Code | Nominal limit | 013CC9DF under NI's driver | 01CEE482 under this driver |
 |---|---|---|---|
-| 0xf9 | 100 ms | 0.132 s | 0.127 s (a session total; the wire was not logged) |
+| 0xf5 | 1 ms | 2.3 ms | 1.0 ms (the log's resolution) |
+| 0xf6 | 3 ms | 5.3-5.5 ms | 4.0 ms |
+| 0xf7 | 10 ms | 17.7-17.8 ms | 13.0 ms |
+| 0xf8 | 30 ms | 34.1 ms | 38.0 ms |
+| 0xf9 | 100 ms | 0.132 s | 0.125 s |
 | 0xfb | 1 s | 1.050 s | 1.250 s |
-| 0xfc | 3 s | 4.196 s | 3.750 s |
+| 0xfc | 3 s | 4.196 s | 3.750-3.838 s |
 | 0xfd | 10 s | 16.778 s | 20.0 s |
 | 0xfe | 30 s | 33.556 s | 41.25 s |
 
-The codes below 0xf9 were timed on 013CC9DF only, the codes above 0xfe on
-neither. The full table is in the `controller` docstring.
+01CEE482's figures below 0xf9, and its 0xf9 on the wire, are from
+2026-09-23, in the virtual machine as well (spec §10.11); the host waits
+for 0xf5-0xf8 still rest on an estimate for that unit, which is above
+each. The codes above 0xfe were timed on neither. The full table is in
+the `controller` docstring.
 
 - A read is bounded as a whole, as NI's single instruction is, by the
   longer of the two units' expiries for its code, not by the value set: a
@@ -211,15 +226,22 @@ taking control of the bus, and the driver now waits 100 ms there (spec
 
 ## Linux
 
-Untested on hardware.
+Run on 2026-09-23 in an Ubuntu 26.04 arm64 virtual machine on the Mac
+(kernel 7.0), the adapter passed through by QEMU 11.1's usb-host (spec
+§10.11). Not run on a Linux machine of its own.
 
 If a kernel driver has claimed the adapter's interface 0 (linux-gpib's, for
-example), the transport detaches it when it opens the adapter. It does not
-reattach it on close; unplugging and replugging the adapter gives the device
-back to the kernel.
+example), the transport detaches it when it opens the adapter. Checked with
+usbserial's generic driver bound to interface 0 through `new_id`: the
+transport detached it and opened the adapter. It does not reattach it on
+close, and nothing was bound after the close; unplugging and replugging the
+adapter gives the device back to the kernel.
 
 Opening the device as a user other than root needs permission on its USB
-device node. An example udev rule, also untested, in
+device node. In the virtual machine the node was `root:root 0664` without a
+rule and the open failed; the driver then says so, naming the node and this
+rule. With the rule's 709b line installed the unprivileged user opened the
+adapter. The other lines are the same rule for models never connected. In
 `/etc/udev/rules.d/60-ni-gpib-usb.rules`:
 
 ```
