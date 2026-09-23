@@ -3461,6 +3461,79 @@ instrument accepted data bytes and never talked within 33.6 s.
 
 ---
 
+### 10.11 This project's driver on the bench, 2026-09-23
+
+Not a capture of NI: this project's driver, on GPIB-USB-HS unit 01CEE482 with
+a Keithley 2400 at primary address 3, on the Mac (macOS 27, libusb 1.0 through
+pyusb) and in an Ubuntu 26.04 arm64 virtual machine on the same Mac (kernel
+7.0, the adapter passed through by QEMU 11.1's usb-host). Times are from a log
+of every USB transfer with 1 ms resolution. Everything here is **[bench]**.
+
+**Expiry of the short codes on 01CEE482.** A read (0x0a) with nothing to read
+under each code, from the OUT of its message to the reply: 0xf5 1.0 ms (at
+the log's resolution), 0xf6 4.0 ms, 0xf7 13.0 ms, 0xf8 38.0 ms, 0xf9
+125 ms, 0xfa 375 ms, 0xfb 1.250 s, 0xfc 3.751-3.838 s, 0xfd 20.000 s. The
+codes from 0xf6 up fit this unit's 1.25 x nominal pattern of 7.3 (3.75,
+12.5, 37.5 ms) to within a millisecond; 0xf5 cannot be told apart from 1 ms
+at this resolution. The same values came back in the virtual machine.
+
+**NI's 0x0b message honours its code on 01CEE482.** With this driver sending
+the read message NI sends (§10.1.2; 0x0c, 0x0b and the bank-2 0x03 write in
+one message), a 0x0b with nothing to read replied with error 0x0a at 1.25 s
+under 0xfb and 3.75 s under 0xfc, this unit's expiries for those codes. The
+20.0 s whatever the code of §11.2 was therefore a property of the message
+this driver sent on 2026-09-21, not of the unit. The same message read a
+1536-byte answer (an exact multiple of 512 bytes, under a count of 20480) in
+one instruction with no zero-length-packet stall and the next read normal,
+and a 35 000-byte answer in 6.23 s, the framed path's time. NI's 0x0e
+message wrote 2049, 3000 and 6000 bytes to the 2400 without error, and a
+2500-byte write to an address with no device failed at once with no
+listeners, the next query answering normally with no replug. A 0x0b from an
+address with no device ended with a timeout at the code's expiry.
+
+**The interrupt push needs the bank-2 0x03 write, once per push.** With
+`*SRE 32`, `*ESE 1` and `*OPC` the 2400 asserted SRQ (a serial poll then
+returned 96), but no packet arrived on the interrupt endpoint in 5 s of
+reads. Sent once before `*OPC`, the 12-byte write NI sends on
+viEnableEvent and every 15 ms while waiting (§10.4.1, §10.4.3), `09 01 00
+02 03 01 00 00 04 00 00 00`, made the push arrive 7-8 ms after `*OPC`:
+`30 03 00 60 31 a1 01 00` (byte 3 = 0x60, the status byte; bytes 1-2 read
+`03 00` where NI's unit showed `18 00`). A serial poll afterwards returned
+32, not 96: the adapter had polled the device itself, as §10.4.2 says of
+NI's. One write arms one push: a second `*OPC` in the same session raised
+SRQ (poll 96) but no second push came in 3 s. Sent while SRQ was already
+asserted, the write's reply carried ibsta 0x1068 (SRQI set) and the push
+followed at once. It does not survive the session: a fresh session with no
+write saw no push. No monitor-mask request was needed. The 0x3b control
+request after the push (§10.4.2) was sent and completed. Same results in
+the virtual machine.
+
+**Unplugging on macOS does not say "no such device" while the handle is
+open.** With `*IDN?` in a loop the cable was pulled at the adapter, twice.
+The read in flight failed with `[Errno 5] Input/Output Error` (a bulk
+read), and every later request on the open handle -- clearing halts on
+0x06, 0x02, 0x84, 0x88, the stop request, the readiness query -- failed
+within 8 ms with libusb's "Other error" (pyusb `errno` None). "No such
+device" (errno 19) appeared only when a new handle was opened for the
+same device (set configuration, claim). On Linux, in the virtual machine,
+the in-flight read failed with errno 19 directly, whatever the host did to
+remove the device. After the replug the adapter enumerated with the same
+serial number in 5.7 s and a new session in the same process opened it
+and answered.
+
+**Other checks.** INTFC session: IFC in 0.105 s, CIC afterwards, REN
+assert and deassert reflected in `VI_ATTR_GPIB_REN_STATE`, UNL UNT sent, and
+the instrument session answering with the INTFC session open and after it
+closed. Device clear with an answer pending, then `*IDN?`: one fresh answer.
+GET to the idle 2400: `-211,"Trigger ignored"` in its error queue, so the
+trigger arrived. Serial poll with 0x10 at an empty address: error 5 at the
+code's expiry (1.25 s), as on 2026-09-21. In the virtual machine the device
+node was root:root 0664 until a rule setting `GROUP="plugdev", MODE="0660"`
+for 3923:709b was installed; with it the unprivileged user opened the
+adapter. With usbserial's generic driver bound to interface 0 (new_id),
+the transport detached it and opened the adapter; nothing was bound
+after close.
+
 ## 11. Open questions for the bench
 
 Every "not established", "uncertain", "not captured" and "not measured"
@@ -3491,7 +3564,7 @@ what to send, the last is curiosity.
 - [ ] **Are the bank-2 0x03..0x07 writes required for anything?** The
   bench's framed paths ran without them; NI never omits them. Meaning of
   0x03 and 0x04 not established (8.15, 2.8, §10.2.4).
-- [ ] **Does the interrupt push need the monitor mask?** No mask request
+- [x] **Does the interrupt push need the monitor mask?** No mask request
   in any capture, but every capture starts after NI's driver owned the
   adapter (2.5, 2.8 steps 4 and 6, §10.4.1). With it: the function of
   control request 0x3b (2.2, §10.4.2); bytes 4-7 of the push (2.5);
@@ -3534,6 +3607,9 @@ what to send, the last is curiosity.
   more than 65535 (or 20480, the largest seen) bytes, and how the 0x88
   transfer and its padding behave when it does, is not shown (1.2,
   §10.10.3).
+  **[bench, 2026-09-23]** No; it needs the 12-byte bank-2 0x03 write, one per push (§10.11).
+  **[bench, 2026-09-23]** 0xf5-0xf8 on unit 01CEE482: 1.0 (at 1 ms resolution), 4.0, 13.0, 38.0 ms (§10.11).
+  **[bench, 2026-09-23]** 0x0b and 0x0e in NI's message form, and the interrupt push after the bank-2 0x03 write, work on unit 01CEE482 (§10.11). Batched messages beyond NI's read and write messages, 0x02 and 0x03 on their own are still unrun.
 
 ### 11.2 Decide how to parse and recover
 
@@ -3585,7 +3661,7 @@ what to send, the last is curiosity.
   without the SDC receives the remainder contiguously -- as a second
   count-limited read does (§10.1.7) -- was not captured; a driver that
   continues a long read after error 0x0a depends on it.
-- [ ] **A 0x0b on unit 01CEE482 ends after 20.0 s whatever its code**
+- [x] **A 0x0b on unit 01CEE482 ends after 20.0 s whatever its code**
   **[bench, 2026-09-21]**: `0b 14 0a <code> 00 b0 ff ff | 09 01 00 01 0a
   55 00 00 | 04 00 00 00`, sent as its own message after a `0c` (own
   code) and a `06`, with nothing pending at the instrument, ended with a
@@ -3661,6 +3737,8 @@ what to send, the last is curiosity.
   the `partial` capture showed for NI's two reads (§10.1.7). Consecutive
   0x0a with no 0x0c between them are unobserved in the captures; this is
   the bench observation that fills that gap.
+  **[bench, 2026-09-23]** Settled: with NI's read message the 0x0b ends at the code's expiry on this unit (§10.11); the 20.0 s came from the message.
+  **[bench, 2026-09-23]** On macOS the open handle never reports errno 19: the in-flight transfer fails with errno 5 and every later request with libusb's "Other error"; errno 19 comes only when the device is opened again. On Linux the in-flight transfer reports errno 19 (§10.11).
 
 ### 11.3 Bytes whose meaning is unknown but which can be copied
 
