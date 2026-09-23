@@ -37,6 +37,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # Shared harness: the app / sim_window fixtures live in conftest.py; the
 # pump/CSV helpers in e2e_utils.py. Aliased to keep test bodies unchanged.
 from .e2e_utils import (  # noqa: E402
+    newest_csv,
     pump_for as _pump_for,
     read_csv_data as _read_csv_data,
     switch_to as _switch_to,
@@ -88,16 +89,33 @@ def _drive_timed_run(window, tab, label, seconds, app):
            list(window.data_buffers[mode_key].resistance)
 
 
+def _finite(values, n, what):
+    """Every one of the ``n`` recorded values, which must all be finite: a
+    NaN reading fails here rather than slipping past a tolerance check."""
+    finite = [x for x in values if x is not None and math.isfinite(x)]
+    assert len(finite) == n, (
+        f"{what}: {n - len(finite)} of {n} readings missing or not finite")
+    return finite
+
+
 def test_resistance_records_ohms_law(sim_window, app):
     ts, _, _, rs = _drive_timed_run(
         sim_window, sim_window.tab_resistance, "Resistance Measurement",
         seconds=3.0, app=app,
     )
     assert len(ts) >= 3, f"too few points: {len(ts)}"
-    finite_rs = [r for r in rs if r is not None and not math.isnan(r)]
-    assert finite_rs, "no resistance values recorded"
+    finite_rs = _finite(rs, len(ts), "R")
     bad = [r for r in finite_rs if abs(r - DUT_OHMS) > 0.01]
     assert not bad, f"resistance drift: {bad[:3]} (expected {DUT_OHMS})"
+
+    # The buffer keeps only R in this mode; V and I are in the CSV.
+    rows = _read_csv_data(newest_csv("measurement_data/**/*_R_*.csv"))
+    header, data = rows[0], rows[1:]
+    assert data, "no resistance rows written"
+    vi, ii = header.index("V_meas"), header.index("I_meas")
+    ratios = [float(r[vi]) / float(r[ii]) for r in data]
+    bad = [x for x in ratios if not (math.isfinite(x) and abs(x - DUT_OHMS) <= 0.01)]
+    assert not bad, f"V_meas/I_meas != {DUT_OHMS} Ω: {bad[:3]}"
 
 
 def test_voltage_source_records_correct_current(sim_window, app):
@@ -107,8 +125,8 @@ def test_voltage_source_records_correct_current(sim_window, app):
         seconds=3.0, app=app,
     )
     assert len(ts) >= 3, f"too few points: {len(ts)}"
-    bad_v = [v for v in vs if v is not None and abs(v - 1.0) > 1e-3]
-    bad_i = [i for i in is_ if i is not None and abs(i - 0.01) > 1e-5]
+    bad_v = [v for v in _finite(vs, len(ts), "V") if abs(v - 1.0) > 1e-3]
+    bad_i = [i for i in _finite(is_, len(ts), "I") if abs(i - 0.01) > 1e-5]
     assert not bad_v, f"V drift: {bad_v[:3]}"
     assert not bad_i, f"I drift (expected 10 mA): {bad_i[:3]}"
 
@@ -120,8 +138,8 @@ def test_current_source_records_correct_voltage(sim_window, app):
         seconds=3.0, app=app,
     )
     assert len(ts) >= 3, f"too few points: {len(ts)}"
-    bad_v = [v for v in vs if v is not None and abs(v - 0.1) > 1e-4]
-    bad_i = [i for i in is_ if i is not None and abs(i - 1e-3) > 1e-7]
+    bad_v = [v for v in _finite(vs, len(ts), "V") if abs(v - 0.1) > 1e-4]
+    bad_i = [i for i in _finite(is_, len(ts), "I") if abs(i - 1e-3) > 1e-7]
     assert not bad_v, f"V drift (expected 0.1 V): {bad_v[:3]}"
     assert not bad_i, f"I drift: {bad_i[:3]}"
 
@@ -140,8 +158,8 @@ def test_four_point_probe_records_v_i_at_source(sim_window, app):
     assert len(ts) >= 3, f"too few points: {len(ts)}"
     src_i = sim_window.tab_four_point.fpp_current.value()
     expected_v = src_i * DUT_OHMS
-    bad_v = [v for v in vs if v is not None and abs(v - expected_v) > 1e-4]
-    bad_i = [i for i in is_ if i is not None and abs(i - src_i) > 1e-7]
+    bad_v = [v for v in _finite(vs, len(ts), "V") if abs(v - expected_v) > 1e-4]
+    bad_i = [i for i in _finite(is_, len(ts), "I") if abs(i - src_i) > 1e-7]
     assert not bad_v, f"V drift (expected {expected_v}): {bad_v[:3]}"
     assert not bad_i, f"I drift (expected {src_i}): {bad_i[:3]}"
 
