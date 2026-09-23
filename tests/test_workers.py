@@ -542,32 +542,65 @@ class TestRetryAndErrors:
 # ============================================================================
 
 class TestPathSafety:
-    def test_traversal_in_sample_name_is_sanitized(self, qapp, fake_rm, tmp_path):
+    """A traversal in a name must not move the run's files out of data/.
+
+    The data directory sits several levels below tmp_path, so that a run
+    whose sanitizing had failed would still write inside tmp_path, where
+    the test can see it, and not beside other tests' directories.
+    """
+
+    @staticmethod
+    def _nested_settings(tmp_path):
         settings = _source_v_settings(tmp_path)
-        # Sample name with path traversal attempt
+        data = tmp_path / "a" / "b" / "c" / "d" / "data"
+        settings["file"]["data_directory"] = str(data)
+        return settings, data.resolve()
+
+    @staticmethod
+    def _assert_run_stayed_in(worker, data, user_dir_name):
+        user_dir = data / user_dir_name
+        written = worker.filename
+        assert written, "the run recorded no data file"
+        assert Path(written).resolve().parent == user_dir, (
+            f"data file not in {user_dir}: {written}"
+        )
+        assert list(user_dir.glob("*.csv")), f"no CSV in {user_dir}"
+        # Nothing anywhere under tmp_path outside data/: an escaped file
+        # would land beside the nested directories.
+        root = data.parents[4]
+        stray = [p for p in root.rglob("*") if p.is_file()
+                 and data not in p.resolve().parents]
+        assert stray == [], f"files written outside the data dir: {stray}"
+
+    def test_traversal_in_sample_name_is_sanitized(self, qapp, fake_rm, tmp_path):
+        settings, data = self._nested_settings(tmp_path)
         worker = MeasurementWorker("source_v", "../../etc/passwd",
                                      "alice", settings)
         spies = _drive_worker(qapp, worker, stop_after_n_points=1)
 
         assert spies.error_occurred == []
-        # All output files MUST be inside tmp_path/data
-        all_files = list((tmp_path / "data").rglob("*"))
-        for f in all_files:
-            resolved = f.resolve()
-            assert str(resolved).startswith(str((tmp_path / "data").resolve())), (
-                f"file escaped data dir: {resolved}"
-            )
+        self._assert_run_stayed_in(worker, data, "alice")
+        assert "etcpasswd" in Path(worker.filename).name
 
     def test_traversal_in_username_is_sanitized(self, qapp, fake_rm, tmp_path):
-        settings = _source_v_settings(tmp_path)
+        settings, data = self._nested_settings(tmp_path)
         worker = MeasurementWorker("source_v", "sample", "../../../bob", settings)
         spies = _drive_worker(qapp, worker, stop_after_n_points=1)
 
         assert spies.error_occurred == []
-        all_files = list((tmp_path / "data").rglob("*"))
-        for f in all_files:
-            resolved = f.resolve()
-            assert str(resolved).startswith(str((tmp_path / "data").resolve()))
+        self._assert_run_stayed_in(worker, data, "bob")
+
+    @pytest.mark.parametrize("name, expected", [
+        ("../../etc/passwd", "etcpasswd"),
+        ("../../../bob", "bob"),
+        ("..\\..\\win", "win"),
+        ("/abs/path", "abspath"),
+        ("..", "unnamed"),
+        ("Anna Lee", "Anna_Lee"),
+    ])
+    def test_sanitize_path_component_strips_traversal(self, name, expected):
+        from resistamet_gui.session.run_files import sanitize_path_component
+        assert sanitize_path_component(name) == expected
 
 
 # ============================================================================
