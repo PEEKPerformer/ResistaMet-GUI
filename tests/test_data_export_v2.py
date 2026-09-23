@@ -337,6 +337,11 @@ class TestHdf5Exporter:
         with h5py.File(exp.output_paths[0], 'r') as f:
             ds = f['data']
             assert ds.shape == (2,)
+
+            def text(values):
+                return [v.decode('utf-8') if isinstance(v, bytes) else v for v in values]
+            assert text(ds['elapsed_s']) == ['0', '1']
+            assert text(ds['R_ohm']) == ['1.05', '1.04']
             assert f.attrs['user'] == 'brenden'
             assert f.attrs['mode'] == 'resistance'
             assert f.attrs['ended_at'] == '2026-05-13T14:30:00'
