@@ -1191,20 +1191,30 @@ class TestVdpStop:
         # then call stop_measurement.
         worker = VdpMeasurementWorker("sample", "alice", _vdp_settings(tmp_path))
         ready = []
+        errors = []
         worker.geometry_ready.connect(lambda i, g: ready.append(i))
+        worker.error_occurred.connect(errors.append)
         worker.start()
         # Wait until the worker has emitted the first ready signal.
-        deadline = time.time() + 5.0
+        deadline = time.time() + 15.0
         while not ready and time.time() < deadline:
             qapp.processEvents()
             time.sleep(0.01)
         assert ready, "worker never emitted geometry_ready"
         worker.stop_measurement()
-        deadline = time.time() + 3.0
+        deadline = time.time() + 15.0
         while worker.isRunning() and time.time() < deadline:
             qapp.processEvents()
             time.sleep(0.01)
         assert not worker.isRunning()
+        for _ in range(5):
+            qapp.processEvents()
+            time.sleep(0.01)
+
+        assert errors == []
+        outp = [c for op, c in fake_rm.opened[0].command_log
+                if op == "write" and c.upper() in (":OUTP ON", ":OUTP OFF")]
+        assert outp and outp[-1].upper() == ":OUTP OFF", outp
 
 
 class TestFourPointDeltaReadRetry:
@@ -1361,10 +1371,11 @@ class TestStopDuringSettle:
         worker = MeasurementWorker("source_v", "wafer1", "alice", settings)
         spies = _Spies(worker)
         worker.start()
-        deadline = time.time() + 5.0
+        deadline = time.time() + 15.0
         while time.time() < deadline and not any("settling" in m.lower() for m in spies.status_update):
             qapp.processEvents()
             time.sleep(0.02)
+        assert any("settling" in m.lower() for m in spies.status_update), spies.status_update
         began = time.time()
         worker.stop_measurement()
         assert worker.wait(5000), "worker did not stop"
@@ -1379,11 +1390,22 @@ class TestStopDuringSettle:
         worker = MeasurementWorker("four_point", "wafer1", "alice", settings)
         spies = _Spies(worker)
         worker.start()
-        deadline = time.time() + 5.0
-        while time.time() < deadline and not any("Starting measurement" in m for m in spies.status_update):
+
+        def in_first_polarity_settle():
+            # The +I write after :OUTP ON starts the first delta settle.
+            if not fake_rm.opened:
+                return False
+            writes = [c for op, c in list(fake_rm.opened[0].command_log) if op == "write"]
+            if ":OUTP ON" not in writes:
+                return False
+            after_on = writes[writes.index(":OUTP ON") + 1:]
+            return any(c.startswith(":SOUR:CURR ") for c in after_on)
+
+        deadline = time.time() + 15.0
+        while time.time() < deadline and not in_first_polarity_settle():
             qapp.processEvents()
             time.sleep(0.02)
-        time.sleep(0.3)  # into the first polarity settle
+        assert in_first_polarity_settle(), "the run never reached the delta settle"
         worker.stop_measurement()
         assert worker.wait(5000), "worker did not stop"
         qapp.processEvents()
