@@ -754,10 +754,29 @@ class TestOutputResetMigration:
 class TestConcurrentWrites:
     """Two writers must not be able to lose the file between them."""
 
-    def test_save_is_atomic(self, temp_config_file):
+    def test_save_is_atomic(self, temp_config_file, monkeypatch):
         """A reader never sees a truncated file, only old or new."""
         manager = ConfigManager(config_file=temp_config_file)
         manager.add_user('alice')
+
+        # Stop a save half-way through writing and look at the file then.
+        before = json.loads(Path(temp_config_file).read_text())
+        seen = []
+        real_dumps = json.dumps
+
+        def dump_with_a_pause(obj, handle, **kwargs):
+            text = real_dumps(obj, **kwargs)
+            handle.write(text[:len(text) // 2])
+            handle.flush()
+            seen.append(Path(temp_config_file).read_text())
+            handle.write(text[len(text) // 2:])
+
+        with monkeypatch.context() as patch:
+            patch.setattr(json, 'dump', dump_with_a_pause)
+            manager.add_user('bob')
+        assert len(seen) == 1
+        assert json.loads(seen[0]) == before
+        assert 'bob' in json.loads(Path(temp_config_file).read_text())['users']
 
         import threading
 
