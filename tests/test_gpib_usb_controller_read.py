@@ -130,8 +130,7 @@ class TestRead:
         assert info.value.code == 0x0A and info.value.partial == b''
         assert controller.write(22, b'*IDN?\n', timeout_s=3.0) == 6
         transport.assert_done()
-        assert not [step for step in transport.script if step[0] == 'ctrl' and step[1][0] == 0x20]
-        assert not [step for step in transport.script if step[0] == 'clear_halt']
+        assert 0x20 not in transport.control_requests and transport.halts_cleared == []
 
 
 def framed_counts(messages: List[bytes]) -> List[int]:

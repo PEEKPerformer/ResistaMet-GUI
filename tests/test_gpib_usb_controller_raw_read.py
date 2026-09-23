@@ -356,7 +356,7 @@ class TestRawRead:
             controller.read_raw(20480, timeout_s=1.0)
         assert info.value.code == 0x0A
         transport.assert_done()
-        assert 0x20 not in [step[1][0] for step in transport.script if step[0] == 'ctrl'][3:]  # no stop request
+        assert 0x20 not in transport.control_requests  # no stop request
 
     def test_partial_data_at_the_host_wait_is_kept_and_completed_after_the_stop(self):
         # The transport received 4 bytes when its wait expired (pyusb's partial count); after the

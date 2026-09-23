@@ -86,6 +86,9 @@ class ScriptedTransport:
         self.timeouts: List[Tuple[str, int, int]] = []
         #: How often ``device_present`` was asked, and the script position each time.
         self.presence_checks: List[int] = []
+        #: The bRequest of every control IN and every endpoint reset asked for, in order.
+        self.control_requests: List[int] = []
+        self.halts_cleared: List[int] = []
 
     def device_present(self) -> Optional[bool]:
         self.presence_checks.append(self.pos)
@@ -108,6 +111,7 @@ class ScriptedTransport:
 
     def control_in(self, request, value, index, length, timeout_ms,
                    request_type=t.REQUEST_TYPE_VENDOR_DEVICE) -> bytes:
+        self.control_requests.append(request)
         step = self._next('ctrl', 'request 0x%02x' % request)
         expected = tuple(step[1])
         actual = (request, value, index, length) + ((request_type,) if len(expected) == 5 else ())
@@ -168,6 +172,7 @@ class ScriptedTransport:
         return step[1]
 
     def clear_halt(self, endpoint: int) -> None:
+        self.halts_cleared.append(endpoint)
         step = self._next('clear_halt', 'endpoint 0x%02x' % endpoint)
         if step[1] != endpoint:
             self._off('clear_halt on 0x%02x, expected 0x%02x' % (endpoint, step[1]))
