@@ -6,6 +6,7 @@ put two events after run_ended. A client that closes on run_ended, or
 resumes from the last seq it saw, was told the wrong thing.
 """
 import pytest
+from pydantic import ValidationError
 
 from resistamet_gui.session.continuous_run import ContinuousRun
 from resistamet_gui.session.control import RunControl
@@ -30,7 +31,7 @@ class TestTheEmitter:
     def test_a_run_ended_that_fails_validation_does_not_close_it(self):
         sink = ListSink()
         emitter = EventEmitter(sink)
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             emitter.emit('run_ended', {'reason': None})
         emitter.emit('run_ended', RUN_ENDED)
         assert sink.types() == ['run_ended']

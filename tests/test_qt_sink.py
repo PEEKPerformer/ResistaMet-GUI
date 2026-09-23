@@ -110,13 +110,12 @@ def test_instrument_connected_becomes_instrument_identified():
 def test_line_frequency_has_no_signal():
     """The GUI reads it from the status log; the API gets the event."""
     worker = _send('line_frequency', {'hz': 60.0, 'assumed': False})
-    assert all(not getattr(worker, name).emitted
-                for name in ('data_point', 'status_update', 'error_occurred'))
+    assert worker.order == []
 
 
 def test_unknown_event_is_dropped_quietly():
     worker = _send('run_started', {'mode': 'resistance'})
-    assert worker.data_point.emitted == []
+    assert worker.order == []
 
 
 def test_log_becomes_status_update():
