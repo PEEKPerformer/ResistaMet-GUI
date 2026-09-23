@@ -6,6 +6,7 @@ import pytest
 from resistamet_gui.gpib_usb import protocol as p
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb.controller import DRAIN_WAIT_S, Controller
+from resistamet_gui.gpib_usb.link import PRESENCE_POLL_S, PRESENCE_SETTLE_S
 from resistamet_gui.gpib_usb.protocol import AdapterGone, AdapterNotReady, GpibError, ProtocolError
 from resistamet_gui.gpib_usb.transport import TransportError, TransportGone, TransportStall, TransportTimeout
 from tests.fakes.gpib_usb import (CLEAR_HALTS, DRAIN, DRAIN_LENGTH, RAW_DRAIN, STOP, T3S, QueueingAdapter,
@@ -453,22 +454,79 @@ class TestAdapterGoneOnMacos:
             controller.write(24, b':OUTP OFF\n', timeout_s=3.0)
         transport.assert_done()
 
-    @pytest.mark.parametrize('present', [True, None])
-    def test_a_real_fault_with_the_adapter_present_is_recovered_as_before(self, present):
-        # None: a transport that cannot tell. Either way the pipes are reset, the stale reply
-        # drained and the attach re-run, as for any USB error.
+    @pytest.mark.parametrize('present, looks_at_the_fault', [(True, 21), (None, 1)])
+    def test_a_real_fault_with_the_adapter_present_is_recovered_as_before(self, present, looks_at_the_fault):
+        # None: a transport that cannot tell, and nothing is waited for. Either way the pipes are
+        # reset, the stale reply drained and the attach re-run, as for any USB error.
         controller, transport = attached([
             ('out', p.command_message(b'\x14', T3S)), ('in', io_error()),
         ] + reattach_after_usb_fault_script() + [
             ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
         ])
         transport.present = present
+        slept = []
+        controller._link.sleep = slept.append
         with pytest.raises(TransportError) as info:
             controller.command(b'\x14', timeout_s=3.0)
         assert not isinstance(info.value, TransportGone) and not controller.adapter_gone
+        # The extra delay a present adapter pays for the look at the bus is bounded: 100 ms.
+        assert len(transport.presence_checks) == looks_at_the_fault
+        assert slept == [PRESENCE_POLL_S] * (looks_at_the_fault - 1)
+        assert sum(slept) == pytest.approx(PRESENCE_SETTLE_S if present else 0.0)
         assert controller.command(b'\x14', timeout_s=3.0) == 1
         transport.assert_done()
-        assert len(transport.presence_checks) == 2   # at the fault, and before the re-attach
+        assert len(transport.presence_checks) == looks_at_the_fault + 1   # and one before the re-attach
+
+    def test_the_bench_sequence_waits_for_libusb_to_drop_the_adapter(self):
+        # macOS, 2026-09-23: the adapter was still listed when the first I/O error arrived and
+        # for some milliseconds after; the look at the bus waits for it to go instead of
+        # starting the recovery (which then failed ten requests in a row on the bench).
+        script = address_talker(pad=24) + [('out', p.read_message(1024, T3S)), ('in', io_error())]
+        controller, transport = attached(script)
+        transport.present = [True, True, True, False]
+        slept = []
+        controller._link.sleep = slept.append
+        with pytest.raises(AdapterGone):
+            controller.read(24, max_bytes=20480, timeout_s=3.0)
+        transport.assert_done()   # no pipe reset, stop request, drain or re-attach
+        assert len(transport.presence_checks) == 4 and slept == [PRESENCE_POLL_S] * 3
+
+    def test_an_adapter_that_leaves_during_the_recovery_ends_it_at_the_first_failed_request(self):
+        # Present through the whole wait at the fault and at the look before the re-attach; gone
+        # when the first pipe reset fails with "Other error": nothing more is sent.
+        controller, transport = attached([
+            ('out', p.command_message(b'\x14', T3S)), ('in', io_error()),
+            ('clear_halt', 0x06, other_error()),
+        ])
+        with pytest.raises(TransportError):
+            controller.command(b'\x14', timeout_s=3.0)
+        transport.present = [True, False]
+        with pytest.raises(AdapterGone):
+            controller.command(b'\x14', timeout_s=3.0)
+        assert controller.adapter_gone
+        transport.assert_done()
+
+    def test_the_stop_request_of_a_resync_failing_with_the_adapter_gone_ends_it(self):
+        controller, transport = absent([
+            ('out', p.command_message(b'\x14', T3S)), ('in', h('0c 00'), 12),
+            ('ctrl', (0x20, 0, 0, 8), other_error()),
+        ])
+        with pytest.raises(AdapterGone):
+            controller.command(b'\x14', timeout_s=3.0)   # no drain
+        transport.assert_done()
+
+    def test_a_recovery_request_that_fails_with_the_adapter_present_does_not_end_it(self):
+        controller, transport = attached([
+            ('out', p.command_message(b'\x14', T3S)), ('in', io_error()),
+            ('clear_halt', 0x06, other_error()), ('clear_halt', 0x02), ('clear_halt', 0x84), ('clear_halt', 0x88),
+            STOP, ('in', TransportTimeout('nothing to drain'), DRAIN_LENGTH),
+        ] + attach_script() + [
+            ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
+        ])
+        with pytest.raises(TransportError):
+            controller.command(b'\x14', timeout_s=3.0)
+        assert controller.command(b'\x14', timeout_s=3.0) == 1
+        transport.assert_done()
 
     def test_an_adapter_that_leaves_after_the_fault_is_gone_before_the_re_attach(self):
         controller, transport = attached([('out', p.command_message(b'\x14', T3S)), ('in', io_error())])

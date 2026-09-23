@@ -519,7 +519,9 @@ class PyUsbTransport:
         such device": the transfer in flight fails with errno 5 and every
         later request with libusb's "Other error", and errno 19 comes only
         when the device is opened again (§10.11). The controller asks here
-        instead, after an error that does not say.
+        instead, after an error that does not say, and more than once: on
+        the bench libusb still listed the unplugged adapter for about 10 ms
+        after the first error (``link.AdapterLink.gone_instead``).
 
         Present means a device with this one's vendor and product id at its
         bus and address. pyusb's ``find`` reads each device's descriptor,
