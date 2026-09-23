@@ -191,10 +191,18 @@ def test_a_stalled_stream_shows_its_age_while_still_served(_closer):
                ["DATA,21.0,22.0,0,0"])
     _closer(s)
     s.wait_for_reading(2.0)
+    s._stop_evt.set()                    # nothing re-caches from here on
+    # Age both clocks: the timestamp clock for age_s, the monotonic one the
+    # staleness limit is measured on.
+    real = time.monotonic
     now[0] += AUX_STALE_AFTER_S - 1.0
+    s._monotonic = lambda: real() + AUX_STALE_AFTER_S - 1.0
     r = s.read_latest()                  # still inside the staleness limit
     assert r.ok, "the repeated value carries no fault of its own"
     assert r.age_s(now[0]) == AUX_STALE_AFTER_S - 1.0
+    s._monotonic = lambda: real() + AUX_STALE_AFTER_S + 1.0
+    with pytest.raises(SensorReadError, match="stale"):
+        s.read_latest()                  # past it: no longer served
 
 
 def test_reader_resyncs_past_banner_lines(_closer):
