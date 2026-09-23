@@ -97,9 +97,11 @@ class TestPlatformDetection:
 
     def test_platform_flags_mutually_exclusive(self):
         """Test that only one platform flag is True."""
-        active_flags = sum([IS_MACOS, IS_WINDOWS, IS_LINUX])
-        # At most one should be True (could be 0 on unknown platform)
-        assert active_flags <= 1
+        import sys
+        # Exactly the flag for the platform the suite runs on is set.
+        assert [IS_MACOS, IS_WINDOWS, IS_LINUX] == [
+            sys.platform == 'darwin', sys.platform == 'win32',
+            sys.platform.startswith('linux')]
 
     def test_get_platform_info_returns_dict(self):
         """Test that get_platform_info returns expected structure."""
