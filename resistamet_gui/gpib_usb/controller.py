@@ -39,12 +39,17 @@ controller raises the same without touching USB. On Linux that call
 reports libusb's "no such device" (errno ENODEV) itself. On macOS the
 open handle never does: the transfer in flight fails with errno 5 and
 every later request with "Other error" (§10.11). So any USB error but a
-timeout or a STALL is followed, before anything is sent to recover, by a
-look at the bus (``Transport.device_present``, an enumeration that opens
-nothing); an adapter not found there is gone as above, and one that is
-found is recovered as for any fault. The same look precedes every
-re-attach. A replugged adapter is a new USB device, which the board
-registry opens afresh (spec §11.2, "Hot-unplug mid-run").
+timeout or a STALL is followed, before anything is sent to recover, by
+looks at the bus (``Transport.device_present``, an enumeration that opens
+nothing), every 5 ms for up to 100 ms, since on the bench libusb kept the
+unplugged adapter in its list for about 10 ms after the first error
+(``link.PRESENCE_SETTLE_S``). An adapter that leaves the list in that
+time is gone as above; one that stays is recovered as for any fault, at
+most 100 ms later than it would have been. A recovery request that then
+fails while the adapter is no longer found ends the recovery at once as
+gone, and one look precedes every re-attach. A replugged adapter is a
+new USB device, which the board registry opens afresh (spec §11.2,
+"Hot-unplug mid-run").
 
 The interrupt endpoint is not used at attach (§2.5 calls it optional and
 operation without it reliable), so attach skips the interrupt-monitor-mask
@@ -233,7 +238,7 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         #: 0x0e are used only when the caller has switched them on and the
         #: model has the alternate pair.
         self._link = AdapterLink(transport, model, raw=self._ni_instructions and model.raw_endpoints,
-                                 infinite_wait_s=infinite_wait_s)
+                                 infinite_wait_s=infinite_wait_s, sleep=sleep)
         self._own_address = own_address
         self._t1_ns = t1_ns
         self._sleep = sleep

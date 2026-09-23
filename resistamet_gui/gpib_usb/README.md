@@ -30,7 +30,7 @@ on macOS and in a Linux virtual machine.
 | The `GPIB0::INTFC` board resource | Run on 01CEE482, 2026-09-23 (spec §10.11): IFC, controller-in-charge afterwards, REN on and off with `VI_ATTR_GPIB_REN_STATE` following, command bytes, and an instrument session on the same board answering with the board open and after it closed. No run of its data transfers is recorded. |
 | Device clear, trigger | Run on 01CEE482, 2026-09-23 (spec §10.11): a clear with an answer pending left one fresh answer for the next query; a trigger reached the 2400 |
 | The service-request wait | The write that arms the adapter and the push it arms ran on 01CEE482, 2026-09-23 (spec §10.11). The wait as written now, which sends that write when it starts and every 15 ms, has not run as a whole. pyvisa-py 0.8.1 has no event API, so nothing reaches it through pyvisa. |
-| Unplugging mid-run | 01CEE482, 2026-09-21 and 2026-09-23 (spec §11.2, §10.11). On Linux libusb reports "no such device" at the first failed call. On macOS it never does on the open handle: the transfer in flight fails with an I/O error and every later request with "Other error". The driver now looks at the bus after such an error to tell an unplug from a fault; that check has not run on an adapter. After a replug a new session in the same process opened the adapter. |
+| Unplugging mid-run | 01CEE482, 2026-09-21 and 2026-09-23 (spec §11.2, §10.11). On Linux libusb reports "no such device" at the first failed call. On macOS it never does on the open handle: the transfer in flight fails with an I/O error and every later request with "Other error". The driver looks at the bus after such an error to tell an unplug from a fault. On the bench that check ran with a single look: libusb still listed the adapter for about 10 ms after the first error, so the first call reported an I/O error and ten recovery requests failed before the adapter was reported gone. The driver now watches the bus for up to 100 ms before deciding, and stops a recovery at the first failed request once the adapter is gone; that form has not run on an adapter. After a replug a new session in the same process opened the adapter. |
 
 ## What it supports
 
@@ -133,8 +133,10 @@ without sending them anything.
 - **An unplugged adapter** is `VI_ERROR_CONN_LOST` on that operation and
   every later one on the session, with nothing retried. On Linux libusb
   says the device is gone; on macOS the driver finds it missing from the
-  bus after the first failed call. After a replug the next open finds it
-  again with no restart.
+  bus after the first failed call, watching for up to 100 ms. A USB error
+  with the adapter still present therefore reports up to 100 ms later
+  than before. After a replug the next open finds it again with no
+  restart.
 - **No permission on the device** (Linux without the udev rule below) is
   `VI_ERROR_SYSTEM_ERROR` at open, with a message naming the device node
   and the rule.

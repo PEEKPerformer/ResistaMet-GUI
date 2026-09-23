@@ -62,13 +62,14 @@ class ScriptedTransport:
     request; ``('clear_halt', endpoint[, exc])`` -- the next pipe reset.
 
     ``device_present`` is not a step, since it sends nothing to the adapter: it
-    answers ``present`` and records where in the script it was asked.
+    answers ``present`` and records where in the script it was asked. A list
+    for ``present`` is answered one item per call, the last item repeating.
     """
 
     max_packet_size = 512
     max_packet_size_raw = 512
     #: What ``device_present`` answers: whether the adapter is still on the USB bus.
-    present: Optional[bool] = True
+    present: Any = True
 
     def __init__(self, script: List[Tuple[Any, ...]], clock: Optional[FakeClock] = None) -> None:
         self.script = list(script)
@@ -87,6 +88,8 @@ class ScriptedTransport:
 
     def device_present(self) -> Optional[bool]:
         self.presence_checks.append(self.pos)
+        if isinstance(self.present, list):
+            return self.present.pop(0) if len(self.present) > 1 else self.present[0]
         return self.present
 
     def _next(self, kind: str, what: str) -> Tuple[Any, ...]:
@@ -647,8 +650,14 @@ class SimulatedAdapter:
         self.unplugged = False
         self.unplug_like_macos = False
         self.calls_while_unplugged = 0
+        #: How many looks at the bus still find the device after it was unplugged: libusb on
+        #: macOS kept it listed for about 10 ms after the first error (§10.11).
+        self.still_listed_looks = 0
 
     def device_present(self) -> bool:
+        if self.unplugged and self.still_listed_looks:
+            self.still_listed_looks -= 1
+            return True
         return not self.unplugged
 
     def _plugged(self) -> None:

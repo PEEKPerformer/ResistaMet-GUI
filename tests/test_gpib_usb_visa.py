@@ -551,9 +551,11 @@ class TestInstrumentSession:
 
     def test_an_adapter_unplugged_on_macos_is_connection_lost_at_the_first_failed_call(self, rm, adapter):
         # §10.11: on macOS the query fails with errno 5, not "no such device"; the controller
-        # finds the adapter gone from the bus before any recovery and reports it at once.
+        # finds the adapter gone from the bus before any recovery and reports it at once, after
+        # waiting out the milliseconds libusb still lists it for (two looks here).
         inst = rm.open_resource('GPIB0::24::INSTR')
         adapter.unplug_like_macos = True
+        adapter.still_listed_looks = 2
         adapter.unplugged = True
         with pytest.raises(pyvisa.errors.VisaIOError) as info:
             inst.query('*IDN?')

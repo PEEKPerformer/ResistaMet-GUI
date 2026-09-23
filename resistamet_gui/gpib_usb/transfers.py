@@ -303,6 +303,7 @@ class _TransferMixin:
         except TransportGone:
             raise
         except TransportError as exc:
+            self._link.end_if_gone(exc)
             logger.warning('%s: reading the reply after the refused data failed: %s', self._link.model.name, exc)
         self._link.reset_out_pipes()
         if status is not None:

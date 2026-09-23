@@ -10,7 +10,8 @@ the infinite wait, and the fault and stop flags. The constants are
 re-exported by ``controller``.
 """
 import logging
-from typing import List, Optional, Sequence, Tuple
+import time
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import protocol as p
 from . import tables as t
@@ -46,13 +47,27 @@ DEFAULT_INFINITE_WAIT_S = 600.0
 #: formatting, §10.1.4; about 5600 taking write data, §10.5.2). A driver
 #: choice, not a specification value.
 BUS_MIN_RATE_BPS = 1000
+#: How long, after a USB error that does not say the device is gone, the
+#: bus is watched for the adapter to leave it, and how often it is looked
+#: at. On macOS, 2026-09-23, the unplugged adapter was still in libusb's
+#: device list 3 ms after the first I/O error and gone from it 13 ms after
+#: (error at .076; a look at .079 found it, one at .089 did not). 100 ms
+#: is several times the 13 ms seen, and is what a real fault with the
+#: adapter present pays on top of its recovery, with 21 enumerations;
+#: looking every 5 ms finds the adapter gone within 5 ms of libusb
+#: dropping it. Driver choices, sized on that one observation.
+PRESENCE_SETTLE_S = 0.1
+PRESENCE_POLL_S = 0.005
 
 
 class AdapterLink:
     """The exchange primitives and fault recovery of one ``Controller`` (see the module docstring)."""
 
-    def __init__(self, transport: Transport, model: t.Model, *, raw: bool, infinite_wait_s: float) -> None:
+    def __init__(self, transport: Transport, model: t.Model, *, raw: bool, infinite_wait_s: float,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
         self.transport = transport
+        #: Paces the looks at the bus of ``gone_instead``; the controller's, so tests run without waiting.
+        self.sleep = sleep
         self.model = model
         #: Whether 0x0b / 0x0e are used (see ``Controller.raw_transfers``).
         self.raw = raw
@@ -89,25 +104,56 @@ class AdapterLink:
             logger.debug('%s: the presence check failed: %s', self.model.name, exc)
             return None
 
-    def gone_instead(self, exc: TransportError) -> Optional[TransportGone]:
+    def gone_instead(self, exc: TransportError, settle: bool = True) -> Optional[TransportGone]:
         """For a USB error that does not say the device is gone: whether it is, as ``TransportGone``.
 
         On macOS an unplugged adapter's handle reports errno 5 and then
         "Other error", never "no such device" (§10.11), so the error alone
-        cannot tell an unplug from a transfer fault. This looks at the bus,
-        before anything is sent to recover: None when the adapter is still
-        there or the transport cannot tell, and recovery goes ahead as for
-        any fault. A timeout or a STALL is an answer from a device that is
-        there, and is not looked into.
+        cannot tell an unplug from a transfer fault. This looks at the bus
+        before anything is sent to recover. libusb on macOS keeps the
+        device in its list for a while after the first error (about 10 ms
+        on the bench), so with ``settle`` the bus is looked at every
+        ``PRESENCE_POLL_S`` for up to ``PRESENCE_SETTLE_S`` (100 ms): the
+        adapter leaving within that time is gone. A real fault with the
+        adapter present therefore reaches its recovery at most 100 ms later
+        than before. Without ``settle``, one look: for a recovery request
+        that fails after the fault's own look has waited. None when the
+        adapter is still there or the transport cannot tell (then nothing
+        is waited for), and recovery goes ahead as for any fault. A timeout
+        or a STALL is an answer from a device that is there, and is not
+        looked into.
         """
         if isinstance(exc, (TransportGone, TransportTimeout, TransportStall)):
             return None
-        if self.device_present() is not False:
+        looks = 1 + (int(round(PRESENCE_SETTLE_S / PRESENCE_POLL_S)) if settle else 0)
+        for look in range(looks):
+            if look:
+                self.sleep(PRESENCE_POLL_S)
+            present = self.device_present()
+            if present is None:
+                return None
+            if present is False:
+                break
+        else:
             return None
         gone = TransportGone('%s; the adapter is no longer on the USB bus' % exc)
         gone.errno, gone.backend_code = exc.errno, exc.backend_code
         gone.__cause__ = exc
         return gone
+
+    def end_if_gone(self, exc: TransportError) -> None:
+        """A recovery request failed: raise ``TransportGone`` if the adapter is no longer on the bus.
+
+        One look, no waiting: the fault that started the recovery has had its
+        look with the wait (``gone_instead``). On the bench (macOS,
+        2026-09-23) the pipe resets and the stop request of a recovery failed
+        with "Other error" one after another for 10 ms before the adapter
+        was seen gone; each such failure now ends the recovery once the
+        adapter is not found, with the remaining steps not run.
+        """
+        gone = self.gone_instead(exc, settle=False)
+        if gone is not None:
+            raise gone
 
     def control(self, request: t.ControlRequest,
                 timeout_ms: int = t.CONTROL_TIMEOUT_MS) -> bytes:
@@ -265,7 +311,8 @@ class AdapterLink:
 
         Raises nothing but ``TransportGone``: an adapter that has left the
         bus has no pipe to bring back into step, and the controller must
-        hear of it at once.
+        hear of it at once. A step that fails while the adapter is no longer
+        on the bus (``end_if_gone``) ends the recovery there.
         """
         self.resync_pending = True
         if self.drained:
@@ -283,6 +330,7 @@ class AdapterLink:
         except TransportTimeout:
             logger.debug('nothing to drain')
         except TransportError as exc:
+            self.end_if_gone(exc)
             logger.debug('drain after a malformed reply failed: %s', exc)
         if self.raw:
             # Data of an interrupted 0x0b, or the zero-length packet that ends
@@ -296,6 +344,7 @@ class AdapterLink:
             except TransportTimeout:
                 logger.debug('nothing to drain on the alternate endpoint')
             except TransportError as exc:
+                self.end_if_gone(exc)
                 logger.debug('alternate-endpoint drain failed: %s', exc)
 
     def clear_halts_after_fault(self) -> None:
@@ -324,13 +373,16 @@ class AdapterLink:
         Raises nothing but ``TransportGone``: every caller is already
         reporting or recovering from another failure, which a transport
         without ``clear_halt``, or one whose reset fails, must not replace;
-        an adapter that has left the bus ends the recovery instead.
+        an adapter that has left the bus ends the recovery instead, whether
+        the reset says so or fails while the adapter is gone (``end_if_gone``).
         """
         try:
             self.transport.clear_halt(endpoint)
         except TransportGone:
             raise
         except Exception as exc:  # noqa: BLE001 -- see the docstring
+            if isinstance(exc, TransportError):
+                self.end_if_gone(exc)
             logger.warning('%s: clearing the halt on endpoint 0x%02x failed: %s: %s',
                            self.model.name, endpoint, type(exc).__name__, exc)
             return False
