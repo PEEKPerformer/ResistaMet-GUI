@@ -248,18 +248,18 @@ class TestEnhancedResistance:
         # User manual §4 worked example: 100 mΩ @ 5 mA, enhanced mode.
         # The manual derives ±0.447% via linear-sum of measure specs.
         # We're below the 2 Ω row so we fall through to V/I propagation.
-        # V = 500 µV on 200 mV range → σ_V = 0.012%×500µV + 300µV ≈ 300 µV
-        # I = 5 mA on 10 mA range → σ_I = 0.027%×5mA + 60 nA ≈ 1.41 µA
+        # V = 500 µV on 200 mV range → σ_V = 0.012%×500µV + 300µV = 300.06 µV
+        # I = 5 mA on 10 mA range → σ_I = 0.035%×5mA + 600 nA = 2.35 µA
         # σ_R/R via RSS:
-        #   √((300e-6/500e-6)² + (1.41e-6/5e-3)²) ≈ √(0.36 + 7.95e-8) ≈ 0.6
+        #   √((300.06e-6/500e-6)² + (2.35e-6/5e-3)²) = √(0.360144 + 2.2e-7)
+        #   = 0.600120, so σ_R = 0.1 Ω × 0.600120 = 0.060012 Ω
         # = 60% — same as the V-dominated propagation result we already
         # have in test_100mohm_at_5ma_normal_mode_via_propagation.
         # The point: enhanced=True at sub-2-Ω R doesn't blow up; it
         # gracefully returns the same conservative V/I number.
         sigma = resistance_uncertainty(500e-6, 5e-3, model="2400", nplc=1.0, enhanced=True)
-        # Just assert it's finite and positive — the dominant V offset
-        # carries the answer regardless of mode.
-        assert math.isfinite(sigma) and sigma > 0
+        assert sigma == pytest.approx(0.060012, rel=1e-5)
+        assert sigma == resistance_uncertainty(500e-6, 5e-3, model="2400", nplc=1.0, enhanced=False)
 
 
 # ---------------------------------------------------------------------------
