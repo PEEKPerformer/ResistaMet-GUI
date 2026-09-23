@@ -499,6 +499,35 @@ class TestPyUsbTransport:
         with pytest.raises(TransportError):
             usb_transport.clear_halt(0x06)
 
+    def test_device_present_finds_this_device_by_bus_and_address_and_opens_nothing(self, monkeypatch):
+        # §10.11: on macOS the open handle of an unplugged adapter never says "no such device".
+        device = HS(bus=2, address=7, serial='01CEE482')
+        devices = [device]
+        fake = install_fake_usb(monkeypatch, devices)
+        usb_transport = PyUsbTransport(device, 0x02, 0x84)
+        assert usb_transport.device_present() is True
+        assert fake['calls']['find'][-1] == ('backend', {'idVendor': t.VENDOR_ID, 'idProduct': t.PID_HS,
+                                                         'bus': 2, 'address': 7})
+        assert device.serial_reads == 0 and device.ctrl_calls == [] and fake['calls']['dispose'] == []
+        devices.clear()   # unplugged
+        assert usb_transport.device_present() is False
+        devices.append(HS(bus=2, address=8, serial='01CEE482'))   # back, as a new device
+        assert usb_transport.device_present() is False
+
+    def test_device_present_cannot_tell_without_an_enumeration(self, monkeypatch):
+        device = HS()
+        fake = install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84)
+
+        def find(**kwargs):
+            raise fake['core'].USBError('Other error', -99, None)
+        fake['core'].find = find
+        assert usb_transport.device_present() is None
+        install_fake_usb(monkeypatch, [device], backend=None)
+        assert usb_transport.device_present() is None
+        device.address = None
+        assert usb_transport.device_present() is None
+
     def test_close_releases_and_disposes(self, monkeypatch):
         device = HS()
         fake = install_fake_usb(monkeypatch, [device])

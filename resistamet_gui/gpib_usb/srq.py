@@ -171,7 +171,10 @@ class _SrqMixin:
             except TransportGone as gone:
                 with self._lock:
                     raise self._adapter_gone(gone) from gone
-            except TransportError:
+            except TransportError as exc:
                 with self._lock:
+                    gone = self._link.gone_instead(exc)  # macOS: the error does not say (§10.11)
+                    if gone is not None:
+                        raise self._adapter_gone(gone) from gone
                     self._link.resync_pending = True
                 raise
