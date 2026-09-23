@@ -72,14 +72,22 @@ def test_sample_without_derived_adds_no_row(panel_window):
 
 
 def test_panel_no_longer_recomputes(panel_window, monkeypatch):
-    """The legacy calculation must not run on the GUI thread any more."""
+    """The legacy calculation must not run on the GUI thread any more.
+
+    Spied both in ``calculations`` (a function-level import reads it there)
+    and in ``main_window``'s own namespace, where a module-level
+    ``from ..calculations import ...`` would bind it.
+    """
     from resistamet_gui import calculations
+    from resistamet_gui.ui import main_window as main_window_module
 
     def fail(*args, **kwargs):
         raise AssertionError("4PP panel recomputed instead of using the worker's values")
 
-    monkeypatch.setattr(calculations, 'calculate_four_point_probe', fail)
-    monkeypatch.setattr(calculations, 'calculate_four_point_probe_bound', fail)
+    for name in ('calculate_four_point_probe', 'calculate_four_point_probe_bound',
+                 'calculate_four_point_probe_f84'):
+        monkeypatch.setattr(calculations, name, fail)
+        monkeypatch.setattr(main_window_module, name, fail, raising=False)
     _drive_sample(panel_window, DERIVED)
 
     assert panel_window.tab_four_point._fpp_rows
