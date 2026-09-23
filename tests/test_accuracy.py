@@ -325,9 +325,9 @@ class TestSourceUncertainty:
 class TestDerivedRForSourceModes:
     """σ_R for R = V_set / I_meas (source_v) or V_meas / I_set (source_i).
 
-    The worker computes these inline rather than via a helper, so this
-    pins the algebra to a hand-calculated reference and acts as a
-    regression check on the source-mode wiring in workers.py.
+    This pins the algebra to a hand-calculated reference. The parsers in
+    session/samples.py compute it inline; test_samples_uncertainty.py
+    checks the value they write against the same hand values.
     """
 
     def test_source_v_typical_case(self):
