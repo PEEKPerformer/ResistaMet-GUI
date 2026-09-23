@@ -130,7 +130,7 @@ class TestFormatWithUncertainty:
     def test_current_microamps(self):
         # 100 µA ± 25 nA → 100.000 ± 0.025 µA.
         result = format_with_uncertainty(100e-6, 25e-9, 'A')
-        assert result == "100.025 ± 0.025 µA" or result == "100.000 ± 0.025 µA"
+        assert result == "100.000 ± 0.025 µA"
 
     def test_falls_back_when_uncertainty_nonfinite(self):
         # NaN σ → plain engineering format (no ± shown).
