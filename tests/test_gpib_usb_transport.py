@@ -17,8 +17,8 @@ import pytest
 import resistamet_gui.gpib_usb as gpib_usb
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb import transport
-from resistamet_gui.gpib_usb.transport import (AdapterInfo, PyUsbTransport, TransportError, TransportGone,
-                                                TransportStall, TransportTimeout)
+from resistamet_gui.gpib_usb.transport import (AdapterInfo, PyUsbTransport, TransportAccessDenied, TransportError,
+                                                TransportGone, TransportStall, TransportTimeout)
 
 
 class FakeEndpoint:
@@ -296,6 +296,41 @@ class TestPyUsbTransport:
         with pytest.raises(TransportError):
             PyUsbTransport(device, 0x02, 0x84)
         assert fake['calls']['dispose'] == [device]
+
+    @pytest.mark.parametrize('error_args', [('Access denied (insufficient permissions)', -3, errno.EACCES),
+                                            ('Access denied', -errno.EACCES, None)])
+    def test_a_claim_refused_for_permission_on_linux_names_the_node_and_the_udev_rule(self, monkeypatch,
+                                                                                      error_args):
+        # §10.11: without the rule the node was root:root 0664 and the open failed as
+        # VI_ERROR_SYSTEM_ERROR, "Unknown system error". libusb1 backend, then libusb0.
+        device = HS(bus=1, address=4)
+        fake = install_fake_usb(monkeypatch, [device])
+        device.claim_error = fake['core'].USBError(*error_args)
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        with pytest.raises(TransportAccessDenied) as info:
+            PyUsbTransport(device, 0x02, 0x84)
+        message = str(info.value)
+        assert 'no permission on its USB device node /dev/bus/usb/001/004' in message
+        assert 'udev rule' in message and 'README' in message and 'replug' in message
+        assert (info.value.errno, info.value.backend_code) == (error_args[2], error_args[1])
+        assert fake['calls']['dispose'] == [device]
+
+    def test_a_claim_refused_elsewhere_says_access_was_denied(self, monkeypatch):
+        device = HS()
+        fake = install_fake_usb(monkeypatch, [device])
+        device.claim_error = fake['core'].USBError('Access denied (insufficient permissions)', -3, errno.EACCES)
+        monkeypatch.setattr(sys, 'platform', 'darwin')
+        with pytest.raises(TransportAccessDenied) as info:
+            PyUsbTransport(device, 0x02, 0x84)
+        assert 'denied access' in str(info.value) and 'udev' not in str(info.value)
+
+    def test_other_claim_failures_are_not_access_denied(self, monkeypatch):
+        device = HS()
+        fake = install_fake_usb(monkeypatch, [device])
+        device.claim_error = fake['core'].USBError('Resource busy', -6, errno.EBUSY)
+        with pytest.raises(TransportError) as info:
+            PyUsbTransport(device, 0x02, 0x84)
+        assert not isinstance(info.value, TransportAccessDenied)
 
     def test_control_in_uses_the_vendor_request_types(self, monkeypatch):
         device = HS()

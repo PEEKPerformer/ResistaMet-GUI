@@ -100,6 +100,22 @@ LIBUSB_ERROR_PIPE = -9
 LIBUSB_ERROR_NO_DEVICE = -4
 
 
+class TransportAccessDenied(TransportError):
+    """The operating system refused this process access to the adapter's USB device.
+
+    On Linux that is the permission on its device node, which a udev rule
+    grants (package README, "Linux"; §10.11: root:root 0664 without the
+    rule, and with it the unprivileged user opened the adapter). The
+    message names the node and the rule.
+    """
+
+
+#: libusb's code for access denied. The libusb-1.0 backend raises it as
+#: ``USBError('Access denied (insufficient permissions)', -3, EACCES)``; the
+#: libusb-0.1 backend passes -EACCES as the backend code and no errno.
+LIBUSB_ERROR_ACCESS = -3
+
+
 def _is_stall(exc: Exception) -> bool:
     return (getattr(exc, 'backend_error_code', None) == LIBUSB_ERROR_PIPE
             or getattr(exc, 'errno', None) == errno.EPIPE)
@@ -108,6 +124,24 @@ def _is_stall(exc: Exception) -> bool:
 def _is_gone(exc: Exception) -> bool:
     return (getattr(exc, 'errno', None) == errno.ENODEV
             or getattr(exc, 'backend_error_code', None) in (LIBUSB_ERROR_NO_DEVICE, -errno.ENODEV))
+
+
+def _is_access_denied(exc: Exception) -> bool:
+    return (getattr(exc, 'errno', None) == errno.EACCES
+            or getattr(exc, 'backend_error_code', None) in (LIBUSB_ERROR_ACCESS, -errno.EACCES))
+
+
+def _access_denied_message(device: Any, interface: int, exc: Exception) -> str:
+    """What to tell the user when the claim is refused: the cause, and on Linux the remedy."""
+    bus, address = getattr(device, 'bus', None), getattr(device, 'address', None)
+    if sys.platform.startswith('linux'):
+        node = ('/dev/bus/usb/%03d/%03d' % (bus, address)) if bus is not None and address is not None \
+            else 'under /dev/bus/usb'
+        return ('cannot open the adapter: no permission on its USB device node %s (%s). Install the '
+                'udev rule in resistamet_gui/gpib_usb/README.md ("Linux"), reload the rules, replug '
+                'the adapter, and make sure your user is in the group the rule names' % (node, exc))
+    return ('cannot claim interface %d: the operating system denied access to the adapter (%s); '
+            'another program may have it open' % (interface, exc))
 
 
 def _carrying_codes(error: TransportError, exc: Exception) -> TransportError:
@@ -363,8 +397,12 @@ class PyUsbTransport:
             usb.util.claim_interface(device, interface)
         except usb.core.USBError as exc:
             _dispose(usb, device)
-            kind = TransportGone if _is_gone(exc) else TransportError
-            raise _carrying_codes(kind('cannot claim interface %d: %s' % (interface, exc)), exc) from exc
+            if _is_access_denied(exc):
+                error: TransportError = TransportAccessDenied(_access_denied_message(device, interface, exc))
+            else:
+                kind = TransportGone if _is_gone(exc) else TransportError
+                error = kind('cannot claim interface %d: %s' % (interface, exc))
+            raise _carrying_codes(error, exc) from exc
         self.max_packet_size = self._in_packet_size(self._in)
         if self._in_raw is not None:
             self.max_packet_size_raw = self._in_packet_size(self._in_raw)

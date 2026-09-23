@@ -62,7 +62,7 @@ from . import tables as t
 from .boards import BoardRegistry
 from .controller import Controller
 from .protocol import AdapterGone, GpibError, GpibTimeout, NoListener
-from .transport import TransportError
+from .transport import TransportAccessDenied, TransportError
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +79,22 @@ DeviceAddress = Tuple[int, Optional[int]]
 def registry() -> BoardRegistry:
     """The one board registry every session class and dispatcher shares."""
     return _REGISTRY
+
+
+class AccessDeniedError(errors.VisaIOError):
+    """VI_ERROR_SYSTEM_ERROR, with why: the operating system refused the adapter's USB device.
+
+    pyvisa-py turns an ``OpenError`` into its status code alone, and that
+    code's text is "Unknown system error", which says nothing of the cause
+    or the cure. This is raised past pyvisa-py's open instead, with the same
+    code, so ``except VisaIOError`` catches it as before and the message
+    carries the transport's: the device node and the udev rule on Linux.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(StatusCode.error_system_error)
+        self.detail = detail
+        self.args = ('%s %s%s.' % (self.args[0], detail[:1].upper(), detail[1:].rstrip('.')),)
 
 
 def status_for(exc: Exception) -> StatusCode:
@@ -185,6 +201,9 @@ class NiUsbGpibSession(Session):
             self.interface = registry().acquire(self.parsed.board)
         except KeyError:
             raise OpenError(StatusCode.error_resource_not_found)
+        except TransportAccessDenied as exc:
+            logger.warning('GPIB%s: cannot open adapter: %s', self.parsed.board, exc)
+            raise AccessDeniedError(str(exc)) from exc
         except Exception as exc:  # noqa: BLE001 - pyvisa expects an OpenError, whatever the USB stack threw
             logger.warning('GPIB%s: cannot open adapter: %s', self.parsed.board, exc)
             raise OpenError(StatusCode.error_system_error)

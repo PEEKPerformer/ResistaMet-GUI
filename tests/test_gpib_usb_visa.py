@@ -9,6 +9,7 @@ presence probe), holding one fake instrument at address 24 that answers
 import functools
 import sys
 import threading
+import types
 from typing import List
 
 import pytest
@@ -34,7 +35,7 @@ from resistamet_gui.gpib_usb import controller as controller_module  # noqa: E40
 from resistamet_gui.gpib_usb import transport, visa_session  # noqa: E402
 from resistamet_gui.gpib_usb import boards  # noqa: E402
 from resistamet_gui.gpib_usb.boards import BoardRegistry  # noqa: E402
-from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportError  # noqa: E402
+from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportAccessDenied, TransportError  # noqa: E402
 from resistamet_gui.gpib_usb.visa_session import GPIB_INSTR, NiUsbGpibDispatch  # noqa: E402
 from tests.fakes.gpib_usb import FakeClock, FakeInstrument, SimulatedAdapter, fake_adapter_info, h  # noqa: E402
 from tests.fakes.gpib_usb_visa import (Sentinel, enumeration, ni_instructions,  # noqa: E402,F401
@@ -735,6 +736,23 @@ class TestDispatch:
         with pytest.raises(pyvisa.errors.VisaIOError) as info:
             rm.open_resource('GPIB0::24::INSTR')
         assert info.value.error_code == StatusCode.error_system_error
+
+    def test_no_permission_on_the_device_says_so_and_how_to_grant_it(self, rm, monkeypatch, adapter):
+        # §10.11: in the Linux VM without the udev rule this was VI_ERROR_SYSTEM_ERROR,
+        # "Unknown system error", and nothing else.
+        def refused(info):
+            raise TransportAccessDenied(transport._access_denied_message(
+                types.SimpleNamespace(bus=1, address=4), 0, OSError(13, 'Access denied (insufficient permissions)')))
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(visa_session, '_REGISTRY', BoardRegistry(open_transport=refused, first_board=0))
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            rm.open_resource('GPIB0::24::INSTR')
+        assert info.value.error_code == StatusCode.error_system_error
+        message = str(info.value)
+        assert message.startswith('VI_ERROR_SYSTEM_ERROR')
+        assert 'no permission on its USB device node /dev/bus/usb/001/004' in message
+        assert 'udev rule' in message and 'README' in message
+        assert visa_session.registry()._boards['0'].sessions == 0   # nothing left counted open
 
     def test_attach_failure_closes_the_transport(self, rm, monkeypatch, adapter):
         broken_sim = SimulatedAdapter({}, serial_reply=h('00 00 00 00 00'))
