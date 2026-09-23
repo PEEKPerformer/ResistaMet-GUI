@@ -219,6 +219,7 @@ class TestDerivedValues:
         samples = sink.of_type('sample')
         assert samples, "no samples"
         header, rows = self._csv_rows(sink.of_type('run_ended')[0].payload['path'])
+        assert len(samples) == len(rows) == 2
         for sample, row in zip(samples, rows):
             derived = sample.payload['derived']
             assert float(row[header.index('Rs_ohm_sq')]) == pytest.approx(derived['rs'])
