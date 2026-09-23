@@ -59,8 +59,13 @@ class _SrqMixin:
     # nothing; sent with SRQ asserted, its reply carried SRQI and the 4-byte
     # packet `31 a5 nn 00` came 1-2 ms later on each of three rounds, and
     # the serial poll afterwards returned 96. The wait then raised
-    # ProtocolError on that packet; taking it as a request with no status
-    # byte, as now, has not run on hardware. Nothing in the application
+    # ProtocolError on that packet. Taking it as a request with no status
+    # byte, as now, then ran on the same unit on macOS the same day: five
+    # service requests in one session, each returned None in 2-3 ms and
+    # each cleared by *ESR?; in a separate session a 1 s wait before *OPC
+    # timed out at 1.18 s, a wait after *OPC returned None in 2 ms, the
+    # caller's serial poll then returned 96 and, after *ESR?, 0, and a wait
+    # with nothing pending timed out at 1.18 s. Nothing in the application
     # calls it: pyvisa-py 0.8.1 has no enable_event / wait_on_event.
     # ------------------------------------------------------------------
 
@@ -93,10 +98,10 @@ class _SrqMixin:
         Control request 0x3b follows either packet, as NI sends it after the
         push (§10.4.2) and as the bench sent it after each 4-byte packet
         (§10.12). None means a request was made and its status byte is not
-        known here: the caller serial-polls the device for it, which also
-        clears its RQS. A packet shorter than 8 bytes in any other form has not
-        been seen and raises ``ProtocolError`` before any 0x3b, the bulk pipes
-        untouched.
+        known here: the caller serial-polls the device for it and clears
+        the cause of the request (on the bench, *ESR? on the 2420). A
+        packet shorter than 8 bytes in any other form has not been seen and
+        raises ``ProtocolError`` before any 0x3b, the bulk pipes untouched.
 
         No write is sent while no wait runs. (The same write is the last
         block of NI's raw messages, §10.2.5; whether it arms the push there
