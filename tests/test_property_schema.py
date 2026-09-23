@@ -21,14 +21,17 @@ The run is derandomised and keeps no example database.
 import copy
 import math
 import re
+import tempfile
 import typing
+from pathlib import Path
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
-from resistamet_gui.constants import DEFAULT_SETTINGS
+from resistamet_gui.constants import DEFAULT_SETTINGS, MODE_TIMING_OVERRIDES
+from resistamet_gui.data_export import CsvExporter, parse_metadata
 from resistamet_gui.schema import settings_common as common
 from resistamet_gui.schema.resolve import allowed_override_keys, resolve_run_settings
 from resistamet_gui.schema.settings_modes import MODE_MODELS
@@ -138,6 +141,11 @@ def _outside(field, side, how_far, kind_of_bad):
 
 @pytest.mark.parametrize("name", sorted(MODELS))
 class TestEveryModel:
+    """The models against their own bounds: that pydantic enforces what each
+    field declares, and that no bound on one field leaks onto another. The
+    bounds read off the model cannot say whether a bound is *right*; that is
+    ``test_settings_bounds.py``, which holds them against the widgets."""
+
     @PROPERTY
     @given(st.data())
     def test_inside_every_bound_validates(self, name, data):
@@ -155,7 +163,7 @@ class TestEveryModel:
         model = MODELS[name]
         candidates = _bounded_fields(model)
         if not candidates:
-            return
+            pytest.skip(f"{name} has no bounded numeric field")
         values = data.draw(valid_settings(model))
         key, side = data.draw(st.sampled_from(candidates))
         values[key] = _outside(model.model_fields[key], side,
@@ -210,7 +218,10 @@ class TestSpotRequest:
             assert {error["loc"][0] for error in caught.value.errors()} == {"map_id"}
 
     @PROPERTY
-    @given(st.text(max_size=100))
+    @given(st.one_of(st.text(max_size=100),
+                     st.text(st.characters(blacklist_categories=("Cs", "Cc")), min_size=1, max_size=90),
+                     st.sampled_from(["a: b", "# x", "007", "true", "NaN", "[1, 2]", " µΩ ",
+                                      "x\u2028y", "x\x85y", "C:\\data\\n1"])))
     def test_an_accepted_label_reads_back_from_a_header_line_unchanged(self, label):
         try:
             spot = SpotRequest(**{**_SPOT, "label": label})
@@ -221,6 +232,13 @@ class TestSpotRequest:
             return
         assert spot.label == label.strip() == spot.label.strip()
         assert 1 <= len(spot.label) <= 80 and not _CONTROL.search(spot.label)
+        with tempfile.TemporaryDirectory() as directory:
+            exporter = CsvExporter(Path(directory) / "run", {"spot": spot.model_dump()},
+                                   ["elapsed_s", "V"])
+            exporter.write_row([0.0, 1.0])
+            exporter.finalize({"total_samples": 1})
+            read = parse_metadata(exporter.output_paths[0], text_keys=("spot.label",))
+        assert read["spot.label"] == spot.label
 
     @PROPERTY
     @given(st.one_of(st.none(), finite), st.one_of(st.none(), finite),
@@ -307,6 +325,24 @@ def requests(draw):
     return mode, overrides
 
 
+@st.composite
+def valid_requests(draw):
+    """Overrides drawn inside every bound, for keys the mode allows."""
+    mode = draw(modes)
+    values = draw(valid_settings(MODE_MODELS[mode]))
+    keys = sorted(key for key in values if key in allowed_override_keys(mode))
+    chosen = set(draw(st.lists(st.sampled_from(keys), min_size=1, max_size=5, unique=True)))
+    if mode == "sweep" and "sweep_source" in chosen:
+        # valid_settings fits the sweep values to the source it drew.
+        chosen |= {key for key in keys if key.startswith("sweep_")}
+    return mode, {key: values[key] for key in sorted(chosen)}
+
+
+#: The checks across fields a request inside every bound can still fail:
+#: the ones the GUI makes at Start, and a rectangle without its sides.
+_CROSS_FIELD_KEYS = {"vdp_thickness_cm", "fpp_power_stop_w", "fpp_sample_shape"}
+
+
 class TestResolver:
     @PROPERTY
     @given(requests(), st.booleans())
@@ -330,6 +366,25 @@ class TestResolver:
         resolved = resolve_run_settings(_profile(), mode, overrides, strict=True)
         if not resolved.ok:
             return
+        self._accepted_again(mode, resolved)
+
+    @PROPERTY
+    @given(valid_requests())
+    def test_a_request_inside_every_bound_is_applied_and_accepted_again(self, request):
+        mode, overrides = request
+        resolved = resolve_run_settings(_profile(), mode, overrides, strict=True)
+        errors = {issue.key for issue in resolved.issues if issue.severity == "error"}
+        assert errors <= _CROSS_FIELD_KEYS, resolved.issues
+        if not resolved.ok:
+            return
+        forced = MODE_TIMING_OVERRIDES.get(mode, {})
+        measurement = resolved.settings["measurement"]
+        for key, value in overrides.items():
+            assert measurement[key] == (forced[key] if key in forced else value), key
+        self._accepted_again(mode, resolved)
+
+    @staticmethod
+    def _accepted_again(mode, resolved):
         measurement = resolved.settings["measurement"]
         for model in (MODE_MODELS[mode], common.InstrumentSettings, common.AuxSensorSettings,
                       common.SafetySettings):
