@@ -6,7 +6,8 @@ Tests are pinned to F76-08 (Reapproved 2016) Section 11 directly:
 - F76 eqs. (1)-(2) recover rho on a synthetic uniform sample, and on
   asymmetric samples the R_s that solves van der Pauw's equation.
 - F76 sec. 11.1 homogeneity gate (10 %) fires correctly.
-- Protocol configuration list matches F76 sec. 10.4 voltage labels.
+- Protocol configuration list matches F76 sec. 10.4 voltage labels, and
+  the geometries the run wires put each lead where its label says.
 
 These tests do not require an instrument, scipy, or PyQt.
 """
@@ -128,6 +129,43 @@ class TestProtocolConfigurations:
             assert configs[i].source_low == configs[i + 1].source_high
             assert configs[i].sense_high == configs[i + 1].sense_high
             assert configs[i].sense_low == configs[i + 1].sense_low
+
+
+class TestProtocolGeometries:
+    """f76_geometries() is what the run and the wiring prompt use.
+
+    F76 notation V_AB,CD: current enters contact A and leaves B, and the
+    voltage is V_C - V_D. So Force HI goes on A, Force LO on B, Sense HI on
+    C and Sense LO on D, and the -I reading of the same cabling is V_BA,CD.
+    """
+
+    def test_labels_are_the_f76_section_104_pairs(self):
+        pairs = [(g.label_pos, g.label_neg) for g in f76_geometries()]
+        assert pairs == [
+            ("V_21,34", "V_12,34"), ("V_32,41", "V_23,41"),
+            ("V_43,12", "V_34,12"), ("V_14,23", "V_41,23"),
+        ]
+
+    @pytest.mark.parametrize("index", range(4))
+    def test_contacts_match_the_label(self, index):
+        g = f76_geometries()[index]
+        sense = f"{g.sense_high}{g.sense_low}"
+        assert g.label_pos == f"V_{g.source_high}{g.source_low},{sense}"
+        assert g.label_neg == f"V_{g.source_low}{g.source_high},{sense}"
+
+    def test_groups_follow_f76_equations_1_and_2(self):
+        assert [g.group for g in f76_geometries()] == ["A", "A", "B", "B"]
+
+    def test_geometries_are_the_configurations_two_polarities_each(self):
+        configs = f76_configurations()
+        for i, g in enumerate(f76_geometries()):
+            pos, neg = configs[2 * i], configs[2 * i + 1]
+            assert pos == VdpConfiguration(
+                g.label_pos, g.source_high, g.source_low,
+                g.sense_high, g.sense_low, g.group)
+            assert neg == VdpConfiguration(
+                g.label_neg, g.source_low, g.source_high,
+                g.sense_high, g.sense_low, g.group)
 
 
 def _uniform_sample_voltages(sheet_resistance_ohm_sq: float, current_a: float) -> dict:
