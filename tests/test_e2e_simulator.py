@@ -627,21 +627,25 @@ def test_iv_sweep_all_directions(sim_window, app, direction):
     v_values = [float(r[1]) for r in data]
     n = len(v_values)
     # 21 single-direction points at 0.1V step from -1 to +1 inclusive.
+    def near(a, b):
+        return abs(a - b) < 1e-9
+
     if direction == "up_down":
-        assert n >= 40, f"up_down should produce ~42 points; got {n}"
-        # Forward leg ends near +1, reverse leg ends near -1.
-        # Pick a robust signal: the v-value differences should change sign somewhere.
-        diffs = [v_values[i + 1] - v_values[i] for i in range(len(v_values) - 1)]
-        assert any(d > 0 for d in diffs) and any(d < 0 for d in diffs), (
-            "up_down sweep should have both ascending and descending segments"
+        # Forward leg -1 → +1, then the reverse leg +1 → -1, 21 points each.
+        assert n == 42, f"up_down should produce 2 x 21 points; got {n}"
+        ends = (v_values[0], v_values[20], v_values[21], v_values[-1])
+        assert all(near(a, b) for a, b in zip(ends, (-1.0, 1.0, 1.0, -1.0))), (
+            f"up_down legs should run -1 → +1 → -1; ends were {ends}"
         )
     elif direction == "up":
-        assert v_values[0] < v_values[-1], (
-            f"up sweep should go low→high, got {v_values[0]} → {v_values[-1]}"
+        assert n == 21, f"up sweep should produce 21 points; got {n}"
+        assert near(v_values[0], -1.0) and near(v_values[-1], 1.0), (
+            f"up sweep should go -1 → +1, got {v_values[0]} → {v_values[-1]}"
         )
     else:  # down
-        assert v_values[0] > v_values[-1], (
-            f"down sweep should go high→low, got {v_values[0]} → {v_values[-1]}"
+        assert n == 21, f"down sweep should produce 21 points; got {n}"
+        assert near(v_values[0], 1.0) and near(v_values[-1], -1.0), (
+            f"down sweep should go +1 → -1, got {v_values[0]} → {v_values[-1]}"
         )
 
 
