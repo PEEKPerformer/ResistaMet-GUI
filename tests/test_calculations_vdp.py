@@ -3,7 +3,8 @@ Unit tests for the van der Pauw calculations module (ASTM F76 Method A).
 
 Tests are pinned to F76-08 (Reapproved 2016) Section 11 directly:
 - Geometric factor f(Q) inverts the explicit forward equation in Fig. 5.
-- F76 eqs. (1)-(2) recover rho on a synthetic uniform sample.
+- F76 eqs. (1)-(2) recover rho on a synthetic uniform sample, and on
+  asymmetric samples the R_s that solves van der Pauw's equation.
 - F76 sec. 11.1 homogeneity gate (10 %) fires correctly.
 - Protocol configuration list matches F76 sec. 10.4 voltage labels.
 
@@ -21,6 +22,7 @@ from resistamet_gui.calculations_vdp import (
     VdpResult,
     calculate_van_der_pauw,
     f76_configurations,
+    f76_geometries,
     vdp_geometric_factor,
     vdp_resistivity_pair,
 )
@@ -215,6 +217,55 @@ class TestAsymmetricSample:
         )
         assert q > 1.0
         assert 0.0 < f < 1.0
+
+    @pytest.mark.parametrize("r_a, r_b", [
+        (2.0, 1.0), (5.0, 1.0), (20.0, 1.0), (1.0, 8.0), (0.3, 70.0),
+    ])
+    def test_sheet_resistance_solves_van_der_pauw_equation(self, r_a, r_b):
+        # Any sample with the two four-terminal resistances R_A = R_21,34
+        # and R_B = R_32,41 has the R_s that solves van der Pauw's equation
+        #     exp(-pi R_A / R_s) + exp(-pi R_B / R_s) = 1.
+        # Solved here by bisection on its own, with no f(Q). By reciprocity
+        # R_43,12 = R_21,34 and R_14,23 = R_32,41, so group B reads the same.
+        rs_truth = _solve_van_der_pauw_equation(r_a, r_b)
+        current = 1.0e-3
+        thickness = 1.0e-5
+        v_a = r_a * current
+        v_b = r_b * current
+        voltages = {
+            "V_21,34": +v_a, "V_12,34": -v_a,
+            "V_32,41": +v_b, "V_23,41": -v_b,
+            "V_43,12": +v_a, "V_34,12": -v_a,
+            "V_14,23": +v_b, "V_41,23": -v_b,
+        }
+        result = calculate_van_der_pauw(voltages, current, thickness)
+        assert result.q_a == pytest.approx(max(r_a, r_b) / min(r_a, r_b))
+        assert result.sheet_resistance == pytest.approx(rs_truth, rel=1e-6)
+        assert result.rho_a == pytest.approx(rs_truth * thickness, rel=1e-6)
+        assert result.rho_b == pytest.approx(rs_truth * thickness, rel=1e-6)
+
+
+def _solve_van_der_pauw_equation(r_a: float, r_b: float) -> float:
+    """R_s from exp(-pi R_A / R_s) + exp(-pi R_B / R_s) = 1, by bisection.
+
+    The left side rises monotonically from 0 to 2 as R_s goes from 0 to
+    infinity. The root lies between pi * min(R) / ln 2 (where the smaller
+    term alone is 1/2) and pi * (R_A + R_B) / (2 ln 2) (the symmetric case,
+    which is the largest R_s for a given R_A + R_B).
+    """
+    def excess(rs):
+        return math.exp(-math.pi * r_a / rs) + math.exp(-math.pi * r_b / rs) - 1.0
+
+    lo = math.pi * min(r_a, r_b) / math.log(2.0) * 0.5
+    hi = math.pi * (r_a + r_b) / math.log(2.0) * 2.0
+    assert excess(lo) < 0.0 < excess(hi)
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if excess(mid) < 0.0:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
 
 
 class TestHomogeneityGate:
