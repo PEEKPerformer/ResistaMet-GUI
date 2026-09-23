@@ -31,7 +31,12 @@ from tests.fakes.trace_format import Trace, iter_trace_files
 # Tolerance for measured V/I — accounts for real DUT being ~99.6Ω, not 100Ω,
 # plus measurement noise from the 2420's ADC at NPLC=1.
 _RELATIVE_TOLERANCE = 0.05      # 5% on V/I
-_ABSOLUTE_TOLERANCE = 1e-6      # for near-zero readings
+# For near-zero readings (the 0 V point of a sweep reads the current
+# range's offset, not zero): a fraction of the largest reading of that
+# element in the same response, which stands in for the measurement range.
+# A fixed absolute tolerance does not scale: 1e-6 swallowed the whole
+# signal of every microamp trace.
+_RANGE_FRACTION = 1e-3
 
 
 def _all_traces():
@@ -82,6 +87,9 @@ def _compare_read(real: str, fake: str, elem_count_hint: int | None = None) -> N
     else:
         per_point = n
     n_points = n // per_point
+    # Per element, the largest reading in the response: its range, roughly.
+    span = [max(abs(real_vals[pt * per_point + k]) for pt in range(n_points))
+            for k in range(per_point)]
     for pt in range(n_points):
         for k in range(per_point):
             idx = pt * per_point + k
@@ -101,7 +109,7 @@ def _compare_read(real: str, fake: str, elem_count_hint: int | None = None) -> N
             else:
                 # V or I or R element: compare with tolerance
                 if math.isclose(r_val, f_val, rel_tol=_RELATIVE_TOLERANCE,
-                                 abs_tol=_ABSOLUTE_TOLERANCE):
+                                 abs_tol=_RANGE_FRACTION * span[k]):
                     continue
                 pytest.fail(
                     f"value (point {pt}, elem {k}) outside tolerance: "
