@@ -287,10 +287,19 @@ class TestResistanceMode:
         settings = _resistance_settings(tmp_path)
         worker = MeasurementWorker("resistance", "sample1", "alice", settings)
         spies = _drive_worker(qapp, worker, stop_after_n_points=1)
-        # No 825 errors in the queue means the sequence was correct.
-        # The worker should have produced data points without errors.
         assert spies.error_occurred == []
-        assert any("Configuring instrument" in s for s in spies.status_update)
+        assert spies.data_point
+
+        # Auto-ohms rejects the source and compliance commands, so manual
+        # ohms must be selected after :SENS:FUNC 'RES' and before any of them.
+        cmds = _setup_writes(fake_rm.opened[0])
+        man = cmds.index(":SENS:RES:MODE MAN")
+        assert cmds.index(":SENS:FUNC 'RES'") < man
+        sourcing = [i for i, c in enumerate(cmds)
+                    if c.startswith((":SOUR:FUNC", ":SOUR:CURR", ":SENS:VOLT:PROT"))]
+        assert sourcing, f"no source or compliance writes: {cmds}"
+        assert man < min(sourcing), f"sourcing before :SENS:RES:MODE MAN: {cmds}"
+        assert ":SENS:RES:MODE AUTO" not in cmds[man:max(sourcing) + 1]
 
 
 class TestSourceVMode:
