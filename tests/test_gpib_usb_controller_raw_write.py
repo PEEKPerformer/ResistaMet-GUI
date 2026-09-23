@@ -128,6 +128,7 @@ class TestRawWrite:
         with pytest.raises(NoListener):
             controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
         assert ('in', 512, SHORT_MS) in transport.timeouts[-1:]
+        transport.assert_done()
 
     def test_refused_data_ended_by_our_own_stop_request_reattaches_next(self):
         # The refusal came but the reply did not, so the host stopped the instruction. What the
@@ -219,6 +220,7 @@ class TestRawWrite:
                 controller.write(5, self.NOBODY, timeout_s=3.0, eos_char=0x0A)
         line = next(r.getMessage() for r in caplog.records if 'refused the data of a 0x0e' in r.getMessage())
         assert 'TransportStall' in line and 'errno 32' in line and 'backend code -9' in line
+        transport.assert_done()
 
     def test_the_pipes_are_reset_and_the_refusal_raised_when_the_reply_never_comes(self):
         controller, transport = attached_ni(ni_session(pad=5) + [
