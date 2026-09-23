@@ -6,6 +6,14 @@ These tests run the wrapper against a FakeKeithley and verify both:
        because the auto-ohms quirk causes error 825 if violated).
     2. After configuration, ``:READ?`` produces the expected element layout
        (e.g. resistance mode emits two elements, source modes emit three).
+
+Dead helpers: ``Keithley2400.setup_resistance``, ``setup_source_voltage``,
+``setup_source_current`` and ``common_fast`` are not called anywhere in
+``resistamet_gui``. Runs configure the instrument through
+``session/configure.py``; only ``setup_sweep`` is on a live path. The
+classes marked "dead helper" below pin those helpers' own behaviour and
+nothing a run does. The auto-ohms ordering of the live path is tested in
+``TestConfigureResistance``.
 """
 from __future__ import annotations
 
@@ -65,13 +73,53 @@ class TestVisaInstrument:
             inst.close()
 
 
-# ---------------------------------------------------------- Keithley2400 setups
+# ------------------------------------------------ the live resistance configure
+
+class TestConfigureResistance:
+    """Regression: the auto-ohms quirk queues error 825 when :SOUR:CURR,
+    :SOUR:CURR:RANG or :SENS:VOLT:PROT is sent while the RES function has
+    :SENS:RES:MODE AUTO. ``configure_resistance``, which every resistance run
+    goes through, must select manual ohms before configuring the source.
+    """
+
+    def _configure(self, fake_rm, **overrides):
+        from resistamet_gui.session.configure import configure_resistance
+        from resistamet_gui.session.emitter import EventEmitter, ListSink
+
+        settings = {
+            'res_test_current': 1e-3, 'res_voltage_compliance': 5.0,
+            'res_measurement_type': '4-wire', 'res_auto_range': True,
+            'res_offset_comp': False, 'res_cable_null': 0.0,
+        }
+        settings.update(overrides)
+        inst = Keithley2400("GPIB0::24::INSTR").connect()
+        configure_resistance(inst, EventEmitter(ListSink()), settings, 1.0)
+        return inst
+
+    @pytest.mark.parametrize("auto_range", [True, False])
+    def test_writes_res_mode_man_before_sourcing(self, fake_rm, auto_range):
+        inst = self._configure(fake_rm, res_auto_range=auto_range)
+        try:
+            cmds = [c.upper() for c in _commands(inst.dev)]
+            man = cmds.index(":SENS:RES:MODE MAN")
+            assert cmds.index(":SENS:FUNC 'RES'") < man
+            sourcing = [i for i, c in enumerate(cmds)
+                        if c.startswith((":SOUR:CURR", ":SENS:VOLT:PROT"))]
+            assert sourcing and man < min(sourcing), cmds
+            # The fake queues 825 for a source write under auto-ohms.
+            assert inst.dev.query(":SYST:ERR?").startswith("0,")
+        finally:
+            inst.close()
+
+
+# ------------------------------------------ Keithley2400 setups (dead helpers)
 
 class TestSetupResistance:
+    """Dead helper: ``setup_resistance`` is not called by any run."""
+
     def test_writes_res_mode_man_before_sour_curr(self, fake_rm):
-        """Regression: auto-ohms quirk causes error 825 if SOUR:CURR is sent
-        while RES function has SENS:RES:MODE AUTO. Wrapper must sequence
-        :SENS:RES:MODE MAN before configuring source/compliance.
+        """The helper sequences :SENS:RES:MODE MAN before the source, as the
+        live ``configure_resistance`` does (see TestConfigureResistance).
         """
         inst = Keithley2400("GPIB0::24::INSTR").connect()
         try:
@@ -130,6 +178,8 @@ class TestSetupResistance:
 
 
 class TestSetupSourceVoltage:
+    """Dead helper: ``setup_source_voltage`` is not called by any run."""
+
     def test_form_elem_volt_curr_stat(self, fake_rm):
         inst = Keithley2400("GPIB0::24::INSTR").connect()
         try:
@@ -160,6 +210,8 @@ class TestSetupSourceVoltage:
 
 
 class TestSetupSourceCurrent:
+    """Dead helper: ``setup_source_current`` is not called by any run."""
+
     def test_form_elem_volt_curr_stat(self, fake_rm):
         inst = Keithley2400("GPIB0::24::INSTR").connect()
         try:
@@ -212,6 +264,8 @@ class TestSetupSweep:
 
 
 class TestCommonFast:
+    """Dead helper: ``common_fast`` is not called by any run."""
+
     def test_writes_trig_del_zero_and_sour_del_auto(self, fake_rm):
         inst = Keithley2400("GPIB0::24::INSTR").connect()
         try:
@@ -225,6 +279,10 @@ class TestCommonFast:
 # ----------------------------------------------------------- READ? integration
 
 class TestReadAfterSetup:
+    """Dead helpers again: these configure through ``setup_resistance`` and
+    ``setup_source_voltage``, so they check the fake's :READ? layout and its
+    compliance model after those helpers, not a run's."""
+
     def test_resistance_read_returns_two_elements(self, fake_rm):
         inst = Keithley2400("GPIB0::24::INSTR").connect()
         try:
