@@ -418,16 +418,17 @@ class TestPyUsbTransport:
         assert device.ctrl_calls[-1] == (0x40, 0x3B, 0, 0, b'', 1000)
 
     def test_models_without_the_alternate_pair_refuse_raw_transfers(self, monkeypatch):
+        # The USB-B has an alternate IN but no alternate OUT (§1.2): as enumerated and opened.
         device = FakeDevice(t.VENDOR_ID, t.PID_USB_B)
         install_fake_usb(monkeypatch, [device])
-        usb_transport = PyUsbTransport(device, 0x02, 0x82)
+        usb_transport = transport.open_transport(transport.find_adapters()[0])
         with pytest.raises(TransportError):
             usb_transport.bulk_out_raw(b'x', 1000)
         with pytest.raises(TransportError):
             usb_transport.bulk_in_raw(512, 1000)
-        with pytest.raises(TransportError):
-            usb_transport.interrupt_in(64, 1000)
         assert device.writes == [] and device.reads == []
+        usb_transport.interrupt_in(64, 1000)   # its interrupt endpoint is its own
+        assert [r[0] for r in device.reads] == [0x84]
 
     def test_short_raw_write_returns_the_count_accepted(self, monkeypatch):
         # pyusb hands back the partial count when the wait expires after some bytes moved.
@@ -531,8 +532,9 @@ class TestPyUsbTransport:
         usb_transport.clear_halt(0x02)
         assert device.halts_cleared == [0x06, 0x02]
         device.clear_halt_error = fake['core'].USBError('No such device', -4, errno.ENODEV)
-        with pytest.raises(TransportError):
+        with pytest.raises(TransportError) as info:
             usb_transport.clear_halt(0x06)
+        assert '0x06' in str(info.value)
 
     def test_device_present_finds_this_device_by_bus_and_address_and_opens_nothing(self, monkeypatch):
         # §10.11: on macOS the open handle of an unplugged adapter never says "no such device".
@@ -560,8 +562,13 @@ class TestPyUsbTransport:
         assert usb_transport.device_present() is None
         install_fake_usb(monkeypatch, [device], backend=None)
         assert usb_transport.device_present() is None
+        # With a backend and a find that answers, only the unknown address stops the look.
+        fake = install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84)
+        assert usb_transport.device_present() is True
         device.address = None
         assert usb_transport.device_present() is None
+        assert len(fake['calls']['find']) == 1
 
     def test_close_releases_and_disposes(self, monkeypatch):
         device = HS()
