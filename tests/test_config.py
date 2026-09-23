@@ -119,8 +119,11 @@ class TestUserSettings:
         config_manager.add_user("new_user")
         settings = config_manager.get_user_settings("new_user")
 
-        # Should have measurement settings
-        assert 'measurement' in settings or settings == {}
+        for section in ('measurement', 'display', 'file', 'output'):
+            assert settings[section], section
+        assert settings['measurement']['nplc'] == DEFAULT_SETTINGS['measurement']['nplc']
+        assert settings['display'] == DEFAULT_SETTINGS['display']
+        assert settings['file'] == DEFAULT_SETTINGS['file']
 
     def test_update_user_settings(self, config_manager):
         """Test updating user-specific settings."""
