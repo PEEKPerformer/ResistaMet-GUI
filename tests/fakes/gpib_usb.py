@@ -617,6 +617,8 @@ class SimulatedAdapter:
         self.own_listener = False
         #: Set by a test to hold the SRQ line asserted.
         self.srq = False
+        #: Cleared by a test to report the adapter as not controller in charge.
+        self.cic = True
         self.reply = b''
         #: What the next bulk_in_raw returns (the data of a 0x0b), None when none is owed.
         self.raw_reply: Optional[bytes] = None
@@ -690,8 +692,9 @@ class SimulatedAdapter:
         return bytes((request,)) + h('01 30 00 00 00 00 00')
 
     def ibsta(self) -> int:
-        """CMPL and CIC always; ATN, TACS, LACS and SRQI from the bus state."""
-        return (0x0120 | (0x0010 if self.atn else 0) | (0x0008 if self.own_talker else 0)
+        """CMPL always, CIC unless a test cleared it; ATN, TACS, LACS and SRQI from the bus state."""
+        return (0x0100 | (0x0020 if self.cic else 0) | (0x0010 if self.atn else 0)
+                | (0x0008 if self.own_talker else 0)
                 | (0x0004 if self.own_listener else 0) | (0x1000 if self.srq else 0))
 
     def bus_lines(self) -> int:
