@@ -3537,6 +3537,57 @@ adapter. With usbserial's generic driver bound to interface 0 (new_id),
 the transport detached it and opened the adapter; nothing was bound
 after close.
 
+### 10.12 This project's driver on the second unit, 2026-09-23
+
+The same driver and Mac as §10.11, now on GPIB-USB-HS unit **013CC9DF** (the
+unit of every NI capture; bcdDevice 0x0101; interrupt endpoint 0x81,
+wMaxPacketSize 16, bInterval 4) with the Keithley 2420 at primary address 24
+and a 1.05 MΩ resistor. Everything here is **[bench]**.
+
+**The expiry is the unit's, not the message's.** Reads with nothing to read
+under this driver's framed 0x0a message expired at 2.0 ms (0xf5), 5.0 ms
+(0xf6), 17.0 ms (0xf7), 34.0 ms (0xf8), 132 ms (0xf9), 263 ms (0xfa),
+1.049-1.050 s (0xfb), 4.195 s (0xfc) and 16.788 s (0xfd): the powers of two
+in microseconds that NI's messages showed on this unit (7.3, §10.10.1), with
+this driver's bytes. The same driver's bytes gave 1.25 x nominal on unit
+01CEE482 (§10.11). The difference between the tables of 7.3 is therefore a
+property of the unit. Everything below behaved as on 01CEE482 except the
+service request and the serial poll at an empty address.
+
+**The service request differs between the units.** With `*SRE 32`, `*ESE 1`:
+
+- Sending the 12-byte bank-2 0x03 write *before* `*OPC` produced no packet on
+  the interrupt endpoint in 1 s of reads, on three rounds, and the serial
+  poll afterwards returned 96 (not polled by the adapter). On 01CEE482 the
+  same order produced the push (§10.11).
+- Sending it *after* `*OPC`, with SRQ asserted, made the write's reply
+  carry ibsta 0x1028 or 0x1068 (SRQI set), and a **4-byte** packet arrived
+  on the interrupt endpoint 1-2 ms later: `31 a5 01 00`, then `31 a5 02 00`
+  and `31 a5 03 00` on the next two rounds (byte 2 counts up; the 0x3b
+  request was sent after each). No status byte is in it, and the serial poll
+  afterwards returned 96: this unit did not poll the device itself. NI's
+  push on this same unit was 8 bytes, `30 18 00 60 31 a1 01 00`, with the
+  status byte and the adapter's own poll (§10.4.2); what NI's session does
+  that this driver's does not, to get that form, is not established.
+- The same with this driver's NI-instruction path on (NI's bank-2 session
+  configuration sent, §10.2.4) gave the same 4-byte packet.
+- A wait that re-sends the write every 15 ms (§10.4.3) therefore sees the
+  request on this unit through SRQI in a write's reply and through the
+  4-byte packet, not through an 8-byte push.
+
+**Other results on this unit.** Default framed path: `*IDN?`, serial poll
+(0x10 and the §5.9 sequence both matched `*STB?`), writes of 500 and 3000
+bytes, a 35 000-byte `:TRAC:DATA?` in 6.33 s, the same answer cut off at
+1.37 s under a 1 s timeout, INTFC (IFC 0.102 s, REN assert/deassert, UNL
+UNT), device clear, GET (`-211,"Trigger ignored"`). NI's raw messages: a
+1536-byte answer in one 0x0b, a 0x0b with nothing to read ending at 1.27 s
+under 0xfb, 35 000 bytes in 6.28 s, a 2500-byte 0x0e to an empty address
+refused at once and the next write of 2501 bytes accepted. **Serial poll at
+an empty address: timeout at the code's expiry (1.050 s), where unit
+01CEE482 returned error 5 (§10.11)** -- the timeout matches NI's capture on
+this unit (§10.6.6). Through the application's backend: a resistance run
+(10 samples, 1.053 MΩ, auto-ohms at 10 µA) and a 101-point sweep.
+
 ## 11. Open questions for the bench
 
 Every "not established", "uncertain", "not captured" and "not measured"
@@ -3710,10 +3761,11 @@ what to send, the last is curiosity.
   that no longer exists (§8.2 recovery is for a present adapter), and a
   way for the run layer to say the output could not be turned off.
   **[bench, 2026-09-23]** On macOS the open handle never reports errno 19: the in-flight transfer fails with errno 5 and every later request with libusb's "Other error"; errno 19 comes only when the device is opened again. On Linux the in-flight transfer reports errno 19 (§10.11).
-- [ ] **Why unit 01CEE482 expires at 1.25 x {0.1, 0.3, 1, 3, 16, 33} s
+- [x] **Why unit 01CEE482 expires at 1.25 x {0.1, 0.3, 1, 3, 16, 33} s
   and unit 013CC9DF at powers of two in microseconds** (7.3): the unit,
   or this driver's message? Send NI's exact 0x0a bytes from this driver
   to 01CEE482, or this driver's bytes to 013CC9DF.
+  **[bench, 2026-09-23]** The unit: this driver's bytes gave the powers of two on 013CC9DF and 1.25 x nominal on 01CEE482 (§10.12).
 - [ ] **A framed 0x0a with count 20480 whose answer was longer than the
   count wedged unit 01CEE482** **[bench, 2026-09-21]**: `:TRAC:DATA?` of
   500 x 5 elements (about 35 000 bytes) under code 0xfb drew no reply in
