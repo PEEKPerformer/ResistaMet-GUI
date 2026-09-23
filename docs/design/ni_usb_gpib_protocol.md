@@ -2673,7 +2673,10 @@ After `*OPC` (srq.pcap 1.5220 OUT 40 B, reply 1.5240), 2.6 ms later:
 ```
 The same push, `30 18 00 60 31 a1 01 00`, appeared in srq_poll.pcap
 (1.0308) where no event had been enabled, so the adapter pushes on SRQ
-without any enable from the session. Read as a status block (4.1): byte 0
+without any enable from the session. **Qualified [bench, 2026-09-23] (§10.11):** on unit 01CEE482 no push
+came without the 12-byte bank-2 0x03 write, one write per push; NI's
+operation messages in both captures end with that write, so the "no enable"
+reading does not follow. Read as a status block (4.1): byte 0
 = 0x30 (not an instruction echo); bytes 1-2 = ibsta 0x1800 = SRQI (0x1000)
 + RQS (0x0800); byte 3 = 0x60; bytes 4-7 = `31 a1 01 00`, meaning not
 established. Byte 3 = 0x60 = 96 = the instrument's status byte (RQS + ESB)
@@ -3551,6 +3554,7 @@ what to send, the last is curiosity.
   1024 and 1025 bytes, a chunked `:TRAC:DATA?`, writes of 2048 and 2049
   bytes, a long write to an empty address followed by a normal query, a
   read and a serial poll that time out, the REN modes, SRQ on `*OPC`).
+  **[bench, 2026-09-23]** 0x0b and 0x0e in NI's message form, and the interrupt push after the bank-2 0x03 write, work on unit 01CEE482 (§10.11). Batched messages beyond NI's read and write messages, 0x02 and 0x03 on their own are still unrun.
 - [ ] **Mixtures nobody has seen.** 0x06 followed by 0x0b or 0x10; NI's
   batched 0x0c + 0x0a under AUXRA 0x81; the two-write block behind a 0x0a
   under AUXRA 0x99; 5.18 rows taken from different columns (section 5 ATN
@@ -3570,6 +3574,7 @@ what to send, the last is curiosity.
   control request 0x3b (2.2, §10.4.2); bytes 4-7 of the push (2.5);
   whether pushes for bits other than SRQ look the same (2.5); whether
   SRQI ever shows in a 0x21 reply while SRQ is held (5.12, §10.4.4).
+  **[bench, 2026-09-23]** No; it needs the 12-byte bank-2 0x03 write, one per push (§10.11).
 - [x] **What the timeout code bounds.** The whole instruction, or an
   interval inside it: the longest error-free instruction under 0xfc ran
   3.999 s, below that code's measured expiry of 4.194 s, so the captures
@@ -3592,6 +3597,7 @@ what to send, the last is curiosity.
   the start of the read behind its 0x0c (about 1 ms apart, not separable
   on the wire, 7.1, 7.3); any adapter other than this GPIB-USB-HS; two
   timed blocks of one message both expiring (7.2, 7.3).
+  **[bench, 2026-09-23]** 0xf5-0xf8 on unit 01CEE482: 1.0 (at 1 ms resolution), 4.0, 13.0, 38.0 ms (§10.11).
 - [x] **Width of the 0x0b / 0x0e count field**: 32 bits, or 16 bits
   followed by `ff ff`; no count above 0xffff was captured (3.3, §10.1.2).
   **For 0x0b, 32 bits [captured, 2026-09-22]** (§10.10.3): NI sent 65535,
@@ -3607,9 +3613,6 @@ what to send, the last is curiosity.
   more than 65535 (or 20480, the largest seen) bytes, and how the 0x88
   transfer and its padding behave when it does, is not shown (1.2,
   §10.10.3).
-  **[bench, 2026-09-23]** No; it needs the 12-byte bank-2 0x03 write, one per push (§10.11).
-  **[bench, 2026-09-23]** 0xf5-0xf8 on unit 01CEE482: 1.0 (at 1 ms resolution), 4.0, 13.0, 38.0 ms (§10.11).
-  **[bench, 2026-09-23]** 0x0b and 0x0e in NI's message form, and the interrupt push after the bank-2 0x03 write, work on unit 01CEE482 (§10.11). Batched messages beyond NI's read and write messages, 0x02 and 0x03 on their own are still unrun.
 
 ### 11.2 Decide how to parse and recover
 
@@ -3681,6 +3684,7 @@ what to send, the last is curiosity.
   data still arriving alike, so there the code bounds a 0x0b in every
   case captured. Whether 01CEE482's 20.0 s also cuts a 0x0b that is
   receiving data, or its code does, is not established.
+  **[bench, 2026-09-23]** Settled: with NI's read message the 0x0b ends at the code's expiry on this unit (§10.11); the 20.0 s came from the message.
 - [ ] **The 0x10 serial poll works on unit 01CEE482 without the bank-2
   configuration** **[bench, 2026-09-21]**: `10 01 00 00 03 00 fd 00 | 04
   00 00 00` to PAD 3 drew `3a 03 00 04 | 39 00 74 00 07 00 ff ff | 04 00
@@ -3705,6 +3709,7 @@ what to send, the last is curiosity.
   "device gone" error instead of retrying halts and attaches on a handle
   that no longer exists (§8.2 recovery is for a present adapter), and a
   way for the run layer to say the output could not be turned off.
+  **[bench, 2026-09-23]** On macOS the open handle never reports errno 19: the in-flight transfer fails with errno 5 and every later request with libusb's "Other error"; errno 19 comes only when the device is opened again. On Linux the in-flight transfer reports errno 19 (§10.11).
 - [ ] **Why unit 01CEE482 expires at 1.25 x {0.1, 0.3, 1, 3, 16, 33} s
   and unit 013CC9DF at powers of two in microseconds** (7.3): the unit,
   or this driver's message? Send NI's exact 0x0a bytes from this driver
@@ -3737,8 +3742,6 @@ what to send, the last is curiosity.
   the `partial` capture showed for NI's two reads (§10.1.7). Consecutive
   0x0a with no 0x0c between them are unobserved in the captures; this is
   the bench observation that fills that gap.
-  **[bench, 2026-09-23]** Settled: with NI's read message the 0x0b ends at the code's expiry on this unit (§10.11); the 20.0 s came from the message.
-  **[bench, 2026-09-23]** On macOS the open handle never reports errno 19: the in-flight transfer fails with errno 5 and every later request with libusb's "Other error"; errno 19 comes only when the device is opened again. On Linux the in-flight transfer reports errno 19 (§10.11).
 
 ### 11.3 Bytes whose meaning is unknown but which can be copied
 
