@@ -457,6 +457,7 @@ class TestSpotManagement:
         w = main_window.tab_four_point
         w._fpp_spots = [{'name': 'test', 'n': 1, 'rs_mean': 1, 'rs_std': 0,
                           'rho_mean': 0, 'rho_std': 0, 'sigma_mean': 0, 'sigma_std': 0, 'rows': []}]
+        w._fpp_spot_counter = 5
         main_window._clear_all_fpp_spots()
         assert len(w._fpp_spots) == 0
         assert w._fpp_spot_counter == 1
