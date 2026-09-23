@@ -33,11 +33,18 @@ operation follows without a stop request or a re-attach.
 
 An adapter that has left the USB bus is not a fault either: there is no
 pipe to bring back into step. The first USB call that finds the device
-gone (libusb's "no such device", errno ENODEV) ends the operation with
-``AdapterGone`` at once, with no pipe reset, stop request, drain or
-re-attach, and every later operation on the controller raises the same
-without touching USB. A replugged adapter is a new USB device, which the
-board registry opens afresh (spec §11.2, "Hot-unplug mid-run").
+gone ends the operation with ``AdapterGone`` at once, with no pipe reset,
+stop request, drain or re-attach, and every later operation on the
+controller raises the same without touching USB. On Linux that call
+reports libusb's "no such device" (errno ENODEV) itself. On macOS the
+open handle never does: the transfer in flight fails with errno 5 and
+every later request with "Other error" (§10.11). So any USB error but a
+timeout or a STALL is followed, before anything is sent to recover, by a
+look at the bus (``Transport.device_present``, an enumeration that opens
+nothing); an adapter not found there is gone as above, and one that is
+found is recovered as for any fault. The same look precedes every
+re-attach. A replugged adapter is a new USB device, which the board
+registry opens afresh (spec §11.2, "Hot-unplug mid-run").
 
 The interrupt endpoint is not used at attach (§2.5 calls it optional and
 operation without it reliable), so attach skips the interrupt-monitor-mask
@@ -346,7 +353,11 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
                 # handle is dead and looks for the device that comes back.
                 self._adapter_gone(gone)
             except (GpibError, TransportError) as exc:
-                logger.warning('shutdown register write failed: %s', exc)
+                gone = self._link.gone_instead(exc) if isinstance(exc, TransportError) else None
+                if gone is not None:
+                    self._adapter_gone(gone)
+                else:
+                    logger.warning('shutdown register write failed: %s', exc)
             finally:
                 self._attached = False
                 self._link.transport.close()
@@ -613,6 +624,10 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
             except TransportGone as gone:
                 raise self._adapter_gone(gone) from gone
             except Exception as exc:
+                if isinstance(exc, TransportError):
+                    gone = self._link.gone_instead(exc)  # macOS: the error does not say (§10.11)
+                    if gone is not None:
+                        raise self._adapter_gone(gone) from gone
                 try:
                     self._link.note_fault(exc)
                 except TransportGone as gone:
@@ -624,6 +639,10 @@ class Controller(_AttachMixin, _SrqMixin, _TransferMixin):
         if self._closed:
             raise AdapterNotReady('controller is closed')
         if self._link.resync_pending:
+            if self._link.device_present() is False:
+                # Checked at the fault as well; this catches an adapter that has
+                # left since, or that libusb had not yet taken off its list then.
+                raise TransportGone('the adapter is no longer on the USB bus; not re-attaching')
             logger.warning('%s: re-running the attach sequence after a fault', self._link.model.name)
             self._attached = False
             self._link.clear_halts_after_fault()

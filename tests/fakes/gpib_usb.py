@@ -16,12 +16,14 @@ Also the reply builders and the script fragments (attach, re-attach,
 addressing) the controller tests are written in. The pyvisa-py stand-ins are
 in ``gpib_usb_visa``, so that this module imports without pyvisa-py.
 """
+import errno
 from typing import Any, Dict, List, Optional, Tuple
 
 from resistamet_gui.gpib_usb import protocol as p
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb.controller import BUS_MIN_RATE_BPS, RAW_READ_SLICE_S, SHORT_WAIT_S, Controller
-from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportGone, TransportStall, TransportTimeout
+from resistamet_gui.gpib_usb.transport import (AdapterInfo, TransportError, TransportGone, TransportStall,
+                                                TransportTimeout)
 
 
 def h(text: str) -> bytes:
@@ -58,10 +60,15 @@ class ScriptedTransport:
     returns (or raises), and how far it moves ``clock`` first; ``('ctrl',
     params, reply)`` and ``('ctrl_out', params)`` -- the next control
     request; ``('clear_halt', endpoint[, exc])`` -- the next pipe reset.
+
+    ``device_present`` is not a step, since it sends nothing to the adapter: it
+    answers ``present`` and records where in the script it was asked.
     """
 
     max_packet_size = 512
     max_packet_size_raw = 512
+    #: What ``device_present`` answers: whether the adapter is still on the USB bus.
+    present: Optional[bool] = True
 
     def __init__(self, script: List[Tuple[Any, ...]], clock: Optional[FakeClock] = None) -> None:
         self.script = list(script)
@@ -75,6 +82,12 @@ class ScriptedTransport:
         self.off_script: List[str] = []
         #: ('out', opcode, timeout_ms) and ('in', length, timeout_ms) in call order.
         self.timeouts: List[Tuple[str, int, int]] = []
+        #: How often ``device_present`` was asked, and the script position each time.
+        self.presence_checks: List[int] = []
+
+    def device_present(self) -> Optional[bool]:
+        self.presence_checks.append(self.pos)
+        return self.present
 
     def _next(self, kind: str, what: str) -> Tuple[Any, ...]:
         if self.pos >= len(self.script):
@@ -627,15 +640,29 @@ class SimulatedAdapter:
         #: The talker's message ends without EOI on its last byte: the read that drains it
         #: reports no END, and the next read finds nothing and times out.
         self.withhold_eoi = False
-        #: Set by a test to pull the cable: every USB call from then on raises TransportGone,
-        #: as libusb's "no such device" does (§11.2), and is counted here.
+        #: Set by a test to pull the cable: every USB call from then on fails, and is counted
+        #: here. As on Linux, with TransportGone, libusb's "no such device" (§11.2); with
+        #: ``unplug_like_macos`` as on macOS (§10.11): errno 5 for the first call, then
+        #: libusb's "Other error" with no errno, never "no such device".
         self.unplugged = False
+        self.unplug_like_macos = False
         self.calls_while_unplugged = 0
+
+    def device_present(self) -> bool:
+        return not self.unplugged
 
     def _plugged(self) -> None:
         if self.unplugged:
             self.calls_while_unplugged += 1
-            raise TransportGone('the device is no longer on the USB bus')
+            if not self.unplug_like_macos:
+                raise TransportGone('the device is no longer on the USB bus')
+            if self.calls_while_unplugged == 1:
+                failure = TransportError('bulk read failed: [Errno 5] Input/Output Error')
+                failure.errno = errno.EIO
+            else:
+                failure = TransportError('control request 0x20 failed: Other error')
+                failure.backend_code = -99
+            raise failure
 
     def control_in(self, request, value, index, length, timeout_ms, request_type=0xC0) -> bytes:
         self._plugged()

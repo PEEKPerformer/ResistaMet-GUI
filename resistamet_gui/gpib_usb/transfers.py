@@ -204,8 +204,9 @@ class _TransferMixin:
         the count (§10.6.5). NI sends no stop request there; it reads the
         reply and resets the two OUT pipes, and so does this
         (``_refused_raw_write``). Every failure of the raw transfer but a
-        timeout is taken for that refusal until the reply says otherwise:
-        how libusb on macOS reports the STALL has not been seen, and if an
+        timeout, or an adapter found gone from the bus (§10.11), is taken
+        for that refusal until the reply says otherwise: how libusb on
+        macOS reports the STALL has not been seen, and if an
         unrecognised error skipped this path the reply would stay queued
         and the alternate OUT halted for every later 0x0e.
         """
@@ -226,6 +227,9 @@ class _TransferMixin:
         except TransportGone:
             raise  # no adapter to read a reply from or reset a pipe on
         except TransportError as refusal:
+            gone = self._link.gone_instead(refusal)  # macOS: the error does not say (§10.11)
+            if gone is not None:
+                raise gone from refusal
             self._refused_raw_write(refusal)
         stranded = accepted < len(chunk)
         if stranded:

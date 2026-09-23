@@ -81,7 +81,9 @@ class TransportGone(TransportError):
     recover: every pipe reset, stop request and drain fails the same way
     (spec §11.2, "Hot-unplug mid-run"). A replugged adapter comes back as a
     new USB device, reached through a fresh enumeration, not through this
-    handle.
+    handle. Raised for libusb's "no such device"; on macOS, where an open
+    handle never reports that (§10.11), the controller raises it when
+    ``device_present`` no longer finds the adapter after another error.
     """
 
 
@@ -139,7 +141,13 @@ class Transport(Protocol):
     A STALL on any endpoint raises ``TransportStall``. ``clear_halt`` takes
     the endpoint address (``tables.Model`` has them) and resets that pipe,
     which is what NI's driver does after a refused 0x0e (§10.6.5). A device
-    that is no longer on the bus raises ``TransportGone`` from any call.
+    that is no longer on the bus raises ``TransportGone`` from any call
+    where libusb says so, which on macOS it does not (§10.11): there the
+    open handle of an unplugged adapter fails with an I/O error and then
+    "Other error". ``device_present() -> Optional[bool]`` answers from an
+    enumeration whether the adapter is still there, None when it cannot
+    tell; it is optional (``PyUsbTransport`` has it), and a transport
+    without it counts as one that cannot tell.
     """
 
     #: wMaxPacketSize of the primary bulk IN endpoint, for sizing read buffers (§8.6).
@@ -465,6 +473,40 @@ class PyUsbTransport:
     def clear_halt(self, endpoint: int) -> None:
         """Reset a halted pipe: CLEAR_FEATURE(ENDPOINT_HALT) and the host's data toggle."""
         self._run('clear halt on endpoint 0x%02x' % endpoint, lambda: self._device.clear_halt(endpoint))
+
+    def device_present(self) -> Optional[bool]:
+        """Whether this adapter is still on the USB bus, from an enumeration; None if it cannot tell.
+
+        On macOS the open handle of an unplugged adapter never says "no
+        such device": the transfer in flight fails with errno 5 and every
+        later request with libusb's "Other error", and errno 19 comes only
+        when the device is opened again (§10.11). The controller asks here
+        instead, after an error that does not say.
+
+        Present means a device with this one's vendor and product id at its
+        bus and address. pyusb's ``find`` reads each device's descriptor,
+        bus and address without opening it; the serial number is not
+        compared, because reading it opens the device, and a replugged
+        adapter comes back as a new device at a new address, which this
+        handle does not reach anyway. Enumeration that fails, or a device
+        whose location is unknown, gives None.
+        """
+        vendor = getattr(self._device, 'idVendor', None)
+        product = getattr(self._device, 'idProduct', None)
+        bus = getattr(self._device, 'bus', None)
+        address = getattr(self._device, 'address', None)
+        if None in (vendor, product, bus, address):
+            return None
+        try:
+            backend = libusb_backend()
+            if backend is None:
+                return None
+            found = self._usb.core.find(find_all=True, backend=backend, idVendor=vendor, idProduct=product,
+                                        bus=bus, address=address)
+            return next(iter(found), None) is not None
+        except Exception as exc:  # noqa: BLE001 - an enumeration that fails cannot tell
+            logger.debug('USB enumeration for the presence check failed: %s', exc)
+            return None
 
     def _write(self, endpoint: int, what: str, data: bytes, timeout_ms: int) -> None:
         """All of ``data`` or ``TransportTimeout``: pyusb returns a short count only when the wait

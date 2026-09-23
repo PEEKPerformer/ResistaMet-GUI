@@ -1,11 +1,13 @@
 """Controller: the fault rule of §8.2 and the stale reply a USB fault leaves queued."""
+import errno
+
 import pytest
 
 from resistamet_gui.gpib_usb import protocol as p
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb.controller import DRAIN_WAIT_S, Controller
 from resistamet_gui.gpib_usb.protocol import AdapterGone, AdapterNotReady, GpibError, ProtocolError
-from resistamet_gui.gpib_usb.transport import TransportError, TransportGone, TransportTimeout
+from resistamet_gui.gpib_usb.transport import TransportError, TransportGone, TransportStall, TransportTimeout
 from tests.fakes.gpib_usb import (CLEAR_HALTS, DRAIN, DRAIN_LENGTH, RAW_DRAIN, STOP, T3S, QueueingAdapter,
                                   ScriptedTransport, address_listener, address_talker, attach_script, attached,
                                   attached_ni, h, ni_session, ni_write, reattach_after_usb_fault_script,
@@ -396,4 +398,127 @@ class TestAdapterGone:
         assert controller.adapter_gone and transport.closed
         with pytest.raises(AdapterGone):
             controller.status()
+        transport.assert_done()
+
+
+def io_error() -> TransportError:
+    """macOS, the transfer in flight when the cable is pulled: errno 5 (§10.11)."""
+    error = TransportError('bulk read failed: [Errno 5] Input/Output Error')
+    error.errno = errno.EIO
+    return error
+
+
+def other_error() -> TransportError:
+    """macOS, every later request on the open handle: libusb's "Other error", no errno (§10.11)."""
+    error = TransportError('control request 0x20 failed: Other error')
+    error.backend_code = -99
+    return error
+
+
+def absent(extra, build=attached):
+    """``attached`` (or ``attached_ni``), with the adapter no longer found on the bus from the first fault on."""
+    controller, transport = build(extra)
+    transport.present = False
+    return controller, transport
+
+
+class TestAdapterGoneOnMacos:
+    """§10.11: on macOS the open handle never says "no such device"; the bus is looked at instead."""
+
+    def test_an_unplug_mid_read_is_gone_on_the_first_failed_call_with_no_usb_after_it(self):
+        script = address_talker(pad=24) + [('out', p.read_message(1024, T3S)), ('in', io_error())]
+        controller, transport = absent(script)
+        with pytest.raises(AdapterGone) as info:
+            controller.read(24, max_bytes=20480, timeout_s=3.0)
+        assert 'no longer on the USB bus' in str(info.value)
+        assert isinstance(info.value.__cause__, TransportGone)
+        assert info.value.__cause__.errno == errno.EIO
+        assert controller.adapter_gone
+        transport.assert_done()   # no pipe reset, stop request, drain or re-attach
+        assert transport.presence_checks == [len(attach_script()) + len(script)]
+        # The run's cleanup: every later call fails the same way and touches no USB.
+        for operation in (lambda: controller.write(24, b':OUTP OFF\n', timeout_s=3.0),
+                          controller.status, controller.attach):
+            with pytest.raises(AdapterGone):
+                operation()
+        controller.close()
+        transport.assert_done()
+        assert transport.closed
+
+    def test_other_error_on_the_first_call_after_an_idle_unplug_is_gone_as_well(self):
+        controller, transport = absent([
+            ('out', p.command_message(t.address_listener_command(0, 24), T3S), other_error()),
+        ])
+        with pytest.raises(AdapterGone):
+            controller.write(24, b':OUTP OFF\n', timeout_s=3.0)
+        transport.assert_done()
+
+    @pytest.mark.parametrize('present', [True, None])
+    def test_a_real_fault_with_the_adapter_present_is_recovered_as_before(self, present):
+        # None: a transport that cannot tell. Either way the pipes are reset, the stale reply
+        # drained and the attach re-run, as for any USB error.
+        controller, transport = attached([
+            ('out', p.command_message(b'\x14', T3S)), ('in', io_error()),
+        ] + reattach_after_usb_fault_script() + [
+            ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
+        ])
+        transport.present = present
+        with pytest.raises(TransportError) as info:
+            controller.command(b'\x14', timeout_s=3.0)
+        assert not isinstance(info.value, TransportGone) and not controller.adapter_gone
+        assert controller.command(b'\x14', timeout_s=3.0) == 1
+        transport.assert_done()
+        assert len(transport.presence_checks) == 2   # at the fault, and before the re-attach
+
+    def test_an_adapter_that_leaves_after_the_fault_is_gone_before_the_re_attach(self):
+        controller, transport = attached([('out', p.command_message(b'\x14', T3S)), ('in', io_error())])
+        with pytest.raises(TransportError):
+            controller.command(b'\x14', timeout_s=3.0)
+        transport.present = False
+        with pytest.raises(AdapterGone):
+            controller.command(b'\x14', timeout_s=3.0)   # no pipe reset, no stop request, no attach
+        transport.assert_done()
+
+    def test_a_timeout_or_a_stall_is_not_looked_into(self):
+        # Both are answers from a device that is there.
+        controller, transport = absent([('out', p.command_message(b'\x14', T3S), TransportStall('refused'))])
+        with pytest.raises(TransportStall):
+            controller.command(b'\x14', timeout_s=3.0)
+        assert controller._link.gone_instead(TransportTimeout('no reply')) is None
+        assert controller._link.gone_instead(TransportGone('said so itself')) is None
+        assert not controller.adapter_gone and transport.presence_checks == []
+        transport.assert_done()
+
+    def test_the_linux_sequence_is_unchanged_and_needs_no_look_at_the_bus(self):
+        controller, transport = absent(address_talker(pad=24) + [
+            ('out', p.read_message(1024, T3S)), ('in', unplugged()),
+        ])
+        with pytest.raises(AdapterGone) as info:
+            controller.read(24, max_bytes=20480, timeout_s=3.0)
+        assert info.value.__cause__.errno is None   # the transport's own TransportGone
+        transport.assert_done()
+        assert transport.presence_checks == []
+
+    def test_a_raw_write_whose_data_fails_with_the_adapter_gone_reads_no_reply_and_resets_no_pipe(self):
+        controller, transport = absent(ni_session(pad=24) + [
+            ('out', ni_write(2049, pad=24)), ('raw_out', bytes(2049), io_error()),
+        ], build=attached_ni)
+        with pytest.raises(AdapterGone):
+            controller.write(24, bytes(2049), timeout_s=3.0)
+        transport.assert_done()
+
+    def test_a_wait_for_a_service_request_whose_read_fails_with_the_adapter_gone(self):
+        controller, transport = absent(srq_arm() + [('intr', io_error(), 64)])
+        with pytest.raises(AdapterGone):
+            controller.wait_srq(1.0)
+        with pytest.raises(AdapterGone):
+            controller.wait_srq(1.0)
+        transport.assert_done()
+
+    def test_a_close_whose_shutdown_write_finds_the_adapter_gone_records_it(self):
+        controller, transport = absent([
+            ('out', p.register_write_message(t.SHUTDOWN_WRITES), other_error()),
+        ])
+        controller.close()
+        assert controller.adapter_gone and transport.closed
         transport.assert_done()
