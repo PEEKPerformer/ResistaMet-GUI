@@ -790,7 +790,7 @@ def parse_serial_poll_reply(reply: bytes) -> SerialPollReply:
 class SrqPush:
     """The 8-byte interrupt push on a service request (§10.4.2)."""
 
-    ibsta: int        # 0x1800 = SRQI | RQS in both captures
+    ibsta: int        # 0x1800 = SRQI | RQS in both captures; 0x0300 from unit 01CEE482 (§10.11)
     status_byte: int  # the instrument's status byte, already serial-polled by the adapter
     raw: bytes
 
@@ -804,6 +804,8 @@ def parse_srq_push(push: bytes) -> SrqPush:
 
     Bytes 4-7 are not established. Byte 0 was 0x30 in every push captured;
     it is not checked, since no other push has been seen to compare with.
+    Unit 01CEE482 pushed ``30 03 00 60 31 a1 01 00`` on the bench, bytes
+    1-2 not SRQI (§10.11), so nothing here relies on them.
     """
     if len(push) < SRQ_PUSH_LENGTH:
         raise ProtocolError('interrupt push of %d bytes, expected %d: %s'
