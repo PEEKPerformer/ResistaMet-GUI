@@ -542,15 +542,26 @@ class TestNiUsbExtensionDegrades:
     def test_install_survives_a_session_module_that_cannot_import(self, monkeypatch):
         import resistamet_gui.gpib_usb as gpib_usb
 
+        sessions = pytest.importorskip('pyvisa_py.sessions')
+        table = sessions.Session._session_classes
+        # Take out any dispatcher an earlier test installed, so that one put back shows.
+        for key, cls in list(table.items()):
+            if cls.__module__.startswith('resistamet_gui.gpib_usb'):
+                monkeypatch.delitem(table, key)
+        before = dict(table)
+        # Unset, or _install_ni_usb returns before it reaches install().
+        monkeypatch.delenv(visa_backend.DISABLE_NI_USB_ENV, raising=False)
         monkeypatch.setattr(gpib_usb, 'available', lambda: True)
         # None in sys.modules makes the import inside install() raise ImportError,
         # which is what an old pyvisa-py looks like.
         monkeypatch.setitem(sys.modules, 'resistamet_gui.gpib_usb.visa_session', None)
         visa_backend._install_ni_usb()
+        assert table == before
 
     def test_install_is_skipped_without_libusb(self, monkeypatch):
         import resistamet_gui.gpib_usb as gpib_usb
 
+        monkeypatch.delenv(visa_backend.DISABLE_NI_USB_ENV, raising=False)
         monkeypatch.setattr(gpib_usb, 'available', lambda: False)
         called = []
         monkeypatch.setitem(sys.modules, 'resistamet_gui.gpib_usb.visa_session',
@@ -569,13 +580,18 @@ class TestNiUsbExtensionDegrades:
         visa_backend._install_ni_usb()
         assert bool(called) is installs
 
-    def test_a_pyvisa_py_manager_still_opens_when_the_driver_is_absent(self, monkeypatch):
+    def test_a_pyvisa_py_manager_still_opens_when_the_driver_is_absent(self, monkeypatch, caplog):
         import resistamet_gui.gpib_usb as gpib_usb
 
+        monkeypatch.delenv(visa_backend.DISABLE_NI_USB_ENV, raising=False)
         monkeypatch.setattr(gpib_usb, 'available', lambda: True)
         monkeypatch.setitem(sys.modules, 'resistamet_gui.gpib_usb.visa_session', None)
-        rm = visa_backend.resource_manager(visa_backend.PY)
+        with caplog.at_level(logging.WARNING, logger=visa_backend.logger.name):
+            rm = visa_backend.resource_manager(visa_backend.PY)
         try:
             assert visa_backend.describe(rm, visa_backend.PY)['kind'] == 'py'
         finally:
             rm.close()
+        # The driver stood down by itself; resource_manager's guard around the hooks
+        # was not what kept the manager opening.
+        assert not [r for r in caplog.records if 'extension' in r.getMessage() and 'skipped' in r.getMessage()]
