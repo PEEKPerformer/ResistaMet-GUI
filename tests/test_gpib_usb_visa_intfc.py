@@ -436,11 +436,13 @@ class TestData:
 # ---------------------------------------------------------------------------
 
 class TestAttributes:
-    def test_controller_state(self, intf):
+    def test_controller_state(self, intf, board):
         assert intf.is_controller_in_charge is True
         assert intf.is_system_controller is True
         assert intf.primary_address == 0
         assert intf.secondary_address == constants.VI_NO_SEC_ADDR
+        board.cic = False   # the CIC bit of ibsta (§4.2), not just a status that came back
+        assert intf.is_controller_in_charge is False
 
     def test_ndac_follows_a_listener_once_atn_drops(self, intf, board):
         intf.send_command(bytes((UNL, LAD24)))
