@@ -186,10 +186,11 @@ class TestEncoders:
     @PROPERTY
     @given(st.integers(-5, 0x20000))
     def test_counts_round_trip_or_are_refused(self, length):
-        for encode, limit in ((p.encode_count16, 0xFFFF), (p.encode_count32, p.MAX_RAW_TRANSFER_BYTES)):
+        for encode, limit, width in ((p.encode_count16, 0xFFFF, 2), (p.encode_count32, p.MAX_RAW_TRANSFER_BYTES, 4)):
             if 1 <= length <= limit:
                 field = encode(length)
-                assert int.from_bytes(field, "little", signed=True) == -length or len(field) == 2
+                assert len(field) == width
+                assert width == 2 or int.from_bytes(field, "little", signed=True) == -length
                 assert _minus16(field[:2]) == length
             else:
                 with pytest.raises(ValueError):
