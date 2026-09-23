@@ -70,28 +70,19 @@ class TestFormatEngineering:
     """Test engineering notation formatting."""
 
     def test_milliamps(self):
-        result = format_engineering(0.001, 'A')
-        assert 'mA' in result
-        assert '1.00' in result
+        assert format_engineering(0.001, 'A') == '1.000 mA'
 
     def test_microamps(self):
-        result = format_engineering(0.0001, 'A')
-        assert 'µA' in result
-        assert '100' in result
+        assert format_engineering(0.0001, 'A') == '100.0 µA'
 
     def test_nanoamps(self):
-        result = format_engineering(5e-7, 'A')
-        assert 'nA' in result
-        assert '500' in result
+        assert format_engineering(5e-7, 'A') == '500.0 nA'
 
     def test_volts(self):
-        result = format_engineering(1.5, 'V')
-        assert 'V' in result
-        assert '1.5' in result
+        assert format_engineering(1.5, 'V') == '1.500 V'
 
     def test_millivolts(self):
-        result = format_engineering(0.01, 'V')
-        assert 'mV' in result
+        assert format_engineering(0.01, 'V') == '10.00 mV'
 
     def test_zero(self):
         assert format_engineering(0, 'A') == '0 A'
@@ -103,13 +94,10 @@ class TestFormatEngineering:
         assert format_engineering(float('inf'), 'A') == '-- A'
 
     def test_negative(self):
-        result = format_engineering(-0.001, 'A')
-        assert '-' in result
-        assert 'mA' in result
+        assert format_engineering(-0.001, 'A') == '-1.000 mA'
 
     def test_large_value(self):
-        result = format_engineering(1e6, 'Ω')
-        assert 'MΩ' in result
+        assert format_engineering(1e6, 'Ω') == '1.000 MΩ'
 
 
 class TestFormatWithUncertainty:
