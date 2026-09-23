@@ -152,10 +152,13 @@ class TestWebSocket:
         return create_app(session, token=TOKEN, profile_provider=lambda u: {})
 
     def test_wrong_token_is_closed(self, app):
+        from starlette.websockets import WebSocketDisconnect
+
         with TestClient(app) as client:
-            with pytest.raises(Exception):
+            with pytest.raises(WebSocketDisconnect) as closed:
                 with client.websocket_connect('/session/events/ws?token=nope'):
                     pass
+        assert closed.value.code == 4401
 
     def test_events_reach_a_connected_client(self, app):
         with TestClient(app) as client:
@@ -221,14 +224,17 @@ class TestDisconnectWatcher:
         assert asyncio.run(_watch_for_disconnect(Socket())) is None
 
     def test_a_wrong_token_of_any_length_is_refused(self):
+        from starlette.websockets import WebSocketDisconnect
+
         session = MeasurementSession(ListSink())
         app = create_app(session, token=TOKEN, profile_provider=lambda u: {})
         try:
             with TestClient(app) as client:
                 for wrong in ('', 'x', TOKEN + 'x', 'tést'):
-                    with pytest.raises(Exception):
+                    with pytest.raises(WebSocketDisconnect) as closed:
                         with client.websocket_connect(f'/session/events/ws?token={wrong}'):
                             pass
+                    assert closed.value.code == 4401, wrong
         finally:
             session.close(timeout=5.0)
 
