@@ -77,6 +77,10 @@ SMALL_REPLY_BUFFER = 512
 #: The 8-byte interrupt push of §10.4.2: ``30 18 00 sb 31 a1 01 00``.
 SRQ_PUSH_LENGTH = 8
 SRQ_PUSH_ID = 0x30
+#: The 4-byte packet unit 013CC9DF sent instead, ``31 a5 nn 00`` with ``nn``
+#: counting up, carrying no status byte (§10.12).
+SRQ_NOTICE_LENGTH = 4
+SRQ_NOTICE_PREFIX = b'\x31\xa5'
 #: Observed on GPIB-USB-HS 01CEE482: status block (8) + ADR1 + last-block
 #: count + 2 pad + termination (4). The specification derived 28 bytes with
 #: an embedded 0x09 status block that the device does not send.
@@ -788,28 +792,46 @@ def parse_serial_poll_reply(reply: bytes) -> SerialPollReply:
 
 @dataclass(frozen=True)
 class SrqPush:
-    """The 8-byte interrupt push on a service request (§10.4.2)."""
+    """A packet on the interrupt endpoint for a service request (§10.4.2, §10.12).
 
-    ibsta: int        # 0x1800 = SRQI | RQS in both captures; 0x0300 from unit 01CEE482 (§10.11)
-    status_byte: int  # the instrument's status byte, already serial-polled by the adapter
+    Two forms have been seen. The 8-byte push carries an ibsta and the
+    status byte the adapter polled from the device itself (§10.4.2; unit
+    01CEE482 on the bench, §10.11). The 4-byte packet of unit 013CC9DF
+    carries neither, and that unit did not poll the device (§10.12): both
+    fields are None then.
+    """
+
+    ibsta: Optional[int]        # 0x1800 = SRQI | RQS in both captures; 0x0300 from unit 01CEE482 (§10.11)
+    status_byte: Optional[int]  # the instrument's status byte, already serial-polled by the adapter; None: 4-byte form
     raw: bytes
 
     @property
     def srqi(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_SRQI)
+        return self.ibsta is not None and bool(self.ibsta & t.IBSTA_SRQI)
 
 
 def parse_srq_push(push: bytes) -> SrqPush:
-    """``30 18 00 sb 31 a1 01 00``: ibsta big-endian at 1-2, the status byte at 3.
+    """``30 18 00 sb 31 a1 01 00``, or ``31 a5 nn 00`` with no status byte (§10.4.2, §10.12).
 
-    Bytes 4-7 are not established. Byte 0 was 0x30 in every push captured;
-    it is not checked, since no other push has been seen to compare with.
-    Unit 01CEE482 pushed ``30 03 00 60 31 a1 01 00`` on the bench, bytes
-    1-2 not SRQI (§10.11), so nothing here relies on them.
+    The 8-byte form: ibsta big-endian at 1-2, the status byte at 3. Bytes
+    4-7 are not established. Byte 0 was 0x30 in every such push; it is not
+    checked. Unit 01CEE482 pushed ``30 03 00 60 31 a1 01 00`` on the bench,
+    bytes 1-2 not SRQI (§10.11), so nothing here relies on them. A read
+    that returned more than 8 bytes is cut to the first 8.
+
+    The 4-byte form came from unit 013CC9DF on the bench, ``31 a5 01 00``,
+    ``31 a5 02 00``, ``31 a5 03 00`` on three rounds (§10.12): byte 2
+    counts up, and what it counts is not established. Only exactly 4 bytes
+    starting ``31 a5`` are taken as it. Any other packet shorter than 8
+    bytes has not been seen and raises ``ProtocolError``, so that nothing
+    unknown is taken for a service request or dropped without a word.
     """
+    if len(push) == SRQ_NOTICE_LENGTH and push[:len(SRQ_NOTICE_PREFIX)] == SRQ_NOTICE_PREFIX:
+        return SrqPush(ibsta=None, status_byte=None, raw=bytes(push))
     if len(push) < SRQ_PUSH_LENGTH:
-        raise ProtocolError('interrupt push of %d bytes, expected %d: %s'
-                            % (len(push), SRQ_PUSH_LENGTH, push.hex()))
+        raise ProtocolError('interrupt push of %d bytes, expected %d, or %d starting %s: %s'
+                            % (len(push), SRQ_PUSH_LENGTH, SRQ_NOTICE_LENGTH, SRQ_NOTICE_PREFIX.hex(),
+                               push.hex()))
     return SrqPush(ibsta=int.from_bytes(push[1:3], 'big'), status_byte=push[3], raw=bytes(push[:SRQ_PUSH_LENGTH]))
 
 
