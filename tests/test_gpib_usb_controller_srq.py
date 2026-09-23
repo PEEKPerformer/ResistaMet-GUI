@@ -1,4 +1,4 @@
-"""Controller: the wait for a service request (§10.4, §10.11)."""
+"""Controller: the wait for a service request (§10.4, §10.11, §10.12)."""
 from typing import List, Optional
 
 import pytest
@@ -15,6 +15,7 @@ from tests.fakes.gpib_usb import (STATUS_8, T3S, ScriptedTransport, attach_scrip
 
 SRQ_PUSH = h('30 18 00 60 31 a1 01 00')  # srq.pcap 1.5266: status byte 0x60 = RQS | ESB
 BENCH_PUSH = h('30 03 00 60 31 a1 01 00')  # unit 01CEE482, 2026-09-23 (§10.11): bytes 1-2 not SRQI
+NOTICE = h('31 a5 01 00')  # unit 013CC9DF, 2026-09-23 (§10.12): no status byte, the device not polled
 ACK_3B = ('ctrl_out', (0x40, 0x3B, 0, 0, b''))
 NOTHING = ('intr', TransportTimeout('nothing'), 64)
 ARM = srq_arm()
@@ -102,6 +103,54 @@ class TestSrqiInTheReply:
         assert controller.wait_srq(0.01) == 0x60
         transport.assert_done()
         assert intr_slices(transport) == [15] * 6
+
+
+class TestFourBytePacket:
+    """Unit 013CC9DF: ``31 a5 nn 00`` after a write whose reply carried SRQI (§10.12)."""
+
+    def test_the_packet_is_a_request_with_no_status_byte_returned_at_once(self):
+        controller, transport = attached(SRQI_ARM + [('intr', NOTICE, 64), ACK_3B])
+        assert controller.wait_srq(1.0) is None
+        transport.assert_done()   # the 0x3b went out, as after the push
+        assert arms_sent(transport) == 1
+        assert intr_slices(transport) == [15]   # not the 0.25 s allowed for a push after SRQI
+
+    def test_the_packet_without_srqi_first_is_taken_the_same_way(self):
+        controller, transport = attached(waited(2) + ARM + [('intr', NOTICE, 64), ACK_3B])
+        assert controller.wait_srq(1.0) is None
+        transport.assert_done()
+        assert intr_slices(transport) == [15, 15, 15]
+
+    def test_several_in_a_row_in_one_session(self):
+        # §10.12: 31 a5 01 00, 31 a5 02 00, 31 a5 03 00 on three rounds, the 0x3b after each.
+        script = []
+        for n in (1, 2, 3):
+            script += SRQI_ARM + [('intr', bytes((0x31, 0xA5, n, 0x00)), 64), ACK_3B]
+        controller, transport = attached(script)
+        assert [controller.wait_srq(1.0) for _ in range(3)] == [None, None, None]
+        transport.assert_done()
+        assert intr_slices(transport) == [15, 15, 15]
+        assert arms_sent(transport) == 3
+
+    def test_the_8_byte_push_after_4_byte_packets_still_yields_its_status_byte(self):
+        controller, transport = attached(SRQI_ARM + [('intr', NOTICE, 64), ACK_3B]
+                                         + SRQI_ARM + [('intr', h('31 a5 02 00'), 64), ACK_3B]
+                                         + ARM + [('intr', BENCH_PUSH, 64), ACK_3B])
+        assert controller.wait_srq(1.0) is None
+        assert controller.wait_srq(1.0) is None
+        assert controller.wait_srq(1.0) == 0x60
+        transport.assert_done()
+
+    @pytest.mark.parametrize('packet', ['31', '31 a5', '31 a5 01', '30 18 00 60', '31 a1 01 00',
+                                        '31 a5 01 00 00', '30 18 00 60 31 a1 01'])
+    def test_a_packet_of_no_form_seen_is_a_protocol_error_without_an_acknowledge(self, packet):
+        controller, transport = attached(SRQI_ARM + [('intr', h(packet), 64)] + [
+            ('out', p.command_message(b'\x14', T3S)), ('in', status_reply(0x0C)),
+        ])
+        with pytest.raises(ProtocolError):
+            controller.wait_srq(1.0)
+        controller.command(b'\x14', timeout_s=3.0)  # no re-attach: the bulk pipes were untouched
+        transport.assert_done()
 
 
 class TestWaitSrq:

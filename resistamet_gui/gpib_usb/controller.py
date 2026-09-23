@@ -56,8 +56,10 @@ operation without it reliable), so attach skips the interrupt-monitor-mask
 steps 4 and 6 of §2.8 and ``status()`` polls the control endpoint instead;
 the bench needed no mask for the push (§10.11). ``wait_srq`` reads it on
 demand: once armed by the 12-byte bank-2 0x03 write, which it sends at the
-start and every 15 ms, the adapter pushes one 8-byte packet there when an
-instrument asserts SRQ, having serial-polled it itself (§10.4.2, §10.11).
+start and every 15 ms, the adapter sends one packet there when an
+instrument asserts SRQ: 8 bytes with the status byte, having serial-polled
+the device itself, on unit 01CEE482 (§10.4.2, §10.11); 4 bytes with no
+status byte and the device left unpolled on unit 013CC9DF (§10.12).
 That wait has no caller in the application; see the note at the top of its
 class in ``srq`` for what has run on hardware.
 
