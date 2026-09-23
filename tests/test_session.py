@@ -583,49 +583,52 @@ class TestSafetyPrompt:
 
 
 class TestStopLatency:
-    """A stop must interrupt the wait, not queue behind it."""
+    """A stop must interrupt the wait, not queue behind it.
 
-    def test_stop_during_a_long_settle_returns_quickly(self, session, sink, fake_rm, profile):
+    Each test stops only once the run has logged ``settling``, by which time
+    ``:OUTP ON`` is written and the 10 s settle is under way. A stop sent on
+    ``instrument_connected`` lands during configure and never reaches the
+    settle at all.
+    """
+
+    def _stop_in_the_settle(self, session, sink, fake_rm, profile):
         profile['measurement'].update({
             'settling_time': 10.0, 'vsource_voltage': 1.0,
             'vsource_current_compliance': 0.1, 'vsource_duration_hours': 0.0,
         })
         session.start(profile, 'source_v', 'wafer1', 'alice')
-        assert _wait_for(lambda: sink.of_type('instrument_connected'))
+        assert _wait_for(lambda: any(e.payload['code'] == 'settling'
+                                     for e in sink.of_type('log')), timeout=15.0)
+        fake = fake_rm.opened[-1]
+        written = [cmd.upper() for op, cmd in list(fake.command_log) if op == 'write']
+        assert ':OUTP ON' in written, "the stop would land before the output is on"
 
         began = time.time()
         session.stop()
         assert _wait_for(lambda: session.state == 'idle', timeout=5.0)
-        assert time.time() - began < 3.0, "stop waited out the settle"
+        return fake, time.time() - began
+
+    def test_stop_during_a_long_settle_returns_quickly(self, session, sink, fake_rm, profile):
+        _fake, took = self._stop_in_the_settle(session, sink, fake_rm, profile)
+        assert took < 3.0, "stop waited out the settle"
 
     def test_interrupted_settle_produces_no_sample(self, session, sink, fake_rm, profile):
         """The read after an unfinished settle would be unsettled data."""
-        profile['measurement'].update({
-            'settling_time': 10.0, 'vsource_voltage': 1.0,
-            'vsource_current_compliance': 0.1, 'vsource_duration_hours': 0.0,
-        })
-        session.start(profile, 'source_v', 'wafer1', 'alice')
-        assert _wait_for(lambda: sink.of_type('instrument_connected'))
-        session.stop()
-        assert _wait_for(lambda: session.state == 'idle', timeout=5.0)
+        fake, _took = self._stop_in_the_settle(session, sink, fake_rm, profile)
 
         assert sink.of_type('sample') == []
+        log = [cmd.upper() for _op, cmd in fake.command_log]
+        after_on = log[log.index(':OUTP ON') + 1:]
+        assert not any(cmd.startswith(':READ?') for cmd in after_on)
         assert [e.payload['reason'] for e in sink.of_type('run_ended')] == ['user_stop']
 
     def test_output_is_still_turned_off(self, session, sink, fake_rm, profile):
         """Unwinding early must not skip the shutdown."""
-        profile['measurement'].update({
-            'settling_time': 10.0, 'vsource_voltage': 1.0,
-            'vsource_current_compliance': 0.1, 'vsource_duration_hours': 0.0,
-        })
-        session.start(profile, 'source_v', 'wafer1', 'alice')
-        assert _wait_for(lambda: sink.of_type('instrument_connected'))
-        session.stop()
-        assert _wait_for(lambda: session.state == 'idle', timeout=5.0)
+        fake, _took = self._stop_in_the_settle(session, sink, fake_rm, profile)
 
-        fake = fake_rm.opened[-1]
-        assert any(cmd.upper().startswith(':OUTP OFF')
-                    for op, cmd in fake.command_log if op == 'write')
+        written = [cmd.upper() for op, cmd in fake.command_log if op == 'write']
+        after_on = written[written.index(':OUTP ON') + 1:]
+        assert any(cmd.startswith(':OUTP OFF') for cmd in after_on)
 
 
 class TestAbort:
