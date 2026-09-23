@@ -238,26 +238,22 @@ class TestHeaderInjection:
     def test_a_one_line_sample_name_cannot_forge_a_key(self, tmp_path, sample):
         request = _accepted(RunRequest, mode="four_point", username="operator", sample_name=sample)
         if request is None or "\n" in sample or "\r" in sample:
-            return                      # line breaks: the xfail below
+            return                      # line breaks: the test below
         read, expected = _header_of(tmp_path, request.sample_name, dict(_SPOT))
         assert set(read) == expected
         assert read["spot.map_id"] == "wafer7" and read["spot.index"] == 3
         assert read["sample"] == sample.strip()
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "RunRequest.sample_name is any non-empty string and _write_metadata_block "
-        "writes it raw, so a name with a line break continues on a line of its own: "
-        "'x\\n# spot.map_id: forged' puts a forged key *before* the real one, and "
-        "parse_metadata keeps the first. A run can be filed into another map, or a "
-        "header cut short by a line that does not start with '#'. Spot labels are "
-        "guarded by LABEL_PATTERN; sample names (and usernames) are not."))
     @pytest.mark.parametrize("breaker", ["\n", "\r", "\r\n"])
     @pytest.mark.parametrize("forged", _FORGERIES[:3])
     def test_a_sample_name_with_a_line_break_cannot_forge_a_key(self, tmp_path, breaker, forged):
-        request = RunRequest(mode="four_point", username="operator", sample_name="x" + breaker + forged)
-        read, expected = _header_of(tmp_path, request.sample_name, dict(_SPOT))
+        # RunRequest refuses this name (test_settings_models); the PySide6
+        # path hands the typed name to build_metadata without it.
+        sample = "x" + breaker + forged
+        read, expected = _header_of(tmp_path, sample, dict(_SPOT))
         assert set(read) == expected
         assert read["spot.map_id"] == "wafer7" and read["spot.index"] == 3
+        assert read["sample"] == "x\\n" + forged
 
     @pytest.mark.xfail(strict=True, reason=(
         "A mark label is any string (api.routes_session.MarkRequest) and lands in "
