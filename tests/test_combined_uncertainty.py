@@ -160,7 +160,10 @@ class TestVdpCombinedUncertainty:
             sheet_resistance=rs, rho_avg=rho,
             model="2400", nplc=1.0,
         )
-        assert math.isfinite(result.u_inst_R) and result.u_inst_R > 0
+        # Each geometry reads ±1 V on the 2 V range: σ_V = 0.012 % × 1 V +
+        # 300 µV = 420 µV. R = (V_p − V_n) / (2I), so σ_R = √(σ_p² + σ_n²) /
+        # (2|I|) = √2 × 420e-6 / 2e-3 = 0.29698 Ω, the same for all four.
+        assert result.u_inst_R == pytest.approx(0.29698, rel=1e-4)
         # No noise → statistical should be zero (or machine-epsilon).
         assert result.u_stat_R < 1e-6
         # Pythagorean total ≈ u_inst.
@@ -199,6 +202,8 @@ class TestVdpCombinedUncertainty:
             model="2400", nplc=1.0,
         )
         assert math.isclose(result.u_rs / rs, result.u_rho / rho, rel_tol=1e-9)
+        # No noise, so the relative uncertainty is 0.29698 Ω / 1000 Ω (above).
+        assert result.u_rs == pytest.approx(rs * 0.29698e-3, rel=1e-4)
 
     def test_noisy_data_increases_u_stat(self):
         # Add synthetic noise to the V readings → u_stat_R should grow,
