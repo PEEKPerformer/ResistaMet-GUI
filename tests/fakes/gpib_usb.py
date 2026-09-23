@@ -78,8 +78,9 @@ class ScriptedTransport:
         self.pos = 0
         self.closed = False
         self.sent: List[bytes] = []
-        #: Calls the script did not expect. Kept as well as raised: the controller's pipe
-        #: reset swallows whatever it is given, and ``assert_done`` must still fail.
+        #: Calls the script did not expect, or with other arguments than it expected. Kept
+        #: as well as raised: the controller's pipe reset swallows whatever it is given,
+        #: and ``assert_done`` must still fail.
         self.off_script: List[str] = []
         #: ('out', opcode, timeout_ms) and ('in', length, timeout_ms) in call order.
         self.timeouts: List[Tuple[str, int, int]] = []
@@ -92,14 +93,16 @@ class ScriptedTransport:
             return self.present.pop(0) if len(self.present) > 1 else self.present[0]
         return self.present
 
+    def _off(self, message: str) -> None:
+        self.off_script.append(message)
+        raise AssertionError(message)
+
     def _next(self, kind: str, what: str) -> Tuple[Any, ...]:
         if self.pos >= len(self.script):
-            self.off_script.append('unexpected %s after the script ended: %s' % (kind, what))
-            raise AssertionError(self.off_script[-1])
+            self._off('unexpected %s after the script ended: %s' % (kind, what))
         step = self.script[self.pos]
         if step[0] != kind:
-            self.off_script.append('step %d: expected %r, got %s %s' % (self.pos + 1, step[0], kind, what))
-            raise AssertionError(self.off_script[-1])
+            self._off('step %d: expected %r, got %s %s' % (self.pos + 1, step[0], kind, what))
         self.pos += 1
         return step
 
@@ -109,7 +112,7 @@ class ScriptedTransport:
         expected = tuple(step[1])
         actual = (request, value, index, length) + ((request_type,) if len(expected) == 5 else ())
         if expected != actual:
-            raise AssertionError('control_in %r, expected %r' % (actual, expected))
+            self._off('control_in %r, expected %r' % (actual, expected))
         if isinstance(step[2], Exception):
             raise step[2]
         return step[2]
@@ -119,7 +122,7 @@ class ScriptedTransport:
         step = self._next('ctrl_out', 'request 0x%02x' % request)
         actual = (request_type, request, value, index, data)
         if tuple(step[1]) != actual:
-            raise AssertionError('control_out %r, expected %r' % (actual, tuple(step[1])))
+            self._off('control_out %r, expected %r' % (actual, tuple(step[1])))
         if len(step) > 2 and isinstance(step[2], Exception):
             raise step[2]
 
@@ -137,7 +140,7 @@ class ScriptedTransport:
     def _out(self, kind: str, data: bytes, timeout_ms: int) -> Tuple[Any, ...]:
         step = self._next(kind, data[:64].hex(' '))
         if data != step[1]:
-            raise AssertionError(hex_diff(step[1][:80], data[:80]))
+            self._off(hex_diff(step[1][:80], data[:80]))
         if len(step) > 2 and isinstance(step[2], Exception):
             raise step[2]
         return step
@@ -155,20 +158,19 @@ class ScriptedTransport:
         step = self._next(kind, '%s(%d)' % (kind, length))
         self.timeouts.append((kind, length, timeout_ms))
         if len(step) > 2 and step[2] is not None and step[2] != length:
-            raise AssertionError('%s asked for %d bytes, expected %d' % (kind, length, step[2]))
+            self._off('%s asked for %d bytes, expected %d' % (kind, length, step[2]))
         if len(step) > 3:
             self.clock.advance(step[3])
         if isinstance(step[1], Exception):
             raise step[1]
         if len(step[1]) > length:
-            raise AssertionError('reply of %d bytes would overflow the %d-byte buffer'
-                                 % (len(step[1]), length))
+            self._off('reply of %d bytes would overflow the %d-byte buffer' % (len(step[1]), length))
         return step[1]
 
     def clear_halt(self, endpoint: int) -> None:
         step = self._next('clear_halt', 'endpoint 0x%02x' % endpoint)
         if step[1] != endpoint:
-            raise AssertionError('clear_halt on 0x%02x, expected 0x%02x' % (endpoint, step[1]))
+            self._off('clear_halt on 0x%02x, expected 0x%02x' % (endpoint, step[1]))
         if len(step) > 2 and isinstance(step[2], Exception):
             raise step[2]
 
