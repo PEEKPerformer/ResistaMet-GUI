@@ -74,10 +74,9 @@ second = control.raise_prompt('vdp_geometry', ['proceed', 'abort'])
 released = []
 def waiter():
     released.append(control.wait_for_prompt()[0])
-t = threading.Thread(target=waiter)
+t = threading.Thread(target=waiter, daemon=True)
 t.start()
-control.running = False
-control.proceed_event.set()
+control.finish('user_stop')
 t.join(timeout=2)
 assert released == [None], released
 print('ok')
