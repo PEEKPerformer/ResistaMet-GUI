@@ -248,6 +248,9 @@ class TestModelDetection:
         assert any("model not in known table" in s.lower() for s in spies.status_update), (
             f"expected a 'not in known table' warning: {spies.status_update}"
         )
+        # ...and proceeds: the run measures, without an error.
+        assert spies.error_occurred == []
+        assert spies.data_point, "the run did not proceed past the warning"
 
 
 class TestResistanceMode:
