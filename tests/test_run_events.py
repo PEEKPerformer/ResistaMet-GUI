@@ -129,6 +129,12 @@ class TestRunEndedWithInstrument:
         assert types[-1] == 'run_ended'
         assert types.index('acquisition_finished') < types.index('run_ended')
         assert 'file_finalized' in types
+        # Cleanup (instrument closed, "Instrument disconnected.") is done
+        # before the run says it has ended.
+        cleanup = [i for i, e in enumerate(sink.events)
+                   if e.type == 'log' and e.payload['code'] == 'cleanup']
+        assert cleanup, "no cleanup log"
+        assert max(cleanup) < types.index('run_ended')
 
     def test_write_failure_reports_write_error(self, fake_rm, tmp_path, monkeypatch):
         run, control, sink = _run(tmp_path, mode='four_point', fpp_current=1e-4,
