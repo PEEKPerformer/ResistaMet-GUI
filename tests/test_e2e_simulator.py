@@ -191,14 +191,88 @@ def test_iv_sweep_writes_linear_csv(sim_window, app, tmp_path):
 # CSV column / unit validation
 # --------------------------------------------------------------------------
 
-def test_csv_headers_match_documented_schema(sim_window, app):
-    """Each mode's saved CSV must use the column names declared in
-    ``data_export.get_column_config``. A unit-confusion regression (e.g.
-    swapping I_meas/V_meas, or renaming R_ohm to R_mohm without updating
-    the export) would slip past every other test in the suite.
-    """
-    from resistamet_gui.data_export import get_column_config
+#: The documented column header of each time-series mode, written out here
+#: rather than read from ``get_column_config``, which is what writes it.
+_DOCUMENTED_HEADERS = {
+    "resistance": ["elapsed_s", "V_meas", "I_meas", "R_ohm", "R_unc_ohm",
+                   "compliance", "event"],
+    "source_v": ["elapsed_s", "V_set", "I_meas", "R_calc", "I_unc_A",
+                 "R_calc_unc_ohm", "compliance", "event"],
+    "source_i": ["elapsed_s", "V_meas", "I_set", "R_calc", "V_unc_V",
+                 "R_calc_unc_ohm", "compliance", "event"],
+    "four_point": ["elapsed_s", "V", "I", "V_over_I", "Rs_ohm_sq", "rho_ohm_cm",
+                   "sigma_S_cm", "V_unc_V", "I_unc_A", "compliance", "event"],
+}
 
+
+def _csv_columns(path):
+    """The data rows of a CSV as {column name: [float, ...]}, with the
+    compliance column kept as text."""
+    rows = _read_csv_data(path)
+    header, data = rows[0], rows[1:]
+    assert data, f"{path}: no data rows"
+    cols = {}
+    for k, name in enumerate(header):
+        if name in ("compliance", "event"):
+            cols[name] = [r[k] for r in data]
+        else:
+            cols[name] = [float(r[k]) if r[k] not in ("",) else float("nan")
+                          for r in data]
+    return header, cols
+
+
+def _all_close(values, expected, rel, what):
+    bad = [v for v in values if not math.isfinite(v)
+           or abs(v - expected) > rel * abs(expected)]
+    assert not bad, f"{what}: expected {expected}, got {bad[:3]} of {len(values)}"
+
+
+def _all_positive(values, what):
+    bad = [v for v in values if not (math.isfinite(v) and v > 0)]
+    assert not bad, f"{what}: expected finite and > 0, got {bad[:3]}"
+
+
+def _check_csv_values(mode, cols, fpp_current):
+    """The values under each header are the simulated 100 Ω DUT's."""
+    assert set(cols["compliance"]) == {"OK"}, f"{mode}: {set(cols['compliance'])}"
+    elapsed = cols["elapsed_s"]
+    assert all(b > a for a, b in zip(elapsed, elapsed[1:])), (
+        f"{mode}: elapsed_s not increasing: {elapsed[:5]}")
+    if mode == "resistance":
+        # Default test current 1 mA into 100 Ω: V = 0.1 V.
+        _all_close(cols["V_meas"], 0.1, 1e-6, "resistance V_meas")
+        _all_close(cols["I_meas"], 1e-3, 1e-6, "resistance I_meas")
+        _all_close(cols["R_ohm"], DUT_OHMS, 1e-6, "resistance R_ohm")
+        _all_positive(cols["R_unc_ohm"], "resistance R_unc_ohm")
+    elif mode == "source_v":
+        # Default 1 V into 100 Ω: I = 10 mA.
+        _all_close(cols["V_set"], 1.0, 1e-6, "source_v V_set")
+        _all_close(cols["I_meas"], 0.01, 1e-6, "source_v I_meas")
+        _all_close(cols["R_calc"], DUT_OHMS, 1e-6, "source_v R_calc")
+        _all_positive(cols["I_unc_A"], "source_v I_unc_A")
+        _all_positive(cols["R_calc_unc_ohm"], "source_v R_calc_unc_ohm")
+    elif mode == "source_i":
+        # Default 1 mA into 100 Ω: V = 0.1 V.
+        _all_close(cols["V_meas"], 0.1, 1e-6, "source_i V_meas")
+        _all_close(cols["I_set"], 1e-3, 1e-6, "source_i I_set")
+        _all_close(cols["R_calc"], DUT_OHMS, 1e-6, "source_i R_calc")
+        _all_positive(cols["V_unc_V"], "source_i V_unc_V")
+        _all_positive(cols["R_calc_unc_ohm"], "source_i R_calc_unc_ohm")
+    else:  # four_point, legacy thin-film path with the default K = 4.532
+        _all_close(cols["I"], fpp_current, 1e-6, "4PP I")
+        _all_close(cols["V"], fpp_current * DUT_OHMS, 1e-6, "4PP V")
+        _all_close(cols["V_over_I"], DUT_OHMS, 1e-6, "4PP V_over_I")
+        _all_close(cols["Rs_ohm_sq"], 4.532 * DUT_OHMS, 1e-6, "4PP Rs_ohm_sq")
+        _all_positive(cols["V_unc_V"], "4PP V_unc_V")
+        _all_positive(cols["I_unc_A"], "4PP I_unc_A")
+
+
+def test_csv_headers_match_documented_schema(sim_window, app):
+    """Each mode's saved CSV carries the documented column names, and the
+    values under them are the simulated DUT's: V under the V column, I
+    under the I column, R in ohms. A unit-confusion regression (swapping
+    I_meas/V_meas, or renaming R_ohm to R_mohm) fails here.
+    """
     # Drive a brief run in each per-tab mode that writes a CSV, then read
     # the CSV header and compare to the documented columns.
     cases = [
@@ -213,8 +287,8 @@ def test_csv_headers_match_documented_schema(sim_window, app):
         app.processEvents()
         assert sim_window.measurement_running, f"{label}: worker didn't start"
         _pump_for(1.0, app)
-        assert _wait_until(lambda: _points(sim_window, mode) >= 1, timeout=15.0, app=app), (
-            f"{label}: no point within 15 s")
+        assert _wait_until(lambda: _points(sim_window, mode) >= 2, timeout=15.0, app=app), (
+            f"{label}: fewer than 2 points within 15 s")
         sim_window.stop_current_measurement()
         assert _wait_until(
             lambda: not sim_window.measurement_running, timeout=3.0, app=app
@@ -231,17 +305,18 @@ def test_csv_headers_match_documented_schema(sim_window, app):
     tag_to_mode = {"_R_": "resistance", "_VSRC_": "source_v",
                    "_ISRC_": "source_i", "_4PP_": "four_point",
                    "_sweep_": "sweep"}
+    fpp_current = sim_window.tab_four_point.fpp_current.value()
     found_modes = set()
     for path in files:
         mode = next((m for tag, m in tag_to_mode.items() if tag in path), None)
         if mode is None:
             continue
-        expected_cols, _units = get_column_config(mode)
-        rows = _read_csv_data(path)
-        header = rows[0] if rows else []
+        expected_cols = _DOCUMENTED_HEADERS[mode]
+        header, cols = _csv_columns(path)
         assert header == expected_cols, (
             f"{path}: header {header} != expected {expected_cols} for {mode}"
         )
+        _check_csv_values(mode, cols, fpp_current)
         found_modes.add(mode)
     # All four time-series modes should have been covered.
     assert {"resistance", "source_v", "source_i", "four_point"} <= found_modes, (
