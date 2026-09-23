@@ -332,15 +332,17 @@ def valid_requests(draw):
     values = draw(valid_settings(MODE_MODELS[mode]))
     keys = sorted(key for key in values if key in allowed_override_keys(mode))
     chosen = set(draw(st.lists(st.sampled_from(keys), min_size=1, max_size=5, unique=True)))
-    if mode == "sweep" and "sweep_source" in chosen:
-        # valid_settings fits the sweep values to the source it drew.
+    if mode == "sweep" and any(key.startswith("sweep_") for key in chosen):
+        # valid_settings fits the sweep values to the source it drew, so
+        # they only hold together with that source.
         chosen |= {key for key in keys if key.startswith("sweep_")}
     return mode, {key: values[key] for key in sorted(chosen)}
 
 
 #: The checks across fields a request inside every bound can still fail:
-#: the ones the GUI makes at Start, and a rectangle without its sides.
-_CROSS_FIELD_KEYS = {"vdp_thickness_cm", "fpp_power_stop_w", "fpp_sample_shape"}
+#: the ones the GUI makes at Start, a rectangle without its sides, and a
+#: sweep step so fine that its points cannot be counted.
+_CROSS_FIELD_KEYS = {"vdp_thickness_cm", "fpp_power_stop_w", "fpp_sample_shape", "sweep_step"}
 
 
 class TestResolver:
