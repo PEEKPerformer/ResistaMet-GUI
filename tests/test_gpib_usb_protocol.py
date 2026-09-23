@@ -958,6 +958,25 @@ class TestSrqPush:
         with pytest.raises(p.ProtocolError):
             p.parse_srq_push(h('30 18 00'))
 
+    def test_the_4_byte_packet_carries_no_status_byte(self):
+        # Unit 013CC9DF under this driver (§10.12): byte 2 counts up from 01.
+        for n in (1, 2, 3):
+            packet = bytes((0x31, 0xA5, n, 0x00))
+            push = p.parse_srq_push(packet)
+            assert push.ibsta is None and push.status_byte is None and not push.srqi
+            assert push.raw == packet
+
+    @pytest.mark.parametrize('packet', ['31 a5 01', '30 18 00 60', '31 a1 01 00', '00 00 00 00',
+                                        '31 a5 01 00 00', '30 18 00 60 31 a1 01'])
+    def test_other_packets_under_8_bytes_raise(self, packet):
+        with pytest.raises(p.ProtocolError):
+            p.parse_srq_push(h(packet))
+
+    def test_8_bytes_starting_31_a5_are_read_as_the_8_byte_push(self):
+        # The length decides; the 8-byte form's byte 0 is not checked (§10.4.2).
+        push = p.parse_srq_push(h('31 a5 01 00 31 a1 01 00'))
+        assert push.ibsta == 0xA501 and push.status_byte == 0x00
+
 
 class TestStatusSnapshotBlock:
     def test_bytes(self):

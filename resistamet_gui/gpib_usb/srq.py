@@ -1,14 +1,17 @@
 """The wait for a service request (§10.4), part of ``Controller``.
 
-The adapter answers an SRQ by serial-polling the requesting device itself
-and pushing the status byte on the interrupt endpoint (§10.4.2), but only
-once it has been armed: with no 12-byte bank-2 0x03 write sent, no push
-comes, and one write arms one push (§10.11). ``wait_srq`` sends that write
-when it starts and every 15 ms while it waits, as NI does (§10.4.1,
-§10.4.3), and reads the interrupt endpoint between the writes with the
-controller lock released. ``Controller`` inherits it from ``_SrqMixin``,
-which has no state of its own. See the note at the top of the class for
-what has and has not run on hardware.
+The adapter answers an SRQ with a packet on the interrupt endpoint, but
+only once it has been armed: with no 12-byte bank-2 0x03 write sent, no
+packet comes, and one write arms one (§10.11, §10.12). Two forms have been
+seen. Under this driver unit 01CEE482 serial-polled the requesting device
+itself and pushed 8 bytes with its status byte, the form NI's captures
+show on the other unit (§10.4.2, §10.11); unit 013CC9DF sent 4 bytes with
+no status byte and left the device unpolled (§10.12). ``wait_srq`` sends
+that write when it starts and every 15 ms while it waits, as NI does
+(§10.4.1, §10.4.3), and reads the interrupt endpoint between the writes
+with the controller lock released. ``Controller`` inherits it from
+``_SrqMixin``, which has no state of its own. See the note at the top of
+the class for what has and has not run on hardware.
 """
 import logging
 from typing import Optional
@@ -51,42 +54,58 @@ class _SrqMixin:
     # with nothing pending timed out at 1.14-1.16 s for 1 s; status() and
     # queries from another thread went through during a wait; close ended a
     # wait in 0.5 s. Whether any request came by SRQI in a write's reply,
-    # and SRQI with no push after it, are not recorded. Nothing in the
-    # application calls it: pyvisa-py 0.8.1 has no enable_event /
-    # wait_on_event.
+    # and SRQI with no push after it, are not recorded. On unit 013CC9DF
+    # with a 2420 the same day (§10.12) a write sent before *OPC brought
+    # nothing; sent with SRQ asserted, its reply carried SRQI and the 4-byte
+    # packet `31 a5 nn 00` came 1-2 ms later on each of three rounds, and
+    # the serial poll afterwards returned 96. The wait then raised
+    # ProtocolError on that packet; taking it as a request with no status
+    # byte, as now, has not run on hardware. Nothing in the application
+    # calls it: pyvisa-py 0.8.1 has no enable_event / wait_on_event.
     # ------------------------------------------------------------------
 
     def wait_srq(self, timeout_s: Optional[float]) -> Optional[int]:
         """Block until an instrument requests service; its status byte, or None (§10.4).
 
-        The adapter pushes nothing on the interrupt endpoint until the
-        12-byte bank-2 0x03 write arms it, one push per write (§10.11). This
-        sends the write when the wait starts and again before every slice of
-        ``SRQ_WAIT_SLICE_S`` (15 ms), which is what NI sends on
-        viEnableEvent and while viWaitOnEvent waits (§10.4.1, §10.4.3), and
-        reads the endpoint in between. Either of two things is the service
-        request:
+        The adapter sends nothing on the interrupt endpoint until the
+        12-byte bank-2 0x03 write arms it, one packet per write (§10.11,
+        §10.12). This sends the write when the wait starts and again before
+        every slice of ``SRQ_WAIT_SLICE_S`` (15 ms), which is what NI sends
+        on viEnableEvent and while viWaitOnEvent waits (§10.4.1, §10.4.3),
+        and reads the endpoint in between. Any of these is the service request:
 
-        - the push, ``30 ss ss sb ..``: the adapter has serial-polled the
-          device itself and ``sb`` is its status byte with RQS set, which is
-          returned; a later explicit poll finds RQS clear (§10.4.2, §10.11).
-          Control request 0x3b follows it, as NI sends it (§10.4.2).
+        - the 8-byte push, ``30 ss ss sb ..`` (NI's captures on 013CC9DF,
+          §10.4.2; this driver on 01CEE482, §10.11): the adapter has
+          serial-polled the device itself and ``sb`` is its status byte with
+          RQS set, which is returned; a later explicit poll finds RQS clear.
+        - the 4-byte packet ``31 a5 nn 00`` (this driver on 013CC9DF,
+          §10.12): no status byte is carried and the adapter has not polled
+          the device, whose RQS is still set. The return is None at once.
         - SRQI in the reply to a write, which the bench saw when the write
-          went out with SRQ already asserted, the push following at once
-          (§10.11). No more writes are sent then, and the push is waited for
-          ``SRQ_PUSH_AFTER_SRQI_S`` more, the caller's timeout aside, since
-          the request has been seen. If it comes, its status byte is
-          returned as above. If it does not, the return is None: a request
-          was made, and its status byte is not known here. Whether the
-          adapter polled the device anyway is not established, so a serial
-          poll then may or may not find RQS still set.
+          went out with SRQ already asserted, a packet following at once
+          (§10.11, §10.12). No more writes are sent then, and the packet is
+          waited for ``SRQ_PUSH_AFTER_SRQI_S`` more, the caller's timeout
+          aside, since the request has been seen. If it comes, it is taken
+          as above. If it does not, the return is None. Whether the adapter
+          polled the device then is not established, so a serial poll may
+          or may not find RQS still set.
+
+        Control request 0x3b follows either packet, as NI sends it after the
+        push (§10.4.2) and as the bench sent it after each 4-byte packet
+        (§10.12). None means a request was made and its status byte is not
+        known here: the caller serial-polls the device for it, which also
+        clears its RQS. A packet shorter than 8 bytes in any other form has not
+        been seen and raises ``ProtocolError`` before any 0x3b, the bulk pipes
+        untouched.
 
         No write is sent while no wait runs. (The same write is the last
         block of NI's raw messages, §10.2.5; whether it arms the push there
         as well has not been checked.) A push armed by a wait that timed
         out, for an SRQ after it, stays in the adapter until the next call,
         which then returns it at once; whether the adapter keeps more than
-        one is not established.
+        one is not established. On 013CC9DF the device's RQS stays set until
+        it is polled, so a wait after a None that has not been followed by a
+        serial poll may see the same request again.
 
         The interrupt read is issued only here, and the controller lock is
         released while it blocks: a permanently pending read would need a
@@ -118,6 +137,9 @@ class _SrqMixin:
         if push is None:
             return None
         parsed = p.parse_srq_push(push)  # a malformed push does not put the bulk pipes out of step
+        if parsed.status_byte is None:
+            logger.info('%s: service request by the %d-byte interrupt packet %s, which carries no '
+                        'status byte', self._link.model.name, len(parsed.raw), parsed.raw.hex())
         with self._guard():
             if self._closed:
                 raise AdapterNotReady('controller is closed')
@@ -139,7 +161,7 @@ class _SrqMixin:
         return bool(status.ibsta & t.IBSTA_SRQI)
 
     def _armed_interrupt_read(self, transport: Transport, timeout_s: Optional[float]) -> Optional[bytes]:
-        """The next interrupt push, a write before each slice; None when SRQI came and no push.
+        """The next interrupt packet, a write before each slice; None when SRQI came and no packet.
 
         Called with the lock released; each write takes it. Counted in
         whole milliseconds, the unit the transport takes, and no slice is
