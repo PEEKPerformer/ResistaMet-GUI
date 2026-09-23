@@ -897,8 +897,8 @@ def host_wait_s(code: int, infinite_wait_s: float) -> float:
     0xfd, which one unit runs for 16.78 s and the other for 20.0 s. A wait
     sized by the first unit alone, 18.78 s, reached the stop request on
     the second 1.2 s before its own error 0x0a reply, and a timeout was
-    reported as an I/O error. Where the second unit was not timed (0xf5-
-    0xf8, and the codes nobody timed) its expiry is taken as 1.25 times
+    reported as an I/O error. Where the second unit's table has no figure
+    (0xf5-0xf8, and the codes nobody timed) its expiry is taken as 1.25 times
     the larger of the nominal limit and the power of two of §7.3 (§7.2).
     ``infinite_wait_s`` is returned for the disabled code 0xf0, where only
     the host can end the wait.

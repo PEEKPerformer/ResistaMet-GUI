@@ -35,12 +35,17 @@ instruction is, by the longer of those expiries (20.0 s for 5000 ms), not
 by the value set: one that runs out returns the bytes read so far with
 VI_ERROR_TMO, as pyvisa-py's own sessions do. With NI's instructions
 switched on, a raw read on unit 01CEE482 used to end at 20.0 s whatever
-its code (§11.2).
+its code (§11.2); in NI's message form, sent since, it ends at the code's
+expiry (§10.11).
 VI_TMO_IMMEDIATE is sent as 100 ms, code 0xf9 (0.132 s on the captured
 unit); what NI sends for it was not captured. VI_TMO_INFINITE is code 0xf0: the adapter
 never ends the instruction, and the controller stops it after its own
 wait, 600 s, and reports a timeout. An adapter that leaves the USB bus is
-VI_ERROR_CONN_LOST on that operation and every later one.
+VI_ERROR_CONN_LOST on that operation and every later one: on Linux libusb
+says so at the first failed call, on macOS the controller finds it by
+looking at the bus after the first failed call (§10.11). An open refused
+for want of permission on the device is VI_ERROR_SYSTEM_ERROR with the
+cause and the remedy in its message (``AccessDeniedError``).
 
 The board itself, ``GPIB<n>::INTFC``, is ``visa_intfc``; ``install()``
 here installs both. Not supported on the INSTR session:

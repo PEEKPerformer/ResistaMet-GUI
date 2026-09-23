@@ -56,9 +56,11 @@ PROBE_ADDRESSES = tuple(range(31))
 #: §11.2) an earlier form of the 0x0b read answers of up to 35 000 bytes
 #: whole but, with nothing to read, ended at 20.0 s whatever its code, and
 #: the 0x10 serial poll's status byte agreed with ``*STB?``. The raw read
-#: and write were changed on 2026-09-22 to send NI's own messages, which
-#: have not run on an adapter; no bench run of the 0x0e is recorded. With
-#: the switch on, pyvisa's reads, of 20480 bytes by default, all take 0x0b.
+#: and write were changed on 2026-09-22 to send NI's own messages, and in
+#: that form ran on the same unit on 2026-09-23 (§10.11): the 0x0b ended at
+#: its code's expiry, and the 0x0e wrote up to 6000 bytes and failed at
+#: once at an empty address. With the switch on, pyvisa's reads, of 20480
+#: bytes by default, all take 0x0b.
 #: Read once per board open, here and nowhere else.
 INSTRUCTIONS_ENV = 'NI_GPIB_USB_INSTRUCTIONS'
 #: Aliases of ``INSTRUCTIONS_ENV``, with the same spellings: the name the
