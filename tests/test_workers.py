@@ -1302,6 +1302,13 @@ class TestEventMarkerQueue:
         assert marked == ["ONE; TWO"]
         assert spies.error_occurred == []
 
+        import csv
+        with open(worker.filename, newline='') as handle:
+            rows = list(csv.reader(line for line in handle if not line.startswith('#')))
+        header, body = rows[0], rows[1:]
+        events = [row[header.index('event')] for row in body]
+        assert [e for e in events if e] == ["ONE; TWO"], events
+
 
 class TestRunControlQueueing:
     """Marker queue semantics live in RunControl now; the worker delegates."""
