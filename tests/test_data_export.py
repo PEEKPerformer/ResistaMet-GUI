@@ -85,6 +85,7 @@ class TestRowWriting:
         with open(exporter.csv_path) as f:
             lines = f.readlines()
             assert len(lines) == 3  # Header + 2 data rows
+            assert [line.strip() for line in lines[1:]] == ['1,100.5', '2,101.3']
 
     def test_row_count_tracking(self, temp_export_dir, basic_metadata):
         """Test that row count is tracked correctly."""
@@ -217,7 +218,7 @@ class TestColumnConfig:
     def test_unknown_mode_fallback(self):
         """Test fallback for unknown mode."""
         columns, units = get_column_config('unknown_mode')
-        assert len(columns) >= 2  # At least elapsed and value
+        assert (columns, units) == (['elapsed_s', 'value'], ['s', ''])
 
 
 class TestCheckpointing:
@@ -356,7 +357,8 @@ class TestBuildMetadata:
             settings=settings,
         )
 
-        assert 'params' in meta
+        assert meta['params']['test_current_A'] == 0.001
+        assert meta['params']['voltage_compliance_V'] == 21.0
 
     def test_resistance_metadata_records_enhanced_mode(self):
         """The offset_compensated_ohms field tells downstream readers
