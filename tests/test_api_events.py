@@ -108,6 +108,20 @@ class TestPublishIsNonBlocking:
         hub = EventHub()
         loop = asyncio.new_event_loop()
         hub.bind(loop)
+        asyncio.set_event_loop(loop)    # Python 3.9 binds the queue to it
+        # A client that is never drained and slow to take each event.
+        stream = hub.add_client()
+        taken = []
+        stalled = {'on': True}
+        real_offer = stream.offer
+
+        def slow_offer(event):
+            taken.append(event)
+            if stalled['on']:
+                time.sleep(0.01)
+            return real_offer(event)
+
+        stream.offer = slow_offer
         emitter = EventEmitter(hub.publish, run_id='run-1')
 
         began = time.time()
@@ -115,6 +129,14 @@ class TestPublishIsNonBlocking:
             emitter.emit('sample', {'t_unix': 0.0, 'elapsed_s': 0.0, 'compliance': 'OK',
                                      'event_marker': '', 'values': {}})
         assert time.time() - began < 2.0
+        assert taken == []              # nothing reached the client on this thread
+
+        # ...and the hand-off did happen: the loop delivers every one.
+        stalled['on'] = False
+        loop.call_soon(loop.stop)
+        loop.run_forever()
+        assert len(taken) == 2000
+        assert stream._queue.qsize() + stream.dropped == 2000
         loop.close()
 
 
