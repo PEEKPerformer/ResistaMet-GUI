@@ -4,7 +4,7 @@ Unit tests for the EnhancedDataBuffer class.
 Tests cover:
 - Buffer initialization
 - Adding data points
-- Statistics calculation (min, max, avg, rsd)
+- Statistics calculation (min, max, avg)
 - Data retrieval for plotting
 - Buffer size limits
 """
@@ -21,12 +21,12 @@ class TestBufferInitialization:
     def test_default_initialization(self):
         """Test buffer initializes with no size limit by default."""
         buffer = EnhancedDataBuffer()
-        assert buffer._max_len is None
+        assert buffer.size is None
 
     def test_initialization_with_size(self):
         """Test buffer initializes with specified size limit."""
         buffer = EnhancedDataBuffer(size=100)
-        assert buffer._max_len == 100
+        assert buffer.size == 100
 
     def test_empty_buffer_statistics(self):
         """Test statistics on empty buffer.
@@ -155,9 +155,10 @@ class TestDataRetrieval:
         buffer = EnhancedDataBuffer()
         buffer.add_resistance(1000.0, 100.0, 'OK')
         buffer.add_resistance(1001.0, 200.0, 'OK')
-        buffer.add_resistance(1002.0, 300.0, 'OK')
+        buffer.add_resistance(1002.0, 300.0, 'V_COMP')
 
-        elapsed, values, events = buffer.get_data_for_plot('resistance')
+        elapsed, values, compliance = buffer.get_data_for_plot('resistance')
+        assert compliance == ['OK', 'OK', 'V_COMP']
 
         # Elapsed time should be relative to first timestamp
         assert elapsed[0] == pytest.approx(0.0)
@@ -169,10 +170,10 @@ class TestDataRetrieval:
     def test_get_data_for_plot_empty(self):
         """Test getting data from empty buffer."""
         buffer = EnhancedDataBuffer()
-        elapsed, values, events = buffer.get_data_for_plot('resistance')
+        elapsed, values, compliance = buffer.get_data_for_plot('resistance')
         assert elapsed == []
         assert values == []
-        assert events == []
+        assert compliance == []
 
     def test_get_data_for_plot_handles_none(self):
         """Test that None values are converted to NaN for plotting."""
