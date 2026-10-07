@@ -66,7 +66,7 @@ any_reading = st.one_of(
     _signed(-15.0, 38.0),
 )
 table_names = st.sampled_from(sorted(TABLES))
-models = st.sampled_from(MODELS + ("2450", "bogus", ""))
+models = st.sampled_from(MODELS + ("bogus", ""))
 
 
 class TestTablesAreWellFormed:
@@ -89,28 +89,24 @@ class TestTablesAreWellFormed:
         for spec in TABLES[table][0][model]:
             assert spec.range_max > 0
             assert 0 < spec.pct_reading < 0.01        # a fraction, not a percentage
-            assert 0 < spec.offset < 0.01 * spec.range_max
+            # 1 % of range exactly on the 2450's 20 mV and 10 nA source rows.
+            assert 0 < spec.offset <= 0.01 * spec.range_max * (1 + 1e-12)
 
     @pytest.mark.parametrize("model", MODELS)
     def test_measure_and_source_tables_have_the_same_ranges(self, model):
         for measure, source in ((acc._V_MEASURE, acc._V_SOURCE), (acc._I_MEASURE, acc._I_SOURCE)):
             assert [s.range_max for s in measure[model]] == [s.range_max for s in source[model]]
 
-    def test_enhanced_resistance_ranges_ascend(self):
-        maxima = [spec.range_max for spec in acc._R_ENH_2400]
+    @pytest.mark.parametrize("model", MODELS)
+    def test_enhanced_resistance_ranges_ascend(self, model):
+        maxima = [spec.range_max for spec in acc._R_ENHANCED[model]]
         assert all(low < high for low, high in zip(maxima, maxima[1:]))
 
 
 class TestAgainstTheInstrumentTable:
     """``accuracy`` says it mirrors ``instrument._MODELS``."""
 
-    @pytest.mark.parametrize("model", [
-        pytest.param(m, marks=[pytest.mark.xfail(strict=True, reason=(
-            "instrument._MODELS knows the 2450 and detect_model returns it, but no "
-            "accuracy table does: every *_uncertainty call falls back silently to the "
-            "2400's rows, and the result is written to the file as the instrument's."))]
-            if m == "2450" else [])
-        for m in instrument.known_models()])
+    @pytest.mark.parametrize("model", instrument.known_models())
     def test_every_detectable_model_has_tables(self, model):
         assert model in MODELS
 
@@ -197,11 +193,18 @@ class TestUncertainty:
         "1.5 mA = 3.76 mA. Whether the 3 A range should take the larger adder is "
         "not something the datasheet settles.")
 
+    _2450_20_MV_SOURCE = (
+        "As printed: SPEC-2450 Rev. C p. 2 gives the 20 mV source range 0.100 % + "
+        "200 uV and the 200 mV range 0.015 % + 200 uV, the same offset, so 21 mV is "
+        "221 uV on the 20 mV range and 203 uV just above it on the 200 mV range.")
+
     @pytest.mark.parametrize("nplc", NPLCS)
     @pytest.mark.parametrize("table, model", _cases())
     def test_ranging_up_never_improves_the_uncertainty(self, request, table, model, nplc):
         if table == "i_measure" and model == "2420" and nplc == 0.01:
             request.applymarker(pytest.mark.xfail(strict=True, reason=self._FAST_1A_ADDER))
+        if table == "v_source" and model == "2450":
+            request.applymarker(pytest.mark.xfail(strict=True, reason=self._2450_20_MV_SOURCE))
         lookup, function, _ = TABLES[table]
         specs = lookup[model]
         for spec in specs[:-1]:
@@ -229,7 +232,7 @@ class TestUncertainty:
             assert math.isnan(value)
 
     @PROPERTY
-    @given(table_names, st.sampled_from(["2450", "bogus", "", "24"]), _signed(-12.0, 4.0), st.sampled_from(NPLCS))
+    @given(table_names, st.sampled_from(["bogus", "", "24"]), _signed(-12.0, 4.0), st.sampled_from(NPLCS))
     def test_an_unknown_model_gets_the_2400_rows(self, table, model, reading, nplc):
         function = TABLES[table][1]
         assert function(reading, model, nplc) == function(reading, "2400", nplc)

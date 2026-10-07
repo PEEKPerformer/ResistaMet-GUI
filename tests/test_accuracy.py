@@ -291,11 +291,11 @@ class TestEnhancedResistance:
 
 def test_known_models_includes_full_2400_family():
     # The four-digit IDN strings the worker is going to hand us.
-    expected = {"2400", "2401", "2410", "2420", "2425", "2430", "2440"}
+    expected = {"2400", "2401", "2410", "2420", "2425", "2430", "2440", "2450"}
     assert expected.issubset(set(known_models()))
 
 
-@pytest.mark.parametrize("model", ["2400", "2401", "2410", "2420", "2425", "2430", "2440"])
+@pytest.mark.parametrize("model", ["2400", "2401", "2410", "2420", "2425", "2430", "2440", "2450"])
 def test_every_model_gives_finite_uncertainty(model):
     # Smoke check: typical mid-range V and I produce a finite, positive
     # uncertainty for every model in the table. Catches typos in the
@@ -544,6 +544,14 @@ _SPEC_SHEET_VOLTAGE = {
         (20.0,  0.02, 2.4 * _MV, 0.015, 1 * _MV),
         (100.0, 0.02, 12 * _MV,  0.015, 5 * _MV),
     ),
+    # SPEC-2450 Rev. C, Voltage Specifications (p. 2).
+    "2450": (
+        (0.02,  0.100, 200 * _UV, 0.100, 150 * _UV),
+        (0.2,   0.015, 200 * _UV, 0.012, 200 * _UV),
+        (2.0,   0.020, 300 * _UV, 0.012, 300 * _UV),
+        (20.0,  0.015, 2.4 * _MV, 0.015, 1 * _MV),
+        (200.0, 0.015, 24 * _MV,  0.015, 10 * _MV),
+    ),
 }
 _SPEC_SHEET_CURRENT = {
     # SPEC-2425 Rev. C, Current Programming Accuracy (p. 1) and Current
@@ -568,6 +576,18 @@ _SPEC_SHEET_CURRENT = {
         (1.0,       0.067, 900 * _UA, 0.060, 570 * _UA),
         (3.0,       0.059, 2.8 * _MA, 0.052, 1.71 * _MA),
         (10.0,      0.089, 5.9 * _MA, 0.082, 1.71 * _MA),
+    ),
+    # SPEC-2450 Rev. C, Current Specifications (p. 2).
+    "2450": (
+        (10 * _NA,  0.100, 100 * _PA, 0.10,  50 * _PA),
+        (100 * _NA, 0.060, 150 * _PA, 0.060, 100 * _PA),
+        (1 * _UA,   0.025, 400 * _PA, 0.025, 300 * _PA),
+        (10 * _UA,  0.025, 1.5 * _NA, 0.025, 700 * _PA),
+        (100 * _UA, 0.020, 15 * _NA,  0.02,  6 * _NA),
+        (1 * _MA,   0.020, 150 * _NA, 0.02,  60 * _NA),
+        (10 * _MA,  0.020, 1.5 * _UA, 0.02,  600 * _NA),
+        (100 * _MA, 0.025, 15 * _UA,  0.025, 6 * _UA),
+        (1.0,       0.067, 900 * _UA, 0.03,  500 * _UA),
     ),
 }
 
@@ -627,3 +647,33 @@ def test_the_2430s_speed_adders():
     assert current_uncertainty(5.0, model="2430", nplc=0.01) == pytest.approx(20.81e-3)
     assert current_uncertainty(2.0, model="2430", nplc=0.01) == pytest.approx(17.75e-3)
     assert current_uncertainty(0.5, model="2430", nplc=0.01) == pytest.approx(5.87e-3)
+
+
+# SPEC-2450 Rev. C, Resistance Measurement Accuracy (p. 3), Enhanced
+# accuracy column: (range in Ω, % rdg, offset in Ω).
+_SPEC_2450_ENHANCED = (
+    (20.0,    0.073, 0.001),
+    (200.0,   0.053, 0.01),
+    (2.0e3,   0.045, 0.1),
+    (20.0e3,  0.043, 1.0),
+    (200.0e3, 0.046, 10.0),
+    (2.0e6,   0.049, 100.0),
+    (20.0e6,  0.052, 500.0),
+    (200.0e6, 0.349, 5.0e3),
+)
+
+
+def test_2450_enhanced_rows_are_the_spec_sheets():
+    from resistamet_gui import accuracy as acc
+
+    assert _rows(acc._R_ENHANCED["2450"]) == _approx_rows(_SPEC_2450_ENHANCED)
+
+
+def test_a_2450_reading_uses_the_2450s_rows():
+    """SPEC-2450 Rev. C. 0.5 A on the 1 A range, measurement 0.03 % +
+    500 uA (p. 2): 150 + 500 = 650 uA, where the 2400's row it used to
+    borrow gives 0.22 % + 570 uA = 1.67 mA. 20 Ohm enhanced, 0.073 % +
+    0.001 Ohm (p. 3): 0.0146 + 0.001 = 0.0156 Ohm, where the 2400's is
+    0.07 % + 0.001 Ohm = 0.015 Ohm."""
+    assert current_uncertainty(0.5, model="2450") == pytest.approx(650e-6)
+    assert resistance_uncertainty(20e-3, 1e-3, model="2450", enhanced=True) == pytest.approx(0.0156)
