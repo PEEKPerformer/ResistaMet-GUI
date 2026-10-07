@@ -198,6 +198,25 @@ _I_SRC_2425 = _I_SRC_2400[1:6] + (
 
 
 # ---------------------------------------------------------------------------
+# 2430. Not in the datasheet above. Source: "2430 and 2430-C SourceMeter
+# Specifications", SPEC-2430 Rev. C (Keithley, 3/20/03), the same tables
+# as the 2425's sheet, whose rows it repeats, plus a 10 A range that works
+# in pulse mode only (p. 1 note 3, p. 2 note 6). ResistaMet sources DC, so
+# a 2430 reading never sits on it; the row is kept so the tables are the
+# sheet's and a value above 3.15 A is not given the 3 A row.
+# ---------------------------------------------------------------------------
+
+_V_MEAS_2430 = _V_MEAS_2425
+_V_SRC_2430 = _V_SRC_2425
+_I_MEAS_2430 = _I_MEAS_2425 + (
+    AccuracySpec(range_max=10.0,   pct_reading=0.00082, offset=1.71e-3),  # 10 A, pulse only
+)
+_I_SRC_2430 = _I_SRC_2425 + (
+    AccuracySpec(range_max=10.0,   pct_reading=0.00089, offset=5.9e-3),   # 10 A, pulse only
+)
+
+
+# ---------------------------------------------------------------------------
 # Enhanced resistance accuracy — 2400/2401 family
 # Source: datasheet p. 7, "Enhanced Accuracy" column. Active when
 # source-readback is ON *and* offset-compensated ohms is ON. The 2400's
@@ -226,13 +245,6 @@ _R_ENH_2400 = (
 # ---------------------------------------------------------------------------
 # Per-model lookup. Mirrors instrument._MODELS so callers can pass the
 # model string straight from IDN parsing.
-#
-# The 2430 is NOT in the datasheet this module cites (it covers the 2400,
-# 2401, 2410, 2420 and 2440). It is given the 2420's rows here as a
-# stand-in, not from a source. Its top voltage range is 100 V, not the
-# 2420's 60 V (2400 Series User's Manual 2400S-900-01 Rev. K, Table 3-1,
-# p. 3-5: 200 mV, 2 V, 20 V, 100 V), and no 100 V accuracy row is tabulated
-# for it: a reading above 63 V is given the 60 V row's numbers.
 # ---------------------------------------------------------------------------
 
 _V_MEASURE: dict[str, Sequence[AccuracySpec]] = {
@@ -241,7 +253,7 @@ _V_MEASURE: dict[str, Sequence[AccuracySpec]] = {
     "2410": _V_MEAS_2410,
     "2420": _V_MEAS_2420,
     "2425": _V_MEAS_2425,
-    "2430": _V_MEAS_2420,       # stand-in; see the note above
+    "2430": _V_MEAS_2430,
     "2440": _V_MEAS_2440,
 }
 
@@ -251,7 +263,7 @@ _I_MEASURE: dict[str, Sequence[AccuracySpec]] = {
     "2410": _I_MEAS_2410,
     "2420": _I_MEAS_2420,
     "2425": _I_MEAS_2425,
-    "2430": _I_MEAS_2420,
+    "2430": _I_MEAS_2430,
     "2440": _I_MEAS_2440,
 }
 
@@ -261,7 +273,7 @@ _V_SOURCE: dict[str, Sequence[AccuracySpec]] = {
     "2410": _V_SRC_2410,
     "2420": _V_SRC_2420,
     "2425": _V_SRC_2425,
-    "2430": _V_SRC_2420,
+    "2430": _V_SRC_2430,
     "2440": _V_SRC_2440,
 }
 
@@ -271,7 +283,7 @@ _I_SOURCE: dict[str, Sequence[AccuracySpec]] = {
     "2410": _I_SRC_2410,
     "2420": _I_SRC_2420,
     "2425": _I_SRC_2425,
-    "2430": _I_SRC_2420,
+    "2430": _I_SRC_2430,
     "2440": _I_SRC_2440,
 }
 
@@ -316,15 +328,24 @@ _NPLC_OFFSET_PCT_RANGE_FAST = {       # 0.01 PLC (Speed = Fast)
 # models, none of which has a 10 A range. It does not name the 2420's 3 A
 # or the 2440's 5 A range, so those take the smaller modifier, as printed
 # (the older per-model sheets, SPEC-2420 Rev. D and 2440 Rev. C, name
-# them). SPEC-2425 Rev. C (p. 2 note 1) names "200mV, 1A, 3A".
+# them). SPEC-2425 Rev. C (p. 2 note 1) names "200mV, 1A, 3A", and
+# SPEC-2430 Rev. C (p. 2 note 1) "200mV, 1A, 3A, 10A".
 _SPECIAL_CURRENT_RANGES: dict[str, tuple[float, ...]] = {
     "2400": (1.0, 10.0),
     "2401": (1.0, 10.0),
     "2410": (1.0, 10.0),
     "2420": (1.0, 10.0),
     "2425": (1.0, 3.0),
-    "2430": (1.0, 10.0),
+    "2430": (1.0, 3.0, 10.0),
     "2440": (1.0, 10.0),
+}
+
+# SPEC-2430 Rev. C (p. 2 note 1) ends its 0.01 PLC sentence "add 0.5%; 3A,
+# 10A ranges add 15mA": on those two ranges the Fast adder is a fixed
+# 15 mA in place of the percentage (0.5 % of 3 A is 15 mA anyway; of 10 A
+# it would be 50 mA). In amperes, by range full scale.
+_FAST_CURRENT_ADDER: dict[str, dict[float, float]] = {
+    "2430": {3.0: 15e-3, 10.0: 15e-3},
 }
 
 # NOTE on NPLC extrapolation: the datasheet documents accuracy modifiers
@@ -363,6 +384,10 @@ def _nplc_modifier(nplc: float, spec: AccuracySpec, kind: str, model: str = _DEF
         bucket = _NPLC_OFFSET_PCT_RANGE_MEDIUM
     else:
         bucket = _NPLC_OFFSET_PCT_RANGE_FAST
+    if kind == "current" and bucket is _NPLC_OFFSET_PCT_RANGE_FAST:
+        for full_scale, adder in _FAST_CURRENT_ADDER.get(model, {}).items():
+            if math.isclose(spec.range_max, full_scale):
+                return adder
     key = "special" if _is_special_range(spec, kind, model) else "default"
     return bucket[key] * spec.range_max
 
