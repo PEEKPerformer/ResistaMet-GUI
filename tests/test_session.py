@@ -649,6 +649,18 @@ class TestSafetyPrompt:
         assert sink.of_type('sample') == []
         session.abort()
 
+    def test_prompt_owner_names_the_run_s_user_for_its_own_prompt_only(
+            self, session, sink, fake_rm, profile):
+        session.start(self._hazardous(profile), 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: self._pending(session) is not None)
+        prompt_id = self._pending(session)['prompt_id']
+
+        assert session.prompt_owner(prompt_id) == 'alice'
+        assert session.prompt_owner('run-0:safety_voltage_ack-1') is None
+        session.answer_prompt(prompt_id, 'cancel')
+        assert _wait_for(lambda: session.state == 'idle')
+        assert session.prompt_owner(prompt_id) is None
+
     def test_silence_request_is_recorded(self, session, sink, fake_rm, profile):
         session.start(self._hazardous(profile), 'source_v', 'wafer1', 'alice')
         assert _wait_for(lambda: self._pending(session) is not None)

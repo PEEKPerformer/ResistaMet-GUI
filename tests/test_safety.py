@@ -251,3 +251,25 @@ class TestWarningSilenced:
     def test_a_value_that_is_not_a_time_does_not_silence(self, until):
         s = _settings({'safety_voltage_warn_silenced_until': until})
         assert warning_silenced(s, self.NOW) is False
+
+
+class TestSafetyAckFields:
+    """What an answer to the touch-safety prompt stores, with the clock given."""
+
+    NOW = 1_800_000_000.0
+
+    def _change(self, **fields):
+        from resistamet_gui.session.status import SafetyAckFields
+        return SafetyAckFields.model_validate(fields).profile_change(self.NOW)
+
+    def test_for_good_is_the_sticky_flag(self):
+        assert self._change(silence_for_profile=True) == {'safety_voltage_warn_silenced': True}
+
+    def test_for_seven_days_is_a_time_seven_days_on(self):
+        change = self._change(silence_for_days=7)
+        assert change == {'safety_voltage_warn_silenced_until': self.NOW + 7 * 86400.0}
+        assert warning_silenced(_settings(change), self.NOW + 7 * 86400.0 - 1)
+        assert not warning_silenced(_settings(change), self.NOW + 7 * 86400.0)
+
+    def test_no_fields_store_nothing(self):
+        assert self._change() == {}

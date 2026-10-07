@@ -1,5 +1,32 @@
 {
   "definitions": {
+    "SafetyAckFields": {
+      "additionalProperties": false,
+      "description": "The ``fields`` of an answer to ``safety_voltage_ack``.\n\n``silence_for_profile`` silences the warning on the run's profile for\ngood; ``silence_for_days`` for that many days from the answer. Either\nis saved only with ``acknowledge``: a person who cancelled has not\nagreed to stop being asked. One or the other, not both. Unknown keys\nare refused, so a misspelt one is an error rather than a silence that\nquietly never happened.\n\nThe silence applies to the runs a person starts; a run an agent\nstarted asks regardless (``docs/design/mcp_layer.md`` M5).",
+      "properties": {
+        "silence_for_days": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 365.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Silence For Days"
+        },
+        "silence_for_profile": {
+          "default": false,
+          "title": "Silence For Profile",
+          "type": "boolean"
+        }
+      },
+      "title": "SafetyAckFields",
+      "type": "object"
+    },
     "SessionStatus": {
       "$defs": {
         "InstrumentInfo": {

@@ -282,6 +282,22 @@ class MeasurementSession:
             logger.warning("prompt answer refused: %s", exc)
             return False
 
+    def prompt_owner(self, prompt_id: str) -> Optional[str]:
+        """The username of the run asking ``prompt_id``; None if none is.
+
+        The run and its control are read together under the lock, and the
+        prompt id carries the run id, so the name is that of the run whose
+        question this is and never of one started since. A caller that acts
+        for the person a prompt was put to -- the API saving the silence an
+        answer asked for -- asks here before answering.
+        """
+        with self._lock:
+            control, run = self._control, self._run
+        prompt = control.pending_prompt if control is not None else None
+        if prompt is None or prompt.prompt_id != prompt_id:
+            return None
+        return getattr(run, 'username', None)
+
     def identify(self, address: str, visa_library: str = '',
                  gpib_interface: str = '') -> Dict[str, Any]:
         """Ask what is at an address. Refused while a run owns the bus."""
