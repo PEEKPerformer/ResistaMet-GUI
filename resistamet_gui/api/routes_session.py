@@ -98,6 +98,10 @@ def start(body: RunRequest, request: Request,
     connected model's (``docs/design/mcp_layer.md`` M4), on the settings the
     session resolved for this run, before anything opens. Beyond them is a
     422 whose detail lists each violation. The window is never checked.
+
+    The same roles are asked the touch-safety question on a hazardous run
+    even where the profile silenced it (M5): a person silenced it for the
+    runs they start, not for an agent's.
     """
     profile = request.app.state.api.profile_provider(body.username)
 
@@ -111,7 +115,8 @@ def start(body: RunRequest, request: Request,
                                 overrides=body.overrides,
                                 prompt_timeout_s=body.prompt_timeout_s,
                                 spot=body.spot, client=body.client,
-                                check=None if role == UI_ROLE else within_agent_limits)
+                                check=None if role == UI_ROLE else within_agent_limits,
+                                ignore_safety_silence=role != UI_ROLE)
     except _BeyondAgentLimits as exc:
         violations = exc.verdict.violations
         raise HTTPException(
