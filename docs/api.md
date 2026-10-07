@@ -42,7 +42,7 @@ Every HTTP route except `GET /health` needs `Authorization: Bearer <token>`. A w
 
 The token keeps other local processes from driving the instrument. It is not an authentication system.
 
-A token carries a role. The handshake's token is the `ui` role. A second token, role `agent`, exists only while [agent access](#agent-access) is on. Only the `ui` role may answer a prompt marked `requires_human`, change the touch-safety settings of a profile, set a VISA library path, change `allow_agents`, or read `GET /agents`; any other role gets 403 there.
+A token carries a role. The handshake's token is the `ui` role. A second token, role `agent`, exists only while [agent access](#agent-access) is on. Only the `ui` role may answer a prompt marked `requires_human`, edit a profile (`PATCH /profiles/{username}`, which holds the touch-safety settings, a VISA library path and `allow_agents`), add a user, shut the sidecar down, store a map's photograph or its registration, or read `GET /agents`; any other role gets 403 there. Any role may stop or abort a run.
 
 ### Agent access
 
@@ -115,7 +115,7 @@ Non-finite floats (an unmeasured temperature, an uncertainty that could not be c
 | `POST /session/mark` | `{"label": "MARK"}` (label optional) | `SessionStatus` | 409 no run in progress |
 | `POST /session/prompt` | `{"prompt_id", "choice", "fields": {}}` | `SessionStatus` | 409 no prompt pending; 409 `prompt_id` stale, already answered, or `choice` not among the prompt's `options` (the prompt stays pending); 403 prompt needs a human and the role is not `ui` |
 | `GET /session/events` | query `since_seq` (0), `run_id` (all runs), `limit` (500) | `{"events": [Event…], "gap": bool, "last_seq": int}` | |
-| `POST /session/shutdown` | | `{"status": "stopping"}` | |
+| `POST /session/shutdown` | | `{"status": "stopping"}` | 403 a role other than `ui` |
 
 `RunRequest` (the model exported as `contracts/settings.schema.json`; unknown fields are refused, so a misspelt one is a 422 that names it):
 
@@ -137,9 +137,9 @@ Non-finite floats (an unmeasured temperature, an uncertainty that could not be c
 | Method and path | Request | Reply | Errors |
 |---|---|---|---|
 | `GET /users` | | `{"users": [...], "last_user": ...}` | |
-| `POST /users` | `{"username"}` (1–64 chars) | **201** same shape. Idempotent; selects the user. | 422 empty name |
+| `POST /users` | `{"username"}` (1–64 chars) | **201** same shape. Idempotent; selects the user. | 422 empty name; 403 a role other than `ui` |
 | `GET /profiles/{username}` | | `{"measurement": {...}, "display": {...}, "file": {...}, "output": {...}}` with this PC's [machine-local](settings.md#machine-local-settings) values filled in | |
-| `PATCH /profiles/{username}` | any of the four sections, each with only the keys to change | The updated profile. Keys not sent keep their stored values. | 404 unknown user; 422 no section given, or the result would not be valid (`detail.issues` lists `section`, `key`, `message`; an old out-of-range value you are not touching does not block the edit); 409 the patch has `gpib_address`, `visa_library` or `gpib_interface` and a run is active; 403 a role other than `ui` changes a touch-safety key, a VISA library path or `allow_agents` |
+| `PATCH /profiles/{username}` | any of the four sections, each with only the keys to change | The updated profile. Keys not sent keep their stored values. | 404 unknown user; 422 no section given, or the result would not be valid (`detail.issues` lists `section`, `key`, `message`; an old out-of-range value you are not touching does not block the edit); 409 the patch has `gpib_address`, `visa_library` or `gpib_interface` and a run is active; 403 a role other than `ui` |
 | `GET /agents` | | `{"enabled": bool}`: whether [agent access](#agent-access) is in force | 403 a role other than `ui` |
 | `GET /schema/settings` | | `{"modes": {mode: {"model", "fields": [...], "override_keys": [...]}}}` | |
 | `POST /settings/resolve` | `{"mode", "username", "overrides": {}, "strict": true}` | `{"settings", "derived", "ok", "issues": [{"key","message","severity"}], "hazard"}` | 422 unknown mode |

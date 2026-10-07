@@ -179,6 +179,44 @@ class TestTheAgentIsRefusedWhereAPersonIsRequired:
         assert config.get_allow_agents() is (not value)
 
 
+    def test_changing_any_profile_key(self, agent, config):
+        """Overrides are an agent's way to choose; the profile is the operator's."""
+        before = config.get_user_settings('alice')['measurement']['sampling_rate']
+        response = agent.patch('/profiles/alice', json={'measurement': {'sampling_rate': 2.0}})
+        assert response.status_code == 403
+        assert config.get_user_settings('alice')['measurement']['sampling_rate'] == before
+
+    def test_adding_a_user(self, agent, config):
+        response = agent.post('/users', json={'username': 'bob'})
+        assert response.status_code == 403
+        assert 'bob' not in config.get_users()
+
+    def test_shutting_the_backend_down(self, agent, app):
+        server = type('Server', (), {'should_exit': False})()
+        app.state.api.server = server
+        response = agent.post('/session/shutdown')
+        assert response.status_code == 403
+        assert server.should_exit is False
+
+    def test_storing_a_map_photograph(self, agent, tmp_path):
+        response = agent.put('/maps/map-1/image', params={'user': 'alice'},
+                             content=b'\x89PNG\r\n\x1a\n', headers={'Content-Type': 'image/png'})
+        assert response.status_code == 403
+        assert not list(tmp_path.rglob('*.png'))
+
+    def test_registering_a_map_photograph(self, agent):
+        response = agent.put('/maps/map-1/registration', params={'user': 'alice'}, json={})
+        assert response.status_code == 403
+
+    def test_but_it_may_always_stop_a_run(self, agent, ui, fake_rm):
+        """Whoever started it: stopping is the safe direction."""
+        assert ui.post('/session/start', json={
+            'mode': 'source_v', 'sample_name': 'wafer1', 'username': 'alice'}).status_code == 202
+        assert _wait_for(lambda: agent.get('/session').json()['state'] != 'idle')
+        assert agent.post('/session/abort').status_code == 200
+        assert _wait_for(lambda: agent.get('/session').json()['state'] == 'idle')
+
+
 class TestAllowAgentsSetting:
     def test_it_is_off_by_default_and_in_every_profile(self, ui):
         assert ui.get('/profiles/alice').json()['measurement']['allow_agents'] is False
@@ -196,12 +234,6 @@ class TestAllowAgentsSetting:
         assert response.status_code == 422
         assert config.get_allow_agents() is False
 
-    def test_an_agent_may_resend_it_unchanged(self, agent):
-        section = agent.get('/profiles/alice').json()['measurement']
-        section.pop('gpib_address')
-        section['nplc'] = 2.0
-        response = agent.patch('/profiles/alice', json={'measurement': section})
-        assert response.status_code == 200
 
     def test_it_can_change_during_a_run(self, ui, session, monkeypatch):
         """Unlike the bus keys: a person must be able to turn agents out mid-run."""

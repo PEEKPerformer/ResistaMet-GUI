@@ -20,7 +20,7 @@ from ..schema.settings_common import (AuxSensorSettings, DisplaySettings, FileSe
                                        InstrumentSettings, OutputSettings, SafetySettings)
 from ..schema.settings_modes import MODE_MODELS
 from ..session.manager import MeasurementSession, SessionBusy
-from .app import UI_ROLE, busy_as_conflict, get_session, require_token
+from .app import busy_as_conflict, get_session, require_token, require_ui
 
 router = APIRouter(tags=["settings"])
 
@@ -121,8 +121,11 @@ class NewUser(BaseModel):
 
 
 @router.post("/users", status_code=status.HTTP_201_CREATED)
-def add_user(body: NewUser, request: Request, role: str = Depends(require_token)):
-    """Create a profile. Idempotent: an existing name is simply selected."""
+def add_user(body: NewUser, request: Request, role: str = Depends(require_ui)):
+    """Create a profile. Idempotent: an existing name is simply selected.
+
+    The ``ui`` role only: a new name in the record is a person's decision.
+    """
     config = _config(request)
     username = body.username.strip()
     if not username:
@@ -168,14 +171,12 @@ def _section_issues(section: str, values: Dict[str, Any]) -> List[Dict[str, str]
     return issues
 
 
-def _refuse_a_worse_profile(sections: Dict[str, Any], role: str):
+def _refuse_a_worse_profile(sections: Dict[str, Any]):
     """The check a profile edit has to pass before it is stored.
 
-    The touch-safety keys decide whether the hazardous-voltage prompt is ever
-    asked, and only a person at the bench may answer that prompt (design
-    decision D4). A role that may not answer it may not raise its threshold
-    or silence it here either. ``allow_agents`` is the same kind of key: it
-    decides who may drive the instrument at all.
+    Who may edit is settled before this: the route is the ``ui`` role's
+    alone, so the touch-safety keys, ``allow_agents`` and a VISA library path
+    are a person's to change (design decision D4, ``mcp_layer.md`` M3).
 
     An issue blocks the edit when it is on a key the edit changes, or when the
     profile did not have it before. One that was already there and is not
@@ -183,28 +184,11 @@ def _refuse_a_worse_profile(sections: Dict[str, Any], role: str):
     still be editable, one key at a time.
     """
     def check(current: Dict[str, Any], merged: Dict[str, Any]) -> None:
-        if role != UI_ROLE and any(
-                current['measurement'].get(key) != merged['measurement'].get(key)
-                for key in SAFETY_KEYS):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                 detail="the touch-safety settings can only be changed "
-                                        "from the user interface")
-        if role != UI_ROLE and (current['measurement'].get('allow_agents')
-                                != merged['measurement'].get('allow_agents')):
-            # An agent must not be able to let agents in, nor any other
-            # client that is not the person at the window.
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                 detail="agent access can only be changed from the "
-                                        "user interface")
         blocking = []
         library = merged['measurement'].get('visa_library', '')
         if library != current['measurement'].get('visa_library', '') \
                 and library not in NAMED_VISA_LIBRARIES:
             # A path is loaded into this process the next time the bus opens.
-            if role != UI_ROLE:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                     detail="a VISA library path can only be set from "
-                                            "the user interface")
             if not os.path.isfile(str(library)):
                 blocking.append({'section': 'measurement', 'key': 'visa_library',
                                  'message': f"no such file: {library}"})
@@ -226,8 +210,13 @@ def _refuse_a_worse_profile(sections: Dict[str, Any], role: str):
 @router.patch("/profiles/{username}")
 def patch_profile(username: str, body: ProfilePatch, request: Request,
                    session: MeasurementSession = Depends(get_session),
-                   role: str = Depends(require_token)):
-    """Change the keys sent; every other key of the profile stays as stored."""
+                   role: str = Depends(require_ui)):
+    """Change the keys sent; every other key of the profile stays as stored.
+
+    The ``ui`` role only. An agent's choices go in a run's overrides, which
+    the run records; a changed profile would change the operator's next run
+    with no trace in it (``docs/design/mcp_layer.md`` M3).
+    """
     sections = body.sections()
     if not sections:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -244,7 +233,7 @@ def patch_profile(username: str, body: ProfilePatch, request: Request,
                              detail="cannot change the instrument address during a run")
     agents_were_allowed = config.get_allow_agents()
     merged = config.merge_user_settings(username, sections,
-                                        check=_refuse_a_worse_profile(sections, role))
+                                        check=_refuse_a_worse_profile(sections))
     if config.get_allow_agents() != agents_were_allowed:
         # Takes effect now, in this backend: an agent turned out gets 401 on
         # its next request, not after a restart. Only a change does
@@ -259,7 +248,7 @@ def patch_profile(username: str, body: ProfilePatch, request: Request,
 
 
 @router.get("/agents")
-def agent_access_status(request: Request, role: str = Depends(require_token)):
+def agent_access_status(request: Request, role: str = Depends(require_ui)):
     """Whether AI agents can connect to this backend right now.
 
     Not the stored setting -- that is in the profile -- but what is in force:
@@ -267,9 +256,6 @@ def agent_access_status(request: Request, role: str = Depends(require_token)):
     holding the connection file keeps it off despite it. The ``ui`` role only;
     an agent learns whether it is let in by being let in.
     """
-    if role != UI_ROLE:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                             detail="only the user interface can see agent access")
     return {"enabled": request.app.state.api.agent_access.enabled}
 
 

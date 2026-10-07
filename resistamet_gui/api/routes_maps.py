@@ -41,7 +41,7 @@ from ..session.spot_map import (
     store_map_registration,
     write_map_summary,
 )
-from .app import require_token
+from .app import require_token, require_ui
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +109,8 @@ async def _body_up_to(request: Request, limit: int) -> bytes:
 async def store_image(request: Request, response: Response,
                       map_id: str = Path(pattern=MAP_ID_PATTERN),
                       user: str = Query(min_length=1), replace: bool = Query(default=False),
-                      role: str = Depends(require_token)) -> dict:
-    """Keep the sample's photograph beside the map's runs.
+                      role: str = Depends(require_ui)) -> dict:
+    """Keep the sample's photograph beside the map's runs. The ``ui`` role only.
 
     The body is the image itself and ``Content-Type`` says which kind. 201
     when it was stored, 200 when the map already holds these exact bytes, 409
@@ -165,8 +165,8 @@ def read_image(request: Request, map_id: str = Path(pattern=MAP_ID_PATTERN),
 def store_registration(body: MapImageRegistration, request: Request,
                        map_id: str = Path(pattern=MAP_ID_PATTERN),
                        user: str = Query(min_length=1),
-                       role: str = Depends(require_token)) -> dict:
-    """Record where the stored photograph sits on the sample.
+                       role: str = Depends(require_ui)) -> dict:
+    """Record where the stored photograph sits on the sample. The ``ui`` role only.
 
     404 when the map has no image yet; 409 when ``sha256`` names another
     image than the one stored. Returns the map's ``image`` block.
