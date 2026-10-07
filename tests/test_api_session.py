@@ -254,6 +254,24 @@ class TestPromptAuthorization:
         assert _wait_for(lambda: sink.of_type('sample'))
         client.post('/session/stop')
 
+    def test_a_silence_with_no_profile_store_is_refused_and_stays_pending(
+            self, client, fake_rm, sink, profile):
+        """Given profiles and no config, a silence has nowhere to be kept."""
+        self._hazardous(profile)
+        _start(client, mode='source_v')
+        assert _wait_for(lambda: client.get('/session').json()['pending_prompt'])
+        prompt = client.get('/session').json()['pending_prompt']
+
+        response = client.post('/session/prompt', json={
+            'prompt_id': prompt['prompt_id'], 'choice': 'acknowledge',
+            'fields': {'silence_for_days': 7}})
+
+        assert response.status_code == 409
+        assert client.get('/session').json()['pending_prompt'] == prompt
+        assert fake_rm.opened == []
+        client.post('/session/abort')
+        assert _wait_for(lambda: client.get('/session').json()['state'] == 'idle')
+
     def test_non_ui_role_is_refused(self, session, profile, fake_rm, sink):
         """D4: an MCP client cannot claim a human made a decision."""
         self._hazardous(profile)

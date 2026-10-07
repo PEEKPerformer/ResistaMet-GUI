@@ -171,6 +171,22 @@ def warning_silenced(settings: Mapping, now: float) -> bool:
     return math.isfinite(until) and until > now
 
 
+def silence_note(fields: Mapping) -> Optional[str]:
+    """The log line for a touch-safety answer that asked for a silence.
+
+    None when it asked for none. The run records the request on its event
+    stream; saving it to the profile is for whoever owns the profile file
+    (the API, as it takes the answer).
+    """
+    if fields.get('silence_for_profile') is True:
+        return "Touch-safety warning silenced for this profile."
+    days = fields.get('silence_for_days')
+    if isinstance(days, (int, float)) and not isinstance(days, bool) \
+            and math.isfinite(days) and days > 0:
+        return f"Touch-safety warning silenced for this profile for {days:g} days."
+    return None
+
+
 def warning_message(check: HazardCheck) -> str:
     """Plain-text body for a warning dialog. Caller wraps in a QMessageBox."""
     return (

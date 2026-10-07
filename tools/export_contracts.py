@@ -81,10 +81,14 @@ def maps_schema():
 
 
 def session_schema():
-    """What ``GET /session`` and the session commands answer with."""
-    from resistamet_gui.session.status import SessionStatus
+    """What ``GET /session`` and the session commands answer with, and the
+    ``fields`` an answer to the touch-safety prompt may carry."""
+    from resistamet_gui.session.status import SafetyAckFields, SessionStatus
 
-    return {'definitions': {'SessionStatus': SessionStatus.model_json_schema()}}
+    return {'definitions': {
+        'SessionStatus': SessionStatus.model_json_schema(),
+        'SafetyAckFields': SafetyAckFields.model_json_schema(),
+    }}
 
 
 def render(schema):
