@@ -13,6 +13,7 @@ from resistamet_gui.data_export import (
     build_metadata,
     get_column_config,
     make_exporter,
+    metadata_from_lines,
     parse_metadata,
 )
 
@@ -220,6 +221,32 @@ class TestParseMetadata:
         meta = parse_metadata(exp.output_paths[0])
         import math
         assert math.isnan(meta['params.temperature_c'])
+
+
+class TestMetadataFromLines:
+    """The same reading of a file already in memory, as the MCP server has it."""
+
+    def _text(self, base_path, basic_meta):
+        exp = CsvExporter(base_path, {**basic_meta, 'spot': {'map_id': '12_3'}},
+                          ['elapsed_s', 'R_ohm'], ['s', 'Ω'])
+        exp.write_row([0.0, 1.05])
+        exp.finalize({'ended_at': '2026-05-13T14:30:00', 'total_samples': 1})
+        return exp.output_paths[0]
+
+    def test_it_reads_what_parse_metadata_reads(self, base_path, basic_meta):
+        path = self._text(base_path, basic_meta)
+        lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
+        assert metadata_from_lines(lines) == parse_metadata(path)
+
+    def test_data_rows_and_the_column_row_are_skipped(self):
+        meta = metadata_from_lines(['# user: alice\n', 'elapsed_s,R_ohm\n', '0,1.05\n',
+                                    '# --- run completed ---\n', '# total_samples: 1\n'])
+        assert meta == {'user': 'alice', 'total_samples': 1}
+
+    def test_text_keys_come_back_as_written(self, base_path, basic_meta):
+        lines = self._text(base_path, basic_meta).read_text(encoding='utf-8').splitlines()
+        assert metadata_from_lines(lines)['spot.map_id'] == 123
+        assert metadata_from_lines(lines, text_keys=('spot.map_id',))['spot.map_id'] == '12_3'
 
 
 class TestParseMetadataTextKeys:
