@@ -172,6 +172,32 @@ _I_SRC_2440 = _I_SRC_2400[1:6] + (
 
 
 # ---------------------------------------------------------------------------
+# 2425. Not in the datasheet above. Source: "2425 and 2425-C SourceMeter
+# Specifications", SPEC-2425 Rev. C (Keithley, 3/20/03): Voltage and
+# Current Programming Accuracy (p. 1), Voltage and Current Measurement
+# Accuracy (p. 2), 1 year, 23°C ±5°C. The ranges up to 20 V are the
+# 2420's, then 100 V; the 10 µA to 100 mA rows are the 2400's. The 1 A
+# measurement row is the 2440's figure (0.060 %), not the 2420's, and the
+# 3 A source offset is 2.8 mA, not the 2420's 2.7 mA.
+# ---------------------------------------------------------------------------
+
+_V_MEAS_2425 = _V_MEAS_2420[:3] + (
+    AccuracySpec(range_max=100.0, pct_reading=0.00015, offset=5e-3),     # 100 V
+)
+_V_SRC_2425 = _V_SRC_2420[:3] + (
+    AccuracySpec(range_max=100.0, pct_reading=0.0002, offset=12e-3),     # 100 V
+)
+_I_MEAS_2425 = _I_MEAS_2400[1:6] + (
+    AccuracySpec(range_max=1.0,    pct_reading=0.00060, offset=570e-6),   # 1 A
+    AccuracySpec(range_max=3.0,    pct_reading=0.00052, offset=1.71e-3),  # 3 A
+)
+_I_SRC_2425 = _I_SRC_2400[1:6] + (
+    AccuracySpec(range_max=1.0,    pct_reading=0.00067, offset=900e-6),   # 1 A
+    AccuracySpec(range_max=3.0,    pct_reading=0.00059, offset=2.8e-3),   # 3 A
+)
+
+
+# ---------------------------------------------------------------------------
 # Enhanced resistance accuracy — 2400/2401 family
 # Source: datasheet p. 7, "Enhanced Accuracy" column. Active when
 # source-readback is ON *and* offset-compensated ohms is ON. The 2400's
@@ -201,13 +227,12 @@ _R_ENH_2400 = (
 # Per-model lookup. Mirrors instrument._MODELS so callers can pass the
 # model string straight from IDN parsing.
 #
-# The 2425 and 2430 are NOT in the datasheet this module cites (it covers
-# the 2400, 2401, 2410, 2420 and 2440). They are given the 2420's rows here
-# as a stand-in, not from a source. Their top voltage range is 100 V, not
-# the 2420's 60 V (2400 Series User's Manual 2400S-900-01 Rev. K, Table 3-1,
+# The 2430 is NOT in the datasheet this module cites (it covers the 2400,
+# 2401, 2410, 2420 and 2440). It is given the 2420's rows here as a
+# stand-in, not from a source. Its top voltage range is 100 V, not the
+# 2420's 60 V (2400 Series User's Manual 2400S-900-01 Rev. K, Table 3-1,
 # p. 3-5: 200 mV, 2 V, 20 V, 100 V), and no 100 V accuracy row is tabulated
-# here: a reading above 63 V on these models is given the 60 V row's
-# numbers. The current ranges (10 µA to 3 A in DC) do match the 2420's.
+# for it: a reading above 63 V is given the 60 V row's numbers.
 # ---------------------------------------------------------------------------
 
 _V_MEASURE: dict[str, Sequence[AccuracySpec]] = {
@@ -215,8 +240,8 @@ _V_MEASURE: dict[str, Sequence[AccuracySpec]] = {
     "2401": _V_MEAS_2400[:3],   # no 200 V range
     "2410": _V_MEAS_2410,
     "2420": _V_MEAS_2420,
-    "2425": _V_MEAS_2420,       # stand-in; see the note above
-    "2430": _V_MEAS_2420,
+    "2425": _V_MEAS_2425,
+    "2430": _V_MEAS_2420,       # stand-in; see the note above
     "2440": _V_MEAS_2440,
 }
 
@@ -225,7 +250,7 @@ _I_MEASURE: dict[str, Sequence[AccuracySpec]] = {
     "2401": _I_MEAS_2400,
     "2410": _I_MEAS_2410,
     "2420": _I_MEAS_2420,
-    "2425": _I_MEAS_2420,
+    "2425": _I_MEAS_2425,
     "2430": _I_MEAS_2420,
     "2440": _I_MEAS_2440,
 }
@@ -235,7 +260,7 @@ _V_SOURCE: dict[str, Sequence[AccuracySpec]] = {
     "2401": _V_SRC_2400[:3],
     "2410": _V_SRC_2410,
     "2420": _V_SRC_2420,
-    "2425": _V_SRC_2420,
+    "2425": _V_SRC_2425,
     "2430": _V_SRC_2420,
     "2440": _V_SRC_2440,
 }
@@ -245,7 +270,7 @@ _I_SOURCE: dict[str, Sequence[AccuracySpec]] = {
     "2401": _I_SRC_2400,
     "2410": _I_SRC_2410,
     "2420": _I_SRC_2420,
-    "2425": _I_SRC_2420,
+    "2425": _I_SRC_2425,
     "2430": _I_SRC_2420,
     "2440": _I_SRC_2440,
 }
@@ -291,13 +316,13 @@ _NPLC_OFFSET_PCT_RANGE_FAST = {       # 0.01 PLC (Speed = Fast)
 # models, none of which has a 10 A range. It does not name the 2420's 3 A
 # or the 2440's 5 A range, so those take the smaller modifier, as printed
 # (the older per-model sheets, SPEC-2420 Rev. D and 2440 Rev. C, name
-# them).
+# them). SPEC-2425 Rev. C (p. 2 note 1) names "200mV, 1A, 3A".
 _SPECIAL_CURRENT_RANGES: dict[str, tuple[float, ...]] = {
     "2400": (1.0, 10.0),
     "2401": (1.0, 10.0),
     "2410": (1.0, 10.0),
     "2420": (1.0, 10.0),
-    "2425": (1.0, 10.0),
+    "2425": (1.0, 3.0),
     "2430": (1.0, 10.0),
     "2440": (1.0, 10.0),
 }
