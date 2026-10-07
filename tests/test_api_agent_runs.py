@@ -1,8 +1,12 @@
-"""An agent's run, as a person at the bench sees it afterwards and during.
+"""An agent's run, as a person at the bench sees it during and afterwards.
 
 ``docs/design/mcp_layer.md`` M5: a hazardous run an agent started asks the
 touch-safety question even on a profile a person silenced, because the
 silence was given for the runs that person starts.
+
+M6: the server records which role started a run, from the token, where a
+person will look: the ``run_started`` event, the session status and the
+data file's header.
 """
 import time
 
@@ -171,3 +175,29 @@ class TestAnAgentsHazardousRunAlwaysAsks:
         assert _wait_for(lambda: any(e.run_id == run_id for e in sink.of_type('sample')))
         assert len(sink.of_type('prompt')) == 2
         _end(ui)
+
+
+class TestTheServerStampsWhoStartedTheRun:
+    @pytest.mark.parametrize('who', ['ui', 'agent'])
+    def test_in_run_started_and_the_status(self, request, fake_rm, sink, who):
+        client = request.getfixturevalue(who)
+        assert _start(client, {'vsource_voltage': 5.0}).status_code == 202
+        assert _wait_for(lambda: sink.of_type('sample'))
+
+        assert sink.of_type('run_started')[0].payload['started_by'] == who
+        assert client.get('/session').json()['started_by'] == who
+        _end(client)
+
+    def test_the_request_cannot_say(self, agent, fake_rm, sink):
+        response = agent.post('/session/start', json={
+            'mode': 'source_v', 'username': 'alice', 'sample_name': 'wafer1',
+            'overrides': {'vsource_voltage': 5.0}, 'started_by': 'ui'})
+        assert response.status_code == 422
+        assert 'started_by' in str(response.json()['detail'])
+        assert sink.events == []
+        assert fake_rm.opened == []
+
+    def test_nor_can_its_overrides(self, agent, fake_rm, sink):
+        response = _start(agent, {'vsource_voltage': 5.0, 'started_by': 'ui'})
+        assert response.status_code == 422
+        assert sink.events == []
