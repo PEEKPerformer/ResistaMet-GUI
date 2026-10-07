@@ -49,6 +49,11 @@ export interface SessionSnapshot {
    *  source may still be driving the sample. Stays until the operator
    *  dismisses it or the backend reports the output off or reconnects. */
   outputUnverified: boolean;
+  /** The API role that started the current run, or the last one ("ui",
+   *  "agent"); null for a run started without the API, or before any run.
+   *  Set by run_started, and by every status, which still has it after a
+   *  reload has lost the event. */
+  runStartedBy: string | null;
 }
 
 const MAX_LOG_LINES = 500;
@@ -62,6 +67,7 @@ let snapshot: SessionSnapshot = {
   log: [],
   gap: false,
   outputUnverified: false,
+  runStartedBy: null,
 };
 
 const listeners = new Set<() => void>();
@@ -128,7 +134,7 @@ export function setStatus(incoming: SessionStatus): void {
     snapshot.instrument === null && status.instrument !== null
       ? instrumentState(status.instrument)
       : snapshot.instrument;
-  publish({ ...snapshot, status, instrument, backendReachable: true });
+  publish({ ...snapshot, status, instrument, backendReachable: true, runStartedBy: status.started_by });
 }
 
 export function setBackendReachable(reachable: boolean): void {
@@ -222,7 +228,7 @@ export function applyEvent(event: AnyEvent): void {
       });
       return;
     case "run_started":
-      publish({ ...snapshot, lastRunEnded: null, gap: false });
+      publish({ ...snapshot, lastRunEnded: null, gap: false, runStartedBy: event.payload.started_by ?? null });
       return;
     case "run_ended":
       publish({
