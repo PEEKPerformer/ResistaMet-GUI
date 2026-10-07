@@ -12,6 +12,7 @@ the backend lets the ``agent`` token do, and nothing here can reach past it.
 ``tests/test_mcp_self_contained.py`` holds that line.
 
 Modules: ``client`` (finding the backend, HTTP), ``tools`` (the tools, one
-per route), ``audit`` (one JSONL line per tool call), ``server`` (the MCP
-server that ties them together).
+per route), ``waiting`` (``wait_for`` and the event digest), ``audit`` (one
+JSONL line per tool call), ``server`` (the MCP server that ties them
+together).
 """

@@ -223,3 +223,81 @@ class TestRefusals:
         scripted.replies[('GET', '/instruments/resources')] = (409, {'detail': 'session is running'})
         failed, text = call('list_instruments')
         assert failed and 'busy' in text and 'session is running' in text
+
+
+class TestRunTools:
+    def test_the_run_tools_act_and_say_so(self, connection_file):
+        tools = _list_tools(connection_file)
+        for name in ('start_run', 'stop_run', 'abort_run', 'pause_run', 'resume_run',
+                     'mark_event'):
+            annotations = tools[name].annotations
+            assert annotations.read_only_hint is False, name
+            assert annotations.destructive_hint is False, name
+        for name in ('wait_for', 'get_run_events'):
+            assert tools[name].annotations.read_only_hint is True, name
+
+    def test_start_sends_the_request_and_names_this_server_as_the_client(
+            self, call, scripted, tmp_path):
+        scripted.replies[('POST', '/session/start')] = (202, {'run_id': 'run-4'})
+        scripted.replies[('GET', '/session')] = (200, {'state': 'running', 'run_id': 'run-4',
+                                                       'pending_prompt': None})
+        failed, started = call('start_run', {'user': 'alice', 'mode': 'resistance',
+                                             'sample_name': 'wafer 1',
+                                             'overrides': {'res_test_current': 0.002}})
+        assert not failed
+        assert started == {'run_id': 'run-4', 'status': {'state': 'running',
+                                                         'run_id': 'run-4',
+                                                         'pending_prompt': None}}
+        body = next(r[3] for r in scripted.requests if r[1] == '/session/start')
+        assert body['mode'] == 'resistance' and body['username'] == 'alice'
+        assert body['sample_name'] == 'wafer 1'
+        assert body['overrides'] == {'res_test_current': 0.002}
+        assert body['client']['name'] == 'resistamet-mcp'
+        assert 'spot' not in body and 'prompt_timeout_s' not in body
+        [line] = [json.loads(text) for path in (tmp_path / 'audit').iterdir()
+                  for text in path.read_text(encoding='utf-8').splitlines()]
+        assert (line['run_id'], line['http_status']) == ('run-4', 202)
+
+    def test_a_start_beyond_the_limits_carries_each_violation(self, call, scripted):
+        detail = {'message': 'beyond the agent limits: voltage 40 V (vsource_voltage) is '
+                             'above the agent limit max_voltage_v = 30 V',
+                  'violations': [{'limit': 'max_voltage_v', 'source': 'agent_limits',
+                                  'model': None, 'keys': ['vsource_voltage'], 'value': 40.0,
+                                  'allowed': 30.0, 'message': 'voltage 40 V ...'}]}
+        scripted.replies[('POST', '/session/start')] = (422, {'detail': detail})
+        failed, text = call('start_run', {'user': 'alice', 'mode': 'source_v',
+                                          'sample_name': 's'})
+        assert failed
+        assert json.dumps(detail, separators=(',', ':')) in text
+        assert 'only a person can change' in text
+
+    def test_stop_returns_the_status(self, call, scripted):
+        scripted.replies[('POST', '/session/stop')] = (200, {'state': 'stopping',
+                                                             'run_id': 'run-4',
+                                                             'pending_prompt': None})
+        assert call('stop_run') == (False, {'state': 'stopping', 'run_id': 'run-4',
+                                            'pending_prompt': None})
+
+    def test_a_mark_sends_its_label(self, call, scripted):
+        scripted.replies[('POST', '/session/mark')] = (200, {'state': 'running'})
+        call('mark_event', {'label': 'lamp on'})
+        assert scripted.requests[-1][3] == {'label': 'lamp on'}
+
+    def test_wait_for_refuses_a_condition_it_does_not_know(self, call):
+        failed, text = call('wait_for', {'until': 'done'})
+        assert failed and 'run_ended, prompt, samples:N or state:<state>' in text
+
+    def test_wait_for_reports_a_prompt_and_who_answers_it(self, call, scripted):
+        scripted.replies[('GET', '/session')] = (200, {'state': 'awaiting_prompt',
+                                                       'run_id': 'run-2', 'last_seq': 3,
+                                                       'pending_prompt': PENDING})
+        scripted.replies[('GET', '/session/events')] = (200, {'events': [], 'gap': False,
+                                                              'last_seq': 0, 'cursor': 0})
+        failed, waited = call('wait_for', {'until': 'samples:5', 'timeout_s': 1})
+        assert not failed
+        assert waited['fired'] == 'prompt'
+        assert 'person must answer' in waited['status']['pending_prompt']['who_answers']
+
+    def test_events_with_no_run_yet_are_none(self, call):
+        assert call('get_run_events') == (False, {'run_id': None, 'events': [],
+                                                  'last_seq': 0})

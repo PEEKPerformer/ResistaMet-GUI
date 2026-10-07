@@ -20,7 +20,7 @@ and profile edits (the API allows them; a tool may follow).
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any, Dict, Optional
+from typing import Annotated, Any, Dict, List, Optional
 from urllib.parse import quote
 
 from mcp.server.mcpserver import MCPServer
@@ -28,6 +28,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
 
+from ..constants import __version__
+from . import audit, waiting
 from .client import Backend, BackendError, BackendUnavailable
 
 #: Said wherever a prompt needs a person, so the agent can pass it on.
@@ -39,6 +41,16 @@ MODES = "resistance, source_v, source_i, four_point, sweep, vdp"
 #: Read-only, and safe to repeat.
 READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True,
                        open_world_hint=False)
+#: Changes what the instrument does, but neither deletes nor overwrites:
+#: every run writes a new file.
+ACT = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False,
+                      open_world_hint=False)
+#: As ACT, and asking twice is the same as asking once.
+ACT_IDEMPOTENT = ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                                 idempotent_hint=True, open_world_hint=False)
+
+#: The program that asks for a run, as the data file's client.* lines name it.
+CLIENT = {'name': 'resistamet-mcp', 'version': __version__}
 
 User = Annotated[str, Field(description="Operator name, as list_users gives it. Their "
                                         "profile supplies every setting not overridden.")]
@@ -107,6 +119,8 @@ async def override_keys(backend: Backend, mode: str) -> Dict[str, Any]:
 def register(server: MCPServer, backend: Backend) -> None:
     """Add every tool to ``server``."""
     _register_reads(server, backend)
+    _register_runs(server, backend)
+    _register_following(server, backend)
 
 
 def _register_reads(server: MCPServer, backend: Backend) -> None:
@@ -220,6 +234,150 @@ def _register_reads(server: MCPServer, backend: Backend) -> None:
         "violation's limit, keys, value and allowed value. agent_may_start false means "
         "start_run will be refused. The limits (by default 30 V; current and power left "
         "to the instrument) are per profile and only a person can change them."))
+
+
+def _register_runs(server: MCPServer, backend: Backend) -> None:
+
+    async def start_run(
+            user: User, mode: Mode,
+            sample_name: Annotated[str, Field(description="Sample name; it goes into the "
+                                                          "data file's name and header.")],
+            overrides: Overrides = None,
+            spot: Annotated[Optional[Dict[str, Any]], Field(description=(
+                "four_point only: which placement of a map this run is, {\"map_id\", "
+                "\"index\", \"label\", optional \"x_mm\", \"y_mm\", \"angle_deg\"}. "
+                "A spot off the sample is refused before the output turns on."))] = None,
+            prompt_timeout_s: Annotated[Optional[float], Field(gt=0, description=(
+                "How long a prompt may wait for a person before the run is abandoned, "
+                "in seconds; default 900."))] = None,
+    ) -> CallToolResult:
+        body: Dict[str, Any] = {'mode': mode, 'username': user, 'sample_name': sample_name,
+                                'overrides': overrides or {}, 'client': CLIENT}
+        if spot is not None:
+            body['spot'] = spot
+        if prompt_timeout_s is not None:
+            body['prompt_timeout_s'] = prompt_timeout_s
+        started = await ask(backend, 'POST', '/session/start', json_body=body)
+        audit.note_run_id(started.get('run_id'))
+        status = status_view(await ask(backend, 'GET', '/session'))
+        return result({'run_id': started.get('run_id'), 'status': status})
+
+    server.add_tool(start_run, annotations=ACT, title="Start run", description=(
+        "Start a measurement as a user, with that user's profile and any overrides. "
+        "Call check_settings with the same arguments first. Returns at once with the "
+        "run_id and the session status; follow the run with wait_for. Refused with the "
+        "backend's reasons: 422 for settings that do not resolve (each key and message) "
+        "or a run beyond the agent limits (each violation: limit, keys, value, allowed; "
+        "only a person can raise a limit), 409 when a run is already going or another "
+        "program holds the instrument. A run at or above the profile's touch-safety "
+        "threshold (30 V by default) and every van der Pauw run stop at prompts that "
+        "only a person at the ResistaMet window can answer. The data file records "
+        "started_by: agent. stop_run ends it."))
+
+    async def stop_run() -> CallToolResult:
+        return result(status_view(await ask(backend, 'POST', '/session/stop')))
+
+    server.add_tool(stop_run, annotations=ACT_IDEMPOTENT, title="Stop run", description=(
+        "End the run in progress, whoever started it, the normal way: output off, data "
+        "file finished with its footer (reason user_stop). Always allowed; a no-op when "
+        "idle. Also releases a run waiting at a prompt. wait_for('run_ended') follows "
+        "the shutdown."))
+
+    async def abort_run() -> CallToolResult:
+        return result(status_view(await ask(backend, 'POST', '/session/abort')))
+
+    server.add_tool(abort_run, annotations=ACT_IDEMPOTENT, title="Abort run", description=(
+        "End the run as stop_run does (output off, file finished) but record the reason "
+        "as aborted rather than user_stop. Always allowed."))
+
+    async def pause_run() -> CallToolResult:
+        return result(status_view(await ask(backend, 'POST', '/session/pause')))
+
+    server.add_tool(pause_run, annotations=ACT_IDEMPOTENT, title="Pause run", description=(
+        "Pause a continuous run: sampling stops, the output stays on. No effect on a "
+        "van der Pauw run. 409 when no run is in progress."))
+
+    async def resume_run() -> CallToolResult:
+        return result(status_view(await ask(backend, 'POST', '/session/resume')))
+
+    server.add_tool(resume_run, annotations=ACT_IDEMPOTENT, title="Resume run",
+                    description="Resume a paused run. 409 when no run is in progress.")
+
+    async def mark_event(
+            label: Annotated[str, Field(description=(
+                "One line of at most 80 characters, e.g. 'lamp on'."))] = 'MARK',
+    ) -> CallToolResult:
+        return result(status_view(await ask(backend, 'POST', '/session/mark',
+                                            json_body={'label': label})))
+
+    server.add_tool(mark_event, annotations=ACT, title="Mark event", description=(
+        "Write a label into the event column of the run's next data row, e.g. when "
+        "something changed at the bench. Marks before one row are joined with '; '. "
+        "409 when no run is in progress; 422 names what the backend refused in a label."))
+
+
+def _register_following(server: MCPServer, backend: Backend) -> None:
+
+    async def get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+        return await ask(backend, 'GET', path, params=params)
+
+    async def wait_for(
+            until: Annotated[str, Field(description=(
+                "run_ended, prompt, samples:N (the run has written N samples) or "
+                "state:<state> (idle, identifying, running, paused, awaiting_prompt, "
+                "stopping)."))],
+            timeout_s: Annotated[float, Field(ge=0, description=(
+                f"Seconds to wait, at most {waiting.MAX_WAIT_S:g}."))] = 60.0,
+    ) -> CallToolResult:
+        try:
+            condition = waiting.parse_until(until)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from None
+        waited = await waiting.wait_for(get, condition, timeout_s)
+        waited['status'] = status_view(waited['status'])
+        audit.note_run_id(waited['status'].get('run_id'))
+        return result(waited)
+
+    server.add_tool(wait_for, annotations=READ, title="Wait for", description=(
+        "Wait on the current run instead of polling get_status. Returns once, with "
+        "fired = the condition asked for, or 'prompt' (a prompt is pending; if it "
+        "requires_human, a person must answer it at the ResistaMet window: tell the "
+        "user), or 'run_ended' (no run is in progress; run_ended then gives the reason, "
+        "ok, samples and data file), or 'timeout'; always with the session status. "
+        f"The timeout is at most {waiting.MAX_WAIT_S:g} s; call again to keep waiting."))
+
+    async def get_run_events(
+            since_seq: Annotated[int, Field(ge=0, description=(
+                "Events after this seq of the run; 0 for all the backend still holds. "
+                "Pass back the last_seq of the previous call."))] = 0,
+            run_id: Annotated[Optional[str], Field(description=(
+                "Which run; default the current or last."))] = None,
+            types: Annotated[Optional[List[str]], Field(description=(
+                "Only these event types, e.g. [\"error\", \"prompt\", \"run_ended\"]."))]
+            = None,
+            include_samples: bool = False,
+            max_samples: Annotated[int, Field(ge=1, le=waiting.MAX_SAMPLES, description=(
+                f"Samples returned at most, spread over the run; at most "
+                f"{waiting.MAX_SAMPLES}."))] = waiting.MAX_SAMPLES,
+    ) -> CallToolResult:
+        run_id = run_id or (await get('/session')).get('run_id')
+        if not run_id:
+            return result({'run_id': None, 'events': [], 'last_seq': since_seq})
+        events, gap, _ = await waiting.read_history(get, run_id, since_seq)
+        digested = waiting.digest(events, types=types, include_samples=include_samples,
+                                  max_samples=max_samples)
+        if digested['last_seq'] is None:
+            digested['last_seq'] = since_seq
+        audit.note_run_id(run_id)
+        return result({'run_id': run_id, 'gap': gap, **digested})
+
+    server.add_tool(get_run_events, annotations=READ, title="Run events", description=(
+        "What happened in a run, as the backend reported it: lifecycle, logs, errors, "
+        "prompts, compliance changes, overpower trips, sweep segments and results "
+        "(vdp_result, spot_complete, run_ended). Progress logs and samples are left out "
+        "unless named in types; include_samples adds samples thinned to max_samples, "
+        "and samples_total counts them either way. For statistics over every row use "
+        "get_run_summary. gap true: the backend's memory no longer reaches back that far."))
 
 
 def _segment(value: str) -> str:
