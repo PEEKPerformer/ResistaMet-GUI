@@ -335,8 +335,14 @@
     },
     "InstrumentSettings": {
       "additionalProperties": true,
-      "description": "Knobs that apply to every mode, wherever the value comes from.\n\n``gpib_address``, ``visa_library`` and ``gpib_interface`` are machine-local\n\u2014 ``ConfigManager`` keeps them under ``machines[hostname]`` and injects\nthem into the profile on read, so they are never stored per user\n(``config.py``).",
+      "description": "Knobs that apply to every mode, wherever the value comes from.\n\n``gpib_address``, ``visa_library``, ``gpib_interface`` and\n``allow_agents`` are machine-local \u2014 ``ConfigManager`` keeps them in this\nmachine's own file and injects them into the profile on read, so they are\nnever stored per user (``config.py``).",
       "properties": {
+        "allow_agents": {
+          "default": false,
+          "description": "Let AI agents connect to a backend on this machine, through an MCP server, with a token of their own (role 'agent'). Machine-local; only the 'ui' role may change it.",
+          "title": "Allow Agents",
+          "type": "boolean"
+        },
         "auto_zero": {
           "default": "once",
           "enum": [

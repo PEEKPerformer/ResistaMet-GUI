@@ -1039,3 +1039,78 @@ class TestMachineLocalGpibInterface:
 
         other_pc = ConfigManager(config_file=temp_config_file, machine_file=other_machine_file)
         assert other_pc.get_user_settings('alice')['measurement']['gpib_interface'] == ''
+
+
+class TestMachineLocalAllowAgents:
+    """Whether AI agents may connect is this PC's switch, and off unless set."""
+
+    LEGACY = {'users': ['alice'],
+              'machines': {'HOST-A': {'allow_agents': True}},
+              'measurement': {'allow_agents': True}}
+
+    def test_default_is_off(self, temp_config_file, machine_file):
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
+        assert manager.get_allow_agents() is False
+        assert manager.get_user_settings('alice')['measurement']['allow_agents'] is False
+
+    def test_set_writes_a_boolean_to_the_machine_file(self, temp_config_file, machine_file):
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
+        manager.set_machine_local('allow_agents', True)
+
+        with open(machine_file) as f:
+            assert json.load(f)['allow_agents'] is True
+        reopened = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
+        assert reopened.get_allow_agents() is True
+
+    @pytest.mark.parametrize('slot', ['machines', 'measurement'])
+    def test_a_stored_false_stays_false(self, temp_config_file, machine_file, slot):
+        """False is falsy: it must not fall through to an older slot that says True."""
+        legacy = {'users': ['alice'], slot: self.LEGACY[slot]}
+        Path(temp_config_file).write_text(json.dumps(legacy))
+        Path(machine_file).write_text(json.dumps({'allow_agents': False}))
+
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                                hostname='HOST-A')
+
+        assert manager.get_machine_local('allow_agents') is False
+        assert manager.get_allow_agents() is False
+        assert manager.get_user_settings('alice')['measurement']['allow_agents'] is False
+
+    def test_config_json_cannot_turn_it_on(self, temp_config_file, machine_file):
+        """A shared config.json is written by other PCs; it is not consulted."""
+        Path(temp_config_file).write_text(json.dumps(self.LEGACY))
+
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                                hostname='HOST-A')
+
+        assert manager.get_allow_agents() is False
+        # Nor carried over into the machine file by the first-start migration.
+        if Path(machine_file).exists():
+            assert 'allow_agents' not in json.loads(Path(machine_file).read_text())
+
+    @pytest.mark.parametrize('stored', ['yes', 'true', 1, None])
+    def test_only_a_real_true_turns_it_on(self, temp_config_file, machine_file, stored):
+        Path(machine_file).write_text(json.dumps({'allow_agents': stored}))
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
+        assert manager.get_allow_agents() is False
+        assert manager.get_user_settings('alice')['measurement']['allow_agents'] is False
+
+    def test_a_profile_save_routes_it_to_the_machine_file(self, temp_config_file,
+                                                          machine_file, other_machine_file):
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
+        manager.update_user_settings('alice', {'measurement': {'allow_agents': True}})
+
+        with open(temp_config_file) as f:
+            saved = json.load(f)
+        assert 'allow_agents' not in saved['user_settings']['alice'].get('measurement', {})
+        assert manager.get_allow_agents() is True
+
+        other_pc = ConfigManager(config_file=temp_config_file, machine_file=other_machine_file)
+        assert other_pc.get_allow_agents() is False
+
+    def test_turning_it_off_is_stored(self, temp_config_file, machine_file):
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file)
+        manager.set_machine_local('allow_agents', True)
+        manager.set_machine_local('allow_agents', False)
+        assert json.loads(Path(machine_file).read_text())['allow_agents'] is False
+        assert manager.get_allow_agents() is False

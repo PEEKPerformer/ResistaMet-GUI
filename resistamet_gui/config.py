@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .constants import CONFIG_FILE, DEFAULT_SETTINGS, OUTPUT_RESET_MIGRATION
 
@@ -24,7 +24,14 @@ logger = logging.getLogger(__name__)
 # shared `measurement` block or in per-user overrides, because the same
 # config.json may be opened from another lab PC with different wiring. They
 # live in a file of this machine's own (``default_machine_file``).
-_MACHINE_LOCAL_MEASUREMENT_KEYS = ('gpib_address', 'visa_library', 'gpib_interface')
+_MACHINE_LOCAL_MEASUREMENT_KEYS = ('gpib_address', 'visa_library', 'gpib_interface',
+                                   'allow_agents')
+
+# Machine-local keys that never lived in config.json, so nothing there is
+# consulted or carried over for them. ``allow_agents`` lets an AI agent drive
+# this PC's instrument: a shared config.json that some other machine, or an
+# old version, wrote must not be able to turn that on.
+_MACHINE_FILE_ONLY_KEYS = ('allow_agents',)
 
 # The sections a user profile can override.
 _USER_SECTIONS = ('measurement', 'display', 'file', 'output')
@@ -319,6 +326,8 @@ class ConfigManager:
             return
         found = {}
         for key in _MACHINE_LOCAL_MEASUREMENT_KEYS:
+            if key in _MACHINE_FILE_ONLY_KEYS:
+                continue
             value = self._legacy_machine_slot().get(key)
             if not value:
                 value = self.config.get('measurement', {}).get(key)
@@ -329,22 +338,31 @@ class ConfigManager:
             self._save_machine_file()
             logger.info(f"Machine settings moved to '{self.machine_file}': {sorted(found)}")
 
-    def get_machine_local(self, key: str) -> str:
+    def get_machine_local(self, key: str) -> Any:
         """Resolve a machine-local measurement key for this machine.
 
         Lookup order: the machine file, then what an older version left in
         config.json (this hostname's ``machines`` slot, then the shared
-        ``measurement`` block), then the default.
+        ``measurement`` block), then the default. A value in the machine file
+        is returned as stored, False and '' included, except that a switch
+        (a key whose default is a bool) holding anything but true or false
+        reads as its default. The keys that only ever lived in the machine
+        file skip config.json altogether.
         """
+        default = DEFAULT_SETTINGS['measurement'].get(key, '')
         if key in self._machine:
-            return self._machine[key]
-        legacy = self._legacy_machine_slot().get(key) or \
-            self.config.get('measurement', {}).get(key)
-        if legacy:
-            return legacy
-        return DEFAULT_SETTINGS['measurement'].get(key, '')
+            value = self._machine[key]
+            if isinstance(default, bool) and not isinstance(value, bool):
+                return default
+            return value
+        if key not in _MACHINE_FILE_ONLY_KEYS:
+            legacy = self._legacy_machine_slot().get(key) or \
+                self.config.get('measurement', {}).get(key)
+            if legacy:
+                return legacy
+        return default
 
-    def set_machine_local(self, key: str, value: str) -> None:
+    def set_machine_local(self, key: str, value: Any) -> None:
         """Persist a machine-local key to the machine file.
 
         Also strips any stale copies from the shared measurement block and
@@ -390,6 +408,14 @@ class ConfigManager:
     def get_gpib_interface(self) -> str:
         """The GPIB adapter interface resource this machine opens first, or ''."""
         return self.get_machine_local('gpib_interface')
+
+    def get_allow_agents(self) -> bool:
+        """Whether a backend on this machine lets AI agents connect.
+
+        Only a stored ``true`` counts: a hand-edited "yes" or 1 in the
+        machine file leaves agents out rather than guessing what was meant.
+        """
+        return self.get_machine_local('allow_agents') is True
 
     def _store_machine_local_from(self, measurement_in) -> None:
         """Route any machine-local keys in an incoming measurement block."""
