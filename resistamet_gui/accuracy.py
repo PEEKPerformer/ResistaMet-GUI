@@ -404,7 +404,9 @@ _NPLC_OFFSET_PCT_RANGE_FAST = {       # 0.01 PLC (Speed = Fast)
 # them). SPEC-2425 Rev. C (p. 2 note 1) names "200mV, 1A, 3A", and
 # SPEC-2430 Rev. C (p. 2 note 1) "200mV, 1A, 3A, 10A". SPEC-2450 Rev. C
 # states its accuracies at 1 PLC and prints no modifier for a shorter
-# integration; the 2450 is given the datasheet's rule rather than none.
+# integration; the 2450 is given the datasheet's rule rather than none,
+# and its 20 mV range, below the 200 mV the rule names, takes the larger
+# modifier too. Both only ever widen a 2450 uncertainty.
 _SPECIAL_CURRENT_RANGES: dict[str, tuple[float, ...]] = {
     "2400": (1.0, 10.0),
     "2401": (1.0, 10.0),
@@ -434,10 +436,18 @@ _FAST_CURRENT_ADDER: dict[str, dict[float, float]] = {
 # 1 PLC should pin NPLC to one of the canonical Speed values.
 
 
+# Voltage ranges that take the bigger modifier: 200 mV everywhere, and the
+# 2450's 20 mV (borrowed; see above).
+_SPECIAL_VOLTAGE_RANGES: dict[str, tuple[float, ...]] = {
+    "2450": (0.02, 0.2),
+}
+
+
 def _is_special_range(spec: AccuracySpec, kind: str, model: str = _DEFAULT_MODEL) -> bool:
     """Return True for ranges that take the bigger NPLC modifier."""
     if kind == "voltage":
-        return math.isclose(spec.range_max, 0.2)   # 200 mV
+        special = _SPECIAL_VOLTAGE_RANGES.get(model, (0.2,))
+        return any(math.isclose(spec.range_max, r) for r in special)
     if kind == "current":
         special = _SPECIAL_CURRENT_RANGES.get(model, _SPECIAL_CURRENT_RANGES[_DEFAULT_MODEL])
         return any(math.isclose(spec.range_max, r) for r in special)
