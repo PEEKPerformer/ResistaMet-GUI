@@ -33,17 +33,6 @@ class TestCircleAgainstF84Table3:
         assert geo.circle_factor(5.08, 0.1016) == pytest.approx(geo.circle_factor(50.8, 1.016), rel=1e-12)
 
 
-#: Table entries the image series does not reproduce. Every other entry
-#: agrees to 0.06 %; these look like transcription errors in the table, which
-#: is left as it is until the original has been checked.
-#: (D/s, column) -> what the series gives.
-SMITS_DISAGREEMENTS = {
-    (32.0, 1): 4.4997, (32.0, 2): 4.5011, (32.0, 3): 4.5011, (32.0, 4): 4.5011,
-}
-SMITS_LOW_DISAGREEMENTS = {
-    (1.25, 3): 1.2468,   # L/W = 4; the table has 1.2248, its L/W = 3 neighbour 1.2467
-    (2.0, 1): 1.9454,    # L/W = 2; the table has 1.9475
-}
 _RATIOS = {1: 1.0, 2: 2.0, 3: 3.0, 4: 4.0}
 
 
@@ -53,31 +42,32 @@ def _smits_cases():
         if d_over_s > 1e6:
             continue
         for col in (1, 2, 3, 4):
-            yield d_over_s, _RATIOS[col], row[col], SMITS_DISAGREEMENTS.get((d_over_s, col))
+            yield d_over_s, _RATIOS[col], row[col]
     for row in calc._SMITS_RECT_LOW_DS:
         d_over_s = row[0]
         for col, ratio in ((1, 2.0), (2, 3.0), (3, 4.0)):
             if math.isnan(row[col]):
                 continue
-            yield d_over_s, ratio, row[col], SMITS_LOW_DISAGREEMENTS.get((d_over_s, col))
+            yield d_over_s, ratio, row[col]
 
 
 class TestRectangleAgainstSmits:
     """At the centre, probe along the length, the series is the Smits table."""
 
-    @pytest.mark.parametrize("d_over_s, ratio, table_value, series_value", list(_smits_cases()))
-    def test_table_entry(self, d_over_s, ratio, table_value, series_value):
+    @pytest.mark.parametrize("d_over_s, ratio, table_value", list(_smits_cases()))
+    def test_table_entry(self, d_over_s, ratio, table_value):
         length = ratio * d_over_s
         if length <= 3.0:
             pytest.skip("the probe (3 s long) does not fit on this sample")
         factor = geo.rectangle_factor(width=d_over_s, length=length, spacing=1.0)
-        if series_value is None:
-            assert factor == pytest.approx(table_value, rel=6e-4)
-        else:
-            # Documented disagreement: pin the series, and show the table is
-            # off by more than the agreement everywhere else.
-            assert factor == pytest.approx(series_value, abs=1e-4)
-            assert abs(factor / table_value - 1.0) > 1e-3
+        assert factor == pytest.approx(table_value, rel=6e-4)
+
+    def test_the_misprinted_entry_is_the_series_value(self):
+        """Smits prints 1.2248 at D/s = 1.25, L/W >= 4, below the 1.2467 of
+        L/W = 3 in the same row; the table holds the series value instead."""
+        factor = geo.rectangle_factor(width=1.25, length=5.0, spacing=1.0)
+        assert factor == pytest.approx(1.2468, abs=1e-4)
+        assert abs(factor / 1.2248 - 1.0) > 1e-2
 
     def test_large_rectangle_tends_to_the_unbounded_sheet(self):
         assert geo.rectangle_factor(2000.0, 3000.0, 1.0) == pytest.approx(geo.UNBOUNDED_FACTOR, rel=1e-5)

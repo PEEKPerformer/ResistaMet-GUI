@@ -415,10 +415,11 @@ def _linear_interp(x: float, table: tuple, col: int) -> float:
     return table[-1][col]  # unreachable, but mypy-safe
 
 
-# Smits 1958 / commonly-tabulated geometry correction factors for non-circular
-# samples. Indexed by D/s (sample lateral dimension / probe spacing). For
+# Geometry correction factors for non-circular samples from Smits 1958,
+# Table I (Bell Syst. Tech. J. 37, 711, p. 714), checked against the
+# original. Indexed by D/s (sample lateral dimension / probe spacing). For
 # rectangles, D is the WIDTH (the dimension perpendicular to the probe array)
-# and L/W is the aspect ratio.
+# and L/W is the aspect ratio (Smits's a/d; his last column is a/d >= 4).
 #
 # The Circle column reproduces F84 Table 3 in inverted form: S/D = 0.10 ↔
 # D/s = 10. We keep the dense F84 table (_F84_TABLE3_F2) for the circle case
@@ -430,13 +431,12 @@ def _linear_interp(x: float, table: tuple, col: int) -> float:
 _SMITS_GEOMETRY_CF: tuple = (
     # (D/s, Square, Rect L/W=2, Rect L/W=3, Rect L/W=4)
     (3.0,    2.4575, 2.7000, 2.7005, 2.7005),
-    (4.0,    3.1127, 3.2246, 3.2248, 3.2248),
+    (4.0,    3.1137, 3.2246, 3.2248, 3.2248),
     (5.0,    3.5098, 3.5749, 3.5750, 3.5750),
     (7.5,    4.0095, 4.0361, 4.0362, 4.0362),
     (10.0,   4.2209, 4.2357, 4.2357, 4.2357),
     (15.0,   4.3882, 4.3947, 4.3947, 4.3947),
     (20.0,   4.4516, 4.4553, 4.4553, 4.4553),
-    (32.0,   4.4878, 4.4899, 4.4899, 4.4899),
     (40.0,   4.5120, 4.5129, 4.5129, 4.5129),
     (1e9,    4.5324, 4.5324, 4.5324, 4.5324),
 )
@@ -447,10 +447,12 @@ _SMITS_GEOMETRY_CF: tuple = (
 _SMITS_RECT_LOW_DS: tuple = (
     # (D/s, Rect L/W=2, Rect L/W=3, Rect L/W=4)
     (1.0,    float('nan'), 0.9988, 0.9994),
-    (1.25,   float('nan'), 1.2467, 1.2248),
+    # Smits prints 1.2248 for L/W >= 4 here, below its own L/W = 3 entry;
+    # the image series (calculations_geometry) gives 1.2468.
+    (1.25,   float('nan'), 1.2467, 1.2468),
     (1.5,    1.4788, 1.4893, 1.4893),
     (1.75,   1.7196, 1.7238, 1.7238),
-    (2.0,    1.9475, 1.9475, 1.9475),
+    (2.0,    1.9454, 1.9475, 1.9475),
     (2.5,    2.3532, 2.3541, 2.3541),
     (3.0,    2.7000, 2.7005, 2.7005),
 )
@@ -472,9 +474,8 @@ def f2_finite_diameter(
     For `geometry in ('square', 'rectangle_2', 'rectangle_3', 'rectangle_4')`
     this returns the Smits 1958 correction factor for a square or rectangular
     sample of aspect ratio L/W ∈ {2, 3, 4}, indexed by D/s where D = sample
-    width (dimension perpendicular to the probe array). Sources are the
-    commonly-tabulated Smits values reproduced in lab references including
-    the Adamson group's 4PP manual.
+    width (dimension perpendicular to the probe array), from Smits 1958
+    Table I.
 
     Args:
         spacing_cm: Probe-tip spacing S, cm.

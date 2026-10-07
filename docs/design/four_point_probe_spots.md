@@ -72,18 +72,17 @@ sheet, and the closed form works at *any* position and orientation:
   periodic lattice. Summed in closed form along one axis
   (`ln|sin(pi (z - a) / 2W)|`, taken along the shorter side) the other
   axis converges exponentially for any aspect ratio. Evaluated at the centre
-  this agrees with the Smits table in `calculations.py` to within 0.05 % —
-  with three exceptions, which look like transcription errors in the table
-  rather than physics:
+  this agrees with the Smits table in `calculations.py` to within 0.05 %.
+  Three entries disagreed at first; Smits 1958 itself settled them:
 
-  | table entry | table | series | difference |
-  |---|---|---|---|
-  | D/s = 32, all columns | 4.4878 / 4.4899 | 4.4997 / 4.5011 | 0.26 % (the table values are what the series gives at D/s ≈ 27.5) |
-  | D/s = 1.25, L/W = 4 | 1.2248 | 1.2468 | 1.8 % (L/W = 3 in the same row is 1.2467) |
-  | D/s = 2.0, L/W = 2 | 1.9475 | 1.9454 | 0.11 % |
+  | table entry | had | Smits 1958 Table I | series | now |
+  |---|---|---|---|---|
+  | D/s = 32, all columns | 4.4878 / 4.4899 | no such row | 4.4997 / 4.5011 | row removed: it was the straight line between D/s = 20 and 40, which the lookup still draws, 0.26 % low at D/s = 32 |
+  | D/s = 2.0, L/W = 2 | 1.9475 | 1.9454 | 1.9454 | 1.9454 |
+  | D/s = 1.25, L/W >= 4 | 1.2248 | 1.2248 | 1.2468 | 1.2468; Smits's own misprint (L/W = 3 in the same row is 1.2467) |
 
-  The table is left alone until the source has been checked against the
-  original publication; the new functions do not use it.
+  The check also found the square at D/s = 4 copied as 3.1127; Smits prints
+  3.1137.
 
 What this buys:
 

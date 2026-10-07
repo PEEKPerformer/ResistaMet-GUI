@@ -415,25 +415,15 @@ class TestF2FiniteDiameter:
 
 
 class TestGeometryCorrectionNonCircular:
-    """Smits 1958 / Adamson lab table: square + rectangular geometries.
+    """Smits 1958 Table I: square + rectangular geometries.
 
     F84 only tabulates circular wafers. Most non-Si materials labs measure
     on cut squares or rectangles, so the broader Smits table matters. These
-    tests pin values directly from the Adamson group 4PP manual, and where
-    the probe fits on the sample (length > 3 s) check each against the
-    closed-form image series of calculations_geometry, which is derived
-    independently of any table.
+    tests pin values typed from Smits's printed table, and where the probe
+    fits on the sample (length > 3 s) check each against the closed-form
+    image series of calculations_geometry, which is derived independently
+    of any table.
     """
-
-    #: Rows where the manual's value and the image series disagree by more
-    #: than the 0.06 % they agree to everywhere else. Which is right is open
-    #: until the original table has been checked, so they are not asserted
-    #: here; see SMITS_DISAGREEMENTS and SMITS_LOW_DISAGREEMENTS in
-    #: tests/test_calculations_geometry.py.
-    DISPUTED = pytest.mark.skip(reason=(
-        "disputed table entry: the image series disagrees, see "
-        "SMITS_DISAGREEMENTS / SMITS_LOW_DISAGREEMENTS in "
-        "tests/test_calculations_geometry.py"))
 
     @staticmethod
     def _check(geometry, aspect_ratio, d_over_s, expected):
@@ -445,15 +435,15 @@ class TestGeometryCorrectionNonCircular:
             assert value == pytest.approx(series, rel=6e-4)
 
     @pytest.mark.parametrize("d_over_s,expected", [
-        (3.0, 2.4575), (4.0, 3.1127), (5.0, 3.5098), (7.5, 4.0095),
+        (3.0, 2.4575), (4.0, 3.1137), (5.0, 3.5098), (7.5, 4.0095),
         (10.0, 4.2209), (15.0, 4.3882), (20.0, 4.4516),
-        pytest.param(32.0, 4.4878, marks=DISPUTED), (40.0, 4.5120),
+        (40.0, 4.5120),
     ])
     def test_square_against_table(self, d_over_s, expected):
         self._check('square', 1.0, d_over_s, expected)
 
     @pytest.mark.parametrize("d_over_s,expected", [
-        (1.5, 1.4788), pytest.param(2.0, 1.9475, marks=DISPUTED), (3.0, 2.7000),
+        (1.5, 1.4788), (2.0, 1.9454), (3.0, 2.7000),
         (5.0, 3.5749), (10.0, 4.2357), (40.0, 4.5129),
     ])
     def test_rectangle_2_against_table(self, d_over_s, expected):
