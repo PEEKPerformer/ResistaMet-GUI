@@ -677,3 +677,26 @@ def test_a_2450_reading_uses_the_2450s_rows():
     0.07 % + 0.001 Ohm = 0.015 Ohm."""
     assert current_uncertainty(0.5, model="2450") == pytest.approx(650e-6)
     assert resistance_uncertainty(20e-3, 1e-3, model="2450", enhanced=True) == pytest.approx(0.0156)
+
+
+def test_a_2450_below_1_plc_takes_the_larger_modifier_on_20_mv():
+    """SPEC-2450 Rev. C prints no modifier below 1 PLC, so the 2450 borrows
+    the datasheet's and treats its 20 mV range like 200 mV. 10 mV on the
+    20 mV range, 0.1 % + 150 uV = 160 uV at 1 PLC; 0.05 % of 20 mV = 10 uV
+    more at 0.1 PLC, 0.5 % = 100 uV more at 0.01 PLC."""
+    assert voltage_uncertainty(10e-3, model="2450", nplc=1.0) == pytest.approx(160e-6)
+    assert voltage_uncertainty(10e-3, model="2450", nplc=0.1) == pytest.approx(170e-6)
+    assert voltage_uncertainty(10e-3, model="2450", nplc=0.01) == pytest.approx(260e-6)
+    # The 2400 has no 20 mV range: the same reading is on 200 mV.
+    assert voltage_uncertainty(10e-3, model="2400", nplc=0.01) == pytest.approx(
+        voltage_uncertainty(10e-3, model="2400", nplc=1.0) + 0.005 * 0.2)
+
+
+@pytest.mark.parametrize("nplc", [0.3, 0.1, 0.06, 0.01])
+def test_a_2450_uncertainty_never_shrinks_below_1_plc(nplc):
+    for value in (10e-3, 0.15, 1.5, 15.0, 150.0):
+        assert voltage_uncertainty(value, model="2450", nplc=nplc) > \
+            voltage_uncertainty(value, model="2450", nplc=1.0)
+    for value in (5e-9, 50e-9, 0.5e-6, 5e-6, 50e-6, 0.5e-3, 5e-3, 50e-3, 0.5):
+        assert current_uncertainty(value, model="2450", nplc=nplc) > \
+            current_uncertainty(value, model="2450", nplc=1.0)
