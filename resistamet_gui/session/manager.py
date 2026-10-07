@@ -119,7 +119,8 @@ class MeasurementSession:
               prompt_timeout_s: float = 900.0,
               spot: Optional[Any] = None,
               client: Optional[Any] = None,
-              check: Optional[Callable[[Dict[str, Any]], None]] = None) -> str:
+              check: Optional[Callable[[Dict[str, Any]], None]] = None,
+              ignore_safety_silence: bool = False) -> str:
         """Resolve settings, then run them. Returns the run id immediately.
 
         ``spot`` (a ``SpotRequest`` or its dict) says which placement of the
@@ -136,6 +137,11 @@ class MeasurementSession:
         raises propagates and nothing starts. It is how a caller holds a run
         to a rule of its own -- the API's agent limits -- on exactly the
         values the run would use, without resolving them a second time.
+
+        ``ignore_safety_silence`` makes a hazardous run ask the touch-safety
+        question even on a profile that silenced it. The API sets it for every
+        role but the window's: the silence is a person's choice for their own
+        runs, not for one an agent started (``docs/design/mcp_layer.md`` M5).
 
         Raises ``SessionBusy`` unless idle, ``InstrumentBusy`` when another
         process holds the instrument, and ``ValueError`` when the strict
@@ -166,6 +172,7 @@ class MeasurementSession:
             # run's *RST turns it off before any configuration; the run says
             # so (log output_off_recovered), and _record clears the doubt.
             recover_output = (address == self._output_unknown_at)
+            safety_ack = 'always' if ignore_safety_silence else 'prompt'
             try:
                 self._run_count += 1
                 run_id = f"run-{self._run_count}"
@@ -173,11 +180,11 @@ class MeasurementSession:
                 emitter = EventEmitter(self._record, run_id=run_id, clock=self._clock)
                 if mode == VDP_MODE:
                     run = VdpRun(sample_name, username, resolved.settings, control, emitter,
-                                  safety_ack='prompt', prompt_timeout_s=prompt_timeout_s,
+                                  safety_ack=safety_ack, prompt_timeout_s=prompt_timeout_s,
                                   instrument_lock=held, recover_output=recover_output)
                 else:
                     run = ContinuousRun(mode, sample_name, username, resolved.settings,
-                                         control, emitter, safety_ack='prompt',
+                                         control, emitter, safety_ack=safety_ack,
                                          prompt_timeout_s=prompt_timeout_s,
                                          instrument_lock=held, recover_output=recover_output)
                 thread = threading.Thread(target=self._execute, args=(run, held, emitter),
