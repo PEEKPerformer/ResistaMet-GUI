@@ -66,12 +66,13 @@ any_reading = st.one_of(
     _signed(-15.0, 38.0),
 )
 table_names = st.sampled_from(sorted(TABLES))
-models = st.sampled_from(MODELS + ("2450", "bogus", ""))
+models = st.sampled_from(MODELS + ("bogus", ""))
 
 
 class TestTablesAreWellFormed:
     def test_every_table_names_the_same_models(self):
-        for lookup in (acc._V_MEASURE, acc._I_MEASURE, acc._V_SOURCE, acc._I_SOURCE, acc._R_ENHANCED):
+        for lookup in (acc._V_MEASURE, acc._I_MEASURE, acc._V_SOURCE, acc._I_SOURCE, acc._R_ENHANCED,
+                       acc._SPECIAL_CURRENT_RANGES):
             assert tuple(sorted(lookup)) == MODELS
         assert acc._DEFAULT_MODEL in MODELS
 
@@ -88,38 +89,28 @@ class TestTablesAreWellFormed:
         for spec in TABLES[table][0][model]:
             assert spec.range_max > 0
             assert 0 < spec.pct_reading < 0.01        # a fraction, not a percentage
-            assert 0 < spec.offset < 0.01 * spec.range_max
+            # 1 % of range exactly on the 2450's 20 mV and 10 nA source rows.
+            assert 0 < spec.offset <= 0.01 * spec.range_max * (1 + 1e-12)
 
     @pytest.mark.parametrize("model", MODELS)
     def test_measure_and_source_tables_have_the_same_ranges(self, model):
         for measure, source in ((acc._V_MEASURE, acc._V_SOURCE), (acc._I_MEASURE, acc._I_SOURCE)):
             assert [s.range_max for s in measure[model]] == [s.range_max for s in source[model]]
 
-    def test_enhanced_resistance_ranges_ascend(self):
-        maxima = [spec.range_max for spec in acc._R_ENH_2400]
+    @pytest.mark.parametrize("model", MODELS)
+    def test_enhanced_resistance_ranges_ascend(self, model):
+        maxima = [spec.range_max for spec in acc._R_ENHANCED[model]]
         assert all(low < high for low, high in zip(maxima, maxima[1:]))
 
 
 class TestAgainstTheInstrumentTable:
     """``accuracy`` says it mirrors ``instrument._MODELS``."""
 
-    @pytest.mark.parametrize("model", [
-        pytest.param(m, marks=[pytest.mark.xfail(strict=True, reason=(
-            "instrument._MODELS knows the 2450 and detect_model returns it, but no "
-            "accuracy table does: every *_uncertainty call falls back silently to the "
-            "2400's rows, and the result is written to the file as the instrument's."))]
-            if m == "2450" else [])
-        for m in instrument.known_models()])
+    @pytest.mark.parametrize("model", instrument.known_models())
     def test_every_detectable_model_has_tables(self, model):
         assert model in MODELS
 
-    @pytest.mark.parametrize("model", [
-        pytest.param(m, marks=[pytest.mark.xfail(strict=True, reason=(
-            "ModelSpec gives the 2425 and 2430 a 100 V maximum, but their voltage tables "
-            "are the 2420's and stop at 60 V, so anything above 63 V is clamped onto the "
-            "60 V row. One of instrument._MODELS and accuracy._V_MEASURE/_V_SOURCE is wrong."))]
-            if m in ("2425", "2430") else [])
-        for m in MODELS])
+    @pytest.mark.parametrize("model", MODELS)
     def test_the_top_range_reaches_the_models_maximum(self, model):
         """A Keithley range sources at most 110 % of its full scale (the
         2410's 1000 V range reaches 1100 V)."""
@@ -174,7 +165,7 @@ class TestUncertainty:
         value = function(reading, model, nplc)
         assert value >= spec.offset > 0
         assert value == function(-reading, model, nplc)
-        modifier = acc._nplc_modifier(nplc, spec, kind) if kind else 0.0
+        modifier = acc._nplc_modifier(nplc, spec, kind, model) if kind else 0.0
         assert value == pytest.approx(spec.pct_reading * abs(reading) + spec.offset + modifier, rel=1e-12)
         # Relative accuracy is never better than the row's percentage.
         assert value / abs(reading) > spec.pct_reading
@@ -202,11 +193,18 @@ class TestUncertainty:
         "1.5 mA = 3.76 mA. Whether the 3 A range should take the larger adder is "
         "not something the datasheet settles.")
 
+    _2450_20_MV_SOURCE = (
+        "As printed: SPEC-2450 Rev. C p. 2 gives the 20 mV source range 0.100 % + "
+        "200 uV and the 200 mV range 0.015 % + 200 uV, the same offset, so 21 mV is "
+        "221 uV on the 20 mV range and 203 uV just above it on the 200 mV range.")
+
     @pytest.mark.parametrize("nplc", NPLCS)
     @pytest.mark.parametrize("table, model", _cases())
     def test_ranging_up_never_improves_the_uncertainty(self, request, table, model, nplc):
-        if table == "i_measure" and model in ("2420", "2425", "2430") and nplc == 0.01:
+        if table == "i_measure" and model == "2420" and nplc == 0.01:
             request.applymarker(pytest.mark.xfail(strict=True, reason=self._FAST_1A_ADDER))
+        if table == "v_source" and model == "2450":
+            request.applymarker(pytest.mark.xfail(strict=True, reason=self._2450_20_MV_SOURCE))
         lookup, function, _ = TABLES[table]
         specs = lookup[model]
         for spec in specs[:-1]:
@@ -234,7 +232,7 @@ class TestUncertainty:
             assert math.isnan(value)
 
     @PROPERTY
-    @given(table_names, st.sampled_from(["2450", "bogus", "", "24"]), _signed(-12.0, 4.0), st.sampled_from(NPLCS))
+    @given(table_names, st.sampled_from(["bogus", "", "24"]), _signed(-12.0, 4.0), st.sampled_from(NPLCS))
     def test_an_unknown_model_gets_the_2400_rows(self, table, model, reading, nplc):
         function = TABLES[table][1]
         assert function(reading, model, nplc) == function(reading, "2400", nplc)
@@ -265,9 +263,10 @@ class TestResistanceUncertainty:
         actual_r = v / i
         enhanced = acc.resistance_uncertainty(v, i, model, nplc, enhanced=True)
         table = acc._R_ENHANCED[model]
-        if 2.0 < actual_r <= table[-1].range_max * 1.05:
+        if table and 2.0 < actual_r <= table[-1].range_max * 1.05:
             spec = acc._pick_range(actual_r, table)
-            assert enhanced == pytest.approx(spec.pct_reading * actual_r + spec.offset, rel=1e-12)
+            modifier = acc._nplc_modifier(nplc, spec, "resistance", model)
+            assert enhanced == pytest.approx(spec.pct_reading * actual_r + spec.offset + modifier, rel=1e-12)
         else:
             assert enhanced == acc.resistance_uncertainty(v, i, model, nplc)
         assert enhanced > 0

@@ -415,25 +415,15 @@ class TestF2FiniteDiameter:
 
 
 class TestGeometryCorrectionNonCircular:
-    """Smits 1958 / Adamson lab table: square + rectangular geometries.
+    """Smits 1958 Table I: square + rectangular geometries.
 
     F84 only tabulates circular wafers. Most non-Si materials labs measure
     on cut squares or rectangles, so the broader Smits table matters. These
-    tests pin values directly from the Adamson group 4PP manual, and where
-    the probe fits on the sample (length > 3 s) check each against the
-    closed-form image series of calculations_geometry, which is derived
-    independently of any table.
+    tests pin values typed from Smits's printed table, and where the probe
+    fits on the sample (length > 3 s) check each against the closed-form
+    image series of calculations_geometry, which is derived independently
+    of any table.
     """
-
-    #: Rows where the manual's value and the image series disagree by more
-    #: than the 0.06 % they agree to everywhere else. Which is right is open
-    #: until the original table has been checked, so they are not asserted
-    #: here; see SMITS_DISAGREEMENTS and SMITS_LOW_DISAGREEMENTS in
-    #: tests/test_calculations_geometry.py.
-    DISPUTED = pytest.mark.skip(reason=(
-        "disputed table entry: the image series disagrees, see "
-        "SMITS_DISAGREEMENTS / SMITS_LOW_DISAGREEMENTS in "
-        "tests/test_calculations_geometry.py"))
 
     @staticmethod
     def _check(geometry, aspect_ratio, d_over_s, expected):
@@ -445,15 +435,15 @@ class TestGeometryCorrectionNonCircular:
             assert value == pytest.approx(series, rel=6e-4)
 
     @pytest.mark.parametrize("d_over_s,expected", [
-        (3.0, 2.4575), (4.0, 3.1127), (5.0, 3.5098), (7.5, 4.0095),
+        (3.0, 2.4575), (4.0, 3.1137), (5.0, 3.5098), (7.5, 4.0095),
         (10.0, 4.2209), (15.0, 4.3882), (20.0, 4.4516),
-        pytest.param(32.0, 4.4878, marks=DISPUTED), (40.0, 4.5120),
+        (40.0, 4.5120),
     ])
     def test_square_against_table(self, d_over_s, expected):
         self._check('square', 1.0, d_over_s, expected)
 
     @pytest.mark.parametrize("d_over_s,expected", [
-        (1.5, 1.4788), pytest.param(2.0, 1.9475, marks=DISPUTED), (3.0, 2.7000),
+        (1.5, 1.4788), (2.0, 1.9454), (3.0, 2.7000),
         (5.0, 3.5749), (10.0, 4.2357), (40.0, 4.5129),
     ])
     def test_rectangle_2_against_table(self, d_over_s, expected):
@@ -544,8 +534,20 @@ class TestThicknessCorrection:
         w = w_over_s * s
         # The X1.1 closed form agrees with the printed table to 6 parts in
         # 1e4 except at w/S = 0.9, where it gives 0.9460 against the
-        # printed 0.944.
+        # printed 0.944. Smits's Table III (below) brackets that point at
+        # 0.9600 and 0.9214 and agrees with the closed form to 2e-4, so the
+        # printed 0.944 is the odd one out.
         assert f_thickness_correction(w, s) == pytest.approx(expected, abs=tol)
+
+    # Smits 1958, Table III: F(w/s) from Uhlir, to four places.
+    @pytest.mark.parametrize("w_over_s,expected", [
+        (0.4, 0.9995), (0.5, 0.9974), (0.5555, 0.9948), (0.6250, 0.9898),
+        (0.7143, 0.9798), (0.8333, 0.9600), (1.0, 0.9214), (1.1111, 0.8907),
+        (1.25, 0.8490), (1.4286, 0.7938), (1.6666, 0.7225), (2.0, 0.6336),
+    ])
+    def test_against_smits_table_iii(self, w_over_s, expected):
+        s = 0.1
+        assert f_thickness_correction(w_over_s * s, s) == pytest.approx(expected, abs=2.5e-4)
 
     def test_invalid_inputs_return_nan(self):
         import math

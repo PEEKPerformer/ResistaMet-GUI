@@ -69,7 +69,7 @@ One sidecar drives one instrument and one run at a time.
   "last_seq": 77,
   "pending_prompt": null,
   "instrument": {"address": "GPIB0::24::INSTR", "idn": "KEITHLEY …", "model": "2420",
-                 "max_source_v": 60.0, "max_source_i": 3.05, "max_power_w": 22.0}
+                 "max_source_v": 63.0, "max_source_i": 3.15, "max_power_w": 66.0}
 }
 ```
 
