@@ -224,8 +224,8 @@ class TestModelDetection:
         # Should also include the source-V/I/W caps
         detected = [s for s in spies.status_update if "Detected:" in s]
         assert detected, "expected a Detected: line"
-        assert "60V" in detected[0] and "3.05A" in detected[0], (
-            f"expected 60V / 3.05A in detection line: {detected[0]}"
+        assert "63V / 3.15A / 66W" in detected[0], (
+            f"expected 63V / 3.15A / 66W in detection line: {detected[0]}"
         )
 
     def test_unknown_model_warns_but_proceeds(self, qapp, fake_rm, tmp_path):

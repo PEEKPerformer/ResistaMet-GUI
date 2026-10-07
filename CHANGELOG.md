@@ -44,6 +44,7 @@ Development branch `phase0/reviewable-baseline`. The measuring code is separated
 - **The touch-safety check used the last saved settings**, so a tab edited after the last save could start a hazardous run with no warning. It now checks the settings the run will use.
 - **A single failed read in four-point delta mode ended the run silently.** It now goes through the same bounded retries as the other modes.
 - **The four-point panel recomputed Rs without the ASTM F84 corrections** that the file's rows had; it now shows the run's own numbers.
+- **Model limits shown at connect were wrong for most models.** Every model showed 22 W, and most showed a voltage or current below the instrument's. They now come from each model's specifications: for example a 2420 shows 63 V / 3.15 A / 66 W, not 60 V / 3.05 A / 22 W. The limits are shown and bound a voltage-limit read-back; nothing enforces them.
 - **Detect Devices, the address picker and Test Connection ignored the configured VISA backend** and always asked pyvisa's default.
 - `docs/troubleshooting.md` pointed at a log file under `~/.resistamet/logs/` that no entry point ever enabled; `docs/outputs.md` said rows are `fsync`'d as they arrive (they are flushed every auto-save interval) and listed F84 inputs the four-point header does not contain.
 
