@@ -35,6 +35,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import ConfigSaveError
 from ..session.manager import MeasurementSession, SessionBusy
+from .agent_access import AgentAccess
 
 logger = logging.getLogger(__name__)
 
@@ -76,11 +77,14 @@ class ApiState:
     ``profile_provider`` maps a username to the stored settings a run starts
     from. It is injected rather than reached for, so tests do not need a
     config file and the sidecar decides which config it reads.
+
+    ``agent_access`` adds and withdraws the ``agent`` token; it starts off.
+    ``connection_file`` is where it writes that token for an MCP server.
     """
 
     def __init__(self, session: MeasurementSession, token: str, role: str = UI_ROLE,
                  profile_provider: Optional[Callable[[str], dict]] = None,
-                 config=None, hub=None):
+                 config=None, hub=None, connection_file: Optional[str] = None):
         self.session = session
         self.hub = hub
         # Replaced, never changed in place: a request thread checking a token
@@ -90,6 +94,9 @@ class ApiState:
         self._tokens_lock = threading.Lock()
         self._config = config
         self._profile_provider = profile_provider
+        self.agent_access = AgentAccess(
+            grant=lambda agent_token: self.add_token(agent_token, AGENT_ROLE),
+            revoke=self.remove_token, path=connection_file)
 
     def add_token(self, token: str, role: str) -> None:
         with self._tokens_lock:
@@ -187,8 +194,14 @@ def create_app(session: MeasurementSession, token: Optional[str] = None,
                 role: str = UI_ROLE,
                 profile_provider: Optional[Callable[[str], dict]] = None,
                 config=None, hub=None,
-                allowed_origins: Optional[Iterable[str]] = None) -> FastAPI:
-    """Build the app around an existing session."""
+                allowed_origins: Optional[Iterable[str]] = None,
+                connection_file: Optional[str] = None) -> FastAPI:
+    """Build the app around an existing session.
+
+    Agent access starts off; the caller turns it on through
+    ``app.state.api.agent_access`` (the sidecar does, when this machine allows
+    agents or ``--allow-agents`` was given).
+    """
     from .event_hub import EventHub
     from .events_ws import router as events_router
     from .routes_maps import router as maps_router
@@ -210,7 +223,7 @@ def create_app(session: MeasurementSession, token: Optional[str] = None,
         allow_headers=["Authorization", "Content-Type"],
     )
     app.state.api = ApiState(session, token or secrets.token_urlsafe(32), role,
-                              profile_provider, config, hub or EventHub())
+                              profile_provider, config, hub or EventHub(), connection_file)
     app.include_router(session_router)
     app.include_router(settings_router)
     app.include_router(results_router)

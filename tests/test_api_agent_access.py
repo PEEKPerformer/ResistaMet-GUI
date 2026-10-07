@@ -5,7 +5,13 @@ of its own, role ``agent``. Every role check in the API asks for ``ui``, so
 these tests do not look at a check's code: they present an agent token to
 each one and expect it refused, while the same token reads like any client.
 """
+import json
+import os
+import stat
+import subprocess
+import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -211,3 +217,272 @@ class TestAllowAgentsSetting:
         assert response.json()['ok'] is False
         assert [issue['key'] for issue in response.json()['issues']] == ['allow_agents']
         assert response.json()['settings']['measurement']['allow_agents'] is False
+
+
+# --- turning access on and off, and the connection file ----------------------
+
+URL = 'http://127.0.0.1:50000'
+POSIX = os.name == 'posix'
+
+
+def _dead_pid() -> int:
+    child = subprocess.Popen([sys.executable, '-c', 'pass'])
+    child.wait(timeout=30)
+    return child.pid
+
+
+def _connection(path) -> dict:
+    return json.loads(Path(path).read_text())
+
+
+@pytest.fixture
+def connection_file(tmp_path):
+    return tmp_path / 'api' / 'connection.json'
+
+
+@pytest.fixture
+def live_app(session, config, connection_file):
+    """An app as the sidecar has it once its socket is bound."""
+    made = create_app(session, token=UI_TOKEN, config=config,
+                      connection_file=str(connection_file))
+    made.state.api.agent_access.set_url(URL)
+    yield made
+    made.state.api.agent_access.disable()
+
+
+@pytest.fixture
+def live_ui(live_app):
+    with TestClient(live_app) as client:
+        client.headers.update({'Authorization': f'Bearer {UI_TOKEN}'})
+        yield client
+
+
+def _as(client, token):
+    return {'Authorization': f'Bearer {token}'}
+
+
+class TestAgentAccess:
+    def test_off_by_default_and_no_file(self, live_app, connection_file):
+        assert live_app.state.api.agent_access.enabled is False
+        assert not connection_file.exists()
+
+    def test_on_writes_the_file_and_the_token_in_it_works(self, live_app, live_ui,
+                                                          connection_file):
+        assert live_app.state.api.agent_access.enable() is True
+
+        written = _connection(connection_file)
+        assert set(written) == {'url', 'agent_token', 'pid', 'started'}
+        assert written['url'] == URL
+        assert written['pid'] == os.getpid()
+        assert abs(written['started'] - time.time()) < 60
+        assert live_app.state.api.role_for(written['agent_token']) == AGENT_ROLE
+        assert live_ui.get('/session', headers=_as(live_ui, written['agent_token'])
+                           ).status_code == 200
+
+    @pytest.mark.skipif(not POSIX, reason="mode bits; on Windows the profile directory "
+                                          "is what keeps other accounts out")
+    def test_only_this_user_can_read_it(self, live_app, connection_file):
+        live_app.state.api.agent_access.enable()
+        assert stat.S_IMODE(os.stat(connection_file).st_mode) == 0o600
+        assert stat.S_IMODE(os.stat(connection_file.parent).st_mode) & 0o077 == 0
+
+    @pytest.mark.skipif(not POSIX, reason="mode bits")
+    def test_it_is_never_readable_by_others_even_briefly(self, live_app, connection_file,
+                                                         monkeypatch):
+        """Created 0600, not chmod'ed afterwards: a permissive umask changes nothing."""
+        opened = []
+        real_open = os.open
+
+        def spy(path, flags, mode=0o777, *args, **kwargs):
+            opened.append(mode)
+            return real_open(path, flags, mode, *args, **kwargs)
+
+        monkeypatch.setattr(os, 'open', spy)
+        previous = os.umask(0)
+        try:
+            live_app.state.api.agent_access.enable()
+        finally:
+            os.umask(previous)
+        assert opened == [0o600]
+        assert stat.S_IMODE(os.stat(connection_file).st_mode) == 0o600
+
+    def test_enabling_before_the_url_is_known_waits_for_it(self, session, config,
+                                                           connection_file):
+        app = create_app(session, token=UI_TOKEN, config=config,
+                         connection_file=str(connection_file))
+        access = app.state.api.agent_access
+        try:
+            assert access.enable() is True
+            assert not connection_file.exists()
+
+            access.set_url(URL)
+
+            assert _connection(connection_file)['url'] == URL
+        finally:
+            access.disable()
+
+    def test_off_removes_the_file_and_the_token_at_once(self, live_app, live_ui,
+                                                        connection_file):
+        access = live_app.state.api.agent_access
+        access.enable()
+        token = _connection(connection_file)['agent_token']
+
+        access.disable()
+
+        assert not connection_file.exists()
+        assert access.enabled is False
+        assert live_ui.get('/session', headers=_as(live_ui, token)).status_code == 401
+
+    def test_each_enable_mints_a_new_token(self, live_app, live_ui, connection_file):
+        access = live_app.state.api.agent_access
+        access.enable()
+        first = _connection(connection_file)['agent_token']
+        access.disable()
+        access.enable()
+        second = _connection(connection_file)['agent_token']
+
+        assert second != first
+        assert live_ui.get('/session', headers=_as(live_ui, first)).status_code == 401
+        assert live_ui.get('/session', headers=_as(live_ui, second)).status_code == 200
+
+    def test_enabling_twice_keeps_the_token(self, live_app, connection_file):
+        access = live_app.state.api.agent_access
+        access.enable()
+        first = _connection(connection_file)['agent_token']
+        access.enable()
+        assert _connection(connection_file)['agent_token'] == first
+
+    def test_a_stale_file_is_replaced(self, live_app, connection_file):
+        connection_file.parent.mkdir(parents=True)
+        connection_file.write_text(json.dumps({'url': 'http://127.0.0.1:1', 'pid': _dead_pid(),
+                                               'agent_token': 'old', 'started': 0}))
+
+        assert live_app.state.api.agent_access.enable() is True
+
+        assert _connection(connection_file)['pid'] == os.getpid()
+
+    @pytest.mark.parametrize('content', ['not json', '[]', '{"pid": "12"}', '{}'])
+    def test_an_unreadable_file_is_replaced(self, live_app, connection_file, content):
+        connection_file.parent.mkdir(parents=True)
+        connection_file.write_text(content)
+        assert live_app.state.api.agent_access.enable() is True
+        assert _connection(connection_file)['pid'] == os.getpid()
+
+    def test_another_live_backends_file_is_left_alone(self, live_app, live_ui,
+                                                      connection_file, caplog):
+        theirs = {'url': 'http://127.0.0.1:1', 'pid': os.getppid(),
+                  'agent_token': 'theirs', 'started': 0}
+        connection_file.parent.mkdir(parents=True)
+        connection_file.write_text(json.dumps(theirs))
+        access = live_app.state.api.agent_access
+
+        with caplog.at_level('ERROR'):
+            assert access.enable() is False
+
+        assert access.enabled is False
+        assert _connection(connection_file) == theirs
+        assert 'another backend' in caplog.text
+        # No token of ours is left that nobody was told about.
+        assert set(live_app.state.api._tokens.values()) == {UI_ROLE}
+        # Turning it off does not delete their file either.
+        access.disable()
+        assert _connection(connection_file) == theirs
+
+    def test_another_backends_file_found_late_still_wins(self, session, config,
+                                                         connection_file):
+        """Enabled before the bind; by the time the URL is known, another has it."""
+        app = create_app(session, token=UI_TOKEN, config=config,
+                         connection_file=str(connection_file))
+        access = app.state.api.agent_access
+        access.enable()
+        connection_file.parent.mkdir(parents=True)
+        connection_file.write_text(json.dumps({'pid': os.getppid()}))
+
+        access.set_url(URL)
+
+        assert access.enabled is False
+        assert _connection(connection_file) == {'pid': os.getppid()}
+
+    def test_a_file_that_cannot_be_written_leaves_access_off(self, session, config,
+                                                             tmp_path):
+        (tmp_path / 'not-a-directory').write_text('')
+        app = create_app(session, token=UI_TOKEN, config=config,
+                         connection_file=str(tmp_path / 'not-a-directory' / 'c.json'))
+        app.state.api.agent_access.set_url(URL)
+        assert app.state.api.agent_access.enable() is False
+        assert set(app.state.api._tokens.values()) == {UI_ROLE}
+
+
+class TestPidIsAlive:
+    def test_this_process_is(self):
+        from resistamet_gui.api.agent_access import pid_is_alive
+        assert pid_is_alive(os.getpid()) is True
+        assert pid_is_alive(os.getppid()) is True
+
+    def test_a_finished_one_is_not(self):
+        from resistamet_gui.api.agent_access import pid_is_alive
+        assert pid_is_alive(_dead_pid()) is False
+
+    @pytest.mark.parametrize('pid', [0, -1, True, '123', None])
+    def test_no_process_group_or_non_number_is(self, pid):
+        from resistamet_gui.api.agent_access import pid_is_alive
+        assert pid_is_alive(pid) is False
+
+
+class TestTheUiSwitchesAccessLive:
+    def test_on_then_off(self, live_app, live_ui, config, connection_file):
+        on = live_ui.patch('/profiles/alice', json={'measurement': {'allow_agents': True}})
+        assert on.status_code == 200
+        assert config.get_allow_agents() is True
+        assert json.loads(Path(config.machine_file).read_text())['allow_agents'] is True
+        assert live_ui.get('/agents').json() == {'enabled': True}
+        if POSIX:
+            assert stat.S_IMODE(os.stat(connection_file).st_mode) == 0o600
+        token = _connection(connection_file)['agent_token']
+        assert live_ui.get('/session', headers=_as(live_ui, token)).status_code == 200
+
+        off = live_ui.patch('/profiles/alice', json={'measurement': {'allow_agents': False}})
+
+        assert off.status_code == 200
+        assert json.loads(Path(config.machine_file).read_text())['allow_agents'] is False
+        assert live_ui.get('/agents').json() == {'enabled': False}
+        assert not connection_file.exists()
+        assert live_ui.get('/session', headers=_as(live_ui, token)).status_code == 401
+
+    def test_turned_on_again_it_is_a_new_token(self, live_ui, connection_file):
+        live_ui.patch('/profiles/alice', json={'measurement': {'allow_agents': True}})
+        first = _connection(connection_file)['agent_token']
+        live_ui.patch('/profiles/alice', json={'measurement': {'allow_agents': False}})
+        live_ui.patch('/profiles/alice', json={'measurement': {'allow_agents': True}})
+        second = _connection(connection_file)['agent_token']
+
+        assert second != first
+        assert live_ui.get('/session', headers=_as(live_ui, first)).status_code == 401
+
+    def test_the_agent_turned_out_cannot_turn_itself_back_on(self, live_ui, connection_file):
+        live_ui.patch('/profiles/alice', json={'measurement': {'allow_agents': True}})
+        token = _connection(connection_file)['agent_token']
+        live_ui.patch('/profiles/alice', json={'measurement': {'allow_agents': False}})
+
+        response = live_ui.patch('/profiles/alice', headers=_as(live_ui, token),
+                                 json={'measurement': {'allow_agents': True}})
+
+        assert response.status_code == 401
+        assert live_ui.get('/agents').json() == {'enabled': False}
+
+    def test_resending_the_stored_value_changes_nothing(self, live_app, live_ui,
+                                                        connection_file):
+        """--allow-agents turns access on without the setting; a Save must not undo it."""
+        live_app.state.api.agent_access.enable()
+        token = _connection(connection_file)['agent_token']
+
+        live_ui.patch('/profiles/alice', json={'measurement': {'allow_agents': False}})
+
+        assert live_ui.get('/agents').json() == {'enabled': True}
+        assert _connection(connection_file)['agent_token'] == token
+
+    def test_only_the_ui_sees_whether_it_is_on(self, live_app, live_ui):
+        live_app.state.api.agent_access.enable()
+        token = _connection(live_app.state.api.agent_access.path)['agent_token']
+        assert live_ui.get('/agents', headers=_as(live_ui, token)).status_code == 403
+        assert live_ui.get('/agents', headers=_as(live_ui, 'nope')).status_code == 401
