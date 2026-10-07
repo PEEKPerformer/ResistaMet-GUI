@@ -14,7 +14,8 @@ from ..schema.settings_modes import RunRequest
 from ..schema.spots import LABEL_PATTERN
 from ..session.instrument_lock import InstrumentBusy
 from ..session.manager import MeasurementSession, SessionBusy
-from .app import UI_ROLE, busy_as_conflict, get_session, require_token
+from .app import (UI_ROLE, agent_limit_verdict, busy_as_conflict, get_session,
+                  require_token)
 
 router = APIRouter(prefix="/session", tags=["session"])
 
@@ -92,13 +93,32 @@ def start(body: RunRequest, request: Request,
     Not a look-alike of it: the desktop's types are generated from that
     model, and it forbids unknown fields, so a misspelt one is a 422 naming
     it rather than a run that quietly ignored what the client asked for.
+
+    Every role but ``ui`` is held to the profile's agent limits and the
+    connected model's (``docs/design/mcp_layer.md`` M4), on the settings the
+    session resolved for this run, before anything opens. Beyond them is a
+    422 whose detail lists each violation. The window is never checked.
     """
     profile = request.app.state.api.profile_provider(body.username)
+
+    def within_agent_limits(settings):
+        verdict = agent_limit_verdict(session, profile, body.mode, settings)
+        if not verdict.ok:
+            raise _BeyondAgentLimits(verdict)
+
     try:
         run_id = session.start(profile, body.mode, body.sample_name, body.username,
                                 overrides=body.overrides,
                                 prompt_timeout_s=body.prompt_timeout_s,
-                                spot=body.spot, client=body.client)
+                                spot=body.spot, client=body.client,
+                                check=None if role == UI_ROLE else within_agent_limits)
+    except _BeyondAgentLimits as exc:
+        violations = exc.verdict.violations
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={'message': 'beyond the agent limits: '
+                               + '; '.join(v.message for v in violations),
+                    'violations': [v.model_dump() for v in violations]})
     except SessionBusy as exc:
         raise busy_as_conflict(exc)
     except InstrumentBusy as exc:
@@ -194,6 +214,14 @@ def answer_prompt(body: AnswerRequest,
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                              detail="prompt_id is stale or already answered")
     return session.status()
+
+
+class _BeyondAgentLimits(Exception):
+    """A run an agent asked for that goes beyond what it may start."""
+
+    def __init__(self, verdict):
+        super().__init__(verdict)
+        self.verdict = verdict
 
 
 def _not_an_option(choice: str, options) -> HTTPException:

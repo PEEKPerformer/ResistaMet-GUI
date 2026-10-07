@@ -34,6 +34,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import ConfigSaveError
+from ..schema.agent_limits import AgentLimitCheck, check_agent_limits
 from ..session.manager import MeasurementSession, SessionBusy
 from .agent_access import AgentAccess
 
@@ -165,6 +166,25 @@ def require_token(request: Request,
 
 def get_session(request: Request) -> MeasurementSession:
     return request.app.state.api.session
+
+
+def agent_limit_verdict(session: MeasurementSession, profile: dict, mode: str,
+                         settings: dict) -> AgentLimitCheck:
+    """Whether a run with these resolved settings is within an agent's reach.
+
+    The profile's ``agent_limits``, and the connected model's limits when the
+    backend knows which model is at the run's address: the last ``identify``
+    or run told it (``session.status()['instrument']``). When it does not
+    know -- nothing has spoken to that address yet -- only the profile is
+    checked, and the instrument enforces its own limits when the run
+    configures it. Shared by start and resolve, so a dry run gives the
+    verdict the start would.
+    """
+    instrument = session.status()['instrument']
+    address = settings.get('measurement', {}).get('gpib_address')
+    if instrument is not None and instrument.get('address') != address:
+        instrument = None
+    return check_agent_limits(settings, mode, profile.get('agent_limits'), instrument)
 
 
 def busy_as_conflict(exc: SessionBusy) -> HTTPException:
