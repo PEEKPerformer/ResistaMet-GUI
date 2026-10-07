@@ -5,8 +5,9 @@ what it was told, so a run an agent started can be traced back to the
 requests behind it. One file per UTC day,
 ``~/.resistamet/logs/mcp/<YYYY-MM-DD>.jsonl``. Each line holds the time, the
 MCP client's name and version (from its ``initialize``), the tool, its
-arguments, its result, the outcome, the last HTTP status the backend
-answered, and the run it concerned, if any.
+arguments, its result, the outcome, the HTTP status the backend answered
+(the highest, where a tool made several requests), and the run it
+concerned, if any.
 
 Large results are cut and marked, so a long event digest cannot grow the
 log without bound; the data file is the record of the measurement, not
@@ -55,9 +56,14 @@ _current: contextvars.ContextVar[Optional[CallNote]] = contextvars.ContextVar(
 
 
 def note_http_status(status: int) -> None:
-    """Record the status of the backend's last reply. A no-op outside a tool call."""
+    """Record a backend reply's status. A no-op outside a tool call.
+
+    A tool may make several requests; the highest status is kept, so a
+    refusal is not hidden by a later 200, and a start reads 202 rather than
+    the status read after it.
+    """
     note = _current.get()
-    if note is not None:
+    if note is not None and (note.http_status is None or status > note.http_status):
         note.http_status = status
 
 
