@@ -525,6 +525,13 @@ _SPEC_SHEET_VOLTAGE = {
         (20.0,  0.02, 2.4 * _MV, 0.015, 1 * _MV),
         (100.0, 0.02, 12 * _MV,  0.015, 5 * _MV),
     ),
+    # SPEC-2430 Rev. C, the same tables on the same pages.
+    "2430": (
+        (0.2,   0.02, 600 * _UV, 0.012, 300 * _UV),
+        (2.0,   0.02, 600 * _UV, 0.012, 300 * _UV),
+        (20.0,  0.02, 2.4 * _MV, 0.015, 1 * _MV),
+        (100.0, 0.02, 12 * _MV,  0.015, 5 * _MV),
+    ),
 }
 _SPEC_SHEET_CURRENT = {
     # SPEC-2425 Rev. C, Current Programming Accuracy (p. 1) and Current
@@ -537,6 +544,18 @@ _SPEC_SHEET_CURRENT = {
         (100 * _MA, 0.066, 20 * _UA,  0.055, 6 * _UA),
         (1.0,       0.067, 900 * _UA, 0.060, 570 * _UA),
         (3.0,       0.059, 2.8 * _MA, 0.052, 1.71 * _MA),
+    ),
+    # SPEC-2430 Rev. C, the same tables on the same pages; the 10 A range
+    # is pulse mode only.
+    "2430": (
+        (10 * _UA,  0.033, 2 * _NA,   0.027, 700 * _PA),
+        (100 * _UA, 0.031, 20 * _NA,  0.025, 6 * _NA),
+        (1 * _MA,   0.034, 200 * _NA, 0.027, 60 * _NA),
+        (10 * _MA,  0.045, 2 * _UA,   0.035, 600 * _NA),
+        (100 * _MA, 0.066, 20 * _UA,  0.055, 6 * _UA),
+        (1.0,       0.067, 900 * _UA, 0.060, 570 * _UA),
+        (3.0,       0.059, 2.8 * _MA, 0.052, 1.71 * _MA),
+        (10.0,      0.089, 5.9 * _MA, 0.082, 1.71 * _MA),
     ),
 }
 
@@ -582,3 +601,17 @@ def test_the_2425s_3_a_range_takes_the_larger_speed_adder():
     assert current_uncertainty(2.0, model="2425", nplc=0.01) == pytest.approx(17.75e-3)
     assert current_uncertainty(2.0, model="2420", nplc=0.1) == pytest.approx(2.9e-3)
     assert current_uncertainty(2.0, model="2420", nplc=0.01) == pytest.approx(4.25e-3)
+
+
+def test_the_2430s_speed_adders():
+    """SPEC-2430 Rev. C, p. 2 note 1: "except 200mV, 1A, 3A, 10A ranges,
+    add 0.05%" at 0.1 PLC; at 0.01 PLC "add 0.5%; 3A, 10A ranges add
+    15mA". 5 A on the 10 A range (0.082 % + 1.71 mA): 4.1 + 1.71 + 5 =
+    10.81 mA at 0.1 PLC, 4.1 + 1.71 + 15 = 20.81 mA at 0.01 PLC (not
+    0.5 % of 10 A, 50 mA). 2 A on the 3 A range at 0.01 PLC: 1.04 + 1.71
+    + 15 = 17.75 mA. 0.5 A on the 1 A range at 0.01 PLC: 0.3 + 0.57 + 5 =
+    5.87 mA."""
+    assert current_uncertainty(5.0, model="2430", nplc=0.1) == pytest.approx(10.81e-3)
+    assert current_uncertainty(5.0, model="2430", nplc=0.01) == pytest.approx(20.81e-3)
+    assert current_uncertainty(2.0, model="2430", nplc=0.01) == pytest.approx(17.75e-3)
+    assert current_uncertainty(0.5, model="2430", nplc=0.01) == pytest.approx(5.87e-3)
