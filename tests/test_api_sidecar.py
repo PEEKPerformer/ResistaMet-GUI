@@ -151,6 +151,95 @@ class TestEventsWebSocket:
             _stop(process)
 
 
+def _connection_file(tmp_path) -> Path:
+    """Where the sidecar, given ``tmp_path/home``, writes the agent token."""
+    return tmp_path / 'home' / '.resistamet' / 'api' / 'connection.json'
+
+
+def _wait_for_file(path, timeout=10.0):
+    # Written just after the handshake, once the URL is known.
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if path.exists():
+            try:
+                return json.loads(path.read_text())
+            except ValueError:
+                pass  # mid-replace on a slow disk; read again
+        time.sleep(0.05)
+    raise AssertionError(f"{path} never appeared")
+
+
+class TestAgentAccess:
+    """The agent token goes to the connection file, and nowhere else."""
+
+    def test_off_by_default(self, tmp_path):
+        process, handshake = _spawn(tmp_path)
+        try:
+            httpx.get(f"{handshake['url']}/health", timeout=5.0)
+            assert not _connection_file(tmp_path).exists()
+        finally:
+            _stop(process)
+
+    def test_allow_agents_flag_end_to_end(self, tmp_path):
+        process, handshake = _spawn(tmp_path, '--allow-agents', '--no-watchdog')
+        ui = {'Authorization': f"Bearer {handshake['token']}"}
+        try:
+            # The handshake is unchanged: the ui token and nothing else.
+            assert set(handshake) == {'url', 'token', 'pid'}
+
+            path = _connection_file(tmp_path)
+            connection = _wait_for_file(path)
+            assert connection['url'] == handshake['url']
+            assert connection['pid'] == process.pid
+            assert connection['agent_token'] != handshake['token']
+            if os.name == 'posix':
+                assert path.stat().st_mode & 0o777 == 0o600
+
+            agent = {'Authorization': f"Bearer {connection['agent_token']}"}
+            assert httpx.get(f"{handshake['url']}/session", headers=agent,
+                             timeout=5.0).status_code == 200
+            # The flag does not change the machine's setting.
+            assert httpx.get(f"{handshake['url']}/profiles/e2e", headers=ui, timeout=5.0
+                             ).json()['measurement']['allow_agents'] is False
+            assert httpx.get(f"{handshake['url']}/agents", headers=ui,
+                             timeout=5.0).json() == {'enabled': True}
+            assert httpx.get(f"{handshake['url']}/agents", headers=agent,
+                             timeout=5.0).status_code == 403
+            # A WebSocket connect logs its query string; the agent's token
+            # is redacted there like the ui token.
+            assert _websocket_upgrade_status(handshake['url'],
+                                             connection['agent_token']) == 101
+
+            httpx.post(f"{handshake['url']}/session/shutdown", headers=ui, timeout=5.0)
+            assert process.wait(timeout=30) == 0
+
+            assert not path.exists()
+            stdout, stderr = process.stdout.read(), process.stderr.read()
+            assert stdout.strip() == ''
+            assert connection['agent_token'] not in stderr
+            assert 'token=***' in stderr
+        finally:
+            _stop(process)
+
+    def test_the_machine_setting_turns_it_on_and_stdin_closing_cleans_up(self, tmp_path):
+        from resistamet_gui.config import ConfigManager
+
+        machine_file = tmp_path / 'home' / '.resistamet' / 'machine.json'
+        ConfigManager(config_file=str(tmp_path / 'config.json'),
+                      machine_file=str(machine_file)).set_machine_local('allow_agents', True)
+        process, handshake = _spawn(tmp_path)
+        try:
+            connection = _wait_for_file(_connection_file(tmp_path))
+            assert connection['agent_token'] not in json.dumps(handshake)
+
+            process.stdin.close()
+            assert process.wait(timeout=30) == 0
+
+            assert not _connection_file(tmp_path).exists()
+        finally:
+            _stop(process)
+
+
 class TestShutdown:
     def test_closing_stdin_stops_the_process(self, tmp_path):
         """A killed parent must not leave a process holding the instrument."""
