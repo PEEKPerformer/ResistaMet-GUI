@@ -141,9 +141,11 @@ DEFAULT_SETTINGS = {
         # for the rationale (IEC 61010-1 SELV at 30 V DC). Set to 0 to
         # disable; the silenced flag flips when a user clicks "don't show
         # again" on the warning dialog and stays per-profile until they
-        # re-enable in Settings.
+        # re-enable in Settings. silenced_until is the timed form: a Unix
+        # time, after which the warning returns on its own.
         "safety_voltage_warn_v": 30.0,       # threshold in V; 0 disables
-        "safety_voltage_warn_silenced": False
+        "safety_voltage_warn_silenced": False,
+        "safety_voltage_warn_silenced_until": None,
     },
     "display": {
         "enable_plot": True,
