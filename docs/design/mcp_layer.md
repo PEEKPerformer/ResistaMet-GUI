@@ -111,21 +111,21 @@ off the instrument.
 
 ## 5. What an agent may and may not do
 
-**M3. The `agent` role is refused on these:**
+**M3. The `agent` role is refused only what protects people or the machine:**
 
 | Refused (403) | Why |
 |---|---|
 | Answering a `requires_human` prompt | D4: an agent cannot know leads were rewired or that people are clear of a hazardous voltage |
-| Touch-safety keys and a VISA library path in a profile | already `ui`-only |
-| The agent limits (M4) and `allow_agents` | an agent must not raise its own ceiling |
-| `POST /users` | a new person in the audit trail is a person's decision |
-| `PATCH /profiles/*` (any key) | an agent's choices go in the run's `overrides`, which are recorded with the run; a changed profile is not, and would silently change the operator's next run |
-| `POST /shutdown` | the backend belongs to the window |
-| Map image and registration writes | a photograph and its alignment are the operator's |
+| Changing the touch-safety keys in a profile | they decide whether a person is asked at all |
+| Changing the agent limits (M4) or `allow_agents` | an agent must not raise its own ceiling or let agents in |
+| Setting a VISA library path | a path is loaded into the backend process as code |
 
-Everything else is allowed: reads, resolve, identify, start within the limits,
-stop, abort, pause, resume and mark. **Stopping is never restricted.** Either
-side may end any run, whoever started it.
+Everything else is open to an agent: reads, resolve, identify, start within the
+limits, stop, abort, pause, resume, mark, profile edits of any other key, new
+users, map photographs and shutdown. **Stopping is never restricted.** Either
+side may end any run, whoever started it. A profile edit by an agent is a
+change the operator will see in the window; the run records what it ran with
+either way.
 
 **M4. Agent limits: a per-profile envelope only the UI can set. A start from
 the `agent` role is refused, before anything opens, when its resolved settings
@@ -282,6 +282,8 @@ M1–M4 add a package nothing else imports.
 1. **M4 defaults:** 30 V, the touch-safety bound; current and power uncapped
    beyond the instrument. All three can be overridden per profile from the
    window. Make the user safe without limiting what a scientist can do.
-2. **Profile writes by an agent:** refused (M3). Overrides cover every run.
+2. **Agent restrictions:** only what protects people or the machine (M3).
+   An agent may edit the rest of a profile, add users, store map photographs
+   and shut the backend down.
 3. **An agent may start a run with no window open,** within the envelope.
    Prompts still need the window.
