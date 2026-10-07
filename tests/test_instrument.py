@@ -278,28 +278,41 @@ class TestCommonFast:
 
 # ----------------------------------------------------------- READ? integration
 
-class TestReadAfterSetup:
-    """Dead helpers again: these configure through ``setup_resistance`` and
-    ``setup_source_voltage``, so they check the fake's :READ? layout and its
-    compliance model after those helpers, not a run's."""
+class TestReadAfterConfigure:
+    """:READ? layout and compliance after the configure a run uses."""
 
-    def test_resistance_read_returns_two_elements(self, fake_rm):
+    def _configure(self, configure, settings):
+        from resistamet_gui.session.emitter import EventEmitter, ListSink
         inst = Keithley2400("GPIB0::24::INSTR").connect()
+        configure(inst, EventEmitter(ListSink()), settings, 1.0)
+        return inst
+
+    def test_resistance_read_returns_four_elements(self, fake_rm):
+        from resistamet_gui.session.configure import configure_resistance
+        inst = self._configure(configure_resistance, {
+            'res_test_current': 1e-3, 'res_voltage_compliance': 5.0,
+            'res_measurement_type': '4-wire', 'res_auto_range': True,
+            'res_offset_comp': False, 'res_cable_null': 0.0,
+        })
         try:
-            inst.setup_resistance(1e-3, 5.0, 1.0, True, True)
             inst.write(":OUTP ON")
             response = inst.query(":READ?")
             parts = response.split(",")
-            assert len(parts) == 2
-            r = float(parts[0])
+            assert len(parts) == 4  # VOLT, CURR, RES, STAT
+            v, i, r = (float(x) for x in parts[:3])
+            assert i == pytest.approx(1e-3, rel=0.01)
+            assert v == pytest.approx(0.1, rel=0.01)
             assert r == pytest.approx(100.0, rel=0.01)  # default DUT
         finally:
             inst.close()
 
     def test_source_v_read_returns_three_elements(self, fake_rm):
-        inst = Keithley2400("GPIB0::24::INSTR").connect()
+        from resistamet_gui.session.configure import configure_source_v
+        inst = self._configure(configure_source_v, {
+            'vsource_voltage': 0.1, 'vsource_current_compliance': 0.1,
+            'vsource_current_range_auto': True,
+        })
         try:
-            inst.setup_source_voltage(0.1, 0.1, 1.0, True)
             inst.write(":OUTP ON")
             response = inst.query(":READ?")
             parts = response.split(",")
@@ -312,10 +325,12 @@ class TestReadAfterSetup:
             inst.close()
 
     def test_compliance_sets_stat_bit_3(self, fake_rm):
-        inst = Keithley2400("GPIB0::24::INSTR").connect()
+        from resistamet_gui.session.configure import configure_source_v
+        inst = self._configure(configure_source_v, {
+            'vsource_voltage': 0.5, 'vsource_current_compliance': 1e-3,
+            'vsource_current_range_auto': False,
+        })
         try:
-            inst.setup_source_voltage(voltage=0.5, i_comp=1e-3, nplc=1.0,
-                                       auto_range_curr=False)
             inst.write(":OUTP ON")
             response = inst.query(":READ?")
             parts = response.split(",")
