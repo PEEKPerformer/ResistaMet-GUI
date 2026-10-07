@@ -348,6 +348,12 @@ def build_metadata(
     ``client.name`` / ``client.version``; ``software_version`` stays the
     backend's own. A run started any other way has no such key and its header
     is unchanged.
+
+    ``settings['started_by']`` is the API role that started the run (``ui``,
+    ``agent``), which the server takes from the token rather than from the
+    request (``docs/design/mcp_layer.md`` M6). It is written as
+    ``started_by``. ``client`` is what the program says it is; this is who the
+    server let in. The window's runs have neither, and no such line.
     """
     from .constants import __version__
 
@@ -457,6 +463,10 @@ def build_metadata(
     client = settings.get('client')
     if client:
         meta['client'] = {'name': client.get('name'), 'version': client.get('version')}
+
+    started_by = settings.get('started_by')
+    if started_by:
+        meta['started_by'] = str(started_by)
 
     return meta
 

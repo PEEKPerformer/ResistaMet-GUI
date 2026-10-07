@@ -682,6 +682,8 @@ class TestCsvDefaultOutput:
         # End-block must have been written at finalize.
         assert "# --- run completed ---" in text
         assert "# total_samples:" in text
+        # The API stamps the role that started a run; the window has none.
+        assert "started_by" not in text
 
 
 class TestFourPointSpot:
