@@ -71,7 +71,8 @@ models = st.sampled_from(MODELS + ("2450", "bogus", ""))
 
 class TestTablesAreWellFormed:
     def test_every_table_names_the_same_models(self):
-        for lookup in (acc._V_MEASURE, acc._I_MEASURE, acc._V_SOURCE, acc._I_SOURCE, acc._R_ENHANCED):
+        for lookup in (acc._V_MEASURE, acc._I_MEASURE, acc._V_SOURCE, acc._I_SOURCE, acc._R_ENHANCED,
+                       acc._SPECIAL_CURRENT_RANGES):
             assert tuple(sorted(lookup)) == MODELS
         assert acc._DEFAULT_MODEL in MODELS
 
@@ -174,7 +175,7 @@ class TestUncertainty:
         value = function(reading, model, nplc)
         assert value >= spec.offset > 0
         assert value == function(-reading, model, nplc)
-        modifier = acc._nplc_modifier(nplc, spec, kind) if kind else 0.0
+        modifier = acc._nplc_modifier(nplc, spec, kind, model) if kind else 0.0
         assert value == pytest.approx(spec.pct_reading * abs(reading) + spec.offset + modifier, rel=1e-12)
         # Relative accuracy is never better than the row's percentage.
         assert value / abs(reading) > spec.pct_reading
