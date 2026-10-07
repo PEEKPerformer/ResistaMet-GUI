@@ -22,6 +22,7 @@ The frozen build is the same program under the name `resistamet-api` (it ships i
 | `--simulate` | off | Run against the in-package simulator (a 2420 at `GPIB0::24::INSTR`). |
 | `--sim-resistance OHMS` | `100` | Simulated DUT. |
 | `--no-watchdog` | off | Do not exit when stdin closes. Needed when you start the sidecar from an interactive shell or in the background. |
+| `--allow-agents` | the machine's `allow_agents` | Let AI agents connect to this process ([Agent access](#agent-access)) without changing the stored setting. |
 | `--check-visa [quiet\|bus]` | | Print one JSON line describing this machine's VISA situation and exit without serving. See [GPIB → Diagnosing](gpib.md#diagnosing-with-check-visa). |
 | `--visa-library`, `--gpib-interface` | the machine's configured values | Overrides for `--check-visa` only. |
 
@@ -41,7 +42,29 @@ Every HTTP route except `GET /health` needs `Authorization: Bearer <token>`. A w
 
 The token keeps other local processes from driving the instrument. It is not an authentication system.
 
-A token carries a role. At this commit there is one token and its role is `ui`. The role matters in two places: a prompt marked `requires_human` may only be answered by the `ui` role, and only the `ui` role may change the touch-safety settings of a profile (403 otherwise). No other role can be minted yet.
+A token carries a role. The handshake's token is the `ui` role. A second token, role `agent`, exists only while [agent access](#agent-access) is on. Only the `ui` role may answer a prompt marked `requires_human`, change the touch-safety settings of a profile, set a VISA library path, change `allow_agents`, or read `GET /agents`; any other role gets 403 there.
+
+### Agent access
+
+An AI agent, through an MCP server, connects with a token of its own, so that it can be refused what only a person at the bench may do. Agent access is off unless the machine-local setting [`allow_agents`](settings.md#machine-local-settings) is on or the sidecar was started with `--allow-agents`.
+
+While it is on, the sidecar writes the agent token to a connection file, which is how an MCP server finds the backend:
+
+```
+~/.resistamet/api/connection.json   (Windows: C:\Users\<you>\.resistamet\api\connection.json)
+```
+
+```json
+{"url": "http://127.0.0.1:53124", "agent_token": "Zp8…", "pid": 41234, "started": 1791369600.5}
+```
+
+- The file is created readable by this user only (mode 0600, in a 0700 directory). On Windows the mode bits do nothing; the user's profile directory is what keeps other accounts out.
+- It is written once the port is bound, and removed when the sidecar exits or access is turned off. The agent token never appears on stdout or in the log.
+- The `ui` role turns access on or off at once by changing `allow_agents` with `PATCH /profiles/{username}`. Off withdraws the token: an agent holding it gets 401 on its next request. Each time access is turned on, the token is new.
+- One file serves one backend. If the file names a process that is still running, another backend is serving agents: this one leaves the file alone, runs without agent access and logs an error saying so. A file whose process is gone is stale and is replaced.
+- `GET /agents` tells the `ui` role whether access is in force (`{"enabled": true}`), which is not always the stored setting: `--allow-agents` turns it on without the setting, and another backend holding the file keeps it off.
+
+Like the `ui` token, this keeps other local programs, and agents the user did not configure, off the instrument. It is not authentication.
 
 Cross-origin requests are accepted only from the desktop shell's origins (`tauri://localhost`, `http(s)://tauri.localhost`) and the UI dev server (`http://localhost:1420`, `http://127.0.0.1:1420`). That restricts browsers, not scripts.
 
@@ -100,7 +123,7 @@ Non-finite floats (an unmeasured temperature, an uncertainty that could not be c
 |---|---|---|
 | `mode` | string | `resistance`, `source_v`, `source_i`, `four_point`, `sweep`, `vdp` |
 | `sample_name`, `username` | string, not empty | The profile of `username` supplies every setting not overridden. |
-| `overrides` | object | Flat measurement keys, e.g. `{"res_test_current": 1e-3}`. Allowed keys per mode come from `GET /schema/settings`. Refused with 422: unknown keys, the profile-owned `settling_time` and `gpib_address`, and the touch-safety keys `safety_voltage_warn_v` and `safety_voltage_warn_silenced` (a run request cannot arrange never to be asked). Values are type-checked strictly: `"1e-3"` is not a number and `"false"` is not a boolean. |
+| `overrides` | object | Flat measurement keys, e.g. `{"res_test_current": 1e-3}`. Allowed keys per mode come from `GET /schema/settings`. Refused with 422: unknown keys, the profile-owned `settling_time` and `gpib_address`, the machine's `allow_agents`, and the touch-safety keys `safety_voltage_warn_v` and `safety_voltage_warn_silenced` (a run request cannot arrange never to be asked). Values are type-checked strictly: `"1e-3"` is not a number and `"false"` is not a boolean. |
 | `prompt_timeout_s` | number > 0, default 900 | How long a prompt may wait before the run is abandoned. |
 | `spot` | object or null | Four-point only (422 for other modes): `{"map_id", "index", "label", "x_mm"?, "y_mm"?, "angle_deg"?}`. See [Concepts → Spots and maps](concepts.md#spots-and-maps). |
 | `client` | object or null | `{"name", "version"}`, each 1–64 characters from letters, digits, space and `. _ + -`. Written to the file header as `client.*`. |
@@ -116,7 +139,8 @@ Non-finite floats (an unmeasured temperature, an uncertainty that could not be c
 | `GET /users` | | `{"users": [...], "last_user": ...}` | |
 | `POST /users` | `{"username"}` (1–64 chars) | **201** same shape. Idempotent; selects the user. | 422 empty name |
 | `GET /profiles/{username}` | | `{"measurement": {...}, "display": {...}, "file": {...}, "output": {...}}` with this PC's [machine-local](settings.md#machine-local-settings) values filled in | |
-| `PATCH /profiles/{username}` | any of the four sections, each with only the keys to change | The updated profile. Keys not sent keep their stored values. | 404 unknown user; 422 no section given, or the result would not be valid (`detail.issues` lists `section`, `key`, `message`; an old out-of-range value you are not touching does not block the edit); 409 the patch has `gpib_address`, `visa_library` or `gpib_interface` and a run is active; 403 a role other than `ui` changes a touch-safety key |
+| `PATCH /profiles/{username}` | any of the four sections, each with only the keys to change | The updated profile. Keys not sent keep their stored values. | 404 unknown user; 422 no section given, or the result would not be valid (`detail.issues` lists `section`, `key`, `message`; an old out-of-range value you are not touching does not block the edit); 409 the patch has `gpib_address`, `visa_library` or `gpib_interface` and a run is active; 403 a role other than `ui` changes a touch-safety key, a VISA library path or `allow_agents` |
+| `GET /agents` | | `{"enabled": bool}`: whether [agent access](#agent-access) is in force | 403 a role other than `ui` |
 | `GET /schema/settings` | | `{"modes": {mode: {"model", "fields": [...], "override_keys": [...]}}}` | |
 | `POST /settings/resolve` | `{"mode", "username", "overrides": {}, "strict": true}` | `{"settings", "derived", "ok", "issues": [{"key","message","severity"}], "hazard"}` | 422 unknown mode |
 
