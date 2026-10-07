@@ -13,7 +13,9 @@ to warn before a measurement starts. Threshold is per-user-profile
 ``safety_voltage_warn_silenced`` lets power users acknowledge once
 and never see the modal again — the Settings dialog has a re-enable
 toggle so paranoid users / new technicians can flip warnings back on
-without JSON editing.
+without JSON editing. ``safety_voltage_warn_silenced_until`` silences
+it for a while instead: a Unix time after which the warning is back on
+its own. :func:`warning_silenced` is the one place either is read.
 
 The *compliance* voltage matters, not the sourced — an open-circuit
 current source swings up to compliance, so even a 1 mA test current
@@ -39,6 +41,12 @@ from typing import Mapping, Optional
 # tops out at 21 V so its compliance ceiling won't trip this. Everything
 # else in the family can exceed it.
 DEFAULT_THRESHOLD_V = 30.0
+
+#: The longest a timed silence may run. A year is long enough for anyone who
+#: means "for now"; anyone who means "for ever" has the sticky flag.
+MAX_SILENCE_DAYS = 365.0
+
+SECONDS_PER_DAY = 86400.0
 
 
 @dataclass(frozen=True)
@@ -133,6 +141,34 @@ def is_potentially_hazardous(
     if not math.isfinite(value):
         return HazardCheck(False, value, threshold_v, reason)
     return HazardCheck(value >= threshold_v, value, threshold_v, reason)
+
+
+def warning_silenced(settings: Mapping, now: float) -> bool:
+    """Whether the profile has silenced the touch-safety warning at ``now``.
+
+    Silenced when ``safety_voltage_warn_silenced`` is set, or while
+    ``safety_voltage_warn_silenced_until`` (Unix time) is still ahead of
+    ``now``. An expired time is simply ignored rather than cleared, so
+    nothing has to write the profile for the warning to come back.
+
+    The session runs and the PySide6 window both ask here, so the two
+    cannot disagree about whether a person is warned. A run an agent
+    started never asks at all: the silence is a person's choice for their
+    own runs (``docs/design/mcp_layer.md`` M5).
+
+    Args:
+        settings: The full settings mapping, with a 'measurement'
+            sub-mapping, as for :func:`is_potentially_hazardous`.
+        now: The current Unix time, passed in so callers and tests decide
+            the clock.
+    """
+    m = settings.get('measurement', {}) if isinstance(settings, Mapping) else {}
+    if bool(m.get('safety_voltage_warn_silenced', False)):
+        return True
+    until = m.get('safety_voltage_warn_silenced_until')
+    if isinstance(until, bool) or not isinstance(until, (int, float)):
+        return False
+    return math.isfinite(until) and until > now
 
 
 def warning_message(check: HazardCheck) -> str:

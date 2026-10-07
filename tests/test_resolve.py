@@ -74,6 +74,7 @@ class TestSafetyGroupIsProfileOwned:
 
     SAFETY_OVERRIDES = [
         {'safety_voltage_warn_silenced': True},
+        {'safety_voltage_warn_silenced_until': 4102444800.0},
         {'safety_voltage_warn_v': 200.0},
         {'safety_voltage_warn_v': 0.0},  # 0 disables the check
     ]

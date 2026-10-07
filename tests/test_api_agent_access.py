@@ -157,6 +157,7 @@ class TestTheAgentIsRefusedWhereAPersonIsRequired:
         assert _wait_for(lambda: ui.get('/session').json()['state'] == 'idle')
 
     @pytest.mark.parametrize('patch', [{'safety_voltage_warn_silenced': True},
+                                        {'safety_voltage_warn_silenced_until': 4102444800.0},
                                         {'safety_voltage_warn_v': 150.0}])
     def test_changing_the_touch_safety_keys(self, agent, config, patch):
         response = agent.patch('/profiles/alice', json={'measurement': patch})
@@ -164,6 +165,7 @@ class TestTheAgentIsRefusedWhereAPersonIsRequired:
         stored = config.get_user_settings('alice')['measurement']
         assert stored['safety_voltage_warn_v'] == 30.0
         assert stored['safety_voltage_warn_silenced'] is False
+        assert stored['safety_voltage_warn_silenced_until'] is None
 
     def test_setting_a_visa_library_path(self, agent, config, tmp_path):
         library = tmp_path / 'libvisa.so'

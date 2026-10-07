@@ -9,6 +9,7 @@ from resistamet_gui.safety import (
     HazardCheck,
     is_potentially_hazardous,
     warning_message,
+    warning_silenced,
 )
 
 
@@ -209,3 +210,44 @@ class TestWarningMessage:
         assert 'V compliance' in msg
         # The memo: warn-then-proceed, not block.
         assert 'will proceed' in msg.lower()
+
+
+class TestWarningSilenced:
+    """The one rule for "is the warning silenced now", with the clock given."""
+
+    NOW = 1_800_000_000.0
+
+    def test_nothing_set_is_not_silenced(self):
+        assert warning_silenced(_settings({}), self.NOW) is False
+
+    def test_the_sticky_flag_silences(self):
+        assert warning_silenced(_settings({'safety_voltage_warn_silenced': True}), self.NOW)
+
+    def test_a_future_time_silences(self):
+        s = _settings({'safety_voltage_warn_silenced': False,
+                       'safety_voltage_warn_silenced_until': self.NOW + 60.0})
+        assert warning_silenced(s, self.NOW) is True
+
+    def test_a_past_time_is_ignored(self):
+        s = _settings({'safety_voltage_warn_silenced': False,
+                       'safety_voltage_warn_silenced_until': self.NOW - 60.0})
+        assert warning_silenced(s, self.NOW) is False
+
+    def test_the_moment_it_expires_the_warning_is_back(self):
+        s = _settings({'safety_voltage_warn_silenced_until': self.NOW})
+        assert warning_silenced(s, self.NOW) is False
+
+    def test_none_is_not_silenced(self):
+        s = _settings({'safety_voltage_warn_silenced': False,
+                       'safety_voltage_warn_silenced_until': None})
+        assert warning_silenced(s, self.NOW) is False
+
+    def test_the_flag_wins_over_an_expired_time(self):
+        s = _settings({'safety_voltage_warn_silenced': True,
+                       'safety_voltage_warn_silenced_until': self.NOW - 60.0})
+        assert warning_silenced(s, self.NOW) is True
+
+    @pytest.mark.parametrize('until', ['2100-01-01', True, float('inf'), float('nan')])
+    def test_a_value_that_is_not_a_time_does_not_silence(self, until):
+        s = _settings({'safety_voltage_warn_silenced_until': until})
+        assert warning_silenced(s, self.NOW) is False

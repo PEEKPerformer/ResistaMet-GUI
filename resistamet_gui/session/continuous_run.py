@@ -421,11 +421,9 @@ class ContinuousRun:
         """
         if self._safety_ack not in ('prompt', 'always'):
             return False
-        from ..safety import is_potentially_hazardous, warning_message
+        from ..safety import is_potentially_hazardous, warning_message, warning_silenced
 
-        measurement = self.settings.get('measurement', {})
-        if (self._safety_ack == 'prompt'
-                and bool(measurement.get('safety_voltage_warn_silenced', False))):
+        if self._safety_ack == 'prompt' and warning_silenced(self.settings, time.time()):
             return False
         check = is_potentially_hazardous(self.settings, self.mode)
         if not check.hazardous:

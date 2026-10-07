@@ -539,6 +539,46 @@ class TestSafetyPrompt:
         assert sink.of_type('prompt') == []
         session.stop()
 
+    def test_a_timed_silence_asks_nothing_until_it_runs_out(self, session, sink, fake_rm,
+                                                            profile):
+        profile = self._hazardous(profile)
+        profile['measurement']['safety_voltage_warn_silenced_until'] = time.time() + 3600.0
+        session.start(profile, 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: sink.of_type('sample'))
+        assert sink.of_type('prompt') == []
+        session.stop()
+
+    def test_an_expired_timed_silence_asks_again(self, session, sink, fake_rm, profile):
+        profile = self._hazardous(profile)
+        profile['measurement']['safety_voltage_warn_silenced_until'] = time.time() - 1.0
+        session.start(profile, 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: self._pending(session) is not None)
+        assert self._pending(session)['kind'] == 'safety_voltage_ack'
+        session.answer_prompt(self._pending(session)['prompt_id'], 'cancel')
+        assert _wait_for(lambda: session.state == 'idle')
+
+    def test_ignoring_the_silence_asks_on_a_timed_silence(self, session, sink, fake_rm,
+                                                          profile):
+        profile = self._hazardous(profile)
+        profile['measurement']['safety_voltage_warn_silenced_until'] = time.time() + 3600.0
+        session.start(profile, 'source_v', 'wafer1', 'alice', ignore_safety_silence=True)
+        assert _wait_for(lambda: self._pending(session) is not None)
+        assert self._pending(session)['kind'] == 'safety_voltage_ack'
+        session.answer_prompt(self._pending(session)['prompt_id'], 'cancel')
+        assert _wait_for(lambda: session.state == 'idle')
+
+    def test_a_van_der_pauw_run_honours_a_timed_silence(self, session, sink, fake_rm, profile):
+        profile['measurement'].update({
+            'safety_voltage_warn_v': 30.0, 'safety_voltage_warn_silenced': False,
+            'safety_voltage_warn_silenced_until': time.time() + 3600.0,
+            'vdp_voltage_compliance': 60.0, 'vdp_thickness_cm': 0.05})
+        session.start(profile, 'vdp', 'wafer1', 'alice')
+        # The first question a silenced vdP run asks is the rewiring one.
+        assert _wait_for(lambda: self._pending(session) is not None)
+        assert self._pending(session)['kind'] == 'vdp_geometry'
+        session.abort()
+        assert _wait_for(lambda: session.state == 'idle')
+
     def test_ignoring_the_silence_asks_on_a_silenced_profile(self, session, sink, fake_rm,
                                                               profile):
         """What the API asks for on an agent's run (mcp_layer.md M5)."""
@@ -579,6 +619,7 @@ class TestSafetyPrompt:
 
     @pytest.mark.parametrize("override", [
         {'safety_voltage_warn_silenced': True},
+        {'safety_voltage_warn_silenced_until': 4102444800.0},
         {'safety_voltage_warn_v': 200.0},
     ])
     def test_a_request_cannot_talk_its_way_past_the_question(self, session, sink, fake_rm,
