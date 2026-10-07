@@ -3,6 +3,9 @@
 Sourced from the *Series 2400 SourceMeter SMU Instruments Datasheet*
 (Tektronix doc 1KW-2798-3, April 2021), Voltage / Current / Resistance
 Accuracy tables (pp. 5-7) for 1-year, 23°C ±5°C, Speed = Normal (1 PLC).
+That datasheet covers the 2400, 2401, 2410, 2420 and 2440; the 2425, 2430
+and 2450 rows come from their own spec sheets, cited where they are
+defined.
 
 The general accuracy formula from the datasheet is::
 
@@ -244,6 +247,65 @@ _R_ENH_2400 = (
 
 
 # ---------------------------------------------------------------------------
+# 2450. Not in the datasheet above. Source: "Model 2450 SourceMeter SMU
+# Instrument Specifications", SPEC-2450 Rev. C (August 2020): Voltage and
+# Current Specifications (p. 2, source and measure, 1 year, 23°C ±5°C) and
+# Resistance Measurement Accuracy (p. 3, Enhanced column: source readback
+# enabled, offset compensation on). All at 1 PLC. The 10 nA and 100 nA
+# ranges are rear-panel triaxial only.
+# ---------------------------------------------------------------------------
+
+_V_MEAS_2450 = (
+    AccuracySpec(range_max=0.02,  pct_reading=0.0010,  offset=150e-6),   # 20 mV
+    AccuracySpec(range_max=0.2,   pct_reading=0.00012, offset=200e-6),   # 200 mV
+    AccuracySpec(range_max=2.0,   pct_reading=0.00012, offset=300e-6),   # 2 V
+    AccuracySpec(range_max=20.0,  pct_reading=0.00015, offset=1e-3),     # 20 V
+    AccuracySpec(range_max=200.0, pct_reading=0.00015, offset=10e-3),    # 200 V
+)
+_V_SRC_2450 = (
+    AccuracySpec(range_max=0.02,  pct_reading=0.0010,  offset=200e-6),   # 20 mV
+    AccuracySpec(range_max=0.2,   pct_reading=0.00015, offset=200e-6),   # 200 mV
+    AccuracySpec(range_max=2.0,   pct_reading=0.0002,  offset=300e-6),   # 2 V
+    AccuracySpec(range_max=20.0,  pct_reading=0.00015, offset=2.4e-3),   # 20 V
+    AccuracySpec(range_max=200.0, pct_reading=0.00015, offset=24e-3),    # 200 V
+)
+_I_MEAS_2450 = (
+    AccuracySpec(range_max=10e-9,  pct_reading=0.0010,  offset=50e-12),   # 10 nA
+    AccuracySpec(range_max=100e-9, pct_reading=0.00060, offset=100e-12),  # 100 nA
+    AccuracySpec(range_max=1e-6,   pct_reading=0.00025, offset=300e-12),  # 1 µA
+    AccuracySpec(range_max=10e-6,  pct_reading=0.00025, offset=700e-12),  # 10 µA
+    AccuracySpec(range_max=100e-6, pct_reading=0.0002,  offset=6e-9),     # 100 µA
+    AccuracySpec(range_max=1e-3,   pct_reading=0.0002,  offset=60e-9),    # 1 mA
+    AccuracySpec(range_max=10e-3,  pct_reading=0.0002,  offset=600e-9),   # 10 mA
+    AccuracySpec(range_max=100e-3, pct_reading=0.00025, offset=6e-6),     # 100 mA
+    AccuracySpec(range_max=1.0,    pct_reading=0.0003,  offset=500e-6),   # 1 A
+)
+_I_SRC_2450 = (
+    AccuracySpec(range_max=10e-9,  pct_reading=0.0010,  offset=100e-12),  # 10 nA
+    AccuracySpec(range_max=100e-9, pct_reading=0.00060, offset=150e-12),  # 100 nA
+    AccuracySpec(range_max=1e-6,   pct_reading=0.00025, offset=400e-12),  # 1 µA
+    AccuracySpec(range_max=10e-6,  pct_reading=0.00025, offset=1.5e-9),   # 10 µA
+    AccuracySpec(range_max=100e-6, pct_reading=0.0002,  offset=15e-9),    # 100 µA
+    AccuracySpec(range_max=1e-3,   pct_reading=0.0002,  offset=150e-9),   # 1 mA
+    AccuracySpec(range_max=10e-3,  pct_reading=0.0002,  offset=1.5e-6),   # 10 mA
+    AccuracySpec(range_max=100e-3, pct_reading=0.00025, offset=15e-6),    # 100 mA
+    AccuracySpec(range_max=1.0,    pct_reading=0.00067, offset=900e-6),   # 1 A
+)
+# Below 2 Ω and above 200 MΩ the Enhanced column reads "Meas I_ACC + Meas
+# V_ACC", which the V/I propagation path computes.
+_R_ENH_2450 = (
+    AccuracySpec(range_max=20.0,    pct_reading=0.00073, offset=0.001),   # 20 Ω
+    AccuracySpec(range_max=200.0,   pct_reading=0.00053, offset=0.01),    # 200 Ω
+    AccuracySpec(range_max=2.0e3,   pct_reading=0.00045, offset=0.1),     # 2 kΩ
+    AccuracySpec(range_max=20.0e3,  pct_reading=0.00043, offset=1.0),     # 20 kΩ
+    AccuracySpec(range_max=200.0e3, pct_reading=0.00046, offset=10.0),    # 200 kΩ
+    AccuracySpec(range_max=2.0e6,   pct_reading=0.00049, offset=100.0),   # 2 MΩ
+    AccuracySpec(range_max=20.0e6,  pct_reading=0.00052, offset=500.0),   # 20 MΩ
+    AccuracySpec(range_max=200.0e6, pct_reading=0.00349, offset=5.0e3),   # 200 MΩ
+)
+
+
+# ---------------------------------------------------------------------------
 # Per-model lookup. Mirrors instrument._MODELS so callers can pass the
 # model string straight from IDN parsing.
 # ---------------------------------------------------------------------------
@@ -256,6 +318,7 @@ _V_MEASURE: dict[str, Sequence[AccuracySpec]] = {
     "2425": _V_MEAS_2425,
     "2430": _V_MEAS_2430,
     "2440": _V_MEAS_2440,
+    "2450": _V_MEAS_2450,
 }
 
 _I_MEASURE: dict[str, Sequence[AccuracySpec]] = {
@@ -266,6 +329,7 @@ _I_MEASURE: dict[str, Sequence[AccuracySpec]] = {
     "2425": _I_MEAS_2425,
     "2430": _I_MEAS_2430,
     "2440": _I_MEAS_2440,
+    "2450": _I_MEAS_2450,
 }
 
 _V_SOURCE: dict[str, Sequence[AccuracySpec]] = {
@@ -276,6 +340,7 @@ _V_SOURCE: dict[str, Sequence[AccuracySpec]] = {
     "2425": _V_SRC_2425,
     "2430": _V_SRC_2430,
     "2440": _V_SRC_2440,
+    "2450": _V_SRC_2450,
 }
 
 _I_SOURCE: dict[str, Sequence[AccuracySpec]] = {
@@ -286,6 +351,7 @@ _I_SOURCE: dict[str, Sequence[AccuracySpec]] = {
     "2425": _I_SRC_2425,
     "2430": _I_SRC_2430,
     "2440": _I_SRC_2440,
+    "2450": _I_SRC_2450,
 }
 
 # Datasheet footnote: "Also available on 2410, 2420, and 2440 with
@@ -306,6 +372,7 @@ _R_ENHANCED: dict[str, Sequence[AccuracySpec]] = {
     "2425": (),
     "2430": (),
     "2440": _R_ENH_2400,
+    "2450": _R_ENH_2450,
 }
 
 # Default fallback when the model isn't in the tables yet — use the base
@@ -335,7 +402,9 @@ _NPLC_OFFSET_PCT_RANGE_FAST = {       # 0.01 PLC (Speed = Fast)
 # or the 2440's 5 A range, so those take the smaller modifier, as printed
 # (the older per-model sheets, SPEC-2420 Rev. D and 2440 Rev. C, name
 # them). SPEC-2425 Rev. C (p. 2 note 1) names "200mV, 1A, 3A", and
-# SPEC-2430 Rev. C (p. 2 note 1) "200mV, 1A, 3A, 10A".
+# SPEC-2430 Rev. C (p. 2 note 1) "200mV, 1A, 3A, 10A". SPEC-2450 Rev. C
+# states its accuracies at 1 PLC and prints no modifier for a shorter
+# integration; the 2450 is given the datasheet's rule rather than none.
 _SPECIAL_CURRENT_RANGES: dict[str, tuple[float, ...]] = {
     "2400": (1.0, 10.0),
     "2401": (1.0, 10.0),
@@ -344,6 +413,7 @@ _SPECIAL_CURRENT_RANGES: dict[str, tuple[float, ...]] = {
     "2425": (1.0, 3.0),
     "2430": (1.0, 3.0, 10.0),
     "2440": (1.0, 10.0),
+    "2450": (1.0, 10.0),            # borrowed; see above
 }
 
 # SPEC-2430 Rev. C (p. 2 note 1) ends its 0.01 PLC sentence "add 0.5%; 3A,
