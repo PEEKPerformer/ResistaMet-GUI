@@ -87,12 +87,16 @@ export interface FourPointSettings {
 /**
  * Knobs that apply to every mode, wherever the value comes from.
  *
- * ``gpib_address``, ``visa_library`` and ``gpib_interface`` are machine-local
- * — ``ConfigManager`` keeps them under ``machines[hostname]`` and injects
- * them into the profile on read, so they are never stored per user
- * (``config.py``).
+ * ``gpib_address``, ``visa_library``, ``gpib_interface`` and
+ * ``allow_agents`` are machine-local — ``ConfigManager`` keeps them in this
+ * machine's own file and injects them into the profile on read, so they are
+ * never stored per user (``config.py``).
  */
 export interface InstrumentSettings {
+  /**
+   * Let AI agents connect to a backend on this machine, through an MCP server, with a token of their own (role 'agent'). Machine-local; only the 'ui' role may change it.
+   */
+  allow_agents?: boolean;
   auto_zero?: "on" | "once" | "off";
   filter_count?: number;
   filter_enabled?: boolean;
@@ -534,6 +538,10 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
     }
   },
   "InstrumentSettings": {
+    "allow_agents": {
+      "type": "boolean",
+      "default": false
+    },
     "auto_zero": {
       "type": "string",
       "enum": [

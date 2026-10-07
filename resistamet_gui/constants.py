@@ -45,6 +45,11 @@ DEFAULT_SETTINGS = {
         # "PRLGX-ASRL::/dev/cu.usbserial-XXXX::INTFC". "" = none. Machine-local
         # like gpib_address (visa_backend.py).
         "gpib_interface": "",
+        # Whether a backend on this machine lets AI agents connect through an
+        # MCP server (docs/design/mcp_layer.md, M2). Off unless a person turns
+        # it on from the user interface. Machine-local, and only ever read
+        # from this machine's own file (config.py).
+        "allow_agents": False,
         "stop_on_compliance": False,
         # auto_zero=once cuts each reading from 3 integrations to 1 (a 3×
         # speedup) by caching the zero/reference at run start. Acceptable

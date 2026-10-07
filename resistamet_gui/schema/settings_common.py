@@ -25,7 +25,7 @@ No Qt, no pyvisa: this module is importable from anywhere.
 import re
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from ..constants import DEFAULT_SETTINGS
 
@@ -51,10 +51,10 @@ class SettingsModel(BaseModel):
 class InstrumentSettings(SettingsModel):
     """Knobs that apply to every mode, wherever the value comes from.
 
-    ``gpib_address``, ``visa_library`` and ``gpib_interface`` are machine-local
-    — ``ConfigManager`` keeps them under ``machines[hostname]`` and injects
-    them into the profile on read, so they are never stored per user
-    (``config.py``).
+    ``gpib_address``, ``visa_library``, ``gpib_interface`` and
+    ``allow_agents`` are machine-local — ``ConfigManager`` keeps them in this
+    machine's own file and injects them into the profile on read, so they are
+    never stored per user (``config.py``).
     """
 
     gpib_address: str = Field(default=_M['gpib_address'], min_length=1)
@@ -75,6 +75,16 @@ class InstrumentSettings(SettingsModel):
             "PRLGX-TCPIP[board]::<host>[::port]::INTFC, port 1234 by default. "
             "[board] defaults to 0 and is the <board> of the instrument "
             "address."
+        ),
+    )
+    #: Strict: a switch that lets an AI agent drive the instrument is true or
+    #: false, never a string or a number that happens to read as one.
+    allow_agents: StrictBool = Field(
+        default=_M['allow_agents'],
+        description=(
+            "Let AI agents connect to a backend on this machine, through an "
+            "MCP server, with a token of their own (role 'agent'). "
+            "Machine-local; only the 'ui' role may change it."
         ),
     )
     nplc: float = Field(default=_M['nplc'], ge=0.01, le=10.0)

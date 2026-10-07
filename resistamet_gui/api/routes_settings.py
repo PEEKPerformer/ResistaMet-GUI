@@ -25,7 +25,12 @@ from .app import UI_ROLE, busy_as_conflict, get_session, require_token
 router = APIRouter(tags=["settings"])
 
 #: Keys that describe this machine rather than this profile.
-MACHINE_LOCAL_KEYS = ('gpib_address', 'visa_library', 'gpib_interface')
+MACHINE_LOCAL_KEYS = ('gpib_address', 'visa_library', 'gpib_interface', 'allow_agents')
+
+#: The machine-local keys that say which instrument a run is talking to, and
+#: so cannot change under a run. ``allow_agents`` can: a person must be able
+#: to turn agents out while one is running something.
+BUS_KEYS = ('gpib_address', 'visa_library', 'gpib_interface')
 
 #: Keys that decide whether the hazardous-voltage prompt is asked.
 SAFETY_KEYS = tuple(SafetySettings.model_fields)
@@ -169,7 +174,8 @@ def _refuse_a_worse_profile(sections: Dict[str, Any], role: str):
     The touch-safety keys decide whether the hazardous-voltage prompt is ever
     asked, and only a person at the bench may answer that prompt (design
     decision D4). A role that may not answer it may not raise its threshold
-    or silence it here either.
+    or silence it here either. ``allow_agents`` is the same kind of key: it
+    decides who may drive the instrument at all.
 
     An issue blocks the edit when it is on a key the edit changes, or when the
     profile did not have it before. One that was already there and is not
@@ -183,6 +189,13 @@ def _refuse_a_worse_profile(sections: Dict[str, Any], role: str):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                                  detail="the touch-safety settings can only be changed "
                                         "from the user interface")
+        if role != UI_ROLE and (current['measurement'].get('allow_agents')
+                                != merged['measurement'].get('allow_agents')):
+            # An agent must not be able to let agents in, nor any other
+            # client that is not the person at the window.
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                 detail="agent access can only be changed from the "
+                                        "user interface")
         blocking = []
         library = merged['measurement'].get('visa_library', '')
         if library != current['measurement'].get('visa_library', '') \
@@ -224,7 +237,7 @@ def patch_profile(username: str, body: ProfilePatch, request: Request,
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                              detail=f"no user named '{username}'")
     measurement = sections.get('measurement') or {}
-    if any(key in measurement for key in MACHINE_LOCAL_KEYS) and session.state != 'idle':
+    if any(key in measurement for key in BUS_KEYS) and session.state != 'idle':
         # Changing the address mid-run would describe a run that is not the
         # one on the bus.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
