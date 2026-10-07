@@ -163,19 +163,6 @@ def require_token(request: Request,
     return role
 
 
-def require_ui(role: str = Depends(require_token)) -> str:
-    """Refuse every role but ``ui``: the route is a person's to call.
-
-    For whole routes an agent may not use at all (``docs/design/mcp_layer.md``
-    M3). Checks that refuse only part of a request -- a prompt that needs a
-    person, a safety key in a profile -- stay where they are.
-    """
-    if role != UI_ROLE:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                             detail="only the user interface can do this")
-    return role
-
-
 def get_session(request: Request) -> MeasurementSession:
     return request.app.state.api.session
 

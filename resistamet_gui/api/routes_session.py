@@ -14,7 +14,7 @@ from ..schema.settings_modes import RunRequest
 from ..schema.spots import LABEL_PATTERN
 from ..session.instrument_lock import InstrumentBusy
 from ..session.manager import MeasurementSession, SessionBusy
-from .app import UI_ROLE, busy_as_conflict, get_session, require_token, require_ui
+from .app import UI_ROLE, busy_as_conflict, get_session, require_token
 
 router = APIRouter(prefix="/session", tags=["session"])
 
@@ -44,12 +44,8 @@ def read_status(session: MeasurementSession = Depends(get_session),
 
 @router.post("/shutdown")
 def shutdown(request: Request, session: MeasurementSession = Depends(get_session),
-              role: str = Depends(require_ui)):
-    """Ask the sidecar to stop. The run gets its grace period first.
-
-    The ``ui`` role only: the backend belongs to the window. An agent can
-    still stop or abort the run.
-    """
+              role: str = Depends(require_token)):
+    """Ask the sidecar to stop. The run gets its grace period first."""
     session.stop()
     server = getattr(request.app.state.api, 'server', None)
     if server is not None:

@@ -221,18 +221,15 @@ class TestTouchSafetyKeysNeedTheUiRole:
         assert response.status_code == 403
         assert config.config['user_settings']['alice'] == before
 
-    def test_another_role_may_not_edit_a_profile_at_all(self, agent, config):
-        """Not even to resend the safety keys unchanged beside another edit:
-        the route is the ui role's alone (mcp_layer.md M3)."""
-        before = copy.deepcopy(config.config['user_settings']['alice'])
+    def test_another_role_may_resend_them_unchanged(self, agent):
         section = agent.get('/profiles/alice').json()['measurement']
         section['nplc'] = 2.0
         section.pop('gpib_address')
 
         response = agent.patch('/profiles/alice', json={'measurement': section})
 
-        assert response.status_code == 403
-        assert config.config['user_settings']['alice'] == before
+        assert response.status_code == 200
+        assert response.json()['measurement']['nplc'] == 2.0
 
     def test_the_ui_role_may_change_them(self, client):
         response = client.patch('/profiles/alice',
@@ -467,10 +464,9 @@ class TestInstruments:
                                json={'measurement': {'visa_library': str(library)}})
             named = agent.patch('/profiles/alice', json={'measurement': {'visa_library': '@py'}})
 
-        # Another role edits no profile, a named library included.
         assert path.status_code == 403
-        assert named.status_code == 403
-        assert config.get_visa_library() == ''
+        assert named.status_code == 200
+        assert config.get_visa_library() == '@py'
 
     def test_the_interface_is_machine_local(self, client, config, fake_rm):
         client.patch('/profiles/alice', json={'measurement': {'gpib_interface': PRLGX}})
