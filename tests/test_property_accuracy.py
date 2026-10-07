@@ -260,7 +260,7 @@ class TestResistanceUncertainty:
         actual_r = v / i
         enhanced = acc.resistance_uncertainty(v, i, model, nplc, enhanced=True)
         table = acc._R_ENHANCED[model]
-        if 2.0 < actual_r <= table[-1].range_max * 1.05:
+        if table and 2.0 < actual_r <= table[-1].range_max * 1.05:
             spec = acc._pick_range(actual_r, table)
             modifier = acc._nplc_modifier(nplc, spec, "resistance", model)
             assert enhanced == pytest.approx(spec.pct_reading * actual_r + spec.offset + modifier, rel=1e-12)

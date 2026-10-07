@@ -254,6 +254,18 @@ class TestEnhancedResistance:
         e_on = resistance_uncertainty(v, i, model="2400", nplc=1.0, enhanced=True)
         assert math.isclose(e_off, e_on, rel_tol=1e-9)
 
+    @pytest.mark.parametrize("model", ["2425", "2430"])
+    def test_no_enhanced_rows_on_the_2425_and_2430(self, model):
+        # SPEC-2425 and SPEC-2430 Rev. C, p. 2, print a Normal ohms column
+        # only, and the datasheet's Enhanced footnote names the 2410, 2420
+        # and 2440, not these. 1500 Ω at 1 mA, which on a 2400 is the 2 kΩ
+        # Enhanced row (0.85 Ω, test_2kohm_range), is V/I propagation:
+        # σ_V = 0.012 % × 1.5 V + 300 µV = 480 µV and σ_I = 0.027 % × 1 mA
+        # + 60 nA = 330 nA, so σ_R = √(480e-6² + (1500 × 330e-9)²) / 1e-3
+        # = √(2.304e-7 + 2.45025e-7) / 1e-3 = 0.68951 Ω.
+        sigma = resistance_uncertainty(1.5, 1e-3, model=model, nplc=1.0, enhanced=True)
+        assert sigma == pytest.approx(0.68951, rel=1e-5)
+
     def test_manual_section_4_enhanced_example(self):
         # User manual §4 worked example: 100 mΩ @ 5 mA, enhanced mode.
         # The manual derives ±0.447% via linear-sum of measure specs.

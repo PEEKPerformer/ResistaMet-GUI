@@ -65,7 +65,7 @@ The "Offset-compensated ohms" technique sources +I, measures V₊; sources −I,
 
 Cost: each reading takes ~2× longer (two source/measure cycles instead of one). The sampling-rate cap halves automatically when Enhanced R is on.
 
-Win: at low R (V-offset-dominated regime, ~ < 200 Ω) the published σ_R is dramatically tighter than V/I propagation gives. The Enhanced R table covers 20 Ω – 200 MΩ; ResistaMet falls back to V/I propagation outside that range.
+Win: at low R (V-offset-dominated regime, ~ < 200 Ω) the published σ_R is dramatically tighter than V/I propagation gives. The Enhanced R table covers 20 Ω – 200 MΩ; ResistaMet falls back to V/I propagation outside that range. The 2425 and 2430 spec sheets print no Enhanced column, so on those models σ_R is always V/I propagation.
 
 **ON by default** because a precision-measurement tool should ship the accurate default. Fast scans where you don't care about EMF cancellation can turn it off in the Resistance tab.
 
