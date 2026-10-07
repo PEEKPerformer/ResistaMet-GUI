@@ -269,10 +269,10 @@ _R_ENHANCED: dict[str, Sequence[AccuracySpec]] = {
 # 2400 numbers, which are the most conservative for the family.
 _DEFAULT_MODEL = "2400"
 
-# Datasheet (p. 5/6/7 footnote 1) — Speed modifiers added to the offset
-# term, expressed as a fraction of range. Special-case ranges get the
-# bigger modifier: 200 mV, 1 A, 10 A. We treat the highest-current range
-# and the lowest-voltage range as the "special" set.
+# Datasheet Speed footnote (p. 5 note 2, p. 6 note 5, p. 7 note 1) —
+# modifiers added to the offset term, expressed as a fraction of range.
+# The ranges the footnote names get the bigger modifier: 200 mV, and the
+# current ranges in _SPECIAL_CURRENT_RANGES below.
 _NPLC_OFFSET_PCT_RANGE_NORMAL = {     # NPLC == 1 (Speed = Normal)
     "default": 0.0,
     "special": 0.0,
@@ -286,6 +286,22 @@ _NPLC_OFFSET_PCT_RANGE_FAST = {       # 0.01 PLC (Speed = Fast)
     "special": 0.005,     # 0.5%
 }
 
+# Current ranges the Speed footnote names, per model. The datasheet's
+# footnote reads "except 200 mV, 1 A, 10 A ranges" for all five of its
+# models, none of which has a 10 A range. It does not name the 2420's 3 A
+# or the 2440's 5 A range, so those take the smaller modifier, as printed
+# (the older per-model sheets, SPEC-2420 Rev. D and 2440 Rev. C, name
+# them).
+_SPECIAL_CURRENT_RANGES: dict[str, tuple[float, ...]] = {
+    "2400": (1.0, 10.0),
+    "2401": (1.0, 10.0),
+    "2410": (1.0, 10.0),
+    "2420": (1.0, 10.0),
+    "2425": (1.0, 10.0),
+    "2430": (1.0, 10.0),
+    "2440": (1.0, 10.0),
+}
+
 # NOTE on NPLC extrapolation: the datasheet documents accuracy modifiers
 # only at the three nominal Speed settings (NPLC = 0.01, 0.1, 1.0). It says
 # nothing about in-between values like NPLC=0.3 or NPLC=0.06. We extrapolate
@@ -296,16 +312,17 @@ _NPLC_OFFSET_PCT_RANGE_FAST = {       # 0.01 PLC (Speed = Fast)
 # 1 PLC should pin NPLC to one of the canonical Speed values.
 
 
-def _is_special_range(spec: AccuracySpec, kind: str) -> bool:
+def _is_special_range(spec: AccuracySpec, kind: str, model: str = _DEFAULT_MODEL) -> bool:
     """Return True for ranges that take the bigger NPLC modifier."""
     if kind == "voltage":
         return math.isclose(spec.range_max, 0.2)   # 200 mV
     if kind == "current":
-        return math.isclose(spec.range_max, 1.0) or math.isclose(spec.range_max, 10.0)
+        special = _SPECIAL_CURRENT_RANGES.get(model, _SPECIAL_CURRENT_RANGES[_DEFAULT_MODEL])
+        return any(math.isclose(spec.range_max, r) for r in special)
     return False
 
 
-def _nplc_modifier(nplc: float, spec: AccuracySpec, kind: str) -> float:
+def _nplc_modifier(nplc: float, spec: AccuracySpec, kind: str, model: str = _DEFAULT_MODEL) -> float:
     """Extra offset (in base units) from running below 1 PLC.
 
     Datasheet wording (p. 5, note 2): "For 0.1 PLC, add 0.005% of range to
@@ -321,7 +338,7 @@ def _nplc_modifier(nplc: float, spec: AccuracySpec, kind: str) -> float:
         bucket = _NPLC_OFFSET_PCT_RANGE_MEDIUM
     else:
         bucket = _NPLC_OFFSET_PCT_RANGE_FAST
-    key = "special" if _is_special_range(spec, kind) else "default"
+    key = "special" if _is_special_range(spec, kind, model) else "default"
     return bucket[key] * spec.range_max
 
 
@@ -362,7 +379,7 @@ def voltage_uncertainty(voltage: float, model: str = _DEFAULT_MODEL, nplc: float
         return float("nan")
     specs = _V_MEASURE.get(model, _V_MEASURE[_DEFAULT_MODEL])
     spec = _pick_range(voltage, specs)
-    return spec.uncertainty(voltage) + _nplc_modifier(nplc, spec, "voltage")
+    return spec.uncertainty(voltage) + _nplc_modifier(nplc, spec, "voltage", model)
 
 
 def current_uncertainty(current: float, model: str = _DEFAULT_MODEL, nplc: float = 1.0) -> float:
@@ -371,7 +388,7 @@ def current_uncertainty(current: float, model: str = _DEFAULT_MODEL, nplc: float
         return float("nan")
     specs = _I_MEASURE.get(model, _I_MEASURE[_DEFAULT_MODEL])
     spec = _pick_range(current, specs)
-    return spec.uncertainty(current) + _nplc_modifier(nplc, spec, "current")
+    return spec.uncertainty(current) + _nplc_modifier(nplc, spec, "current", model)
 
 
 def resistance_uncertainty(
