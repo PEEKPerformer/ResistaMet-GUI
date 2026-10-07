@@ -21,7 +21,8 @@ from ..schema.settings_common import (AgentLimitSettings, AuxSensorSettings, Dis
                                        SafetySettings)
 from ..schema.settings_modes import MODE_MODELS
 from ..session.manager import MeasurementSession, SessionBusy
-from .app import UI_ROLE, busy_as_conflict, get_session, require_token
+from .app import (UI_ROLE, agent_limit_verdict, busy_as_conflict, get_session,
+                  require_token)
 
 router = APIRouter(tags=["settings"])
 
@@ -298,15 +299,33 @@ def read_schema(role: str = Depends(require_token)):
 
 
 @router.post("/settings/resolve")
-def resolve(body: ResolveRequest, request: Request, role: str = Depends(require_token)):
-    """Preview a run's settings without starting it."""
+def resolve(body: ResolveRequest, request: Request,
+             session: MeasurementSession = Depends(get_session),
+             role: str = Depends(require_token)):
+    """Preview a run's settings without starting it.
+
+    ``agent_limits`` is the verdict a start from an agent would get on these
+    settings (``AgentLimitCheck``), for every role, so an agent can check
+    before it asks and the window can show what an agent could not run. It
+    is None when the settings have errors: a start refuses those first, and
+    a verdict on values nobody accepted would mean nothing.
+    """
     if body.mode not in MODE_MODELS:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                              detail=f"unknown mode '{body.mode}'")
     profile = _config(request).get_user_settings(body.username)
     resolved = resolve_run_settings(profile, body.mode, body.overrides, strict=body.strict)
     hazard = resolved.hazard
+    verdict = None
+    if resolved.ok:
+        try:
+            verdict = agent_limit_verdict(session, profile, body.mode, resolved.settings)
+        except (TypeError, ValueError, ArithmeticError):
+            # Lenient resolution passes a stored value through as it is;
+            # one that validated and still is not a number gets no verdict.
+            verdict = None
     return {
+        'agent_limits': None if verdict is None else verdict.model_dump(),
         'settings': resolved.settings,
         'derived': resolved.derived,
         'ok': resolved.ok,

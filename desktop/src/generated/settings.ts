@@ -3,6 +3,33 @@
 // Do not edit. Regenerate with `npm run gen:types`.
 
 /**
+ * The verdict on a run an agent would start. ``ok`` when nothing is beyond.
+ */
+export interface AgentLimitCheck {
+  ok: boolean;
+  violations: AgentLimitViolation[];
+}
+/**
+ * One way a run goes beyond what an agent may start.
+ *
+ * ``limit`` names the bound: one of the profile's ``agent_limits`` keys
+ * when ``source`` is ``'agent_limits'``, a ``ModelSpec`` field when it is
+ * ``'model'`` (and ``model`` says which). ``keys`` are the run's setting
+ * keys that produce ``value``; ``value`` is None when the instrument
+ * chooses the quantity itself, and ``allowed`` is None when the profile's
+ * limit is itself not a valid number.
+ */
+export interface AgentLimitViolation {
+  allowed: number | null;
+  keys: string[];
+  limit: "max_voltage_v" | "max_current_a" | "max_power_w" | "max_source_v" | "max_source_i";
+  message: string;
+  model: string | null;
+  source: "agent_limits" | "model";
+  value: number | null;
+}
+
+/**
  * What a run an AI agent starts may put on the device. Its own section.
  *
  * A section beside ``measurement`` rather than more keys inside it, because
@@ -321,6 +348,16 @@ export interface FieldMeta {
 
 /** Bounds, defaults and enums per model field, from the schema. */
 export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
+  "AgentLimitCheck": {
+    "ok": {
+      "type": "boolean",
+      "required": true
+    },
+    "violations": {
+      "type": "array",
+      "required": true
+    }
+  },
   "AgentLimitSettings": {
     "max_current_a": {
       "type": "number",

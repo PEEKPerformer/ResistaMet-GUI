@@ -25,6 +25,7 @@ CONTRACT_DIR = REPO_ROOT / "contracts"
 
 
 def settings_schema():
+    from resistamet_gui.schema.agent_limits import AgentLimitCheck
     from resistamet_gui.schema.settings_common import (
         AgentLimitSettings, AuxSensorSettings, DisplaySettings, FileSettings,
         InstrumentSettings, OutputSettings, SafetySettings,
@@ -43,6 +44,8 @@ def settings_schema():
         'RunRequest': RunRequest,
         'SampleGeometry': SampleGeometry,
         'SpotRequest': SpotRequest,
+        # The agent-limit verdict of POST /settings/resolve.
+        'AgentLimitCheck': AgentLimitCheck,
     }
     models.update({model.__name__: model for model in MODE_MODELS.values()})
     return {
