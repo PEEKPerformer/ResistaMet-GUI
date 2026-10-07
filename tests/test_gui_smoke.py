@@ -541,6 +541,72 @@ class TestSafetyWarningSilence:
         assert settings['measurement']['safety_voltage_warn_silenced'] is False
 
 
+class TestTimedSafetySilence:
+    """A timed silence (saved from the desktop prompt) silences the window too."""
+
+    @staticmethod
+    def _shown(main_window, monkeypatch, until):
+        shown = []
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, 'exec',
+                            lambda self: shown.append(self.text()) or QMessageBox.Ok)
+        m = main_window.user_settings['measurement']
+        m['safety_voltage_warn_v'] = 30.0
+        m['safety_voltage_warn_silenced'] = False
+        m['safety_voltage_warn_silenced_until'] = until
+        main_window.tab_voltage_source.vsource_voltage.setValue(60.0)
+        settings = main_window.gather_settings_for_mode('source_v')
+        assert main_window._confirm_voltage_safety('source_v', settings) is True
+        return shown
+
+    def test_a_future_time_shows_no_modal(self, main_window, monkeypatch):
+        import time
+        assert self._shown(main_window, monkeypatch, time.time() + 3600.0) == []
+
+    def test_an_expired_time_shows_it_again(self, main_window, monkeypatch):
+        import time
+        assert len(self._shown(main_window, monkeypatch, time.time() - 1.0)) == 1
+
+    @pytest.fixture(autouse=True)
+    def _no_saved_box(self, monkeypatch):
+        # save_settings confirms with a modal box; offscreen it would block.
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, 'information', staticmethod(lambda *a, **k: None))
+
+    @staticmethod
+    def _dialog(main_window, until):
+        from resistamet_gui.ui.dialogs import SettingsDialog
+        main_window.config_manager.update_user_settings('test_user', {'measurement': {
+            **main_window.config_manager.get_user_settings('test_user')['measurement'],
+            'safety_voltage_warn_silenced': False,
+            'safety_voltage_warn_silenced_until': until}})
+        return SettingsDialog(main_window.config_manager, 'test_user', main_window)
+
+    def test_settings_shows_it_and_unchecking_clears_it(self, main_window):
+        import time
+        dialog = self._dialog(main_window, time.time() + 3600.0)
+        box = dialog.safety_voltage_warn_silenced
+        assert box.isChecked()
+        assert 'until' in box.text()
+
+        box.setChecked(False)
+        dialog.save_settings()
+        stored = main_window.config_manager.get_user_settings('test_user')['measurement']
+        assert stored['safety_voltage_warn_silenced'] is False
+        assert stored['safety_voltage_warn_silenced_until'] is None
+        dialog.close()
+
+    def test_settings_left_alone_keeps_the_timed_silence(self, main_window):
+        import time
+        until = time.time() + 3600.0
+        dialog = self._dialog(main_window, until)
+        dialog.save_settings()
+        stored = main_window.config_manager.get_user_settings('test_user')['measurement']
+        assert stored['safety_voltage_warn_silenced'] is False
+        assert stored['safety_voltage_warn_silenced_until'] == until
+        dialog.close()
+
+
 class TestOutputSectionDelivered:
     """The Output section must reach the worker, which reads settings['output']."""
 
