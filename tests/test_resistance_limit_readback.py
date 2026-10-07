@@ -115,7 +115,7 @@ class TestAReadBackThatFails:
 class TestAReadBackThatCannotBeALimit:
     @pytest.mark.parametrize('reply', ['+9.910000E+37', '0', '-2.1', 'nan', '64'])
     def test_it_is_rejected(self, fake_rm, tmp_path, limit_query, reply):
-        """The default simulated model is a 2420: 60 V, so 63 V at most."""
+        """The default simulated model is a 2420, which sources 63 V at most."""
         limit_query.update({'reply': reply})
         sink = _run(_settings(tmp_path))
         assert 'limit_readback_rejected' in _warnings(sink)

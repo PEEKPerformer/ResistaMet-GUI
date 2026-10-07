@@ -23,15 +23,15 @@ class TestParseModelFromIdn:
         spec = parse_model_from_idn(_BENCH_IDNS["2420"])
         assert spec is not None
         assert spec.model == "2420"
-        assert spec.max_source_v == 60.0
-        assert spec.max_source_i == 3.05
+        assert spec.max_source_v == 63.0
+        assert spec.max_source_i == 3.15
         assert spec.family == "2400"
 
     def test_parses_2400_idn(self):
         spec = parse_model_from_idn(_BENCH_IDNS["2400"])
         assert spec is not None
         assert spec.model == "2400"
-        assert spec.max_source_v == 200.0
+        assert spec.max_source_v == 210.0
         assert spec.max_source_i == 1.05
         assert spec.family == "2400"
 
@@ -69,6 +69,27 @@ class TestKnownModels:
         spec = parse_model_from_idn("KEITHLEY,MODEL 2410,1,1")
         assert spec is not None
         assert spec.max_source_v == 1100.0  # the high-V variant
+
+    # (max V, max I, max W) as printed in each model's specifications:
+    # "SOURCE/SINK LIMITS" and "MAX. OUTPUT POWER" (2450: "Maximum output
+    # power and source limits"). The 2430's 3.15 A is its DC 3 A range.
+    @pytest.mark.parametrize("model,v,i,w", [
+        ("2400", 210.0, 1.05, 22.0),
+        ("2401", 21.0, 1.05, 22.0),
+        ("2410", 1100.0, 1.05, 22.0),
+        ("2420", 63.0, 3.15, 66.0),
+        ("2425", 105.0, 3.15, 110.0),
+        ("2430", 105.0, 3.15, 110.0),
+        ("2440", 42.0, 5.25, 55.0),
+        ("2450", 210.0, 1.05, 20.0),
+    ])
+    def test_limits_match_the_spec_sheets(self, model, v, i, w):
+        spec = parse_model_from_idn(f"KEITHLEY,MODEL {model},x,y")
+        assert (spec.max_source_v, spec.max_source_i, spec.max_power_w) == (v, i, w)
+
+    def test_every_known_model_is_pinned(self):
+        assert set(known_models()) == {
+            "2400", "2401", "2410", "2420", "2425", "2430", "2440", "2450"}
 
     def test_each_entry_has_complete_spec(self):
         for model in known_models():
