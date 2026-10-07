@@ -20,6 +20,7 @@ import { seedOverrides, setOverride, useOverrides } from "../../state/overrides"
 import { Badge, Button, Notice, Panel } from "../../components/ui";
 import { BackendNotice } from "../../components/BackendNotice";
 import { OutputNotice } from "../../components/OutputNotice";
+import { AgentRunNotice } from "../../components/AgentRunNotice";
 import { Icons } from "../../components/icons";
 import { FieldRow, SettingsForm } from "../../components/forms/SettingsForm";
 import { STATE_LABEL } from "../continuous/ContinuousView";
@@ -144,6 +145,7 @@ export function VdpView() {
 
         <BackendNotice />
         <OutputNotice />
+        <AgentRunNotice mode={MODE} />
         {error ? <Notice tone="danger">{error}</Notice> : null}
         {running && !thisRunning ? <Notice tone="info">Another run is in progress.</Notice> : null}
         {ui.sampleName.trim() === "" && !running ? <Notice tone="info">{NAME_THE_SAMPLE}</Notice> : null}

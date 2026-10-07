@@ -113,3 +113,27 @@ test("a run reconnecting to the instrument clears it", () => {
   applyEvent(connected);
   assert.equal(getSessionSnapshot().outputUnverified, false);
 });
+
+function runStarted(startedBy: string | null | undefined, runId = "run-5"): AnyEvent {
+  const payload: Record<string, unknown> = { mode: "source_v", sample_name: "s", username: "alice", settings: {}, started_at: 0 };
+  if (startedBy !== undefined) payload.started_by = startedBy;
+  return { type: "run_started", seq: 1, t: 0, run_id: runId, v: 1, payload } as unknown as AnyEvent;
+}
+
+test("run_started says who started the run, and the next run says again", () => {
+  applyEvent(runStarted("agent"));
+  assert.equal(getSessionSnapshot().runStartedBy, "agent");
+  applyEvent(runStarted("ui", "run-6"));
+  assert.equal(getSessionSnapshot().runStartedBy, "ui");
+  // A backend from before the field, or a run started without the API.
+  applyEvent(runStarted(undefined, "run-7"));
+  assert.equal(getSessionSnapshot().runStartedBy, null);
+});
+
+test("after a reload the status says who started the run", () => {
+  applyEvent(runStarted(null));
+  setStatus({ ...awaiting("run-8:safety_voltage_ack-1", "run-8"), started_by: "agent" });
+  assert.equal(getSessionSnapshot().runStartedBy, "agent");
+  setStatus({ ...awaiting("run-9:safety_voltage_ack-1", "run-9"), started_by: null });
+  assert.equal(getSessionSnapshot().runStartedBy, null);
+});
