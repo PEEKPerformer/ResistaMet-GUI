@@ -105,27 +105,35 @@ class TestPhysics:
     def test_resistance_records_ohms_law(self, session, profile):
         sink = _run_until_samples(session, profile, 'resistance',
                                    res_test_current=1e-3, res_voltage_compliance=5.0)
-        for r in _values(sink, 'resistance'):
+        values = _values(sink, 'resistance')
+        assert len(values) == len(sink.of_type('sample')) >= 3
+        for r in values:
             assert r == pytest.approx(DUT_OHMS, rel=0.05)
 
     def test_voltage_source_records_correct_current(self, session, profile):
         sink = _run_until_samples(session, profile, 'source_v', vsource_voltage=1.0,
                                    vsource_current_compliance=0.1,
                                    vsource_duration_hours=0.0)
-        for i in _values(sink, 'current'):
+        values = _values(sink, 'current')
+        assert len(values) == len(sink.of_type('sample')) >= 3
+        for i in values:
             assert i == pytest.approx(1.0 / DUT_OHMS, rel=0.05)
 
     def test_current_source_records_correct_voltage(self, session, profile):
         sink = _run_until_samples(session, profile, 'source_i', isource_current=1e-3,
                                    isource_voltage_compliance=5.0,
                                    isource_duration_hours=0.0)
-        for v in _values(sink, 'voltage'):
+        values = _values(sink, 'voltage')
+        assert len(values) == len(sink.of_type('sample')) >= 3
+        for v in values:
             assert v == pytest.approx(1e-3 * DUT_OHMS, rel=0.05)
 
     def test_four_point_records_v_and_i(self, session, profile):
         sink = _run_until_samples(session, profile, 'four_point', fpp_current=1e-3,
                                    fpp_voltage_compliance=5.0, fpp_samples=0)
-        for v, i in zip(_values(sink, 'voltage'), _values(sink, 'current')):
+        voltages, currents = _values(sink, 'voltage'), _values(sink, 'current')
+        assert len(voltages) == len(currents) == len(sink.of_type('sample')) >= 3
+        for v, i in zip(voltages, currents):
             assert i == pytest.approx(1e-3, rel=0.05)
             assert v == pytest.approx(1e-3 * DUT_OHMS, rel=0.05)
 

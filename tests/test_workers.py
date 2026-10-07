@@ -15,6 +15,7 @@ import os
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 # Skip if PySide6 missing
@@ -247,6 +248,9 @@ class TestModelDetection:
         assert any("model not in known table" in s.lower() for s in spies.status_update), (
             f"expected a 'not in known table' warning: {spies.status_update}"
         )
+        # ...and proceeds: the run measures, without an error.
+        assert spies.error_occurred == []
+        assert spies.data_point, "the run did not proceed past the warning"
 
 
 class TestResistanceMode:
@@ -286,10 +290,19 @@ class TestResistanceMode:
         settings = _resistance_settings(tmp_path)
         worker = MeasurementWorker("resistance", "sample1", "alice", settings)
         spies = _drive_worker(qapp, worker, stop_after_n_points=1)
-        # No 825 errors in the queue means the sequence was correct.
-        # The worker should have produced data points without errors.
         assert spies.error_occurred == []
-        assert any("Configuring instrument" in s for s in spies.status_update)
+        assert spies.data_point
+
+        # Auto-ohms rejects the source and compliance commands, so manual
+        # ohms must be selected after :SENS:FUNC 'RES' and before any of them.
+        cmds = _setup_writes(fake_rm.opened[0])
+        man = cmds.index(":SENS:RES:MODE MAN")
+        assert cmds.index(":SENS:FUNC 'RES'") < man
+        sourcing = [i for i, c in enumerate(cmds)
+                    if c.startswith((":SOUR:FUNC", ":SOUR:CURR", ":SENS:VOLT:PROT"))]
+        assert sourcing, f"no source or compliance writes: {cmds}"
+        assert man < min(sourcing), f"sourcing before :SENS:RES:MODE MAN: {cmds}"
+        assert ":SENS:RES:MODE AUTO" not in cmds[man:max(sourcing) + 1]
 
 
 class TestSourceVMode:
@@ -542,32 +555,65 @@ class TestRetryAndErrors:
 # ============================================================================
 
 class TestPathSafety:
-    def test_traversal_in_sample_name_is_sanitized(self, qapp, fake_rm, tmp_path):
+    """A traversal in a name must not move the run's files out of data/.
+
+    The data directory sits several levels below tmp_path, so that a run
+    whose sanitizing had failed would still write inside tmp_path, where
+    the test can see it, and not beside other tests' directories.
+    """
+
+    @staticmethod
+    def _nested_settings(tmp_path):
         settings = _source_v_settings(tmp_path)
-        # Sample name with path traversal attempt
+        data = tmp_path / "a" / "b" / "c" / "d" / "data"
+        settings["file"]["data_directory"] = str(data)
+        return settings, data.resolve()
+
+    @staticmethod
+    def _assert_run_stayed_in(worker, data, user_dir_name):
+        user_dir = data / user_dir_name
+        written = worker.filename
+        assert written, "the run recorded no data file"
+        assert Path(written).resolve().parent == user_dir, (
+            f"data file not in {user_dir}: {written}"
+        )
+        assert list(user_dir.glob("*.csv")), f"no CSV in {user_dir}"
+        # Nothing anywhere under tmp_path outside data/: an escaped file
+        # would land beside the nested directories.
+        root = data.parents[4]
+        stray = [p for p in root.rglob("*") if p.is_file()
+                 and data not in p.resolve().parents]
+        assert stray == [], f"files written outside the data dir: {stray}"
+
+    def test_traversal_in_sample_name_is_sanitized(self, qapp, fake_rm, tmp_path):
+        settings, data = self._nested_settings(tmp_path)
         worker = MeasurementWorker("source_v", "../../etc/passwd",
                                      "alice", settings)
         spies = _drive_worker(qapp, worker, stop_after_n_points=1)
 
         assert spies.error_occurred == []
-        # All output files MUST be inside tmp_path/data
-        all_files = list((tmp_path / "data").rglob("*"))
-        for f in all_files:
-            resolved = f.resolve()
-            assert str(resolved).startswith(str((tmp_path / "data").resolve())), (
-                f"file escaped data dir: {resolved}"
-            )
+        self._assert_run_stayed_in(worker, data, "alice")
+        assert "etcpasswd" in Path(worker.filename).name
 
     def test_traversal_in_username_is_sanitized(self, qapp, fake_rm, tmp_path):
-        settings = _source_v_settings(tmp_path)
+        settings, data = self._nested_settings(tmp_path)
         worker = MeasurementWorker("source_v", "sample", "../../../bob", settings)
         spies = _drive_worker(qapp, worker, stop_after_n_points=1)
 
         assert spies.error_occurred == []
-        all_files = list((tmp_path / "data").rglob("*"))
-        for f in all_files:
-            resolved = f.resolve()
-            assert str(resolved).startswith(str((tmp_path / "data").resolve()))
+        self._assert_run_stayed_in(worker, data, "bob")
+
+    @pytest.mark.parametrize("name, expected", [
+        ("../../etc/passwd", "etcpasswd"),
+        ("../../../bob", "bob"),
+        ("..\\..\\win", "win"),
+        ("/abs/path", "abspath"),
+        ("..", "unnamed"),
+        ("Anna Lee", "Anna_Lee"),
+    ])
+    def test_sanitize_path_component_strips_traversal(self, name, expected):
+        from resistamet_gui.session.run_files import sanitize_path_component
+        assert sanitize_path_component(name) == expected
 
 
 # ============================================================================
@@ -602,9 +648,10 @@ class TestOutputIntegrity:
         lines = csv_files[0].read_text().strip().splitlines()
         # CSV has header line + N data lines
         data_lines = [l for l in lines if not l.startswith("#")]
-        # Skip the header — data lines = N samples
-        assert len(data_lines) >= len(spies.data_point), (
-            f"CSV ({len(data_lines)} rows) lost data vs signals ({len(spies.data_point)})"
+        assert len(spies.data_point) == 4
+        # One header row, then one row per sample signalled.
+        assert len(data_lines) - 1 == len(spies.data_point), (
+            f"CSV ({len(data_lines) - 1} rows) vs signals ({len(spies.data_point)})"
         )
 
 
@@ -805,16 +852,49 @@ class TestSCPIContract:
 
 
 class TestFourPointF84Path:
-    """Exercise the F84 calculation branch end-to-end through the worker."""
+    """Exercise the F84 calculation branch end-to-end through the worker.
 
-    def test_legacy_path_when_defaults(self, qapp, fake_rm, tmp_path):
-        # All F84-only inputs at defaults → legacy path. Should produce
-        # the same numbers as before this refactor.
-        settings = _four_point_settings(tmp_path, samples=2)
-        worker = MeasurementWorker("four_point", "legacy", "alice", settings)
+    Each test checks the method the sample was derived by and its numbers
+    against the formula for that path, from the V and I the sample read.
+    """
+
+    @staticmethod
+    def _run(qapp, settings, name, finite=('ratio', 'rs', 'rho', 'sigma')):
+        worker = MeasurementWorker("four_point", name, "alice", settings)
+        derived = []
+        worker.sample_derived.connect(lambda _t, d: derived.append(dict(d)))
         spies = _drive_worker(qapp, worker, timeout_s=10.0)
         assert spies.error_occurred == []
         assert len(spies.data_point) == 2
+        assert len(derived) == 2
+        for d in derived:
+            for key in finite:
+                assert np.isfinite(d[key]), f"{key} is not finite: {d}"
+        return spies, derived
+
+    @staticmethod
+    def _f84(spies, settings):
+        from resistamet_gui.calculations import calculate_four_point_probe_f84
+        m = settings["measurement"]
+        _ts, values, _c, _e = spies.data_point[0]
+        return calculate_four_point_probe_f84(
+            voltage=values["voltage"], current=values["current"],
+            spacing_cm=m["fpp_spacing_cm"], thickness_um=m["fpp_thickness_um"],
+            diameter_cm=m.get("fpp_diameter_cm"),
+            geometry=m.get("fpp_geometry", "circle"),
+            temperature_c=m.get("fpp_temperature_c"),
+            dopant_type=m.get("fpp_dopant_type"),
+        )
+
+    def test_legacy_path_when_defaults(self, qapp, fake_rm, tmp_path):
+        # All F84-only inputs at defaults → legacy path: Rs = K·alpha·V/I.
+        # No thickness, so no rho or sigma.
+        settings = _four_point_settings(tmp_path, samples=2)
+        spies, derived = self._run(qapp, settings, "legacy", finite=('ratio', 'rs'))
+        assert {d['method'] for d in derived} == {'legacy'}
+        _ts, values, _c, _e = spies.data_point[0]
+        assert derived[0]['rs'] == pytest.approx(
+            4.532 * 1.0 * values["voltage"] / values["current"])
 
     def test_f84_path_with_diameter(self, qapp, fake_rm, tmp_path):
         # Setting a finite diameter should trigger F84 path and produce a
@@ -822,32 +902,36 @@ class TestFourPointF84Path:
         settings = _four_point_settings(tmp_path, samples=2)
         settings["measurement"]["fpp_diameter_cm"] = 1.0  # D=1cm, S/D=0.1016
         settings["measurement"]["fpp_thickness_um"] = 100.0  # 100 um film
-        worker = MeasurementWorker("four_point", "f84_d", "alice", settings)
-        spies = _drive_worker(qapp, worker, timeout_s=10.0)
-        assert spies.error_occurred == []
-        assert len(spies.data_point) == 2
+        spies, derived = self._run(qapp, settings, "f84_d")
+        assert {d['method'] for d in derived} == {'f84'}
+        assert derived[0]['rs'] < 4.532 * derived[0]['ratio']
+        expected = self._f84(spies, settings)
+        assert derived[0]['rs'] == pytest.approx(expected.rho_T / 100e-4)
 
     def test_f84_path_with_geometry_square(self, qapp, fake_rm, tmp_path):
         settings = _four_point_settings(tmp_path, samples=2)
         settings["measurement"]["fpp_geometry"] = "square"
         settings["measurement"]["fpp_diameter_cm"] = 2.0
         settings["measurement"]["fpp_thickness_um"] = 100.0
-        worker = MeasurementWorker("four_point", "f84_sq", "alice", settings)
-        spies = _drive_worker(qapp, worker, timeout_s=10.0)
-        assert spies.error_occurred == []
-        assert len(spies.data_point) == 2
+        spies, derived = self._run(qapp, settings, "f84_sq")
+        assert {d['method'] for d in derived} == {'f84'}
+        expected = self._f84(spies, settings)
+        assert derived[0]['rs'] == pytest.approx(expected.rho_T / 100e-4)
 
     def test_f84_path_with_temperature_correction(self, qapp, fake_rm, tmp_path):
-        # T + dopant should activate F_T branch and produce finite numbers.
+        # T + dopant should activate the F_T branch: the reported rho is
+        # rho(23), which differs from rho(T) = Rs·t at 25 °C.
         settings = _four_point_settings(tmp_path, samples=2)
         settings["measurement"]["fpp_diameter_cm"] = 1.0
         settings["measurement"]["fpp_thickness_um"] = 100.0
         settings["measurement"]["fpp_temperature_c"] = 25.0
         settings["measurement"]["fpp_dopant_type"] = "n"
-        worker = MeasurementWorker("four_point", "f84_t", "alice", settings)
-        spies = _drive_worker(qapp, worker, timeout_s=10.0)
-        assert spies.error_occurred == []
-        assert len(spies.data_point) == 2
+        spies, derived = self._run(qapp, settings, "f84_t")
+        assert {d['method'] for d in derived} == {'f84'}
+        expected = self._f84(spies, settings)
+        assert expected.rho_23 is not None
+        assert derived[0]['rho'] == pytest.approx(expected.rho_23)
+        assert derived[0]['rho'] != pytest.approx(derived[0]['rs'] * 100e-4)
 
 
 class TestFourPointDeltaPerPolarity:
@@ -1107,20 +1191,30 @@ class TestVdpStop:
         # then call stop_measurement.
         worker = VdpMeasurementWorker("sample", "alice", _vdp_settings(tmp_path))
         ready = []
+        errors = []
         worker.geometry_ready.connect(lambda i, g: ready.append(i))
+        worker.error_occurred.connect(errors.append)
         worker.start()
         # Wait until the worker has emitted the first ready signal.
-        deadline = time.time() + 5.0
+        deadline = time.time() + 15.0
         while not ready and time.time() < deadline:
             qapp.processEvents()
             time.sleep(0.01)
         assert ready, "worker never emitted geometry_ready"
         worker.stop_measurement()
-        deadline = time.time() + 3.0
+        deadline = time.time() + 15.0
         while worker.isRunning() and time.time() < deadline:
             qapp.processEvents()
             time.sleep(0.01)
         assert not worker.isRunning()
+        for _ in range(5):
+            qapp.processEvents()
+            time.sleep(0.01)
+
+        assert errors == []
+        outp = [c for op, c in fake_rm.opened[0].command_log
+                if op == "write" and c.upper() in (":OUTP ON", ":OUTP OFF")]
+        assert outp and outp[-1].upper() == ":OUTP OFF", outp
 
 
 class TestFourPointDeltaReadRetry:
@@ -1218,6 +1312,13 @@ class TestEventMarkerQueue:
         assert marked == ["ONE; TWO"]
         assert spies.error_occurred == []
 
+        import csv
+        with open(worker.filename, newline='') as handle:
+            rows = list(csv.reader(line for line in handle if not line.startswith('#')))
+        header, body = rows[0], rows[1:]
+        events = [row[header.index('event')] for row in body]
+        assert [e for e in events if e] == ["ONE; TWO"], events
+
 
 class TestRunControlQueueing:
     """Marker queue semantics live in RunControl now; the worker delegates."""
@@ -1270,10 +1371,11 @@ class TestStopDuringSettle:
         worker = MeasurementWorker("source_v", "wafer1", "alice", settings)
         spies = _Spies(worker)
         worker.start()
-        deadline = time.time() + 5.0
+        deadline = time.time() + 15.0
         while time.time() < deadline and not any("settling" in m.lower() for m in spies.status_update):
             qapp.processEvents()
             time.sleep(0.02)
+        assert any("settling" in m.lower() for m in spies.status_update), spies.status_update
         began = time.time()
         worker.stop_measurement()
         assert worker.wait(5000), "worker did not stop"
@@ -1288,11 +1390,22 @@ class TestStopDuringSettle:
         worker = MeasurementWorker("four_point", "wafer1", "alice", settings)
         spies = _Spies(worker)
         worker.start()
-        deadline = time.time() + 5.0
-        while time.time() < deadline and not any("Starting measurement" in m for m in spies.status_update):
+
+        def in_first_polarity_settle():
+            # The +I write after :OUTP ON starts the first delta settle.
+            if not fake_rm.opened:
+                return False
+            writes = [c for op, c in list(fake_rm.opened[0].command_log) if op == "write"]
+            if ":OUTP ON" not in writes:
+                return False
+            after_on = writes[writes.index(":OUTP ON") + 1:]
+            return any(c.startswith(":SOUR:CURR ") for c in after_on)
+
+        deadline = time.time() + 15.0
+        while time.time() < deadline and not in_first_polarity_settle():
             qapp.processEvents()
             time.sleep(0.02)
-        time.sleep(0.3)  # into the first polarity settle
+        assert in_first_polarity_settle(), "the run never reached the delta settle"
         worker.stop_measurement()
         assert worker.wait(5000), "worker did not stop"
         qapp.processEvents()

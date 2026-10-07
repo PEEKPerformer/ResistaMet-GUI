@@ -108,6 +108,20 @@ class TestPublishIsNonBlocking:
         hub = EventHub()
         loop = asyncio.new_event_loop()
         hub.bind(loop)
+        asyncio.set_event_loop(loop)    # Python 3.9 binds the queue to it
+        # A client that is never drained and slow to take each event.
+        stream = hub.add_client()
+        taken = []
+        stalled = {'on': True}
+        real_offer = stream.offer
+
+        def slow_offer(event):
+            taken.append(event)
+            if stalled['on']:
+                time.sleep(0.01)
+            return real_offer(event)
+
+        stream.offer = slow_offer
         emitter = EventEmitter(hub.publish, run_id='run-1')
 
         began = time.time()
@@ -115,6 +129,14 @@ class TestPublishIsNonBlocking:
             emitter.emit('sample', {'t_unix': 0.0, 'elapsed_s': 0.0, 'compliance': 'OK',
                                      'event_marker': '', 'values': {}})
         assert time.time() - began < 2.0
+        assert taken == []              # nothing reached the client on this thread
+
+        # ...and the hand-off did happen: the loop delivers every one.
+        stalled['on'] = False
+        loop.call_soon(loop.stop)
+        loop.run_forever()
+        assert len(taken) == 2000
+        assert stream._queue.qsize() + stream.dropped == 2000
         loop.close()
 
 
@@ -130,10 +152,13 @@ class TestWebSocket:
         return create_app(session, token=TOKEN, profile_provider=lambda u: {})
 
     def test_wrong_token_is_closed(self, app):
+        from starlette.websockets import WebSocketDisconnect
+
         with TestClient(app) as client:
-            with pytest.raises(Exception):
+            with pytest.raises(WebSocketDisconnect) as closed:
                 with client.websocket_connect('/session/events/ws?token=nope'):
                     pass
+        assert closed.value.code == 4401
 
     def test_events_reach_a_connected_client(self, app):
         with TestClient(app) as client:
@@ -199,14 +224,17 @@ class TestDisconnectWatcher:
         assert asyncio.run(_watch_for_disconnect(Socket())) is None
 
     def test_a_wrong_token_of_any_length_is_refused(self):
+        from starlette.websockets import WebSocketDisconnect
+
         session = MeasurementSession(ListSink())
         app = create_app(session, token=TOKEN, profile_provider=lambda u: {})
         try:
             with TestClient(app) as client:
                 for wrong in ('', 'x', TOKEN + 'x', 'tést'):
-                    with pytest.raises(Exception):
+                    with pytest.raises(WebSocketDisconnect) as closed:
                         with client.websocket_connect(f'/session/events/ws?token={wrong}'):
                             pass
+                    assert closed.value.code == 4401, wrong
         finally:
             session.close(timeout=5.0)
 

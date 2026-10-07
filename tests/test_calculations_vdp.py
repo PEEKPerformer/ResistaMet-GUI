@@ -3,9 +3,11 @@ Unit tests for the van der Pauw calculations module (ASTM F76 Method A).
 
 Tests are pinned to F76-08 (Reapproved 2016) Section 11 directly:
 - Geometric factor f(Q) inverts the explicit forward equation in Fig. 5.
-- F76 eqs. (1)-(2) recover rho on a synthetic uniform sample.
+- F76 eqs. (1)-(2) recover rho on a synthetic uniform sample, and on
+  asymmetric samples the R_s that solves van der Pauw's equation.
 - F76 sec. 11.1 homogeneity gate (10 %) fires correctly.
-- Protocol configuration list matches F76 sec. 10.4 voltage labels.
+- Protocol configuration list matches F76 sec. 10.4 voltage labels, and
+  the geometries the run wires put each lead where its label says.
 
 These tests do not require an instrument, scipy, or PyQt.
 """
@@ -21,6 +23,7 @@ from resistamet_gui.calculations_vdp import (
     VdpResult,
     calculate_van_der_pauw,
     f76_configurations,
+    f76_geometries,
     vdp_geometric_factor,
     vdp_resistivity_pair,
 )
@@ -128,6 +131,43 @@ class TestProtocolConfigurations:
             assert configs[i].sense_low == configs[i + 1].sense_low
 
 
+class TestProtocolGeometries:
+    """f76_geometries() is what the run and the wiring prompt use.
+
+    F76 notation V_AB,CD: current enters contact A and leaves B, and the
+    voltage is V_C - V_D. So Force HI goes on A, Force LO on B, Sense HI on
+    C and Sense LO on D, and the -I reading of the same cabling is V_BA,CD.
+    """
+
+    def test_labels_are_the_f76_section_104_pairs(self):
+        pairs = [(g.label_pos, g.label_neg) for g in f76_geometries()]
+        assert pairs == [
+            ("V_21,34", "V_12,34"), ("V_32,41", "V_23,41"),
+            ("V_43,12", "V_34,12"), ("V_14,23", "V_41,23"),
+        ]
+
+    @pytest.mark.parametrize("index", range(4))
+    def test_contacts_match_the_label(self, index):
+        g = f76_geometries()[index]
+        sense = f"{g.sense_high}{g.sense_low}"
+        assert g.label_pos == f"V_{g.source_high}{g.source_low},{sense}"
+        assert g.label_neg == f"V_{g.source_low}{g.source_high},{sense}"
+
+    def test_groups_follow_f76_equations_1_and_2(self):
+        assert [g.group for g in f76_geometries()] == ["A", "A", "B", "B"]
+
+    def test_geometries_are_the_configurations_two_polarities_each(self):
+        configs = f76_configurations()
+        for i, g in enumerate(f76_geometries()):
+            pos, neg = configs[2 * i], configs[2 * i + 1]
+            assert pos == VdpConfiguration(
+                g.label_pos, g.source_high, g.source_low,
+                g.sense_high, g.sense_low, g.group)
+            assert neg == VdpConfiguration(
+                g.label_neg, g.source_low, g.source_high,
+                g.sense_high, g.sense_low, g.group)
+
+
 def _uniform_sample_voltages(sheet_resistance_ohm_sq: float, current_a: float) -> dict:
     """Synthetic voltages for a perfectly uniform sample.
 
@@ -215,6 +255,55 @@ class TestAsymmetricSample:
         )
         assert q > 1.0
         assert 0.0 < f < 1.0
+
+    @pytest.mark.parametrize("r_a, r_b", [
+        (2.0, 1.0), (5.0, 1.0), (20.0, 1.0), (1.0, 8.0), (0.3, 70.0),
+    ])
+    def test_sheet_resistance_solves_van_der_pauw_equation(self, r_a, r_b):
+        # Any sample with the two four-terminal resistances R_A = R_21,34
+        # and R_B = R_32,41 has the R_s that solves van der Pauw's equation
+        #     exp(-pi R_A / R_s) + exp(-pi R_B / R_s) = 1.
+        # Solved here by bisection on its own, with no f(Q). By reciprocity
+        # R_43,12 = R_21,34 and R_14,23 = R_32,41, so group B reads the same.
+        rs_truth = _solve_van_der_pauw_equation(r_a, r_b)
+        current = 1.0e-3
+        thickness = 1.0e-5
+        v_a = r_a * current
+        v_b = r_b * current
+        voltages = {
+            "V_21,34": +v_a, "V_12,34": -v_a,
+            "V_32,41": +v_b, "V_23,41": -v_b,
+            "V_43,12": +v_a, "V_34,12": -v_a,
+            "V_14,23": +v_b, "V_41,23": -v_b,
+        }
+        result = calculate_van_der_pauw(voltages, current, thickness)
+        assert result.q_a == pytest.approx(max(r_a, r_b) / min(r_a, r_b))
+        assert result.sheet_resistance == pytest.approx(rs_truth, rel=1e-6)
+        assert result.rho_a == pytest.approx(rs_truth * thickness, rel=1e-6)
+        assert result.rho_b == pytest.approx(rs_truth * thickness, rel=1e-6)
+
+
+def _solve_van_der_pauw_equation(r_a: float, r_b: float) -> float:
+    """R_s from exp(-pi R_A / R_s) + exp(-pi R_B / R_s) = 1, by bisection.
+
+    The left side rises monotonically from 0 to 2 as R_s goes from 0 to
+    infinity. The root lies between pi * min(R) / ln 2 (where the smaller
+    term alone is 1/2) and pi * (R_A + R_B) / (2 ln 2) (the symmetric case,
+    which is the largest R_s for a given R_A + R_B).
+    """
+    def excess(rs):
+        return math.exp(-math.pi * r_a / rs) + math.exp(-math.pi * r_b / rs) - 1.0
+
+    lo = math.pi * min(r_a, r_b) / math.log(2.0) * 0.5
+    hi = math.pi * (r_a + r_b) / math.log(2.0) * 2.0
+    assert excess(lo) < 0.0 < excess(hi)
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if excess(mid) < 0.0:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
 
 
 class TestHomogeneityGate:

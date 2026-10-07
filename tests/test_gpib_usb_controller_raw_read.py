@@ -356,7 +356,7 @@ class TestRawRead:
             controller.read_raw(20480, timeout_s=1.0)
         assert info.value.code == 0x0A
         transport.assert_done()
-        assert 0x20 not in [step[1][0] for step in transport.script if step[0] == 'ctrl'][3:]  # no stop request
+        assert 0x20 not in transport.control_requests  # no stop request
 
     def test_partial_data_at_the_host_wait_is_kept_and_completed_after_the_stop(self):
         # The transport received 4 bytes when its wait expired (pyusb's partial count); after the
@@ -480,8 +480,13 @@ class TestRawTransfersSwitch:
         transport.assert_done()
 
     def test_switched_on_large_transfers_go_raw(self):
-        controller, _ = attached_ni([])
+        controller, transport = attached_ni([
+            ('out', p.read_raw_message(RAW_READ_MIN_BYTES, T3S)), ('raw_in', b'end\n', 1536),
+            ('in', raw_read_reply(RAW_READ_MIN_BYTES, 4), 512),
+        ])
         assert controller.raw_transfers is True and controller.ni_instructions is True
+        assert controller.read_raw(RAW_READ_MIN_BYTES, timeout_s=3.0) == (b'end\n', True)
+        transport.assert_done()
 
     def test_switched_off_reads_and_writes_stay_framed(self):
         controller, transport = attached(address_talker() + [
