@@ -302,3 +302,39 @@ class TestTheConnectedModel:
         assert _start(agent, 'source_v', {'vsource_voltage': 70.0,
                                           'vsource_current_compliance': 0.01}).status_code == 202
         _end(ui)
+
+
+# --- the dry run ---------------------------------------------------------------
+
+def _resolve(client, mode, overrides):
+    reply = client.post('/settings/resolve', json={
+        'mode': mode, 'username': 'alice', 'overrides': overrides})
+    assert reply.status_code == 200
+    return reply.json()
+
+
+class TestResolveGivesTheVerdictStartWould:
+    @pytest.mark.parametrize('mode, limits, overrides, key, over, limit', AT_AND_OVER,
+                             ids=[case[0] for case in AT_AND_OVER])
+    def test_over_and_at(self, agent, ui, fake_rm, mode, limits, overrides, key, over, limit):
+        _limits(ui, {**NO_CAPS, **limits})
+        refused = _start(agent, mode, {**overrides, key: over}).json()['detail']['violations']
+        for client in (agent, ui):
+            verdict = _resolve(client, mode, {**overrides, key: over})['agent_limits']
+            assert verdict == {'ok': False, 'violations': refused}
+            assert _resolve(client, mode, overrides)['agent_limits'] == \
+                {'ok': True, 'violations': []}
+
+    def test_the_connected_model_too(self, agent, ui, fake_rm):
+        _limits(ui, NO_CAPS)
+        agent.post('/instruments/identify', json={'address': 'GPIB0::24::INSTR'})
+        overrides = {'vsource_voltage': 70.0, 'vsource_current_compliance': 0.01}
+        refused = _start(agent, 'source_v', overrides).json()['detail']['violations']
+        verdict = _resolve(agent, 'source_v', overrides)['agent_limits']
+        assert verdict == {'ok': False, 'violations': refused}
+        assert refused[0]['model'] == '2420'
+
+    def test_no_verdict_on_settings_with_errors(self, agent):
+        body = _resolve(agent, 'source_v', {'vsource_voltage': 500.0})
+        assert body['ok'] is False
+        assert body['agent_limits'] is None

@@ -141,7 +141,7 @@ class AgentLimitViolation(BaseModel):
 
     limit: LimitName
     source: Literal['agent_limits', 'model']
-    model: Optional[str] = None
+    model: Optional[str]
     keys: List[str]
     value: Optional[float]
     allowed: Optional[float]
@@ -188,13 +188,15 @@ def check_agent_limits(settings: Mapping[str, Any], mode: str,
         if value is None:
             # Only a current is ever the instrument's choice (auto-ohms).
             violations.append(AgentLimitViolation(
-                limit=limit, source='agent_limits', keys=list(keys), value=None, allowed=cap,
+                limit=limit, source='agent_limits', model=None, keys=list(keys),
+                value=None, allowed=cap,
                 message=f"the instrument chooses the current while "
                         f"{_names(case.current_keys)} is on, so the run cannot be held "
                         f"to {limit} = {cap:g} {unit}"))
         elif value > cap:
             violations.append(AgentLimitViolation(
-                limit=limit, source='agent_limits', keys=list(keys), value=value, allowed=cap,
+                limit=limit, source='agent_limits', model=None, keys=list(keys),
+                value=value, allowed=cap,
                 message=f"{quantity} {value:g} {unit} ({_names(keys)}) is above the agent "
                         f"limit {limit} = {cap:g} {unit}"))
 
@@ -232,7 +234,8 @@ def _read_limits(limits: Optional[Mapping[str, Any]]):
             caps[name] = getattr(AgentLimitSettings.model_validate({name: raw}), name)
         except ValidationError as exc:
             violations.append(AgentLimitViolation(
-                limit=name, source='agent_limits', keys=[], value=None, allowed=None,
+                limit=name, source='agent_limits', model=None, keys=[],
+                value=None, allowed=None,
                 message=f"the profile's agent limit {name} = {raw!r} is not valid "
                         f"({exc.errors()[0]['msg']}); no agent run can start until it "
                         f"is fixed"))

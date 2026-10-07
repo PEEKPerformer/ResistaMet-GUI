@@ -1,5 +1,108 @@
 {
   "definitions": {
+    "AgentLimitCheck": {
+      "$defs": {
+        "AgentLimitViolation": {
+          "description": "One way a run goes beyond what an agent may start.\n\n``limit`` names the bound: one of the profile's ``agent_limits`` keys\nwhen ``source`` is ``'agent_limits'``, a ``ModelSpec`` field when it is\n``'model'`` (and ``model`` says which). ``keys`` are the run's setting\nkeys that produce ``value``; ``value`` is None when the instrument\nchooses the quantity itself, and ``allowed`` is None when the profile's\nlimit is itself not a valid number.",
+          "properties": {
+            "allowed": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Allowed"
+            },
+            "keys": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Keys",
+              "type": "array"
+            },
+            "limit": {
+              "enum": [
+                "max_voltage_v",
+                "max_current_a",
+                "max_power_w",
+                "max_source_v",
+                "max_source_i"
+              ],
+              "title": "Limit",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            },
+            "source": {
+              "enum": [
+                "agent_limits",
+                "model"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Value"
+            }
+          },
+          "required": [
+            "limit",
+            "source",
+            "model",
+            "keys",
+            "value",
+            "allowed",
+            "message"
+          ],
+          "title": "AgentLimitViolation",
+          "type": "object"
+        }
+      },
+      "description": "The verdict on a run an agent would start. ``ok`` when nothing is beyond.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "violations": {
+          "items": {
+            "$ref": "#/$defs/AgentLimitViolation"
+          },
+          "title": "Violations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "ok",
+        "violations"
+      ],
+      "title": "AgentLimitCheck",
+      "type": "object"
+    },
     "AgentLimitSettings": {
       "additionalProperties": true,
       "description": "What a run an AI agent starts may put on the device. Its own section.\n\nA section beside ``measurement`` rather than more keys inside it, because\nthese are not settings of a run: the resolver never copies them into one,\nso they cannot reach a data file, and a run request only carries\nmeasurement keys. They bound the ``agent`` role only; a run a person\nstarts is never held to them (``docs/design/mcp_layer.md`` M4).\n\nNone is no cap beyond the instrument's own. A cap is a positive, finite\nnumber: 0 would refuse every run, which is what turning agents off is for.",
