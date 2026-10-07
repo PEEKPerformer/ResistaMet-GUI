@@ -183,6 +183,17 @@
           ],
           "title": "Run Id"
         },
+        "started_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Started By"
+        },
         "state": {
           "enum": [
             "idle",
@@ -200,6 +211,7 @@
         "state",
         "run_id",
         "mode",
+        "started_by",
         "path",
         "last_seq",
         "pending_prompt",
