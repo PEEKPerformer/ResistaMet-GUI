@@ -13,7 +13,9 @@ from . import visa_backend
 class ModelSpec:
     """Documented capabilities of one Keithley 2400-series model.
 
-    Source/measure limits come from the Keithley datasheets; ``family``
+    ``max_source_v`` and ``max_source_i`` are the largest magnitudes the
+    datasheet's source/sink limits allow (each at the other's lower limit);
+    ``max_power_w`` is its maximum DC output power. ``family``
     distinguishes the original 2400 SCPI surface (2400/2410/2420/2425/2430/
     2440) from the 2450's TSP+SCPI surface, which diverges in some places.
     """
@@ -26,20 +28,27 @@ class ModelSpec:
 
 
 # Keyed by the four-digit model number that appears in the IDN string,
-# e.g. "MODEL 2420" -> "2420". Sourced from the 2400-series datasheets.
+# e.g. "MODEL 2420" -> "2420". From each model's specifications ("MAX.
+# OUTPUT POWER", "SOURCE/SINK LIMITS"): the 2400/2401 sheet, 2410 Rev. D,
+# 2420 Rev. D, 2425 Rev. C, 2430 Rev. C, 2440 Rev. C, and SPEC-2450C.
+# The 20 W / 60 W / 50 W in the Series 2400 datasheet's ordering
+# information are nominal ratings, not these limits. The 2430 sheet's DC
+# limit names only the 105 V / 1.05 A corner; its 3.15 A is the DC 3 A
+# range's 105 %, as on the 2425.
 # Add new entries when community submissions land hardware traces.
 _MODELS: dict[str, ModelSpec] = {
-    "2400": ModelSpec("2400", 200.0, 1.05, 22.0, family="2400"),
-    "2401": ModelSpec("2401", 20.0,  1.05, 22.0, family="2400",
-                       notes="Low-voltage variant of the 2400 (20V max)"),
+    "2400": ModelSpec("2400", 210.0,  1.05, 22.0, family="2400"),
+    "2401": ModelSpec("2401", 21.0,   1.05, 22.0, family="2400",
+                       notes="Low-voltage variant of the 2400 (21 V max)"),
     "2410": ModelSpec("2410", 1100.0, 1.05, 22.0, family="2400",
                        notes="High-voltage model — special handling for >100V"),
-    "2420": ModelSpec("2420", 60.0,  3.05, 22.0, family="2400"),
-    "2425": ModelSpec("2425", 100.0, 3.05, 22.0, family="2400"),
-    "2430": ModelSpec("2430", 100.0, 3.05, 22.0, family="2400",
-                       notes="Pulse mode supports up to 10A (5W avg)"),
-    "2440": ModelSpec("2440", 40.0,  5.05, 22.0, family="2400"),
-    "2450": ModelSpec("2450", 200.0, 1.05, 22.0, family="2450",
+    "2420": ModelSpec("2420", 63.0,   3.15, 66.0, family="2400"),
+    "2425": ModelSpec("2425", 105.0,  3.15, 110.0, family="2400"),
+    "2430": ModelSpec("2430", 105.0,  3.15, 110.0, family="2400",
+                       notes="Pulse mode reaches 10.5 A (10 A range, 8% duty "
+                             "cycle max); the limits here are DC"),
+    "2440": ModelSpec("2440", 42.0,   5.25, 55.0, family="2400"),
+    "2450": ModelSpec("2450", 210.0,  1.05, 20.0, family="2450",
                        notes="Touchscreen successor — TSP+SCPI surface; "
                              "some FORM/STAT details may differ from 2400 family"),
 }
