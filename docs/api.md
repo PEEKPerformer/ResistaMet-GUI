@@ -42,7 +42,7 @@ Every HTTP route except `GET /health` needs `Authorization: Bearer <token>`. A w
 
 The token keeps other local processes from driving the instrument. It is not an authentication system.
 
-A token carries a role. The handshake's token is the `ui` role. A second token, role `agent`, exists only while [agent access](#agent-access) is on. Only the `ui` role may answer a prompt marked `requires_human`, change the touch-safety settings of a profile, change its [agent limits](#agent-limits), set a VISA library path, change `allow_agents`, or read `GET /agents`; any other role gets 403 there. Every role but `ui` is held to the agent limits when it starts a run.
+A token carries a role. The handshake's token is the `ui` role. A second token, role `agent`, exists only while [agent access](#agent-access) is on. Only the `ui` role may answer a prompt marked `requires_human`, change the touch-safety settings of a profile, change its [agent limits](#agent-limits), set a VISA library path, change `allow_agents`, or read `GET /agents`; any other role gets 403 there. Every role but `ui` is held to the agent limits when it starts a run, and is [always asked about touch safety](#an-agents-run-always-asks). Every run started through the API records the role that started it ([Who started a run](#who-started-a-run)).
 
 ### Agent access
 
@@ -90,6 +90,14 @@ The 422 `detail` is an object:
 
 `source` is `agent_limits` or `model` (then `model` names it, and `limit` is the model's field). `keys` are the settings that give `value`. `value` is null for a quantity the instrument chooses; `allowed` is null when a stored limit is itself not a valid number, which refuses every agent run until it is fixed. `POST /settings/resolve` gives the same verdict without starting anything.
 
+### An agent's run always asks
+
+A run started by any role but `ui` raises the [`safety_voltage_ack`](#prompts) prompt whenever its gating voltage reaches the profile's threshold, even on a profile where `safety_voltage_warn_silenced` is true. The silence is a person's choice for the runs they start. The prompt is `requires_human`, so the run waits for someone at the window. The `ui` role's runs are unchanged: a silenced profile is not asked.
+
+### Who started a run
+
+`POST /session/start` stamps the role of the token that asked, as `started_by`, into the run's [`run_started`](#event-types) event, the [session status](#session-state) and the data file header (`# started_by: agent`; see [Data outputs](outputs.md#header-keys)). The request body cannot set it: a `started_by` field is refused with 422, as any unknown field is. `client` in the request says which program is asking; `started_by` says which role the server let in. Runs the PySide6 window starts do not go through the API and record no role.
+
 Cross-origin requests are accepted only from the desktop shell's origins (`tauri://localhost`, `http(s)://tauri.localhost`) and the UI dev server (`http://localhost:1420`, `http://127.0.0.1:1420`). That restricts browsers, not scripts.
 
 ## Session state
@@ -112,6 +120,7 @@ One sidecar drives one instrument and one run at a time.
   "state": "paused",
   "run_id": "run-1",
   "mode": "resistance",
+  "started_by": "ui",
   "path": "measurement_data/alice/1789858920_lock-demo_R_1.00mA.csv",
   "last_seq": 77,
   "pending_prompt": null,
@@ -120,7 +129,7 @@ One sidecar drives one instrument and one run at a time.
 }
 ```
 
-`run_id`, `mode` and `path` describe the current run, or the last one after it ends; all are `null` before the first. `instrument` is the instrument the last run connected to or the last identify found (`model` and the limits are `null` when `*IDN?` names a model the limits table does not know). `pending_prompt` has the fields of the `prompt` event. Every key is always present.
+`run_id`, `mode`, `started_by` and `path` describe the current run, or the last one after it ends; all are `null` before the first. `started_by` is the role that [started the run](#who-started-a-run). `instrument` is the instrument the last run connected to or the last identify found (`model` and the limits are `null` when `*IDN?` names a model the limits table does not know). `pending_prompt` has the fields of the `prompt` event. Every key is always present.
 
 ## Routes
 
@@ -248,7 +257,7 @@ log:cleanup, run_ended
 
 | Type | Payload | When |
 |---|---|---|
-| `run_started` | `mode`, `sample_name`, `username`, `settings` (the full resolved settings the run uses), `started_at` | First event of a run. |
+| `run_started` | `mode`, `sample_name`, `username`, `settings` (the full resolved settings the run uses), `started_at`, `started_by` (the role that [started the run](#who-started-a-run); `null` for a run started without the API) | First event of a run. |
 | `log` | `level` (`info`, `warning`, `error`), `code`, `message` | Progress in words. `message` is the text a UI shows; act on `code`. |
 | `error` | `code`, `source` (`smu`, `aux`, `file`, `run`), `message`, `fatal` | Something failed. |
 | `instrument_connected` | `address`, `idn`, `model`, `max_source_v`, `max_source_i`, `max_power_w` | `*IDN?` answered. |
@@ -280,14 +289,14 @@ A prompt is a decision the run cannot make. The run emits `prompt`, the session 
 
 | `kind` | Raised | `options` | `detail` |
 |---|---|---|---|
-| `safety_voltage_ack` | After `run_started`, before the instrument is opened, when the run's [gating voltage](concepts.md#touch-safety-warning) reaches the profile's threshold and the profile has not silenced the warning | `acknowledge`, `cancel` | `voltage_v`, `threshold_v`, `reason`, `message` |
+| `safety_voltage_ack` | After `run_started`, before the instrument is opened, when the run's [gating voltage](concepts.md#touch-safety-warning) reaches the profile's threshold and the profile has not silenced the warning; on a run started by a role other than `ui`, [whether or not it has](#an-agents-run-always-asks) | `acknowledge`, `cancel` | `voltage_v`, `threshold_v`, `reason`, `message` |
 | `vdp_geometry` | Before each of the four van der Pauw geometries, with the output off | `proceed`, `abort` | `index`, `name`, `group`, the four contact numbers `source_high`, `source_low`, `sense_high`, `sense_low`, `label_pos`, `label_neg` |
 
 A third kind, `cable_null_shorted`, is declared in the contract; no run raises it at this commit.
 
 Both kinds are `requires_human: true`: they assert something only a person at the bench can know (the leads were moved, the voltage is understood). Only the `ui` role may answer them. Software that holds the `ui` token can answer them, and then it is making that assertion.
 
-`cancel` ends the run with reason `cancelled`, no instrument opened and no file. An unanswered prompt ends the run after `prompt_timeout_s` with reason `prompt_timeout`. A stop or abort releases the wait. Answering `acknowledge` with `fields: {"silence_for_profile": true}` is logged but not saved to the profile at this commit; to silence the warning, `PATCH` `safety_voltage_warn_silenced` yourself.
+`cancel` ends the run with reason `cancelled`, no instrument opened and no file. An unanswered prompt ends the run after `prompt_timeout_s` with reason `prompt_timeout`. A stop or abort releases the wait. Answering `acknowledge` with `fields: {"silence_for_profile": true}` is logged but not saved to the profile at this commit; to silence the warning, `PATCH` `safety_voltage_warn_silenced` yourself. Either way the silence never applies to a run started by another role.
 
 ## The instrument lock
 

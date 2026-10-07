@@ -168,7 +168,7 @@ The most a run started by an AI agent may put on the device ([API → Agent limi
 
 None (an empty field) means no cap beyond the instrument's own limits; a cap is a number greater than 0. Only the window can change them: through the API a role other than `ui` gets 403, and a run request may not send them as overrides.
 
-Raising `max_voltage_v` is not meant to take the person out of the loop. In the design ([`docs/design/mcp_layer.md`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/docs/design/mcp_layer.md), M5), every agent-started run at or above the profile's touch-safety threshold waits for a person to acknowledge it at the window, even on a profile where the warning was silenced. That part is not built yet: at this commit an agent's run gets the same touch-safety prompt as any API run, which the profile's silenced flag skips.
+Raising `max_voltage_v` does not take the person out of the loop. Every agent-started run at or above the profile's touch-safety threshold waits for a person to acknowledge it at the window, even on a profile where the warning was silenced: `safety_voltage_warn_silenced` applies only to runs a person starts ([API → An agent's run always asks](api.md#an-agents-run-always-asks)).
 
 ## Configuration storage
 

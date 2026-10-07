@@ -94,7 +94,9 @@ Profile settings that do not belong to one tab, in six sections: **Timing** (NPL
 
 ### Prompts
 
-When a run is blocked on a decision (the touch-safety acknowledgement, a van der Pauw rewiring) a dialog appears that cannot be dismissed; its buttons are the only way on. It is driven by the backend's state, so it reappears after a reload. The touch-safety dialog has no "don't ask again" box, because an answer cannot silence a profile yet; to silence the warning, set **Warning silenced for this profile** under Settings ▸ Safety.
+When a run is blocked on a decision (the touch-safety acknowledgement, a van der Pauw rewiring) a dialog appears that cannot be dismissed; its buttons are the only way on. It is driven by the backend's state, so it reappears after a reload. The touch-safety dialog has no "don't ask again" box, because an answer cannot silence a profile yet; to silence the warning, set **Warning silenced for this profile** under Settings ▸ Safety. The silence does not apply to a run an AI agent started, which always asks.
+
+A run an AI agent started shows **Started by an AI agent** on its mode's view, during the run and after it until the next one starts.
 
 ## Closing the window
 
