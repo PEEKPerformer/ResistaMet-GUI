@@ -201,3 +201,16 @@ class TestTheServerStampsWhoStartedTheRun:
         response = _start(agent, {'vsource_voltage': 5.0, 'started_by': 'ui'})
         assert response.status_code == 422
         assert sink.events == []
+
+    @pytest.mark.parametrize('who', ['ui', 'agent'])
+    def test_in_the_file_header(self, request, fake_rm, sink, who):
+        from resistamet_gui.data_export import parse_metadata
+
+        client = request.getfixturevalue(who)
+        assert _start(client, {'vsource_voltage': 5.0}).status_code == 202
+        assert _wait_for(lambda: sink.of_type('sample'))
+        _end(client)
+        path = sink.of_type('file_finalized')[0].payload['path']
+
+        assert f"# started_by: {who}\n" in open(path, encoding='utf-8').read()
+        assert parse_metadata(path)['started_by'] == who

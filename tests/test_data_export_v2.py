@@ -483,6 +483,41 @@ class TestClientBlock:
         assert "# client.version: 2.0.0-1\n" in text
 
 
+class TestStartedByLine:
+    """``settings['started_by']``: the API role that started the run."""
+
+    def _meta(self, mode, settings):
+        from datetime import datetime
+        return build_metadata(user='alice', sample_name='wafer7', mode=mode,
+                              settings=settings, start_time=datetime(2026, 10, 7, 12, 0, 0))
+
+    @pytest.mark.parametrize("mode", ['resistance', 'four_point', 'sweep', 'vdp'])
+    def test_the_line_is_the_only_difference(self, mode):
+        plain = self._meta(mode, {'measurement': {}})
+        stamped = self._meta(mode, {'measurement': {}, 'started_by': 'agent'})
+        assert 'started_by' not in plain
+        assert stamped.pop('started_by') == 'agent'
+        assert stamped == plain
+
+    @pytest.mark.parametrize("role", ['ui', 'agent'])
+    def test_csv_header_line(self, base_path, role):
+        meta = self._meta('resistance', {'measurement': {}, 'started_by': role})
+        exp = CsvExporter(base_path, meta, ['elapsed_s', 'R_ohm'])
+        exp.finalize()
+        text = exp.output_paths[0].read_text(encoding='utf-8')
+        assert f"# started_by: {role}\n" in text
+        assert parse_metadata(exp.output_paths[0])['started_by'] == role
+
+    def test_hdf5_attribute(self, base_path):
+        h5py = pytest.importorskip("h5py")
+        meta = self._meta('resistance', {'measurement': {}, 'started_by': 'agent'})
+        exp = Hdf5Exporter(base_path, meta, ['elapsed_s'], ['s'])
+        exp.write_row([0.0])
+        exp.finalize({'total_samples': 1})
+        with h5py.File(exp.output_paths[0], 'r') as f:
+            assert f.attrs['started_by'] == 'agent'
+
+
 # ------------------------------- File names ---------------------------------
 
 
