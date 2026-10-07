@@ -242,8 +242,35 @@ def patch_profile(username: str, body: ProfilePatch, request: Request,
         # one on the bus.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                              detail="cannot change the instrument address during a run")
-    return _profile_sections(config.merge_user_settings(
-        username, sections, check=_refuse_a_worse_profile(sections, role)))
+    agents_were_allowed = config.get_allow_agents()
+    merged = config.merge_user_settings(username, sections,
+                                        check=_refuse_a_worse_profile(sections, role))
+    if config.get_allow_agents() != agents_were_allowed:
+        # Takes effect now, in this backend: an agent turned out gets 401 on
+        # its next request, not after a restart. Only a change does
+        # anything, so a client resending the stored value cannot withdraw
+        # access that --allow-agents gave.
+        access = request.app.state.api.agent_access
+        if config.get_allow_agents():
+            access.enable()
+        else:
+            access.disable()
+    return _profile_sections(merged)
+
+
+@router.get("/agents")
+def agent_access_status(request: Request, role: str = Depends(require_token)):
+    """Whether AI agents can connect to this backend right now.
+
+    Not the stored setting -- that is in the profile -- but what is in force:
+    ``--allow-agents`` can turn access on without it, and another backend
+    holding the connection file keeps it off despite it. The ``ui`` role only;
+    an agent learns whether it is let in by being let in.
+    """
+    if role != UI_ROLE:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                             detail="only the user interface can see agent access")
+    return {"enabled": request.app.state.api.agent_access.enabled}
 
 
 @router.get("/schema/settings")
