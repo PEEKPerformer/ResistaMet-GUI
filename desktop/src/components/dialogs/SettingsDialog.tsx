@@ -13,6 +13,7 @@ import { FIELD_META } from "../../generated/settings";
 import type { FieldSpec } from "../../lib/fields";
 import { patchIssues, type PatchIssue } from "../../lib/patchIssues";
 import { profilePatch, withMachineLocal } from "../../lib/profilePatch";
+import { timedSilenceEnd, UNSILENCED } from "../../lib/safetySilence";
 import type { InstrumentInfo, Issue, Profile, VisaBackend } from "../../lib/api";
 import { ApiError } from "../../lib/api";
 import { setIdentifiedInstrument, useSession } from "../../state/session";
@@ -224,8 +225,9 @@ export function SettingsDialog({ onClose }: Props) {
                 ))
               : null}
 
-            {profile && section === "safety"
-              ? SAFETY.map((spec) => (
+            {profile && section === "safety" ? (
+              <>
+                {SAFETY.map((spec) => (
                   <FieldRow
                     key={spec.key}
                     spec={spec}
@@ -235,8 +237,16 @@ export function SettingsDialog({ onClose }: Props) {
                     issue={issueFor("measurement", spec.key)}
                     disabled={running}
                   />
-                ))
-              : null}
+                ))}
+                <TimedSilence
+                  measurement={measurement}
+                  disabled={running}
+                  onClear={() => {
+                    for (const [key, value] of Object.entries(UNSILENCED)) set("measurement", key, value);
+                  }}
+                />
+              </>
+            ) : null}
 
             {profile && section === "agents" ? (
               <>
@@ -304,6 +314,28 @@ export function SettingsDialog({ onClose }: Props) {
         </div>
       </div>
     </Dialog>
+  );
+}
+
+/** A timed silence in force, from a prompt answered "for 7 days". Clear
+ *  edits the draft like the switch above it, and Save stores it. */
+function TimedSilence({
+  measurement,
+  disabled,
+  onClear,
+}: {
+  measurement: Record<string, unknown>;
+  disabled: boolean;
+  onClear: () => void;
+}) {
+  const end = timedSilenceEnd(measurement, Date.now());
+  if (end === null) return null;
+  return (
+    <Field label={`Silenced until ${end.toLocaleString()}`}>
+      <Button size="sm" disabled={disabled} onClick={onClear}>
+        Clear
+      </Button>
+    </Field>
   );
 }
 
