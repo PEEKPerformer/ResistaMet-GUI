@@ -163,6 +163,14 @@ It exists in resistance mode only, as one of two keys. Both hold the reply to `:
 
 The block is absent when no client was named, which is the case for every run the PySide6 window starts. It is provenance, not authentication. `software_version` is always the backend's own version.
 
+### `started_by` — which role started the run
+
+| Key | Meaning |
+|---|---|
+| `started_by` | The [role](api.md#token-and-roles) of the token that called `POST /session/start`: `ui` for the desktop app, `agent` for an AI agent. Written after the `client.*` block, as `# started_by: agent`. |
+
+The server takes it from the token, never from the request, so unlike `client.*` a client cannot choose it ([Who started a run](api.md#who-started-a-run)). The line is absent from runs that do not go through the API, which includes every run the PySide6 window starts.
+
 ### `spot.*` — four-point runs that carry a spot
 
 Written when the run was started with a spot: every four-point run from the PySide6 window (label and index, no position), and any API run whose request has a `spot`. Absent otherwise. See [Concepts → Spots and maps](concepts.md#spots-and-maps).
