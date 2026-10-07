@@ -116,10 +116,10 @@ class TestAgainstTheInstrumentTable:
 
     @pytest.mark.parametrize("model", [
         pytest.param(m, marks=[pytest.mark.xfail(strict=True, reason=(
-            "ModelSpec gives the 2425 and 2430 a 100 V maximum, but their voltage tables "
-            "are the 2420's and stop at 60 V, so anything above 63 V is clamped onto the "
-            "60 V row. One of instrument._MODELS and accuracy._V_MEASURE/_V_SOURCE is wrong."))]
-            if m in ("2425", "2430") else [])
+            "ModelSpec gives the 2430 a 100 V maximum, but its voltage tables are the "
+            "2420's and stop at 60 V, so anything above 63 V is clamped onto the 60 V "
+            "row. One of instrument._MODELS and accuracy._V_MEASURE/_V_SOURCE is wrong."))]
+            if m == "2430" else [])
         for m in MODELS])
     def test_the_top_range_reaches_the_models_maximum(self, model):
         """A Keithley range sources at most 110 % of its full scale (the
@@ -206,7 +206,7 @@ class TestUncertainty:
     @pytest.mark.parametrize("nplc", NPLCS)
     @pytest.mark.parametrize("table, model", _cases())
     def test_ranging_up_never_improves_the_uncertainty(self, request, table, model, nplc):
-        if table == "i_measure" and model in ("2420", "2425", "2430") and nplc == 0.01:
+        if table == "i_measure" and model in ("2420", "2430") and nplc == 0.01:
             request.applymarker(pytest.mark.xfail(strict=True, reason=self._FAST_1A_ADDER))
         lookup, function, _ = TABLES[table]
         specs = lookup[model]
