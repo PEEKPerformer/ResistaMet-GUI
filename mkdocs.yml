@@ -47,6 +47,7 @@ nav:
     - VISA backends and GPIB adapters: gpib.md
     - Desktop app: desktop.md
     - Backend API: api.md
+    - AI agents (MCP): mcp.md
     - Troubleshooting: troubleshooting.md
     - Simulator fidelity: sim_fidelity.md
   - Citation: citation.md
