@@ -92,7 +92,7 @@ The 422 `detail` is an object:
 
 ### An agent's run always asks
 
-A run started by any role but `ui` raises the [`safety_voltage_ack`](#prompts) prompt whenever its gating voltage reaches the profile's threshold, even on a profile where `safety_voltage_warn_silenced` is true. The silence is a person's choice for the runs they start. The prompt is `requires_human`, so the run waits for someone at the window. The `ui` role's runs are unchanged: a silenced profile is not asked.
+A run started by any role but `ui` raises the [`safety_voltage_ack`](#prompts) prompt whenever its gating voltage reaches the profile's threshold, even on a profile where the warning is silenced (`safety_voltage_warn_silenced`, or `safety_voltage_warn_silenced_until` still ahead). The silence is a person's choice for the runs they start. The prompt is `requires_human`, so the run waits for someone at the window. The `ui` role's runs are unchanged: a silenced profile is not asked.
 
 ### Who started a run
 
@@ -146,7 +146,7 @@ Non-finite floats (an unmeasured temperature, an uncertainty that could not be c
 | `POST /session/abort` | | `SessionStatus` | Never fails |
 | `POST /session/pause`, `POST /session/resume` | | `SessionStatus` | 409 no run in progress |
 | `POST /session/mark` | `{"label": "MARK"}` (label optional) | `SessionStatus` | 409 no run in progress |
-| `POST /session/prompt` | `{"prompt_id", "choice", "fields": {}}` | `SessionStatus` | 409 no prompt pending; 409 `prompt_id` stale, already answered, or `choice` not among the prompt's `options` (the prompt stays pending); 403 prompt needs a human and the role is not `ui` |
+| `POST /session/prompt` | `{"prompt_id", "choice", "fields": {}}` | `SessionStatus` | 409 no prompt pending; 409 `prompt_id` stale or already answered; 422 `choice` not among the prompt's `options`, or `fields` the prompt does not take ([Prompts](#prompts)); 403 prompt needs a human and the role is not `ui`. Each leaves the prompt pending |
 | `GET /session/events` | query `since_seq` (0), `run_id` (all runs), `limit` (500) | `{"events": [Event…], "gap": bool, "last_seq": int}` | |
 | `POST /session/shutdown` | | `{"status": "stopping"}` | |
 
@@ -156,7 +156,7 @@ Non-finite floats (an unmeasured temperature, an uncertainty that could not be c
 |---|---|---|
 | `mode` | string | `resistance`, `source_v`, `source_i`, `four_point`, `sweep`, `vdp` |
 | `sample_name`, `username` | string, not empty | The profile of `username` supplies every setting not overridden. |
-| `overrides` | object | Flat measurement keys, e.g. `{"res_test_current": 1e-3}`. Allowed keys per mode come from `GET /schema/settings`. Refused with 422: unknown keys, the profile-owned `settling_time` and `gpib_address`, the machine's `allow_agents`, the touch-safety keys `safety_voltage_warn_v` and `safety_voltage_warn_silenced` (a run request cannot arrange never to be asked), and the agent limits `max_voltage_v`, `max_current_a` and `max_power_w`. Values are type-checked strictly: `"1e-3"` is not a number and `"false"` is not a boolean. |
+| `overrides` | object | Flat measurement keys, e.g. `{"res_test_current": 1e-3}`. Allowed keys per mode come from `GET /schema/settings`. Refused with 422: unknown keys, the profile-owned `settling_time` and `gpib_address`, the machine's `allow_agents`, the touch-safety keys `safety_voltage_warn_v`, `safety_voltage_warn_silenced` and `safety_voltage_warn_silenced_until` (a run request cannot arrange never to be asked), and the agent limits `max_voltage_v`, `max_current_a` and `max_power_w`. Values are type-checked strictly: `"1e-3"` is not a number and `"false"` is not a boolean. |
 | `prompt_timeout_s` | number > 0, default 900 | How long a prompt may wait before the run is abandoned. |
 | `spot` | object or null | Four-point only (422 for other modes): `{"map_id", "index", "label", "x_mm"?, "y_mm"?, "angle_deg"?}`. See [Concepts → Spots and maps](concepts.md#spots-and-maps). |
 | `client` | object or null | `{"name", "version"}`, each 1–64 characters from letters, digits, space and `. _ + -`. Written to the file header as `client.*`. |
@@ -296,7 +296,16 @@ A third kind, `cable_null_shorted`, is declared in the contract; no run raises i
 
 Both kinds are `requires_human: true`: they assert something only a person at the bench can know (the leads were moved, the voltage is understood). Only the `ui` role may answer them. Software that holds the `ui` token can answer them, and then it is making that assertion.
 
-`cancel` ends the run with reason `cancelled`, no instrument opened and no file. An unanswered prompt ends the run after `prompt_timeout_s` with reason `prompt_timeout`. A stop or abort releases the wait. Answering `acknowledge` with `fields: {"silence_for_profile": true}` is logged but not saved to the profile at this commit; to silence the warning, `PATCH` `safety_voltage_warn_silenced` yourself. Either way the silence never applies to a run started by another role.
+`cancel` ends the run with reason `cancelled`, no instrument opened and no file. An unanswered prompt ends the run after `prompt_timeout_s` with reason `prompt_timeout`. A stop or abort releases the wait.
+
+An answer to `safety_voltage_ack` may carry `fields` that silence the warning on the run's profile:
+
+| Field | Value | Saves |
+|---|---|---|
+| `silence_for_profile` | `true` | `safety_voltage_warn_silenced: true`, until someone turns it off |
+| `silence_for_days` | a number, `0 < days ≤ 365` | `safety_voltage_warn_silenced_until`: the answer's time plus that many days |
+
+Send one or neither. Either is saved with `acknowledge`, before the reply, and logged as `safety_silenced`; with `cancel` nothing is saved. Any other field, a value of the wrong type or out of range, or both together is a 422, and the prompt stays pending. A save that fails is a 500 after the answer has been taken: the run goes ahead, unsilenced. The silence applies to later runs the `ui` role starts; a run started by another role [asks regardless](#an-agents-run-always-asks).
 
 ## The instrument lock
 

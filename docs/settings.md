@@ -81,8 +81,9 @@ Applied to the Resistance tab on launch; the tab itself has live widgets that ov
 | **Filter Type** | `repeat` | `repeat` (N readings → 1 result, then repeat) or `moving` (running average) |
 | **Filter Count** | `5` | `1 – 100` |
 | **Enhanced accuracy in Resistance mode** | `True` | Offset-compensated ohms. See [Concepts → Enhanced R mode](concepts.md#enhanced-r-mode). |
-| **Touch-safety warn threshold** (`safety_voltage_warn_v`) | `30 V` | `0 – 1100 V`. Voltage at or above this triggers the warning before run start. `0` disables. It and the *suppress* flag below belong to the profile: an API run request cannot override either. See [Concepts → Touch-safety warning](concepts.md#touch-safety-warning). |
-| **Suppress touch-safety warning for this profile** | `False` | Equivalent to clicking "Don't show again" on the modal. Uncheck to re-enable. |
+| **Touch-safety warn threshold** (`safety_voltage_warn_v`) | `30 V` | `0 – 1100 V`. Voltage at or above this triggers the warning before run start. `0` disables. It and the two silence keys below belong to the profile: an API run request cannot override any of them. See [Concepts → Touch-safety warning](concepts.md#touch-safety-warning). |
+| **Suppress touch-safety warning for this profile** (`safety_voltage_warn_silenced`) | `False` | Equivalent to clicking "Don't show again" on the modal. Checked too while a timed silence is in force, with its end shown; uncheck to re-enable, which also ends a timed silence. |
+| `safety_voltage_warn_silenced_until` | `null` | Unix time; the warning is silenced until then. Set by answering the desktop prompt "Don't ask again for 7 days" (or `silence_for_days`, [API → Prompts](api.md#prompts)); a time in the past is ignored. Desktop Settings ▸ Safety shows it while in force, with **Clear**. Neither silence applies to a run an AI agent started. |
 
 ### Four-point sample outline and spot position
 

@@ -118,7 +118,7 @@ Before any run whose gating voltage reaches the threshold, ResistaMet shows a wa
 
 A run started through the [API](api.md) has no dialog to show, so the run itself stops at a `safety_voltage_ack` prompt before the instrument is opened and waits for a person to acknowledge or cancel; the desktop app presents that prompt as a dialog that cannot be dismissed.
 
-The threshold defaults to 30 V and is per-user-profile-configurable; set it to 0 to disable entirely. A "Don't show again" checkbox sets a sticky silence flag for the profile; Settings → Measurement has a re-enable toggle.
+The threshold defaults to 30 V and is per-user-profile-configurable; set it to 0 to disable entirely. A "Don't show again" checkbox sets a sticky silence flag for the profile; Settings → Measurement has a re-enable toggle. The desktop app's prompt can also silence it for 7 days, after which it asks again by itself.
 
 The status bar appends `⚡ N V live` while a hazardous run is active. Warning is informational — it never blocks the measurement.
 
