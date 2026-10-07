@@ -42,7 +42,7 @@ What that means when one `config.json` is shared between PCs through a synced fo
 - An empty `gpib_address` is never stored. An empty `visa_library` or `gpib_interface` is a real choice (Automatic, none) and is stored.
 - Through the API these three keys cannot be changed while a run is in progress (409), and `gpib_address` can never be sent as a run override.
 
-`allow_agents` (`false` by default) is kept in the same file: whether a backend on this PC lets AI agents connect ([API → Agent access](api.md#agent-access)). It is read from `machine.json` only, never from `config.json` or an older version's entry, and anything there but `true` means off. Through the API only the `ui` role may change it (403 otherwise), also during a run, and a run request may not send it.
+`allow_agents` (`false` by default) is kept in the same file: whether a backend on this PC lets AI agents connect ([API → Agent access](api.md#agent-access)). It is read from `machine.json` only, never from `config.json` or an older version's entry, and anything there but `true` means off. Through the API only the `ui` role may change it (403 otherwise), also during a run, and a run request may not send it. In the desktop app it is **Allow AI agents to connect**, under Settings → AI agents.
 
 **Coming from an earlier version.** Versions up to 1.12 kept the address in `config.json` under `machines.<hostname>`. That broke whenever the hostname changed, which macOS does on its own depending on the network. The first time this version opens a config on a PC that has no `machine.json`, it copies that PC's old entry (or an even older shared `measurement.gpib_address`) into `machine.json`, skipping values that equal the default. The old entry is left in `config.json`, is still consulted for a key `machine.json` lacks, and is never written again, so an older ResistaMet opening the same file keeps working.
 
@@ -156,6 +156,20 @@ See [Data Outputs](outputs.md) for the full format reference; this tab just sele
 !!! info "HDF5 grayed out?"
     If `h5py` isn't installed, the HDF5 option is disabled with a tooltip explaining why. `pip install h5py` and restart to enable it.
 
+## Agent limits
+
+The most a run started by an AI agent may put on the device ([API → Agent limits](api.md#agent-limits)). They are a section of the profile of their own, `agent_limits`, beside `measurement`; the desktop app edits them under Settings → AI agents, and the PySide6 window does not show them. They never apply to a run a person starts.
+
+| Setting | Default | Notes |
+|---|---|---|
+| `max_voltage_v` | `30 V` | Largest voltage an agent's run may source, or allow as compliance. 30 V is the touch-safety threshold's default, the IEC 61010-1 SELV bound. |
+| `max_current_a` | none | Largest current an agent's run may source, or allow as compliance. |
+| `max_power_w` | none | Largest voltage times current an agent's run could deliver. |
+
+None (an empty field) means no cap beyond the instrument's own limits; a cap is a number greater than 0. Only the window can change them: through the API a role other than `ui` gets 403, and a run request may not send them as overrides.
+
+Raising `max_voltage_v` is not meant to take the person out of the loop. In the design ([`docs/design/mcp_layer.md`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/docs/design/mcp_layer.md), M5), every agent-started run at or above the profile's touch-safety threshold waits for a person to acknowledge it at the window, even on a profile where the warning was silenced. That part is not built yet: at this commit an agent's run gets the same touch-safety prompt as any API run, which the profile's silenced flag skips.
+
 ## Configuration storage
 
 Settings are kept in `config.json` in the working directory (gitignored — per-user, not portable). Structure mirrors the four Settings tabs:
@@ -166,6 +180,7 @@ Settings are kept in `config.json` in the working directory (gitignored — per-
   "display": {...},
   "file": {...},
   "output": {...},
+  "agent_limits": {...},
   "users": ["alice", "bob"],
   "last_user": "alice",
   "user_settings": {
