@@ -178,7 +178,10 @@ def _refuse_a_worse_profile(sections: Dict[str, Any], role: str):
     asked, and only a person at the bench may answer that prompt (design
     decision D4). A role that may not answer it may not raise its threshold
     or silence it here either. ``allow_agents`` is the same kind of key: it
-    decides who may drive the instrument at all.
+    decides who may drive the instrument at all. So is the ``agent_limits``
+    section: it decides how far an agent may drive it
+    (``docs/design/mcp_layer.md`` M4). Each is refused only when the edit
+    would change it, so a client may send a value back as it was given.
 
     An issue blocks the edit when it is on a key the edit changes, or when the
     profile did not have it before. One that was already there and is not
@@ -198,6 +201,12 @@ def _refuse_a_worse_profile(sections: Dict[str, Any], role: str):
             # client that is not the person at the window.
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                                  detail="agent access can only be changed from the "
+                                        "user interface")
+        if role != UI_ROLE and current.get('agent_limits') != merged.get('agent_limits'):
+            # The envelope an agent's run is held to: an agent must not
+            # widen it, and no client that is not the window may either.
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                 detail="the agent limits can only be changed from the "
                                         "user interface")
         blocking = []
         library = merged['measurement'].get('visa_library', '')

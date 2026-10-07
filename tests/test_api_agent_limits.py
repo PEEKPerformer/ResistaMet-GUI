@@ -106,3 +106,44 @@ class TestTheProfileSection:
         assert reply.status_code == 422
         assert [issue['key'] for issue in reply.json()['detail']['issues']] == ['max_current_a']
         assert config.get_user_settings('alice')['agent_limits']['max_current_a'] is None
+
+
+class TestOnlyTheWindowChangesThem:
+    @pytest.mark.parametrize('patch', [{'max_voltage_v': 1000.0}, {'max_voltage_v': None},
+                                        {'max_current_a': 1.0}, {'max_power_w': 5.0},
+                                        {'max_voltage_v': 10.0}])
+    def test_an_agent_changing_a_limit_is_forbidden(self, agent, config, patch):
+        reply = agent.patch('/profiles/alice', json={'agent_limits': patch})
+        assert reply.status_code == 403
+        assert config.get_user_settings('alice')['agent_limits'] == {
+            'max_voltage_v': 30.0, 'max_current_a': None, 'max_power_w': None}
+
+    def test_nor_alongside_an_edit_it_may_make(self, agent, config):
+        reply = agent.patch('/profiles/alice', json={
+            'measurement': {'nplc': 2.0}, 'agent_limits': {'max_voltage_v': 200.0}})
+        assert reply.status_code == 403
+        stored = config.get_user_settings('alice')
+        assert stored['agent_limits']['max_voltage_v'] == 30.0
+        assert stored['measurement']['nplc'] != 2.0
+
+    def test_an_agent_may_send_them_back_unchanged(self, agent, config):
+        profile = agent.get('/profiles/alice').json()
+        reply = agent.patch('/profiles/alice', json={
+            'measurement': {'nplc': 2.0}, 'agent_limits': profile['agent_limits']})
+        assert reply.status_code == 200
+        assert config.get_user_settings('alice')['measurement']['nplc'] == 2.0
+
+    @pytest.mark.parametrize('key', ['max_voltage_v', 'max_current_a', 'max_power_w'])
+    def test_a_run_request_cannot_carry_them(self, agent, key):
+        reply = agent.post('/settings/resolve', json={
+            'mode': 'source_v', 'username': 'alice', 'overrides': {key: 1000.0}})
+        assert reply.json()['ok'] is False
+        issues = reply.json()['issues']
+        assert [issue['key'] for issue in issues] == [key]
+        assert 'agent limit' in issues[0]['message']
+
+        started = agent.post('/session/start', json={
+            'mode': 'source_v', 'username': 'alice', 'sample_name': 's',
+            'overrides': {key: 1000.0}})
+        assert started.status_code == 422
+        assert key in started.json()['detail']
