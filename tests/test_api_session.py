@@ -238,6 +238,9 @@ class TestPromptAuthorization:
             'safety_voltage_warn_v': 30.0, 'safety_voltage_warn_silenced': False,
             'vsource_voltage': 60.0, 'vsource_duration_hours': 0.0,
         })
+        # 60 V is above the 30 V an agent may ask for by default; the person
+        # has raised it, so a non-ui run gets as far as the prompt.
+        profile['agent_limits'] = {'max_voltage_v': 100.0}
 
     def test_ui_role_may_answer_a_human_prompt(self, client, fake_rm, sink, profile):
         self._hazardous(profile)

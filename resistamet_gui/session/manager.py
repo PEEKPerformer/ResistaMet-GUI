@@ -118,7 +118,8 @@ class MeasurementSession:
               overrides: Optional[Dict[str, Any]] = None,
               prompt_timeout_s: float = 900.0,
               spot: Optional[Any] = None,
-              client: Optional[Any] = None) -> str:
+              client: Optional[Any] = None,
+              check: Optional[Callable[[Dict[str, Any]], None]] = None) -> str:
         """Resolve settings, then run them. Returns the run id immediately.
 
         ``spot`` (a ``SpotRequest`` or its dict) says which placement of the
@@ -129,6 +130,12 @@ class MeasurementSession:
         ``client`` (a ``ClientInfo`` or its dict) names the program that asked
         for the run. It rides the same way, as ``settings['client']``, and
         ``build_metadata`` writes it into the file header.
+
+        ``check``, when given, is called with the resolved settings once they
+        are known to be valid and before anything is opened; whatever it
+        raises propagates and nothing starts. It is how a caller holds a run
+        to a rule of its own -- the API's agent limits -- on exactly the
+        values the run would use, without resolving them a second time.
 
         Raises ``SessionBusy`` unless idle, ``InstrumentBusy`` when another
         process holds the instrument, and ``ValueError`` when the strict
@@ -144,6 +151,8 @@ class MeasurementSession:
             resolved.settings['spot'] = SpotRequest.model_validate(spot).model_dump()
         if client is not None:
             resolved.settings['client'] = ClientInfo.model_validate(client).model_dump()
+        if check is not None:
+            check(resolved.settings)
 
         with self._lock:
             if self._state != 'idle':

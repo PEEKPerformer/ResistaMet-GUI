@@ -47,6 +47,8 @@ def config(tmp_path):
                          'safety_voltage_warn_v': 30.0,
                          'safety_voltage_warn_silenced': False,
                          'vsource_voltage': 60.0, 'vsource_duration_hours': 0.0},
+        # Above the 30 V default, so an agent's 60 V run reaches its prompt.
+        'agent_limits': {'max_voltage_v': 100.0},
     })
     return manager
 
