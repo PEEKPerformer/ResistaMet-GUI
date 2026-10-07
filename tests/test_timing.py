@@ -10,8 +10,7 @@ On the checked-in bench the estimator under-predicts (is conservative) by
 up to 14.4 % and over-predicts by up to 5.7 %; the test holds it to 15 %
 and 6 %. The worst under-prediction is the low-NPLC / high-filter corner,
 where the manual gives no per-conversion overhead numbers. The estimate
-does over-promise on 8 of the 27 points, so timing.py's "never
-over-promises" is not what this data shows.
+over-promises on 8 of the 27 points.
 """
 import json
 import math
