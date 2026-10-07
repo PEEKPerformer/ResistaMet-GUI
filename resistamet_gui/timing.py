@@ -4,10 +4,11 @@ The per-reading time on a 2400-series sourcemeter is dominated by a few
 documented behaviours (User's Manual §3-10, §7-7, §7-9). The model below
 was validated against a Keithley 2400 (firmware C30) wired in 2-point
 probe configuration: across 27 (auto_zero, NPLC, filter_count) combos
-the formula matches measured rates within ~5% in the production range,
-worst case ~14% **conservative** in the low-NPLC / high-filter corner
-(so the helper under-promises, never over-promises). Raw bench data is
-checked in at ``docs/keithley_2400_timing_bench.json``.
+the formula is within 5% of the measured rate on 20 of them. It is up to
+14.4% low (conservative) in the low-NPLC / high-filter corner, and up to
+5.7% high (over-promising) on 8 combos, the worst at NPLC 0.5 with a
+filter count of 1. Raw bench data is checked in at
+``docs/keithley_2400_timing_bench.json``.
 
 Why this exists:
   Stored ``sampling_rate`` defaults were "aspirational" — the timer
@@ -53,9 +54,9 @@ def estimate_max_sample_rate_hz(
 ) -> float:
     """Predict the maximum sustainable :READ? rate at the given settings.
 
-    Conservative — measured rates are typically 0–14% higher than the
-    estimate, never lower, so a UI cap based on this value will not
-    over-promise.
+    On the bench data the measured rate is between 5.7% below and 14.4%
+    above this estimate, so a UI cap based on it can over-promise by up
+    to about 6%.
 
     ``offset_comp`` doubles the per-reading time when True: the
     Keithley's offset-compensated ohms function samples once with
