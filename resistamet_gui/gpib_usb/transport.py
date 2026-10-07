@@ -74,17 +74,74 @@ class TransportStall(TransportError):
     """
 
 
+class TransportGone(TransportError):
+    """The adapter has left the USB bus: unplugged, or its power lost.
+
+    Nothing sent on the handle can arrive any more, so there is nothing to
+    recover: every pipe reset, stop request and drain fails the same way
+    (spec §11.2, "Hot-unplug mid-run"). A replugged adapter comes back as a
+    new USB device, reached through a fresh enumeration, not through this
+    handle. Raised for libusb's "no such device"; on macOS, where an open
+    handle never reports that (§10.11), the controller raises it when
+    ``device_present`` no longer finds the adapter after another error.
+    """
+
+
 #: libusb's code for a pipe error, which is how it reports a STALL. The
 #: installed pyusb libusb-1.0 backend raises every negative libusb return but
 #: a timeout as ``USBError(strerror, ret, _libusb_errno[ret])`` (its
 #: ``_check``), so a pipe error arrives with ``backend_error_code`` -9 and
 #: ``errno`` EPIPE, both filled.
 LIBUSB_ERROR_PIPE = -9
+#: libusb's code for a device that is no longer there. The same ``_check``
+#: raises it as ``USBError('No such device (it may have been disconnected)',
+#: -4, ENODEV)``; pyusb's libusb-0.1 backend passes the negative errno itself
+#: as the backend code (-ENODEV) and no errno.
+LIBUSB_ERROR_NO_DEVICE = -4
+
+
+class TransportAccessDenied(TransportError):
+    """The operating system refused this process access to the adapter's USB device.
+
+    On Linux that is the permission on its device node, which a udev rule
+    grants (package README, "Linux"; §10.11: root:root 0664 without the
+    rule, and with it the unprivileged user opened the adapter). The
+    message names the node and the rule.
+    """
+
+
+#: libusb's code for access denied. The libusb-1.0 backend raises it as
+#: ``USBError('Access denied (insufficient permissions)', -3, EACCES)``; the
+#: libusb-0.1 backend passes -EACCES as the backend code and no errno.
+LIBUSB_ERROR_ACCESS = -3
 
 
 def _is_stall(exc: Exception) -> bool:
     return (getattr(exc, 'backend_error_code', None) == LIBUSB_ERROR_PIPE
             or getattr(exc, 'errno', None) == errno.EPIPE)
+
+
+def _is_gone(exc: Exception) -> bool:
+    return (getattr(exc, 'errno', None) == errno.ENODEV
+            or getattr(exc, 'backend_error_code', None) in (LIBUSB_ERROR_NO_DEVICE, -errno.ENODEV))
+
+
+def _is_access_denied(exc: Exception) -> bool:
+    return (getattr(exc, 'errno', None) == errno.EACCES
+            or getattr(exc, 'backend_error_code', None) in (LIBUSB_ERROR_ACCESS, -errno.EACCES))
+
+
+def _access_denied_message(device: Any, interface: int, exc: Exception) -> str:
+    """What to tell the user when the claim is refused: the cause, and on Linux the remedy."""
+    bus, address = getattr(device, 'bus', None), getattr(device, 'address', None)
+    if sys.platform.startswith('linux'):
+        node = ('/dev/bus/usb/%03d/%03d' % (bus, address)) if bus is not None and address is not None \
+            else 'under /dev/bus/usb'
+        return ('cannot open the adapter: no permission on its USB device node %s (%s). Install the '
+                'udev rule in resistamet_gui/gpib_usb/README.md ("Linux"), reload the rules, replug '
+                'the adapter, and make sure your user is in the group the rule names' % (node, exc))
+    return ('cannot claim interface %d: the operating system denied access to the adapter (%s); '
+            'another program may have it open' % (interface, exc))
 
 
 def _carrying_codes(error: TransportError, exc: Exception) -> TransportError:
@@ -117,7 +174,14 @@ class Transport(Protocol):
 
     A STALL on any endpoint raises ``TransportStall``. ``clear_halt`` takes
     the endpoint address (``tables.Model`` has them) and resets that pipe,
-    which is what NI's driver does after a refused 0x0e (§10.6.5).
+    which is what NI's driver does after a refused 0x0e (§10.6.5). A device
+    that is no longer on the bus raises ``TransportGone`` from any call
+    where libusb says so, which on macOS it does not (§10.11): there the
+    open handle of an unplugged adapter fails with an I/O error and then
+    "Other error". ``device_present() -> Optional[bool]`` answers from an
+    enumeration whether the adapter is still there, None when it cannot
+    tell; it is optional (``PyUsbTransport`` has it), and a transport
+    without it counts as one that cannot tell.
     """
 
     #: wMaxPacketSize of the primary bulk IN endpoint, for sizing read buffers (§8.6).
@@ -333,7 +397,12 @@ class PyUsbTransport:
             usb.util.claim_interface(device, interface)
         except usb.core.USBError as exc:
             _dispose(usb, device)
-            raise TransportError('cannot claim interface %d: %s' % (interface, exc)) from exc
+            if _is_access_denied(exc):
+                error: TransportError = TransportAccessDenied(_access_denied_message(device, interface, exc))
+            else:
+                kind = TransportGone if _is_gone(exc) else TransportError
+                error = kind('cannot claim interface %d: %s' % (interface, exc))
+            raise _carrying_codes(error, exc) from exc
         self.max_packet_size = self._in_packet_size(self._in)
         if self._in_raw is not None:
             self.max_packet_size_raw = self._in_packet_size(self._in_raw)
@@ -373,6 +442,9 @@ class PyUsbTransport:
         except self._usb.core.USBTimeoutError as exc:
             raise _carrying_codes(TransportTimeout('%s timed out' % what), exc) from exc
         except self._usb.core.USBError as exc:
+            if _is_gone(exc):
+                raise _carrying_codes(TransportGone('%s failed: the device is no longer on the USB bus (%s)'
+                                                    % (what, exc)), exc) from exc
             if _is_stall(exc):
                 raise _carrying_codes(TransportStall('%s was refused with a STALL' % what), exc) from exc
             raise _carrying_codes(TransportError('%s failed: %s' % (what, exc)), exc) from exc
@@ -440,10 +512,49 @@ class PyUsbTransport:
         """Reset a halted pipe: CLEAR_FEATURE(ENDPOINT_HALT) and the host's data toggle."""
         self._run('clear halt on endpoint 0x%02x' % endpoint, lambda: self._device.clear_halt(endpoint))
 
+    def device_present(self) -> Optional[bool]:
+        """Whether this adapter is still on the USB bus, from an enumeration; None if it cannot tell.
+
+        On macOS the open handle of an unplugged adapter never says "no
+        such device": the transfer in flight fails with errno 5 and every
+        later request with libusb's "Other error", and errno 19 comes only
+        when the device is opened again (§10.11). The controller asks here
+        instead, after an error that does not say, and more than once: on
+        the bench libusb still listed the unplugged adapter for about 10 ms
+        after the first error (``link.AdapterLink.gone_instead``).
+
+        Present means a device with this one's vendor and product id at its
+        bus and address. pyusb's ``find`` reads each device's descriptor,
+        bus and address without opening it; the serial number is not
+        compared, because reading it opens the device, and a replugged
+        adapter comes back as a new device at a new address, which this
+        handle does not reach anyway. Enumeration that fails, or a device
+        whose location is unknown, gives None.
+        """
+        vendor = getattr(self._device, 'idVendor', None)
+        product = getattr(self._device, 'idProduct', None)
+        bus = getattr(self._device, 'bus', None)
+        address = getattr(self._device, 'address', None)
+        if None in (vendor, product, bus, address):
+            return None
+        try:
+            backend = libusb_backend()
+            if backend is None:
+                return None
+            found = self._usb.core.find(find_all=True, backend=backend, idVendor=vendor, idProduct=product,
+                                        bus=bus, address=address)
+            return next(iter(found), None) is not None
+        except Exception as exc:  # noqa: BLE001 - an enumeration that fails cannot tell
+            logger.debug('USB enumeration for the presence check failed: %s', exc)
+            return None
+
     def _write(self, endpoint: int, what: str, data: bytes, timeout_ms: int) -> None:
+        """All of ``data`` or ``TransportTimeout``: pyusb returns a short count only when the wait
+        ran out after some packets went (its ``__write``), which is how a hung adapter takes the
+        first packets of a message and NAKs the rest (§8.17)."""
         written = self._run(what, lambda: self._device.write(endpoint, data, timeout_ms))
         if written != len(data):
-            raise TransportError('%s sent %d of %d bytes' % (what, written, len(data)))
+            raise TransportTimeout('%s timed out after %d of %d bytes' % (what, written, len(data)))
 
     def close(self) -> None:
         try:

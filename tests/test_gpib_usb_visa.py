@@ -6,9 +6,11 @@ presence probe), holding one fake instrument at address 24 that answers
 ``*IDN?``. That lets pyvisa drive the whole stack: ``ResourceManager("@py")``,
 ``list_resources``, ``open_resource``, ``query``.
 """
+import functools
 import sys
 import threading
-from typing import Dict, List, Optional, Tuple
+import types
+from typing import List
 
 import pytest
 
@@ -24,7 +26,7 @@ if not hasattr(pytest.importorskip('pyvisa_py.sessions'), 'OpenError'):
 import pyvisa  # noqa: E402
 from pyvisa import constants  # noqa: E402
 from pyvisa.constants import StatusCode  # noqa: E402
-from pyvisa_py.sessions import OpenError, Session  # noqa: E402
+from pyvisa_py.sessions import Session  # noqa: E402
 
 import resistamet_gui.gpib_usb as gpib_usb  # noqa: E402
 from resistamet_gui.gpib_usb import protocol as p  # noqa: E402
@@ -33,380 +35,25 @@ from resistamet_gui.gpib_usb import controller as controller_module  # noqa: E40
 from resistamet_gui.gpib_usb import transport, visa_session  # noqa: E402
 from resistamet_gui.gpib_usb import boards  # noqa: E402
 from resistamet_gui.gpib_usb.boards import BoardRegistry  # noqa: E402
-from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportError, TransportStall  # noqa: E402
-from resistamet_gui.gpib_usb.visa_intfc import NiUsbGpibIntfcDispatch  # noqa: E402
+from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportAccessDenied, TransportError  # noqa: E402
 from resistamet_gui.gpib_usb.visa_session import GPIB_INSTR, NiUsbGpibDispatch  # noqa: E402
-
-
-def h(text: str) -> bytes:
-    return bytes.fromhex(text.replace(' ', ''))
+from tests.fakes.gpib_usb import FakeClock, FakeInstrument, SimulatedAdapter, fake_adapter_info, h  # noqa: E402
+from tests.fakes.gpib_usb_visa import (Sentinel, enumeration, ni_instructions,  # noqa: E402,F401
+                                       session_registry, switch_unset)
 
 
 # ---------------------------------------------------------------------------
-# a behavioural fake adapter
+# helpers
 # ---------------------------------------------------------------------------
-
-class FakeInstrument:
-    def __init__(self, idn: str) -> None:
-        self.idn = idn
-        self.received: List[bytes] = []
-        self.pending = b''
-        self.cleared = 0
-        #: What a serial poll returns.
-        self.status_byte = 0
-
-    def accept(self, data: bytes, eoi: bool) -> None:
-        self.received.append(data)
-        if data.strip() == b'*IDN?':
-            self.pending += (self.idn + '\n').encode()
-
-
-class SimulatedAdapter:
-    """Answers protocol messages like an attached HS with instruments on the bus."""
-
-    max_packet_size = 512
-    max_packet_size_raw = 512
-
-    def __init__(self, instruments: Dict[int, FakeInstrument], serial_reply: bytes = h('41 78 56 34 12')) -> None:
-        self.instruments = instruments
-        self.serial_reply = serial_reply
-        self.listening: List[int] = []
-        self.talker: Optional[int] = None
-        #: Between SPE and SPD the addressed talker answers with its status byte (§5.9).
-        self.serial_poll_mode = False
-        self.atn = True
-        self.ren = False
-        #: The adapter's own addressed state (its address is 0).
-        self.own_talker = False
-        self.own_listener = False
-        #: Set by a test to hold the SRQ line asserted.
-        self.srq = False
-        self.reply = b''
-        #: What the next bulk_in_raw returns (the data of a 0x0b), None when none is owed.
-        self.raw_reply: Optional[bytes] = None
-        #: (length, EOI) of the 0x0e whose bytes the next bulk_out_raw must bring.
-        self.pending_raw_write: Optional[Tuple[int, bool]] = None
-        self.raw_writes: List[bytes] = []
-        #: Endpoints left halted by a STALL, and every pipe reset asked for, in order.
-        self.halted: set = set()
-        self.halts_cleared: List[int] = []
-        self.messages: List[bytes] = []
-        self.control_requests: List[int] = []
-        self.bulk_in_timeouts: List[int] = []
-        self.raw_in_timeouts: List[int] = []
-        self.closed = False
-        #: Raised by the next bulk_out, once.
-        self.fail_next: Optional[Exception] = None
-        #: Raised by the next control_in, once.
-        self.fail_next_control: Optional[Exception] = None
-        #: Answer a read that times out as GPIB-USB-HS 01CEE482 does (§5.2): one 0x36 block
-        #: of stale bytes and min(requested, 15) in the last-block count, nothing read. Off,
-        #: the form NI's captures show: no data block and a stale last-block byte.
-        self.stale_timeout_block = False
-        #: The talker's message ends without EOI on its last byte: the read that drains it
-        #: reports no END, and the next read finds nothing and times out.
-        self.withhold_eoi = False
-
-    def control_in(self, request, value, index, length, timeout_ms, request_type=0xC0) -> bytes:
-        if self.fail_next_control is not None:
-            failure, self.fail_next_control = self.fail_next_control, None
-            raise failure
-        self.control_requests.append(request)
-        if request == 0x41:
-            return self.serial_reply
-        if request == 0x40:
-            return h('40 01 00 01 30 01 02 03 00 03 96 00 00 00 00 00')
-        if request == 0x21:
-            return self._status(request, ibsta=self.ibsta())
-        return bytes((request,)) + h('01 30 00 00 00 00 00')
-
-    def ibsta(self) -> int:
-        """CMPL and CIC always; ATN, TACS, LACS and SRQI from the bus state."""
-        return (0x0120 | (0x0010 if self.atn else 0) | (0x0008 if self.own_talker else 0)
-                | (0x0004 if self.own_listener else 0) | (0x1000 if self.srq else 0))
-
-    def bus_lines(self) -> int:
-        """The BSR of §5.13 for the fake's state: a listener holds NDAC while ATN is false."""
-        ndac = 0x20 if (self.listening and not self.atn) else 0x00
-        return (ndac | (0x01 if self.ren else 0) | (0x80 if self.atn else 0)
-                | (0x04 if self.srq else 0))
-
-    def _status(self, opcode: int, error: int = 0, count: int = 0, ibsta: int = 0x0130) -> bytes:
-        return (bytes((opcode,)) + ibsta.to_bytes(2, 'big') + bytes((error,))
-                + (count & 0xFFFF).to_bytes(2, 'little') + b'\x00\x00')
-
-    def bulk_out(self, data: bytes, timeout_ms: int) -> None:
-        if self.fail_next is not None:
-            failure, self.fail_next = self.fail_next, None
-            raise failure
-        self.messages.append(data)
-        opcode = data[0]
-        if opcode in (p.OP_TAKE_CONTROL, p.OP_INTERFACE_CLEAR):
-            self.atn = True
-            self.reply = self._status(opcode) + h('04 00 00 00')
-        elif opcode == p.OP_GO_TO_STANDBY:
-            self.atn = False
-            self.reply = self._status(opcode) + h('04 00 00 00')
-        elif opcode == p.OP_REGISTER_WRITE:
-            for start in range(3, 3 + 3 * data[1], 3):
-                if data[start:start + 3] == bytes(t.REN_ON_WRITE):
-                    self.ren = True
-                elif data[start:start + 3] == bytes(t.REN_OFF_WRITE):
-                    self.ren = False
-            self.reply = self._status(opcode) + bytes((data[1], 0, 0, 0)) + h('04 00 00 00')
-        elif opcode == p.OP_REGISTER_READ:
-            self.reply = bytes((0x34, self.bus_lines(), 0, 0, 0x35, 1, 0, 0)) + h('04 00 00 00')
-        elif opcode == p.OP_COMMAND:
-            self.reply = self._command(data)
-        elif opcode == p.OP_WRITE:
-            self.reply = self._write(data)
-        elif opcode == p.OP_READ:
-            self.reply = self._read(data)
-        elif opcode == p.OP_READ_RAW:
-            self.reply = self._read_raw(data)
-        elif opcode == p.OP_WRITE_RAW:
-            # §10.5.2: the header now, the bytes on the alternate OUT next; the reply after those.
-            self.pending_raw_write = (-int.from_bytes(data[8:12], 'little', signed=True), bool(data[6] & 0x08))
-        elif opcode == p.OP_SERIAL_POLL:
-            self.reply = self._serial_poll(data)
-        else:
-            raise AssertionError('unexpected opcode 0x%02x' % opcode)
-
-    def _command(self, data: bytes) -> bytes:
-        count = 0x100 - data[1]
-        command_bytes = data[4:4 + count]
-        if not self.instruments:
-            return self._status(p.OP_COMMAND, error=5, count=-count) + h('04 00 00 00')
-        self.atn = True
-        for byte in command_bytes:
-            if byte == t.CMD_UNL:
-                self.listening = []
-                self.own_listener = False
-            elif 0x20 <= byte <= 0x3E:
-                if byte - 0x20 in self.instruments:
-                    self.listening.append(byte - 0x20)
-                self.own_listener = self.own_listener or byte == 0x20
-            elif 0x40 <= byte <= 0x5E:
-                self.talker = byte - 0x40 if byte - 0x40 in self.instruments else None
-                self.own_talker = byte == 0x40
-            elif byte == t.CMD_UNT:
-                self.talker = None
-                self.own_talker = False
-            elif byte == t.CMD_SPE:
-                self.serial_poll_mode = True
-            elif byte == t.CMD_SPD:
-                self.serial_poll_mode = False
-            elif byte == t.CMD_SDC:
-                for pad in self.listening:
-                    self.instruments[pad].cleared += 1
-                    self.instruments[pad].pending = b''
-            elif byte == t.CMD_DCL:
-                for instrument in self.instruments.values():
-                    instrument.cleared += 1
-                    instrument.pending = b''
-        return self._status(p.OP_COMMAND) + h('04 00 00 00')
-
-    def _write(self, data: bytes) -> bytes:
-        length = 0x10000 - int.from_bytes(data[1:3], 'little')
-        payload = data[8:8 + length]
-        if not self.listening:
-            return self._status(p.OP_WRITE, error=8, count=-length) + h('04 00 00 00')
-        for pad in self.listening:
-            self.instruments[pad].accept(payload, bool(data[6] & 0x08))
-        return self._status(p.OP_WRITE) + h('04 00 00 00')
-
-    def _serial_poll(self, data: bytes) -> bytes:
-        """0x10 (§10.5.4): ``3a P S sb`` then a 0x39 status block; the latter alone, with error
-        0x0a, for an absent device."""
-        pad, sad_byte = data[4], data[5]
-        instrument = self.instruments.get(pad)
-        self.atn = True  # the adapter addresses the bus itself
-        if instrument is None:
-            # §10.6.6: a poll that times out is answered without the 0x3a block.
-            return self._status(0x39, error=0x0A, ibsta=0x0074) + h('04 00 00 00')
-        return bytes((0x3A, pad, sad_byte, instrument.status_byte)) + self._status(0x39, ibsta=0x0074) + h('04 00 00 00')
-
-    def _write_raw(self, payload: bytes, eoi: bool) -> bytes:
-        """The 0x0e reply once the bytes have arrived: an 8-byte status with a 32-bit count."""
-        for pad in self.listening:
-            self.instruments[pad].accept(payload, eoi)
-        return bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x00)) + h('00 00 00 00') + h('04 00 00 00')
-
-    def _talker_output(self, requested: int, eos_mode: int, eos_char: int) -> Optional[Tuple[bytes, bool]]:
-        """What the addressed talker gives up for one read: (bytes, END), or None when nothing is pending."""
-        instrument = self.instruments.get(self.talker) if self.talker is not None else None
-        if instrument is not None and self.serial_poll_mode:
-            return bytes((instrument.status_byte,)), False
-        if instrument is None or not instrument.pending:
-            return None
-        source = instrument.pending
-        if eos_mode & 0x04 and bytes((eos_char,)) in source:
-            cut = source.index(bytes((eos_char,))) + 1
-        else:
-            cut = len(source)
-        cut = min(cut, requested)
-        out, instrument.pending = source[:cut], source[cut:]
-        end = ((not instrument.pending and not self.withhold_eoi)
-               or bool(eos_mode & 0x04 and out.endswith(bytes((eos_char,)))))
-        return out, end
-
-    def _read_raw(self, data: bytes) -> bytes:
-        """0x0b (§10.1.3): the bytes go to the alternate IN, a 12-byte 0x0b block and the
-        clear-END write's status come back on the primary."""
-        requested = -int.from_bytes(data[4:8], 'little', signed=True)
-        result = None if self.atn else self._talker_output(requested, data[1], data[2])
-        if result is None:
-            out, end, error = b'', False, (2 if self.atn else 0x0A)
-        else:
-            (out, end), error = result, 0
-        self.raw_reply = out
-        count = (len(out) - requested).to_bytes(4, 'little', signed=True)
-        status = bytes((p.OP_READ_RAW,)) + (0x2064 if end else 0x0064).to_bytes(2, 'big') + bytes((error,))
-        return (status + count + bytes((0xE0 if end else 0x60, 0, 0, 0))
-                + h('09 00 64 00') + count + h('01 00 00 00') + h('04 00 00 00'))
-
-    def _read(self, data: bytes) -> bytes:
-        requested = 0x10000 - int.from_bytes(data[4:6], 'little')
-        eos_mode, eos_char = data[1], data[2]
-        # The 16-byte trailer as the real adapter sends it.
-        trailer_tail = h('04 00 00 00')
-        if self.atn:
-            return self._status(0x38, error=2, count=-requested) + h('60 00 00 00') + trailer_tail
-        result = self._talker_output(requested, eos_mode, eos_char)
-        if result is None:
-            status = self._status(0x38, error=0x0A, count=-requested, ibsta=0x0020)
-            if self.stale_timeout_block and requested <= 15:
-                return (h('36 00 20 00 aa 55 ff ff 04 00 00 00 04 00 00 00') + status
-                        + bytes((0xE0, requested, 0, 0)) + trailer_tail)
-            return status + h('e0 5e 00 00') + trailer_tail
-        out, end = result
-        blocks = b''
-        for start in range(0, len(out), 15):
-            chunk = out[start:start + 15]
-            blocks += bytes((0x36,)) + chunk + b'\xee' * (15 - len(chunk))
-        last_count = len(out) - ((len(out) - 1) // 15) * 15 if out else 0
-        status = self._status(0x38, count=len(out) - requested,
-                              ibsta=0x2100 if end else 0x0100)
-        return blocks + status + bytes((0xE0 if end else 0x60, last_count, 0, 0)) + trailer_tail
-
-    def bulk_in(self, length: int, timeout_ms: int) -> bytes:
-        self.bulk_in_timeouts.append(timeout_ms)
-        assert len(self.reply) <= length, 'reply of %d bytes would overflow %d' % (len(self.reply), length)
-        reply, self.reply = self.reply, b''
-        return reply
-
-    # The alternate pair and the interrupt endpoint; behaviour is added with the
-    # instructions that use them.
-    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> int:
-        if 0x06 in self.halted:
-            raise TransportStall('raw bulk write was refused with a STALL')
-        assert self.pending_raw_write is not None, 'raw bulk OUT with no 0x0e outstanding'
-        length, eoi = self.pending_raw_write
-        assert len(data) == length, 'the 0x0e announced %d bytes, %d arrived' % (length, len(data))
-        self.pending_raw_write = None
-        if not self.listening:
-            # §10.6.5: the data is refused with a STALL, the endpoint stays halted until it is
-            # reset, and the reply with error 8 and the whole count comes by itself.
-            self.halted.add(0x06)
-            count = (-length).to_bytes(4, 'little', signed=True)
-            self.reply = bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x08)) + count + h('04 00 00 00')
-            raise TransportStall('raw bulk write was refused with a STALL')
-        self.raw_writes.append(data)
-        self.reply = self._write_raw(data, eoi)
-        return len(data)
-
-    def clear_halt(self, endpoint: int) -> None:
-        self.halted.discard(endpoint)
-        self.halts_cleared.append(endpoint)
-
-    def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
-        self.raw_in_timeouts.append(timeout_ms)
-        assert self.raw_reply is not None, 'raw bulk IN with no 0x0b outstanding'
-        assert len(self.raw_reply) < length, 'raw data of %d bytes needs a buffer larger than %d' % (len(self.raw_reply), length)
-        reply, self.raw_reply = self.raw_reply, None
-        return reply
-
-    def interrupt_in(self, length: int, timeout_ms: int) -> bytes:
-        raise AssertionError('unexpected interrupt read')
-
-    def control_out(self, request, value, index, data, timeout_ms, request_type=0x40) -> None:
-        raise AssertionError('unexpected control OUT 0x%02x' % request)
-
-    def close(self) -> None:
-        self.closed = True
-
-    def instructions(self, opcode: int) -> List[bytes]:
-        return [m for m in self.messages if m[0] == opcode]
-
 
 def framed_counts(adapter: SimulatedAdapter) -> List[int]:
     """The requested count of every framed 0x0a the adapter has seen, in order."""
     return [0x10000 - int.from_bytes(m[4:6], 'little') for m in adapter.instructions(p.OP_READ)]
 
 
-def fake_adapter_info(serial: Optional[str] = '01234567', bus: int = 20, address: int = 5) -> AdapterInfo:
-    return AdapterInfo(model='GPIB-USB-HS', vendor_id=t.VENDOR_ID, product_id=t.PID_HS, bus=bus,
-                       address=address, serial=serial, endpoint_out=0x02, endpoint_in=0x84,
-                       endpoint_interrupt=0x81, needs_firmware=False, device=None)
-
-
-class Sentinel(Session):
-    """Stands in for whatever pyvisa-py had registered for (gpib, INSTR)."""
-
-    calls: List[str] = []
-
-    def __init__(self, resource_manager_session, resource_name, parsed=None, open_timeout=None):
-        Sentinel.calls.append(resource_name)
-        raise OpenError(StatusCode.error_resource_not_found)
-
-    @staticmethod
-    def list_resources() -> List[str]:
-        return ['GPIB9::1::INSTR']
-
-    def _get_attribute(self, attribute):
-        raise NotImplementedError
-
-    def _set_attribute(self, attribute, state):
-        raise NotImplementedError
-
-    def close(self):
-        raise NotImplementedError
-
-
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------
-
-@pytest.fixture
-def session_registry():
-    """Restore pyvisa-py's session table and both dispatchers' memory after each test.
-
-    ``install()`` puts the INSTR and the INTFC dispatcher in place together,
-    so both ``previous`` slots are saved here.
-    """
-    saved = dict(Session._session_classes)
-    saved_previous = NiUsbGpibDispatch.previous
-    saved_intfc_previous = NiUsbGpibIntfcDispatch.previous
-    Sentinel.calls = []
-    yield Session._session_classes
-    Session._session_classes.clear()
-    Session._session_classes.update(saved)
-    NiUsbGpibDispatch.previous = saved_previous
-    NiUsbGpibIntfcDispatch.previous = saved_intfc_previous
-
-
-@pytest.fixture
-def enumeration(monkeypatch):
-    """A replaceable find_adapters that counts its calls."""
-    state = {'adapters': [fake_adapter_info()], 'calls': 0}
-
-    def find_adapters():
-        state['calls'] += 1
-        return list(state['adapters'])
-
-    monkeypatch.setattr(transport, 'find_adapters', find_adapters)
-    return state
-
 
 @pytest.fixture
 def adapter(monkeypatch, session_registry, enumeration):
@@ -419,19 +66,6 @@ def adapter(monkeypatch, session_registry, enumeration):
     session_registry[GPIB_INSTR] = Sentinel
     gpib_usb.install()
     return sim
-
-
-@pytest.fixture(autouse=True)
-def switch_unset(monkeypatch):
-    """The developer's shell must not decide which instructions these tests see."""
-    monkeypatch.delenv(boards.NI_INSTRUCTIONS_ENV, raising=False)
-    monkeypatch.delenv(boards.RAW_TRANSFERS_ENV, raising=False)
-
-
-@pytest.fixture
-def ni_instructions(monkeypatch, switch_unset):
-    """Switch NI's instructions (0x0b, 0x0e, 0x10) on for boards opened in this test; they are off by default."""
-    monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, '1')
 
 
 @pytest.fixture
@@ -524,34 +158,37 @@ class TestInstrumentSession:
         inst.timeout = 5000
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         # The 20480-byte chunk is then a 0x0b with the data on the alternate endpoint, as it
-        # is under NI's driver (§10.1.1).
-        assert adapter.instructions(p.OP_READ) == []
-        read = adapter.instructions(p.OP_READ_RAW)[-1]
-        # Compare off: m 00 and e 00 (the bench-proven form under our AUXRA 0x81 init; NI
-        # sends e 0a under its 0x99 init, §10.1.6), 10 s code, -20480.
-        assert read[:8] == h('0b 00 00 fd 00 b0 ff ff')
+        # is under NI's driver (§10.1.1), in NI's 40-byte message (§10.1.2): the snapshot, the
+        # addressing with 0xfd, the 0x0b with m 00 and e 0a (the session's character with the
+        # compare off, §10.1.6), 5 s -> 0xfd, -20480, then the clear-END and bank-2 writes.
+        assert adapter.blocks(p.OP_READ) == []
+        assert adapter.messages[-1] == h('03 00 00 00 0c fd 00 fd 3f 20 58 00 0b 00 0a fd 00 b0 ff ff'
+                                         '09 01 00 01 0a 55 00 00 09 01 00 02 03 01 00 00 04 00 00 00')
+        # Before the first raw instruction, NI's bank-2 session configuration (§10.2.4).
+        assert {addr: adapter.bank2[addr] for addr in range(3, 8)} == {3: 1, 4: 1, 5: 24, 6: 0, 7: 0xFD}
         assert adapter.raw_in_timeouts[-1] == 1000  # the first slice of the 0x88 wait; the data was there
         inst.close()
+        assert adapter.bank2[0x04] == 0  # NI's close of the last session on the address (§10.3.3)
 
     def test_read_termination_selects_eos_and_is_stripped(self, rm, adapter, ni_instructions):
         inst = rm.open_resource('GPIB0::24::INSTR', read_termination='\n')
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30'
-        read = adapter.instructions(p.OP_READ_RAW)[-1]
-        assert read[1:3] == h('14 0a')
+        read = adapter.blocks(p.OP_READ_RAW)[-1]
+        assert read[1:3] == h('14 0a')   # eos.pcap 0.5172: NI's bytes with the compare on
         inst.close()
 
     def test_a_long_write_goes_raw(self, rm, adapter, ni_instructions):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 20000
         inst.write('*CLS;' * 409 + '*CL')  # 2048 + '\r\n' = 2050 bytes, as longwrite.pcap
-        assert adapter.instructions(p.OP_WRITE) == []
-        header = adapter.instructions(p.OP_WRITE_RAW)[-1]
-        # NI's header (longwrite.pcap 1.8914) with e = 0x00 in place of its 0x0a: the character
-        # goes into e only with the compare on (see _termchar_byte).
-        assert header == h('0e 00 00 fe 00 00 08 00 fe f7 ff ff 04 00 00 00')
-        inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR_EN, True)
+        assert adapter.blocks(p.OP_WRITE) == []
+        # NI's 36-byte message (longwrite.pcap 1.8914), byte for byte: e is the session's
+        # character with the compare off as on (§10.5.2).
+        assert adapter.messages[-1] == h('03 00 00 00 0c fd 00 fd 40 3f 38 00 0e 00 00 fe 00 0a 08 00 fe f7 ff ff'
+                                         '09 01 00 02 03 01 00 00 04 00 00 00')
+        inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR, 0x2C)
         inst.write('*CLS;' * 409 + '*CL')
-        assert adapter.instructions(p.OP_WRITE_RAW)[-1][5] == 0x0A
+        assert adapter.blocks(p.OP_WRITE_RAW)[-1][5] == 0x2C
         assert adapter.raw_writes[-1] == b'*CLS;' * 409 + b'*CL\r\n'
         assert adapter.instruments[24].received[-1] == adapter.raw_writes[-1]
         inst.close()
@@ -574,15 +211,18 @@ class TestInstrumentSession:
         other.close()
         inst.close()
 
-    def test_plain_reads_send_the_bench_proven_eos_bytes(self, rm, adapter, ni_instructions):
-        # The first *IDN? of a bench day, on both read forms: m 00 e 00 with the compare off,
-        # whatever VI_ATTR_TERMCHAR holds (pyvisa's default is 0x0a).
+    def test_plain_reads_send_ni_s_eos_bytes_raw_and_the_bench_proven_ones_framed(self, rm, adapter,
+                                                                                ni_instructions):
+        # The first *IDN? of a bench day, on both read forms, with the compare off: the raw read
+        # is NI's message, e = VI_ATTR_TERMCHAR (pyvisa's default 0x0a, §10.1.6; idn.pcap 0.5160
+        # but for the code); the framed read keeps the bench-proven 00 00.
         inst = rm.open_resource('GPIB0::24::INSTR')
         assert inst.get_visa_attribute(constants.VI_ATTR_TERMCHAR) == 0x0A
         assert inst.get_visa_attribute(constants.VI_ATTR_TERMCHAR_EN) is False
         inst.write('*IDN?')
         inst.read()
-        assert adapter.instructions(p.OP_READ_RAW)[-1] == h('0b 00 00 fc 00 b0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')
+        assert adapter.messages[-1] == h('03 00 00 00 0c fd 00 fd 3f 20 58 00 0b 00 0a fc 00 b0 ff ff'
+                                         '09 01 00 01 0a 55 00 00 09 01 00 02 03 01 00 00 04 00 00 00')
         inst.chunk_size = 256
         inst.write('*IDN?')
         inst.read()
@@ -590,23 +230,23 @@ class TestInstrumentSession:
             '0a 00 00 fc 00 ff 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')  # §3.6 worked example
         inst.close()
 
-    def test_changing_the_termination_character_changes_e_only_when_enabled(self, rm, adapter, ni_instructions):
-        # eosmodes.pcap: TERMCHAR 0x2c enabled -> 14 2c. Disabled, we keep 00 00 (see _termchar_byte).
+    def test_changing_the_termination_character_changes_e_either_way(self, rm, adapter, ni_instructions):
+        # eosmodes.pcap: TERMCHAR 0x2c enabled -> 14 2c; disabled NI sends 00 and the character.
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR, 0x2C)
         inst.write('*IDN?')
         assert inst.read() == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
-        assert adapter.instructions(p.OP_READ_RAW)[-1][1:3] == h('00 00')
+        assert adapter.blocks(p.OP_READ_RAW)[-1][1:3] == h('00 2c')
         inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR_EN, True)
         inst.write('*IDN?')
         assert inst.read() == 'KEITHLEY INSTRUMENTS INC.,'
-        assert adapter.instructions(p.OP_READ_RAW)[-1][1:3] == h('14 2c')
+        assert adapter.blocks(p.OP_READ_RAW)[-1][1:3] == h('14 2c')
         inst.close()
 
     @pytest.mark.parametrize('value', [None, '0'])
     def test_without_the_environment_switch_every_transfer_is_framed(self, rm, adapter, monkeypatch, value):
         if value is not None:
-            monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, value)
+            monkeypatch.setenv(boards.INSTRUCTIONS_ENV, value)
         inst = rm.open_resource('GPIB0::24::INSTR')
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         inst.write('*CLS;' * 500)
@@ -615,26 +255,53 @@ class TestInstrumentSession:
         assert len(adapter.instructions(p.OP_WRITE)[-1]) == 8 + 2502 + 2 + 4
         inst.close()
 
-    def test_the_environment_switch_spellings(self, monkeypatch):
+    def test_the_switch_s_names(self):
+        assert boards.INSTRUCTIONS_ENVS == (
+            'NI_GPIB_USB_INSTRUCTIONS', 'RESISTAMET_GPIB_NI_INSTRUCTIONS', 'RESISTAMET_GPIB_RAW_TRANSFERS',
+        )
+        assert boards.INSTRUCTIONS_ENV == 'NI_GPIB_USB_INSTRUCTIONS'
+        assert boards.NI_INSTRUCTIONS_ENV == 'RESISTAMET_GPIB_NI_INSTRUCTIONS'
+        assert boards.RAW_TRANSFERS_ENV == 'RESISTAMET_GPIB_RAW_TRANSFERS'
+
+    @pytest.mark.parametrize('name', boards.INSTRUCTIONS_ENVS)
+    def test_the_environment_switch_spellings_under_every_name(self, monkeypatch, name):
         for value in ('1', 'true', 'Yes', ' on '):
-            monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, value)
+            monkeypatch.setenv(name, value)
             assert boards.ni_instructions_enabled() is True, value
         for value in ('0', 'false', 'no', 'off', '', 'raw'):
-            monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, value)
+            monkeypatch.setenv(name, value)
             assert boards.ni_instructions_enabled() is False, value
-        monkeypatch.delenv(boards.NI_INSTRUCTIONS_ENV)
+        monkeypatch.delenv(name)
         assert boards.ni_instructions_enabled() is False
 
-    def test_the_switch_s_first_name_still_works_and_the_new_name_wins(self, monkeypatch):
-        assert boards.RAW_TRANSFERS_ENV == 'RESISTAMET_GPIB_RAW_TRANSFERS'
-        assert boards.NI_INSTRUCTIONS_ENV == 'RESISTAMET_GPIB_NI_INSTRUCTIONS'
-        monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '1')
-        assert boards.ni_instructions_enabled() is True
-        monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, '0')
-        assert boards.ni_instructions_enabled() is False
-        monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '0')
-        monkeypatch.setenv(boards.NI_INSTRUCTIONS_ENV, '1')
-        assert boards.ni_instructions_enabled() is True
+    @pytest.mark.parametrize('name', boards.INSTRUCTIONS_ENVS)
+    def test_each_name_alone_turns_the_instructions_on(self, rm, adapter, monkeypatch, caplog, name):
+        monkeypatch.setenv(name, '1')
+        with caplog.at_level('INFO', logger='resistamet_gui.gpib_usb.boards'):
+            inst = rm.open_resource('GPIB0::24::INSTR')
+        assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
+        assert adapter.blocks(p.OP_READ) == []  # the chunk went out as a 0x0b, not a framed 0x0a
+        inst.close()
+        attached = [record.getMessage() for record in caplog.records if 'attached' in record.getMessage()]
+        assert len(attached) == 1 and 'raw transfers' in attached[0] and '0x10' in attached[0]
+
+    @pytest.mark.parametrize('first, second, third, expected', [
+        ('1', '0', '0', True),
+        ('0', '1', '1', False),
+        ('', '1', '1', False),
+        (None, '1', '0', True),
+        (None, '0', '1', False),
+        (None, '', '1', False),
+        (None, None, '1', True),
+        (None, None, '0', False),
+        ('on', None, 'off', True),
+        ('off', 'on', None, False),
+    ])
+    def test_the_first_name_that_is_set_decides(self, monkeypatch, first, second, third, expected):
+        for name, value in zip(boards.INSTRUCTIONS_ENVS, (first, second, third)):
+            if value is not None:
+                monkeypatch.setenv(name, value)
+        assert boards.ni_instructions_enabled() is expected
 
     def test_the_attach_log_line_says_which_instructions(self, rm, adapter, monkeypatch, caplog):
         with caplog.at_level('INFO', logger='resistamet_gui.gpib_usb.boards'):
@@ -697,9 +364,53 @@ class TestInstrumentSession:
         assert framed_counts(adapter) == [1024, 1024] * 2
         inst.close()
 
+    def test_a_read_that_outlasts_its_timeout_returns_what_it_has_with_error_timeout(self, rm, adapter,
+                                                                                    monkeypatch):
+        # §7.1, §10.10.2: NI's read ends at its code's expiry with the bytes so far and a timeout;
+        # pyvisa-py's own sessions return a timed-out read's bytes with VI_ERROR_TMO. A talker
+        # giving 1024 bytes each 0.4 s under a 1 s timeout (0xfb, 1.25 s on the bench unit):
+        # four pieces, then no fifth.
+        clock = FakeClock()
+        monkeypatch.setattr(boards, 'Controller', functools.partial(controller_module.Controller, clock=clock))
+        slow_reply = adapter.bulk_in
+
+        def bulk_in(length, timeout_ms):
+            if adapter.messages[-1][0] == p.OP_READ:
+                clock.advance(0.4)
+            return slow_reply(length, timeout_ms)
+
+        monkeypatch.setattr(adapter, 'bulk_in', bulk_in)
+        adapter.instruments[24].pending = bytes(range(256)) * 20
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 1000
+        session = inst.visalib.sessions[inst.session]
+        assert session.read(20480) == (bytes(range(256)) * 16, StatusCode.error_timeout)
+        assert framed_counts(adapter) == [1024, 1024, 1024, 1024]
+        assert [m[3] for m in adapter.instructions(p.OP_READ)] == [0xFB] * 4   # the session's code on each
+        inst.close()
+
+    def test_a_split_write_that_runs_out_reports_what_crossed(self, rm, adapter, monkeypatch):
+        # Three framed chunks of 0xffff under a 1 s timeout (0xfb, 1.25 s on the bench unit), each
+        # taking 0.7 s: two go, the third is not started, and VISA is told 131070 bytes went.
+        clock = FakeClock()
+        monkeypatch.setattr(boards, 'Controller', functools.partial(controller_module.Controller, clock=clock))
+        slow_reply = adapter.bulk_in
+
+        def bulk_in(length, timeout_ms):
+            if adapter.messages[-1][0] == p.OP_WRITE:
+                clock.advance(0.7)
+            return slow_reply(length, timeout_ms)
+
+        monkeypatch.setattr(adapter, 'bulk_in', bulk_in)
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 1000
+        session = inst.visalib.sessions[inst.session]
+        assert session.write(bytes(3 * 0xFFFF)) == (2 * 0xFFFF, StatusCode.error_timeout)
+        inst.close()
+
     def test_timeout_attribute_reaches_the_instruction(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
-        inst.timeout = 300
+        inst.timeout = 250
         inst.write('*IDN?')
         assert adapter.instructions(p.OP_WRITE)[-1][3] == 0xFA
         inst.timeout = 20000
@@ -707,12 +418,25 @@ class TestInstrumentSession:
         assert adapter.instructions(p.OP_WRITE)[-1][3] == 0xFE
         inst.close()
 
-    def test_timeout_is_rounded_to_the_device_table(self, rm, adapter):
+    def test_300_ms_goes_out_as_the_one_second_code_because_0xfa_ends_early(self, rm, adapter):
+        # §7.3: NI sends 300 ms as 0xfa, which the captured unit ends after 0.2635 s, so NI
+        # reports a timeout before the time asked for. The least time 0xfb runs is 1.0498 s.
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        for asked, code in ((263, 0xFA), (264, 0xFB), (300, 0xFB)):
+            inst.timeout = asked
+            inst.write('*IDN?')
+            assert adapter.instructions(p.OP_WRITE)[-1][3] == code, asked
+            assert adapter.instructions(p.OP_COMMAND)[-1][3] == code, asked
+        inst.close()
+
+    def test_the_timeout_reads_back_as_set_up_to_the_longest_the_table_offers(self, rm, adapter):
+        # The value is the least time to wait; rounding it up to a nominal limit (5000 to
+        # 10 000) would read back a wait the code does not promise either.
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 5000
-        assert inst.timeout == 10000
+        assert inst.timeout == 5000
         inst.timeout = 2000
-        assert inst.timeout == 3000
+        assert inst.timeout == 2000
         inst.timeout = 2_000_000
         assert inst.timeout == 1_000_000
         inst.write('*IDN?')
@@ -808,9 +532,44 @@ class TestInstrumentSession:
         assert adapter.control_requests.count(0x41) == 2  # attach ran again first
         inst.close()
 
+    def test_an_unplugged_adapter_is_connection_lost_at_once_and_on_every_later_call(self, rm, adapter):
+        # §11.2, "Hot-unplug mid-run": one USB call finds the device gone and ends the query;
+        # the cleanup's ``:OUTP OFF`` after it fails the same way and touches no USB at all.
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        adapter.unplugged = True
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            inst.query('*IDN?')
+        assert info.value.error_code == StatusCode.error_connection_lost
+        assert adapter.calls_while_unplugged == 1
+        for _ in range(2):
+            with pytest.raises(pyvisa.errors.VisaIOError) as info:
+                inst.write(':OUTP OFF')
+            assert info.value.error_code == StatusCode.error_connection_lost
+        assert adapter.calls_while_unplugged == 1
+        inst.close()
+        assert adapter.closed
+
+    def test_an_adapter_unplugged_on_macos_is_connection_lost_at_the_first_failed_call(self, rm, adapter):
+        # §10.11: on macOS the query fails with errno 5, not "no such device"; the controller
+        # finds the adapter gone from the bus before any recovery and reports it at once, after
+        # waiting out the milliseconds libusb still lists it for (two looks here).
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        adapter.unplug_like_macos = True
+        adapter.still_listed_looks = 2
+        adapter.unplugged = True
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            inst.query('*IDN?')
+        assert info.value.error_code == StatusCode.error_connection_lost
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            inst.write(':OUTP OFF')
+        assert info.value.error_code == StatusCode.error_connection_lost
+        assert adapter.calls_while_unplugged == 1
+        inst.close()
+        assert adapter.closed
+
     def test_clear_sends_selected_device_clear_with_the_session_timeout(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
-        inst.timeout = 300
+        inst.timeout = 250
         inst.clear()
         last = adapter.instructions(p.OP_COMMAND)[-1]
         assert last[4:7] == bytes((0x3F, 0x38, 0x04))
@@ -898,7 +657,7 @@ class TestInstrumentSession:
 
     def test_ifc_ren_and_raw_command(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
-        inst.timeout = 300
+        inst.timeout = 250
         # pyvisa puts send_ifc on GPIBInterface only; the INSTR session still answers it.
         assert inst.visalib.gpib_send_ifc(inst.session) == StatusCode.success
         assert adapter.messages[-1] == p.interface_clear_message()
@@ -931,7 +690,7 @@ class TestInstrumentSession:
     ])
     def test_every_ren_mode_on_an_instrument_session(self, rm, adapter, mode, expected):
         inst = rm.open_resource('GPIB0::24::INSTR')
-        inst.timeout = 300
+        inst.timeout = 250
         before = len(adapter.messages)
         inst.control_ren(mode)
         assert adapter.messages[before:] == [getattr(self, name) for name in expected]
@@ -979,6 +738,23 @@ class TestDispatch:
         with pytest.raises(pyvisa.errors.VisaIOError) as info:
             rm.open_resource('GPIB0::24::INSTR')
         assert info.value.error_code == StatusCode.error_system_error
+
+    def test_no_permission_on_the_device_says_so_and_how_to_grant_it(self, rm, monkeypatch, adapter):
+        # §10.11: in the Linux VM without the udev rule this was VI_ERROR_SYSTEM_ERROR,
+        # "Unknown system error", and nothing else.
+        def refused(info):
+            raise TransportAccessDenied(transport._access_denied_message(
+                types.SimpleNamespace(bus=1, address=4), 0, OSError(13, 'Access denied (insufficient permissions)')))
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(visa_session, '_REGISTRY', BoardRegistry(open_transport=refused, first_board=0))
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            rm.open_resource('GPIB0::24::INSTR')
+        assert info.value.error_code == StatusCode.error_system_error
+        message = str(info.value)
+        assert message.startswith('VI_ERROR_SYSTEM_ERROR')
+        assert 'no permission on its USB device node /dev/bus/usb/001/004' in message
+        assert 'udev rule' in message and 'README' in message
+        assert visa_session.registry()._boards['0'].sessions == 0   # nothing left counted open
 
     def test_attach_failure_closes_the_transport(self, rm, monkeypatch, adapter):
         broken_sim = SimulatedAdapter({}, serial_reply=h('00 00 00 00 00'))
@@ -1076,6 +852,118 @@ class TestBoardRegistry:
         assert enumeration['calls'] == 2
         assert registry.owns('7') is False
         assert enumeration['calls'] == 3
+
+    def test_a_replugged_adapter_opens_again_once_its_sessions_are_closed(self, enumeration):
+        # §11.2: after the replug the adapter enumerates as a new USB device with the same serial.
+        opened: List[AdapterInfo] = []
+        sims: List[SimulatedAdapter] = []
+
+        def opener(info):
+            opened.append(info)
+            sims.append(SimulatedAdapter({}))
+            return sims[-1]
+
+        enumeration['adapters'] = [fake_adapter_info(serial='AAA', address=5)]
+        registry = BoardRegistry(open_transport=opener, first_board=0)
+        controller = registry.acquire('0')
+        sims[0].unplugged = True
+        with pytest.raises(gpib_usb.AdapterGone):
+            controller.status()
+        registry.release('0')
+        assert sims[0].closed
+        enumeration['adapters'] = [fake_adapter_info(serial='AAA', address=7)]
+        assert registry.owns('0')
+        again = registry.acquire('0')
+        assert again is not controller and not again.adapter_gone
+        assert [info.address for info in opened] == [5, 7]
+        registry.release('0')
+
+    def test_a_replugged_adapter_opens_again_while_a_session_is_still_open_on_the_old_one(self, enumeration):
+        opened: List[AdapterInfo] = []
+        sims: List[SimulatedAdapter] = []
+
+        def opener(info):
+            opened.append(info)
+            sims.append(SimulatedAdapter({}))
+            return sims[-1]
+
+        enumeration['adapters'] = [fake_adapter_info(serial='AAA', address=5)]
+        registry = BoardRegistry(open_transport=opener, first_board=0)
+        old = registry.acquire('0')
+        sims[0].unplugged = True
+        with pytest.raises(gpib_usb.AdapterGone):
+            old.status()
+        enumeration['adapters'] = [fake_adapter_info(serial='AAA', address=7)]
+        new = registry.acquire('0')   # the old session has not been closed
+        assert new is not old and sims[0].closed and [info.address for info in opened] == [5, 7]
+        with pytest.raises(gpib_usb.AdapterGone):
+            old.status()                # the old session keeps failing, on USB it no longer touches
+        assert sims[0].calls_while_unplugged == 1
+        registry.release('0')           # the old session closes: the new one keeps its adapter
+        assert not sims[1].closed
+        registry.release('0')
+        assert sims[1].closed
+
+    @staticmethod
+    def replugging(enumeration):
+        """An opener that claims only a device on the bus now, failing for a stale one as a real
+        claim does (libusb's no such device, §11.2); returns (registry, opened, sims, plug)."""
+        live = {5}
+        opened: List[AdapterInfo] = []
+        sims: List[SimulatedAdapter] = []
+
+        def opener(info):
+            if info.address not in live:
+                raise transport.TransportGone('cannot claim interface 0: No such device')
+            opened.append(info)
+            sims.append(SimulatedAdapter({}))
+            return sims[-1]
+
+        def plug(address):
+            live.clear()
+            if address is not None:
+                live.add(address)
+            enumeration['adapters'] = [] if address is None else [fake_adapter_info(serial='AAA', address=address)]
+
+        enumeration['adapters'] = [fake_adapter_info(serial='AAA', address=5)]
+        return BoardRegistry(open_transport=opener, first_board=0), opened, sims, plug
+
+    def test_an_unplug_found_only_by_the_close_reopens_on_the_first_attempt(self, enumeration):
+        registry, opened, sims, plug = self.replugging(enumeration)
+        registry.acquire('0')
+        sims[0].unplugged = True
+        plug(7)
+        registry.release('0')   # the shutdown write finds the device gone
+        assert registry.acquire('0') is not None
+        assert [info.address for info in opened] == [5, 7]
+        registry.release('0')
+
+    def test_an_unplug_and_replug_between_sessions_reopens_on_the_first_attempt(self, enumeration):
+        # Nothing saw the unplug: the board still names the old device, whose claim fails.
+        registry, opened, sims, plug = self.replugging(enumeration)
+        registry.acquire('0')
+        registry.release('0')
+        plug(7)
+        assert registry.acquire('0') is not None
+        assert [info.address for info in opened] == [5, 7]
+        registry.release('0')
+
+    def test_an_open_before_the_replug_does_not_keep_the_board_on_the_dead_device(self, enumeration):
+        # A session is still open on the unplugged adapter, and an open (list_instruments makes
+        # one) is tried before the replug: it fails, and the first open after the replug works.
+        registry, opened, sims, plug = self.replugging(enumeration)
+        old = registry.acquire('0')
+        sims[0].unplugged = True
+        with pytest.raises(gpib_usb.AdapterGone):
+            old.status()
+        plug(None)
+        with pytest.raises(transport.TransportGone):
+            registry.acquire('0')
+        plug(7)
+        new = registry.acquire('0')
+        assert new is not old and [info.address for info in opened] == [5, 7]
+        registry.release('0')
+        registry.release('0')
 
     def test_failed_acquire_re_enumerates_next_time(self, enumeration):
         def broken(info):

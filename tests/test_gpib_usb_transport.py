@@ -17,8 +17,8 @@ import pytest
 import resistamet_gui.gpib_usb as gpib_usb
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb import transport
-from resistamet_gui.gpib_usb.transport import (AdapterInfo, PyUsbTransport, TransportError, TransportStall,
-                                                TransportTimeout)
+from resistamet_gui.gpib_usb.transport import (AdapterInfo, PyUsbTransport, TransportAccessDenied, TransportError,
+                                                TransportGone, TransportStall, TransportTimeout)
 
 
 class FakeEndpoint:
@@ -297,6 +297,41 @@ class TestPyUsbTransport:
             PyUsbTransport(device, 0x02, 0x84)
         assert fake['calls']['dispose'] == [device]
 
+    @pytest.mark.parametrize('error_args', [('Access denied (insufficient permissions)', -3, errno.EACCES),
+                                            ('Access denied', -errno.EACCES, None)])
+    def test_a_claim_refused_for_permission_on_linux_names_the_node_and_the_udev_rule(self, monkeypatch,
+                                                                                      error_args):
+        # §10.11: without the rule the node was root:root 0664 and the open failed as
+        # VI_ERROR_SYSTEM_ERROR, "Unknown system error". libusb1 backend, then libusb0.
+        device = HS(bus=1, address=4)
+        fake = install_fake_usb(monkeypatch, [device])
+        device.claim_error = fake['core'].USBError(*error_args)
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        with pytest.raises(TransportAccessDenied) as info:
+            PyUsbTransport(device, 0x02, 0x84)
+        message = str(info.value)
+        assert 'no permission on its USB device node /dev/bus/usb/001/004' in message
+        assert 'udev rule' in message and 'README' in message and 'replug' in message
+        assert (info.value.errno, info.value.backend_code) == (error_args[2], error_args[1])
+        assert fake['calls']['dispose'] == [device]
+
+    def test_a_claim_refused_elsewhere_says_access_was_denied(self, monkeypatch):
+        device = HS()
+        fake = install_fake_usb(monkeypatch, [device])
+        device.claim_error = fake['core'].USBError('Access denied (insufficient permissions)', -3, errno.EACCES)
+        monkeypatch.setattr(sys, 'platform', 'darwin')
+        with pytest.raises(TransportAccessDenied) as info:
+            PyUsbTransport(device, 0x02, 0x84)
+        assert 'denied access' in str(info.value) and 'udev' not in str(info.value)
+
+    def test_other_claim_failures_are_not_access_denied(self, monkeypatch):
+        device = HS()
+        fake = install_fake_usb(monkeypatch, [device])
+        device.claim_error = fake['core'].USBError('Resource busy', -6, errno.EBUSY)
+        with pytest.raises(TransportError) as info:
+            PyUsbTransport(device, 0x02, 0x84)
+        assert not isinstance(info.value, TransportAccessDenied)
+
     def test_control_in_uses_the_vendor_request_types(self, monkeypatch):
         device = HS()
         install_fake_usb(monkeypatch, [device])
@@ -403,12 +438,15 @@ class TestPyUsbTransport:
         device.write_returns = 100
         assert usb_transport.bulk_out_raw(bytes(2050), 5000) == 100
 
-    def test_short_write_is_an_error(self, monkeypatch):
+    def test_short_write_is_a_timeout(self, monkeypatch):
+        # pyusb returns a short count only when the wait ran out after some packets went: a hung
+        # adapter taking the first packets of a message (§8.17) must read as a timeout, which
+        # the controller reports as the hung adapter, not as another USB failure.
         device = HS()
         install_fake_usb(monkeypatch, [device])
         usb_transport = PyUsbTransport(device, 0x02, 0x84)
         device.write_returns = 3
-        with pytest.raises(TransportError):
+        with pytest.raises(TransportTimeout):
             usb_transport.bulk_out(b'\x06\x00\x00\x00\x04\x00\x00\x00', 2000)
 
     def test_usb_timeout_becomes_transport_timeout(self, monkeypatch):
@@ -440,12 +478,40 @@ class TestPyUsbTransport:
         device = HS()
         fake = install_fake_usb(monkeypatch, [device])
         usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
-        device.write_error = fake['core'].USBError('No such device', -4, errno.ENODEV)
+        device.write_error = fake['core'].USBError('Input/output error', -1, errno.EIO)
         with pytest.raises(TransportError) as info:
             usb_transport.bulk_out_raw(bytes(2502), 5000)
-        assert not isinstance(info.value, TransportStall)
+        assert not isinstance(info.value, (TransportStall, TransportGone))
         # What the controller logs when the raw OUT of a 0x0e fails.
-        assert (info.value.errno, info.value.backend_code) == (errno.ENODEV, -4)
+        assert (info.value.errno, info.value.backend_code) == (errno.EIO, -1)
+
+    def test_no_such_device_is_its_own_error_whichever_way_pyusb_marks_it(self, monkeypatch):
+        # pyusb's libusb1 backend: USBError('No such device (it may have been disconnected)',
+        # -4, ENODEV) for LIBUSB_ERROR_NO_DEVICE; its libusb0 backend passes -ENODEV as the
+        # backend code and no errno. The bench saw errno 19 on every call after an unplug (§11.2).
+        device = HS()
+        fake = install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84, endpoint_out_raw=0x06, endpoint_in_raw=0x88)
+        for error in (fake['core'].USBError('No such device (it may have been disconnected)', -4, errno.ENODEV),
+                      fake['core'].USBError('No such device', -4, None),
+                      fake['core'].USBError('No such device', -errno.ENODEV, None),
+                      fake['core'].USBError('No such device', None, errno.ENODEV)):
+            device.next_read = error
+            with pytest.raises(TransportGone) as info:
+                usb_transport.bulk_in(12, 100)
+            assert 'no longer on the USB bus' in str(info.value)
+            device.clear_halt_error = error
+            with pytest.raises(TransportGone):
+                usb_transport.clear_halt(0x88)
+        assert issubclass(TransportGone, TransportError) and not issubclass(TransportGone, TransportTimeout)
+
+    def test_a_device_gone_before_the_claim_is_reported_as_gone(self, monkeypatch):
+        device = HS()
+        fake = install_fake_usb(monkeypatch, [device])
+        device.claim_error = fake['core'].USBError('No such device', -4, errno.ENODEV)
+        with pytest.raises(TransportGone):
+            PyUsbTransport(device, 0x02, 0x84)
+        assert fake['calls']['dispose'] == [device]
 
     def test_a_stall_carries_the_errno_and_backend_code_it_came_with(self, monkeypatch):
         device = HS()
@@ -467,6 +533,35 @@ class TestPyUsbTransport:
         device.clear_halt_error = fake['core'].USBError('No such device', -4, errno.ENODEV)
         with pytest.raises(TransportError):
             usb_transport.clear_halt(0x06)
+
+    def test_device_present_finds_this_device_by_bus_and_address_and_opens_nothing(self, monkeypatch):
+        # §10.11: on macOS the open handle of an unplugged adapter never says "no such device".
+        device = HS(bus=2, address=7, serial='01CEE482')
+        devices = [device]
+        fake = install_fake_usb(monkeypatch, devices)
+        usb_transport = PyUsbTransport(device, 0x02, 0x84)
+        assert usb_transport.device_present() is True
+        assert fake['calls']['find'][-1] == ('backend', {'idVendor': t.VENDOR_ID, 'idProduct': t.PID_HS,
+                                                         'bus': 2, 'address': 7})
+        assert device.serial_reads == 0 and device.ctrl_calls == [] and fake['calls']['dispose'] == []
+        devices.clear()   # unplugged
+        assert usb_transport.device_present() is False
+        devices.append(HS(bus=2, address=8, serial='01CEE482'))   # back, as a new device
+        assert usb_transport.device_present() is False
+
+    def test_device_present_cannot_tell_without_an_enumeration(self, monkeypatch):
+        device = HS()
+        fake = install_fake_usb(monkeypatch, [device])
+        usb_transport = PyUsbTransport(device, 0x02, 0x84)
+
+        def find(**kwargs):
+            raise fake['core'].USBError('Other error', -99, None)
+        fake['core'].find = find
+        assert usb_transport.device_present() is None
+        install_fake_usb(monkeypatch, [device], backend=None)
+        assert usb_transport.device_present() is None
+        device.address = None
+        assert usb_transport.device_present() is None
 
     def test_close_releases_and_disposes(self, monkeypatch):
         device = HS()

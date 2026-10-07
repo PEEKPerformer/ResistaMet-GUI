@@ -32,8 +32,11 @@ import pytest
 from resistamet_gui.gpib_usb import protocol as p
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb.controller import RAW_READ_MIN_BYTES, RAW_WRITE_MIN_BYTES, Controller
+from tests.fakes.gpib_usb import AnsweringAdapter
 
 CAPTURES = Path(__file__).resolve().parents[1] / 'docs' / 'design' / 'captures' / 'ni_usb_gpib_2026-09-19'
+#: The fourth batch (§10.10): same PC, adapter, instrument and NI stack.
+CAPTURES_2026_09_22 = CAPTURES.parent / 'ni_usb_gpib_2026-09-22'
 ADAPTER_DEVICE_ADDRESS = 2
 EP_OUT, EP_IN, EP_OUT_RAW, EP_IN_RAW, EP_INTR = 0x02, 0x84, 0x06, 0x88, 0x81
 
@@ -55,6 +58,12 @@ class Transfer:
         self.usbd_status = usbd_status
         #: The URB function: 0x09 a bulk or interrupt transfer, 0x1e a pipe reset.
         self.function = function
+
+
+def _pcap(name: str) -> Path:
+    """``name.pcap`` from the 2026-09-19 batch, or from the 2026-09-22 one if it is not there."""
+    path = CAPTURES / (name + '.pcap')
+    return path if path.exists() else CAPTURES_2026_09_22 / (name + '.pcap')
 
 
 def _packets(path: Path) -> Iterator[Tuple[float, bytes]]:
@@ -82,7 +91,7 @@ def transfers(name: str) -> List[Transfer]:
     """
     out: List[Transfer] = []
     head: Optional[Transfer] = None  # an OUT on 0x02 that is not yet a whole message
-    for ts, pkt in _packets(CAPTURES / (name + '.pcap')):
+    for ts, pkt in _packets(_pcap(name)):
         hdr_len, _irp, status, function, info, _bus, device, endpoint, _transfer, data_len = (
             struct.unpack_from('<HQIHBHHBBI', pkt, 0))
         if device != ADAPTER_DEVICE_ADDRESS:
@@ -104,7 +113,7 @@ def transfers(name: str) -> List[Transfer]:
 def control_requests(name: str) -> List[Tuple[int, int]]:
     """(bmRequestType, bRequest) of every control request to the adapter in ``name.pcap``."""
     out: List[Tuple[int, int]] = []
-    for _ts, pkt in _packets(CAPTURES / (name + '.pcap')):
+    for _ts, pkt in _packets(_pcap(name)):
         hdr_len, _irp, _status, _function, info, _bus, device, _endpoint, transfer, data_len = (
             struct.unpack_from('<HQIHBHHBBI', pkt, 0))
         # Transfer type 2 is control; its header carries the stage in byte 27, 0 = SETUP.
@@ -243,6 +252,83 @@ class TestEncoderReproducesNi:
                         seen[block[0]] = seen.get(block[0], 0) + 1
         assert seen[p.OP_READ_RAW] >= 12 and seen[p.OP_WRITE_RAW] >= 1
         assert seen[p.OP_SERIAL_POLL] >= 3 and seen[p.OP_WRITE] >= 10 and seen[p.OP_READ] >= 20
+
+
+#: The 2026-09-22 batch (§10.10), when present.
+PCAPS_2026_09_22 = (sorted(path.stem for path in CAPTURES_2026_09_22.glob('*.pcap'))
+                    if CAPTURES_2026_09_22.is_dir() else [])
+
+
+def _address_bytes(command: bytes) -> bytes:
+    return command[4:4 + (0x100 - command[1])]
+
+
+def _secondary(address: bytes, index: int) -> Optional[int]:
+    return address[index] - 0x60 if len(address) > index else None
+
+
+class TestNiMessagesReproduced:
+    """The opt-in raw paths send NI's own messages whole: every one in every capture, rebuilt
+    from the fields decoded from it (§10.1.2, §10.5.2, §10.2.4, §10.3.3)."""
+
+    def test_every_raw_and_session_message_is_rebuilt_whole(self):
+        seen: Dict[str, int] = {}
+        for name in ALL_PCAPS + PCAPS_2026_09_22:
+            for transfer in transfers(name):
+                if transfer.endpoint != EP_OUT or transfer.completion or not transfer.payload:
+                    continue
+                message = transfer.payload
+                blocks = split_host_blocks(message)
+                ids = [block[0] for block in blocks]
+                if ids == [p.OP_STATUS_SNAPSHOT, p.OP_COMMAND, p.OP_READ_RAW, p.OP_REGISTER_WRITE, p.OP_REGISTER_WRITE]:
+                    address, read = _address_bytes(blocks[1]), blocks[2]
+                    count = -int.from_bytes(read[4:8], 'little', signed=True)
+                    if count > p.MAX_RAW_TRANSFER_BYTES:
+                        seen['read above 0xffff, not built'] = seen.get('read above 0xffff, not built', 0) + 1
+                        continue
+                    built = p.ni_read_raw_message(address[1] - 0x20, address[2] - 0x40, _secondary(address, 3),
+                                                  count, read[3], **_eos_params(read[1], read[2]))  # type: ignore[arg-type]
+                    kind = 'read'
+                elif ids == [p.OP_STATUS_SNAPSHOT, p.OP_COMMAND, p.OP_WRITE_RAW, p.OP_REGISTER_WRITE]:
+                    address, write = _address_bytes(blocks[1]), blocks[2]
+                    built = p.ni_write_raw_message(address[0] - 0x40, address[2] - 0x20, _secondary(address, 3),
+                                                   -int.from_bytes(write[8:12], 'little', signed=True), write[3],
+                                                   bool(write[6] & p.WRITE_FLAG_EOI), write[5])
+                    kind = 'write'
+                elif ids[-2:] == [p.OP_REGISTER_WRITE, p.OP_REGISTER_WRITE] and blocks[-1][1] == 4:
+                    values = {blocks[-1][i + 1]: blocks[-1][i + 2] for i in range(3, 15, 3)}
+                    sad = None if values[0x06] == 0 else values[0x06] - 0x60
+                    if ids[0] == p.OP_STATUS_SNAPSHOT:
+                        built, kind = p.ni_session_open_message(values[0x05], sad, values[0x07]), 'session open'
+                    else:
+                        built, kind = p.ni_session_update_message(values[0x05], sad, values[0x07]), 'session update'
+                elif message == p.ni_session_close_message():
+                    built, kind = message, 'session close'
+                elif message == p.ni_session_mark_message():
+                    built, kind = message, 'session mark'
+                else:
+                    continue
+                if kind in ('read', 'write') and name == 'srq_poll' and blocks[1][3] == 0xFC:
+                    # §10.1.9: the one capture whose addressing carried 0xfc, after an INTFC session
+                    # had been opened and closed in the same process; meaning not established.
+                    built = built[:7] + bytes((0xFC,)) + built[8:]
+                    seen['addressing under 0xfc'] = seen.get('addressing under 0xfc', 0) + 1
+                assert built == message, '%s: %s\n  NI:    %s\n  built: %s' % (name, kind, message.hex(' '),
+                                                                          built.hex(' '))
+                seen[kind] = seen.get(kind, 0) + 1
+        assert seen['read'] >= 50 and seen['write'] >= 3
+        assert seen['session open'] >= 20 and seen['session update'] >= 20 and seen['session close'] >= 20
+
+
+    @pytest.mark.skipif(not CAPTURES_2026_09_22.is_dir(), reason='2026-09-22 capture directory not present')
+    def test_a_new_timeout_code_is_the_12_byte_write_then_the_28_byte_update(self):
+        # §10.10.1: the sequence ``_ni_session`` sends when the code changes on an address.
+        messages = [x.payload for x in transfers('timeout_map')
+                    if x.endpoint == EP_OUT and not x.completion and x.payload]
+        updates = [i for i, message in enumerate(messages)
+                   if len(message) == 28 and split_host_blocks(message)[-1][1] == 4]
+        assert len(updates) >= 10
+        assert all(messages[i - 1] == p.ni_session_mark_message() for i in updates)
 
 
 # ---------------------------------------------------------------------------
@@ -386,52 +472,6 @@ class TestReplyParserDecodesNi:
 # (c) the choice of instruction (§10.1.1, §10.5.2)
 # ---------------------------------------------------------------------------
 
-class AnsweringAdapter:
-    """Just enough of an HS for a ``Controller`` to attach and send one data instruction.
-
-    Reads are answered as timed out with nothing read and writes as complete;
-    only the opcode the controller chose matters here.
-    """
-
-    max_packet_size = 512
-    max_packet_size_raw = 512
-
-    def __init__(self) -> None:
-        self.opcodes: List[int] = []
-        self._reply = b''
-
-    def control_in(self, request, value, index, length, timeout_ms, request_type=0xC0) -> bytes:
-        if request == 0x41:
-            return bytes.fromhex('4178563412')
-        return bytes.fromhex('40010001300102030003960000000000')
-
-    def bulk_out(self, data: bytes, timeout_ms: int) -> None:
-        opcode = data[0]
-        self.opcodes.append(opcode)
-        status = bytes((opcode, 0x01, 0x30, 0x00)) + bytes(4)
-        if opcode == p.OP_REGISTER_WRITE:
-            self._reply = status + bytes((data[1], 0, 0, 0))
-        elif opcode == p.OP_READ:
-            self._reply = bytes((p.BLOCK_READ_STATUS, 0x00, 0x20, 0x0A)) + data[4:6] + b'\xff\xff' + bytes((0x60, 0, 0, 0))
-        elif opcode == p.OP_READ_RAW:
-            self._reply = bytes((opcode, 0x00, 0x64, 0x0A)) + data[4:8] + bytes((0x60, 0, 0, 0))
-        else:
-            self._reply = status
-        self._reply += p.TERMINATION_BLOCK
-
-    def bulk_in(self, length: int, timeout_ms: int) -> bytes:
-        return self._reply
-
-    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> int:
-        return len(data)
-
-    def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
-        return b''
-
-    def close(self) -> None:
-        pass
-
-
 def captured_sizes(opcodes: Tuple[int, int]) -> List[Tuple[int, int]]:
     """(opcode, byte count) of every data instruction of the two ``opcodes`` in any capture, deduplicated."""
     found = set()
@@ -550,7 +590,8 @@ class TestErrorPaths:
                        and x.payload and any(b[0] == opcode for b in split_host_blocks(x.payload)))
             reply = next(x for x in transfers('raw_errors') if x.endpoint == EP_IN and x.completion and x.ts > out.ts)
             waits.append(reply.ts - out.ts)
-        code, limit = p.effective_timeout(2.0)  # the scenario's VI_ATTR_TMO_VALUE
+        code = p.timeout_code(2.0)  # the scenario's VI_ATTR_TMO_VALUE
+        limit = t.TIMEOUT_NOMINAL_S[code]
         assert code == 0xFC and limit == 3.0
         assert all(limit < wait < p.host_wait_s(code, 600.0) for wait in waits), waits
         assert all(abs(wait - 4.196) < 0.01 for wait in waits), waits
@@ -580,6 +621,35 @@ class TestErrorPaths:
             assert p.host_wait_s(code, 600.0) > seen + 1.9e-3
         # What nominal + max(2 s, 50 %) would have been for 0xfd: shorter than the adapter ran.
         assert 10.0 + 5.0 < timed[0xFD] < p.host_wait_s(0xFD, 600.0)
+
+    @pytest.mark.skipif(not CAPTURES_2026_09_22.is_dir(), reason='2026-09-22 capture directory not present')
+    def test_no_timed_read_ended_before_the_least_expiry_the_driver_chooses_its_code_by(self):
+        # §7.3, §10.10.1, §10.10.2: every read that NI's adapter ended with error 0x0a in the
+        # three timing captures, idle and with data still arriving, timed from the OUT to the
+        # reply. The code for a timeout is picked so that it never ends before the time asked
+        # (``protocol.timeout_code``), which rests on no code ending sooner than this.
+        seen: Dict[int, List[float]] = {}
+        for name in ('timeout_map', 'timeout_expiry', 'timeout_bound'):
+            everything = transfers(name)
+            for out in everything:
+                if out.endpoint != EP_OUT or out.completion or not out.payload:
+                    continue
+                read = next((b for b in split_host_blocks(out.payload) if b[0] in (p.OP_READ, p.OP_READ_RAW)), None)
+                if read is None:
+                    continue
+                reply = next(x for x in everything if x.endpoint == EP_IN and x.completion and x.payload
+                             and x.ts > out.ts)
+                status_id = p.BLOCK_READ_STATUS if read[0] == p.OP_READ else p.OP_READ_RAW
+                status = next(b for i, b in p.split_reply_blocks(reply.payload) if i == status_id)
+                if p.parse_status_block(status).error == t.ERR_TIMEOUT:
+                    seen.setdefault(read[3], []).append(reply.ts - out.ts)
+        assert sorted(seen) == [0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE]
+        for code, waits in seen.items():
+            assert t.timeout_expiry_least_s(code) <= min(waits) + 2e-6, (hex(code), waits)
+            assert t.TIMEOUT_EXPIRY_MEASURED_SHORTEST_S[code] < min(waits) + 2e-6, (hex(code), waits)
+            assert max(waits) < t.TIMEOUT_EXPIRY_MEASURED_S[code] + 2e-6, (hex(code), waits)
+        # The one code that ends before its nominal value: NI sends 300 ms as 0xfa.
+        assert max(seen[0xFA]) < 0.300 and p.timeout_code(0.300) == 0xFB
 
     def test_serial_poll_that_timed_out_has_no_result_block(self):
         exchange = next(e for e in exchanges('raw_errors') if e.block(p.OP_SERIAL_POLL) is not None)

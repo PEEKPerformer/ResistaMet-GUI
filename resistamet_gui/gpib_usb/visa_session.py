@@ -21,6 +21,32 @@ listing does the same.
 (the board handle, timeouts, IFC, raw command bytes, the REN and ATN line
 operations); ``NiUsbGpibInstrSession`` adds the addressed device on top.
 
+Timeouts. VI_ATTR_TMO_VALUE is the least time to wait, and reads back as
+set (capped at 1000 s, the longest the device table offers). It goes into
+every instruction of an operation as NI's code, the smallest nominal limit
+not below it (§7.1), except where that code ends sooner on an adapter timed
+in §7.3: 264 to 300 ms go out as 0xfb (NI's 0xfa ends at 0.2635 s on the
+captured unit) and 268 to 300 s as 0x02. The adapter then waits the code's expiry, which differs by unit:
+for the application's 5000 ms, code 0xfd, 16.78 s on the captured unit
+013CC9DF and 20.0 s on bench unit 01CEE482; for 1000 ms, 0xfb, 1.05 s and
+1.25 s; for 3000 ms, 0xfc, 4.20 s and 3.75 s (the table is in the
+``controller`` docstring). A read is bounded as a whole, as NI's one
+instruction is, by the longer of those expiries (20.0 s for 5000 ms), not
+by the value set: one that runs out returns the bytes read so far with
+VI_ERROR_TMO, as pyvisa-py's own sessions do. With NI's instructions
+switched on, a raw read on unit 01CEE482 used to end at 20.0 s whatever
+its code (§11.2); in NI's message form, sent since, it ends at the code's
+expiry (§10.11).
+VI_TMO_IMMEDIATE is sent as 100 ms, code 0xf9 (0.132 s on the captured
+unit); what NI sends for it was not captured. VI_TMO_INFINITE is code 0xf0: the adapter
+never ends the instruction, and the controller stops it after its own
+wait, 600 s, and reports a timeout. An adapter that leaves the USB bus is
+VI_ERROR_CONN_LOST on that operation and every later one: on Linux libusb
+says so at the first failed call, on macOS the controller finds it by
+looking at the bus after the first failed call (§10.11). An open refused
+for want of permission on the device is VI_ERROR_SYSTEM_ERROR with the
+cause and the remedy in its message (``AccessDeniedError``).
+
 The board itself, ``GPIB<n>::INTFC``, is ``visa_intfc``; ``install()``
 here installs both. Not supported on the INSTR session:
 ``gpib_pass_control`` (§5.17 leaves the adapter's report of the hand-over
@@ -37,12 +63,11 @@ from pyvisa.constants import ResourceAttribute, StatusCode
 from pyvisa_py.sessions import OpenError, Session, UnknownAttribute
 
 from . import device_ops as ops
-from . import protocol as p
 from . import tables as t
 from .boards import BoardRegistry
 from .controller import Controller
-from .protocol import GpibError, GpibTimeout, NoListener
-from .transport import TransportError
+from .protocol import AdapterGone, GpibError, GpibTimeout, NoListener
+from .transport import TransportAccessDenied, TransportError
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +86,26 @@ def registry() -> BoardRegistry:
     return _REGISTRY
 
 
+class AccessDeniedError(errors.VisaIOError):
+    """VI_ERROR_SYSTEM_ERROR, with why: the operating system refused the adapter's USB device.
+
+    pyvisa-py turns an ``OpenError`` into its status code alone, and that
+    code's text is "Unknown system error", which says nothing of the cause
+    or the cure. This is raised past pyvisa-py's open instead, with the same
+    code, so ``except VisaIOError`` catches it as before and the message
+    carries the transport's: the device node and the udev rule on Linux.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(StatusCode.error_system_error)
+        self.detail = detail
+        self.args = ('%s %s%s.' % (self.args[0], detail[:1].upper(), detail[1:].rstrip('.')),)
+
+
 def status_for(exc: Exception) -> StatusCode:
+    if isinstance(exc, AdapterGone):
+        # The adapter left the USB bus: VISA's "connection lost", not a bus error.
+        return StatusCode.error_connection_lost
     if isinstance(exc, GpibTimeout):
         return StatusCode.error_timeout
     if isinstance(exc, NoListener):
@@ -162,6 +206,9 @@ class NiUsbGpibSession(Session):
             self.interface = registry().acquire(self.parsed.board)
         except KeyError:
             raise OpenError(StatusCode.error_resource_not_found)
+        except TransportAccessDenied as exc:
+            logger.warning('GPIB%s: cannot open adapter: %s', self.parsed.board, exc)
+            raise AccessDeniedError(str(exc)) from exc
         except Exception as exc:  # noqa: BLE001 - pyvisa expects an OpenError, whatever the USB stack threw
             logger.warning('GPIB%s: cannot open adapter: %s', self.parsed.board, exc)
             raise OpenError(StatusCode.error_system_error)
@@ -185,25 +232,25 @@ class NiUsbGpibSession(Session):
     def _set_timeout(self, attribute: ResourceAttribute, value: int) -> StatusCode:
         status = super()._set_timeout(attribute, value)
         if self.timeout:
-            # Round to the device's table (§7.1) so the attribute reads back as
-            # the row whose code goes out; above the table, the longest row.
-            # That is the nominal limit. What the adapter then waits is the
-            # expiry of §7.3 (16.78 s or 20.0 s for the 10 s row, by unit),
-            # and the controller derives the host wait from the longer of
-            # those, not from this value.
-            _, limit = p.effective_timeout(min(self.timeout, t.TIMEOUT_MAX_S))
-            self.timeout = limit
+            # The attribute reads back as set, capped at the longest finite
+            # timeout the device table offers (1000 s, §7.1): the value is the
+            # least time to wait, and the controller picks the code for it
+            # (``protocol.timeout_code``), which may run longer. Rounding it up
+            # to a code's nominal limit, as before, stood for the wrong wait:
+            # 0xfa's 300 ms ends at 0.2635 s on one unit (§7.3).
+            self.timeout = min(self.timeout, t.TIMEOUT_MAX_S)
         return status
 
     def _device_timeout(self) -> Optional[float]:
-        # VISA "immediate" (0) has no device analogue. The table's shortest
-        # row (10 us, code 0xf1) would go into every instruction of the
-        # operation, the addressing included, and no handshake completes in
-        # it: everything would time out. So immediate means the shortest
-        # timeout known to let a handshake finish: 100 ms, code 0xf9, the
-        # shortest code NI's driver was captured sending and the shortest
-        # whose expiry was timed (§7.1, §7.3). The codes below it are
-        # inherited, never seen on the wire. None stays infinite.
+        # VISA "immediate" (0) has no device analogue, and what NI sends for
+        # it was not captured (§7.1). The table's shortest row (10 us, code
+        # 0xf1) would go into every instruction of the operation, the
+        # addressing included, and 0xf1-0xf4 were never observed on any wire
+        # (§7.3), so what they do to a handshake is not known. Immediate is
+        # sent as 100 ms, code 0xf9, which the captured unit ends at 0.132 s
+        # (§7.3; the bench unit's 0.127 s is a session total, its wire not
+        # logged). None stays infinite: code 0xf0, and the controller's own
+        # host wait.
         if self.timeout == 0:
             return IMMEDIATE_TIMEOUT_S
         return self.timeout
@@ -213,20 +260,15 @@ class NiUsbGpibSession(Session):
         return None
 
     def _termchar_byte(self) -> Optional[int]:
-        """VI_ATTR_TERMCHAR as a byte when VI_ATTR_TERMCHAR_EN is on, else None.
+        """VI_ATTR_TERMCHAR as a byte, whether or not VI_ATTR_TERMCHAR_EN is on.
 
-        For the ``e`` byte of a 0x0e write header, the one place it goes; a
-        read takes the character as its EOS compare instead. NI fills ``e``
-        of every read and write with the character even with the compare
-        off (§10.1.6, §10.5.1), but that was seen only under NI's AUXRA 0x99
-        initialisation; ours is 0x81 (§2.6 row 3), under which §5.2 still
-        says error 4 for a read. With the compare off the byte does nothing
-        useful, so the bench-proven 0x00 is sent until hardware says
-        otherwise; the codec can build either.
+        For the ``e`` byte of NI's raw instructions: NI fills it with the
+        session's character on every read and write, the compare on or off
+        (§10.1.6, §10.5.1, §10.5.2), and the opt-in raw paths send what NI
+        sends. The framed 0x0a and 0x0d do not take it and keep the
+        bench-proven 0x00 with the compare off (§2.6 row 3, §5.2: NI's form
+        was seen only under its AUXRA 0x99).
         """
-        enabled, _ = self.get_attribute(ResourceAttribute.termchar_enabled)
-        if not enabled:
-            return None
         termchar, _ = self.get_attribute(ResourceAttribute.termchar)
         return termchar if isinstance(termchar, int) and 0 <= termchar <= 0xFF else None
 
@@ -312,6 +354,8 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
         self._pad = int(self.parsed.primary_address)
         sad = self.parsed.secondary_address
         self._sad: Optional[int] = None if sad is None else int(sad)
+        # Accepted and read back, and of no effect: the controller addresses before every
+        # transfer (``Controller._address``).
         readdress = ResourceAttribute.gpib_readdress_enabled
         self.attrs[readdress] = attributes.AttributesByID[readdress].default
 
@@ -320,10 +364,6 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
 
     def _label(self) -> str:
         return 'GPIB%s::%d' % (self.parsed.board, self._pad)
-
-    def _readdress(self) -> bool:
-        value, _ = self.get_attribute(ResourceAttribute.gpib_readdress_enabled)
-        return bool(value)
 
     # ------------------------------------------------------------------
     # data
@@ -341,7 +381,7 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
         try:
             data, ended = controller.read(self._pad, sad=self._sad, max_bytes=count,
                                           timeout_s=self._device_timeout(), eos=eos,
-                                          eos_8bit=True, readdress=self._readdress())
+                                          eos_8bit=True, termchar=self._termchar_byte())
         except GpibTimeout as exc:
             return exc.partial, StatusCode.error_timeout
         except (GpibError, TransportError) as exc:
@@ -360,8 +400,10 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
         send_end, _ = self.get_attribute(ResourceAttribute.send_end_enabled)
         try:
             written = controller.write(self._pad, data, sad=self._sad, send_eoi=bool(send_end),
-                                       timeout_s=self._device_timeout(), eos_char=self._termchar_byte(),
-                                       readdress=self._readdress())
+                                       timeout_s=self._device_timeout(), eos_char=self._termchar_byte())
+        except GpibTimeout as exc:
+            # What crossed before the timeout: whole chunks of a write that was split.
+            return len(exc.partial), StatusCode.error_timeout
         except (GpibError, TransportError) as exc:
             logger.debug('%s write: %s', self._label(), exc)
             return 0, status_for(exc)
@@ -464,7 +506,6 @@ class NiUsbGpibDispatch(Session):
 
 def install() -> None:
     """Put our dispatchers in front of pyvisa-py's ``(gpib, INSTR)`` and ``(gpib, INTFC)``. Idempotent."""
-    import pyvisa_py  # noqa: F401 - registers pyvisa-py's own session classes first
     from . import visa_intfc  # here, not at the top: visa_intfc subclasses this module's session
     current = Session._session_classes.get(GPIB_INSTR)
     if current is not NiUsbGpibDispatch:
