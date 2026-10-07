@@ -19,6 +19,7 @@ function awaiting(promptId: string, runId = "run-1"): SessionStatus {
     path: null,
     pending_prompt: { detail: {}, kind: "vdp_geometry", options: ["proceed", "abort"], prompt_id: promptId, requires_human: true },
     run_id: runId,
+    started_by: null,
     state: "awaiting_prompt",
   };
 }

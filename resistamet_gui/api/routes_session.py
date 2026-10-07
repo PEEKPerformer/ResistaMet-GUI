@@ -102,6 +102,9 @@ def start(body: RunRequest, request: Request,
     The same roles are asked the touch-safety question on a hazardous run
     even where the profile silenced it (M5): a person silenced it for the
     runs they start, not for an agent's.
+
+    The run records the role that started it (M6), from the token: the body
+    cannot say, and a ``started_by`` in it is refused like any unknown field.
     """
     profile = request.app.state.api.profile_provider(body.username)
 
@@ -116,7 +119,8 @@ def start(body: RunRequest, request: Request,
                                 prompt_timeout_s=body.prompt_timeout_s,
                                 spot=body.spot, client=body.client,
                                 check=None if role == UI_ROLE else within_agent_limits,
-                                ignore_safety_silence=role != UI_ROLE)
+                                ignore_safety_silence=role != UI_ROLE,
+                                started_by=role)
     except _BeyondAgentLimits as exc:
         violations = exc.verdict.violations
         raise HTTPException(

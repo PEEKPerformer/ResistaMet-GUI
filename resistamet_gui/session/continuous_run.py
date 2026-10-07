@@ -558,6 +558,7 @@ class ContinuousRun:
                 'username': self.username,
                 'settings': self.settings,
                 'started_at': time.time(),
+                'started_by': self.settings.get('started_by'),
             })
             if not began:
                 # Stopped before it began: nothing is opened, nothing re-armed.

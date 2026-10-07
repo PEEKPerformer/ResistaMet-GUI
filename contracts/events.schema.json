@@ -697,7 +697,7 @@
     },
     "run_started": {
       "additionalProperties": false,
-      "description": "A run is beginning; the settings are exactly what it will use.",
+      "description": "A run is beginning; the settings are exactly what it will use.\n\n``started_by`` is the API role that started the run (``ui``, ``agent``),\nstamped by the server from the token, never taken from the request. None\nfor a run started without the API, as the PySide6 window's are.",
       "properties": {
         "mode": {
           "title": "Mode",
@@ -715,6 +715,18 @@
         "started_at": {
           "title": "Started At",
           "type": "number"
+        },
+        "started_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started By"
         },
         "username": {
           "title": "Username",

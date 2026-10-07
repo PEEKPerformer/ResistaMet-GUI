@@ -12,6 +12,7 @@ export interface SessionStatus {
   path: string | null;
   pending_prompt: PendingPrompt | null;
   run_id: string | null;
+  started_by: string | null;
   state: "idle" | "identifying" | "running" | "paused" | "awaiting_prompt" | "stopping";
 }
 /**
