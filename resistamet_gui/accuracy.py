@@ -408,7 +408,8 @@ def resistance_uncertainty(
     conservative — see the divergence note below).
 
     Enhanced lookup picks the R-range via the same 105%-overrange rule
-    used for V and I (range inference from |R|). Out of the table
+    used for V and I (range inference from |R|), and adds the same NPLC
+    modifier as a V or I reading on a non-special range. Out of the table
     (below 2 Ω or above 200 MΩ) it falls back to V/I propagation so the
     function never silently returns garbage for ultra-low or ultra-high
     resistances.
@@ -457,7 +458,9 @@ def resistance_uncertainty(
         OMITTED_R_RANGE_MAX = 2.0   # the 2 Ω range; everything below uses V/I
         if specs and OMITTED_R_RANGE_MAX < abs(r) <= specs[-1].range_max * 1.05:
             spec = _pick_range(r, specs)
-            return spec.uncertainty(r)
+            # The Speed footnote is note 1 of the resistance table (p. 7)
+            # too; no ohms range is one it names, so the smaller adder.
+            return spec.uncertainty(r) + _nplc_modifier(nplc, spec, "resistance", model)
     sigma_v = voltage_uncertainty(voltage, model, nplc)
     sigma_i = current_uncertainty(current, model, nplc)
     # The same expression with |R| taken inside the root:
