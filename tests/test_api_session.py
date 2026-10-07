@@ -273,6 +273,7 @@ class TestPromptAuthorization:
 
     @pytest.mark.parametrize("override", [
         {'safety_voltage_warn_silenced': True},
+        {'safety_voltage_warn_silenced_until': 4102444800.0},
         {'safety_voltage_warn_v': 200.0},
     ])
     def test_non_ui_role_cannot_avoid_the_question_either(self, session, profile, fake_rm,
