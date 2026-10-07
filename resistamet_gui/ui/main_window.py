@@ -2085,17 +2085,19 @@ class ResistanceMeterApp(QMainWindow):
 
         Per the 1.9.1 design (resistamet_gui/safety.py): runs the pure
         hazard check; returns True immediately when the run is safe or
-        when the user has previously checked "don't show again." On
-        hazard + not-silenced, shows a modal with a sticky checkbox
-        that flips ``safety_voltage_warn_silenced`` and persists the
-        user profile. Always returns True after the dialog — warn-then-
-        proceed per the design memo, "users are domain experts."
+        when the profile has silenced it, for good ("don't show again")
+        or for a while (a timed silence saved from the desktop prompt);
+        ``safety.warning_silenced`` decides, as it does for the session
+        runs. On hazard + not-silenced, shows a modal with a sticky
+        checkbox that flips ``safety_voltage_warn_silenced`` and persists
+        the user profile. Always returns True after the dialog — warn-
+        then-proceed per the design memo, "users are domain experts."
         """
-        from ..safety import is_potentially_hazardous, warning_message
+        from ..safety import is_potentially_hazardous, warning_message, warning_silenced
         if not self.user_settings or not settings:
             return True
         m = self.user_settings.get('measurement', {})
-        if bool(m.get('safety_voltage_warn_silenced', False)):
+        if warning_silenced(self.user_settings, time.time()):
             return True
         # The gathered settings carry the live widget values; the stored
         # profile can be stale by tens of volts.
