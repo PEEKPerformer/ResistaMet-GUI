@@ -112,7 +112,7 @@ def status_view(status: Dict[str, Any]) -> Dict[str, Any]:
     return view
 
 
-async def override_keys(backend: Backend, mode: str) -> Dict[str, Any]:
+async def mode_entry(backend: Backend, mode: str) -> Dict[str, Any]:
     """The schema route's entry for one mode, or a tool error naming the modes."""
     modes = (await ask(backend, 'GET', '/schema/settings')).get('modes', {})
     if mode not in modes:
@@ -182,7 +182,7 @@ def _register_reads(server: MCPServer, backend: Backend) -> None:
                             user: Annotated[Optional[str], Field(
                                 description="Whose stored values to show; default the "
                                             "last user.")] = None) -> CallToolResult:
-        entry = await override_keys(backend, mode)
+        entry = await mode_entry(backend, mode)
         described: Dict[str, Any] = {
             'mode': mode,
             'mode_keys': entry.get('fields', []),
@@ -209,7 +209,7 @@ def _register_reads(server: MCPServer, backend: Backend) -> None:
 
     async def check_settings(user: User, mode: Mode,
                              overrides: Overrides = None) -> CallToolResult:
-        keys = (await override_keys(backend, mode)).get('override_keys', [])
+        keys = (await mode_entry(backend, mode)).get('override_keys', [])
         resolved = await ask(backend, 'POST', '/settings/resolve', json_body={
             'mode': mode, 'username': user, 'overrides': overrides or {}})
         measurement = resolved.get('settings', {}).get('measurement', {})
