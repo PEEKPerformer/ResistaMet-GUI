@@ -146,6 +146,16 @@ class TestMiddleware:
         assert (line['outcome'], line['http_status']) == ('error', 422)
         assert line['result'] == 'Error executing tool start_run: refused'
 
+    def test_of_several_requests_the_highest_status_is_kept(self, log, lines):
+        async def handler(ctx):
+            for status in (200, 422, 200):
+                audit.note_http_status(status)
+            return _wire(text='refused', is_error=True)
+
+        self._call(AuditMiddleware(log), _ctx(params={'name': 'check_settings',
+                                                      'arguments': {}}), handler)
+        assert lines()[0]['http_status'] == 422
+
     def test_the_run_id_is_found_in_the_status_a_tool_returned(self, log, lines):
         async def handler(ctx):
             return _wire({'fired': 'run_ended', 'status': {'run_id': 'run-7'}})
