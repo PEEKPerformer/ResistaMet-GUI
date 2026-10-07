@@ -10,14 +10,18 @@ any other local process from driving the instrument, which is the threat that
 matters for a lab PC. It is not an authentication system and does not pretend
 to be one.
 
-The token carries a role. In step 1 there is exactly one token and it is the
-``ui`` role, which is the only role allowed to answer a prompt marked
+Each token carries a role. The token the parent is handed is the ``ui``
+role, which is the only role allowed to answer a prompt marked
 ``requires_human`` — claiming leads were rewired is not something software can
-truthfully do (design doc, decision D4).
+truthfully do (design doc, decision D4). A second token, the ``agent`` role,
+exists only while this machine allows AI agents to connect (``agent_access``,
+``docs/design/mcp_layer.md`` M2). Every role check asks for ``ui``, so a
+token of any other role is refused wherever a person is required.
 """
 import logging
 import secrets
-from typing import Callable, Iterable, Optional
+import threading
+from typing import Callable, Dict, Iterable, Optional
 
 import json
 import math
@@ -35,6 +39,8 @@ from ..session.manager import MeasurementSession, SessionBusy
 logger = logging.getLogger(__name__)
 
 UI_ROLE = 'ui'
+#: The role of the token an MCP server presents on an agent's behalf.
+AGENT_ROLE = 'agent'
 
 _bearer = HTTPBearer(auto_error=True)
 
@@ -65,7 +71,7 @@ class NullNanJSONResponse(JSONResponse):
 
 
 class ApiState:
-    """What the routes share: the session, the token, its role, the profiles.
+    """What the routes share: the session, the tokens and their roles, the profiles.
 
     ``profile_provider`` maps a username to the stored settings a run starts
     from. It is injected rather than reached for, so tests do not need a
@@ -77,10 +83,37 @@ class ApiState:
                  config=None, hub=None):
         self.session = session
         self.hub = hub
-        self.token = token
-        self.role = role
+        # Replaced, never changed in place: a request thread checking a token
+        # iterates whichever map it read, while another thread adds or
+        # removes one.
+        self._tokens: Dict[str, str] = {token: role}
+        self._tokens_lock = threading.Lock()
         self._config = config
         self._profile_provider = profile_provider
+
+    def add_token(self, token: str, role: str) -> None:
+        with self._tokens_lock:
+            self._tokens = {**self._tokens, token: role}
+
+    def remove_token(self, token: str) -> None:
+        """Forget a token. A request presenting it from now on is a 401."""
+        with self._tokens_lock:
+            self._tokens = {known: role for known, role in self._tokens.items()
+                            if known != token}
+
+    def role_for(self, presented: str) -> Optional[str]:
+        """The role of the token presented, or None when it is not one of ours.
+
+        Compared with every known token, in constant time each, and without
+        stopping at a match: how long the check takes says as little as
+        possible about which token, if any, was nearly right.
+        """
+        presented_bytes = presented.encode()
+        matched = None
+        for token, role in self._tokens.items():
+            if secrets.compare_digest(presented_bytes, token.encode()):
+                matched = role
+        return matched
 
     @property
     def config(self):
@@ -116,10 +149,11 @@ def require_token(request: Request,
                    credentials: HTTPAuthorizationCredentials = Depends(_bearer)) -> str:
     """Check the bearer token; return the role it carries."""
     state: ApiState = request.app.state.api
-    if not secrets.compare_digest(credentials.credentials, state.token):
+    role = state.role_for(credentials.credentials)
+    if role is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                              detail="invalid token")
-    return state.role
+    return role
 
 
 def get_session(request: Request) -> MeasurementSession:
