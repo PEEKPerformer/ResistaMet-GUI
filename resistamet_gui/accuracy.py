@@ -224,10 +224,11 @@ _I_SRC_2430 = _I_SRC_2425 + (
 # FORM:ELEM response carries V and I alongside R (the latter is implicit
 # in our setup; we always request VOLT,CURR,RES,STAT for resistance mode).
 #
-# Below the 2 Ω range the datasheet falls back to "I_acc + V_acc" — i.e.
-# you compute it from V and I uncertainties yourself. We omit those rows
-# from the table and let the call site fall through to the V/I propagation
-# path for ultra-low-R measurements.
+# On the 2 Ω range and below it the Enhanced column reads "Source I_ACC +
+# Meas. V_ACC", as it does above 200 MΩ — i.e. you compute it from V and
+# I uncertainties yourself. We omit those rows from the table and let the
+# call site fall through to the V/I propagation path for ultra-low-R
+# measurements.
 # ---------------------------------------------------------------------------
 
 _R_ENH_2400 = (
@@ -288,17 +289,22 @@ _I_SOURCE: dict[str, Sequence[AccuracySpec]] = {
 }
 
 # Datasheet footnote: "Also available on 2410, 2420, and 2440 with
-# similar accuracy enhancement." We use the 2400/2401 numbers for the
-# whole family — the datasheet doesn't print a model-specific Enhanced
-# column for them, so reusing the canonical table is the most defensible
-# choice. If a model needs its own numbers later, add an entry here.
+# similar accuracy enhancement." We use the 2400/2401 numbers for those
+# three — the datasheet doesn't print a model-specific Enhanced column for
+# them, so reusing the canonical table is the most defensible choice. If a
+# model needs its own numbers later, add an entry here.
+#
+# The 2425 and 2430 sheets print a Normal ohms column only, and the
+# footnote above does not name them, so they have no Enhanced rows: an
+# enhanced reading on either gets V/I propagation, as a reading without
+# offset compensation does.
 _R_ENHANCED: dict[str, Sequence[AccuracySpec]] = {
     "2400": _R_ENH_2400,
     "2401": _R_ENH_2400,
     "2410": _R_ENH_2400,
     "2420": _R_ENH_2400,
-    "2425": _R_ENH_2400,
-    "2430": _R_ENH_2400,
+    "2425": (),
+    "2430": (),
     "2440": _R_ENH_2400,
 }
 
