@@ -42,7 +42,7 @@ Every HTTP route except `GET /health` needs `Authorization: Bearer <token>`. A w
 
 The token keeps other local processes from driving the instrument. It is not an authentication system.
 
-A token carries a role. The handshake's token is the `ui` role. A second token, role `agent`, exists only while [agent access](#agent-access) is on. Only the `ui` role may answer a prompt marked `requires_human`, change the touch-safety settings of a profile, set a VISA library path, change `allow_agents`, or read `GET /agents`; any other role gets 403 there.
+A token carries a role. The handshake's token is the `ui` role. A second token, role `agent`, exists only while [agent access](#agent-access) is on. Only the `ui` role may answer a prompt marked `requires_human`, change the touch-safety settings of a profile, change its [agent limits](#agent-limits), set a VISA library path, change `allow_agents`, or read `GET /agents`; any other role gets 403 there. Every role but `ui` is held to the agent limits when it starts a run.
 
 ### Agent access
 
@@ -65,6 +65,30 @@ While it is on, the sidecar writes the agent token to a connection file, which i
 - `GET /agents` tells the `ui` role whether access is in force (`{"enabled": true}`), which is not always the stored setting: `--allow-agents` turns it on without the setting, and another backend holding the file keeps it off.
 
 Like the `ui` token, this keeps other local programs, and agents the user did not configure, off the instrument. It is not authentication.
+
+### Agent limits
+
+A run started by any role but `ui` must stay inside the profile's [`agent_limits`](settings.md#agent-limits): by default at most 30 V, with current and power left to the instrument. `POST /session/start` checks the settings the session has resolved for the run, before anything is opened, and refuses with 422 when the worst case of the run goes beyond a limit:
+
+- **Voltage** is the sourced voltage, or the voltage compliance of a current source (an open circuit drives a current source up to it).
+- **Current** is the sourced current, or the current compliance of a voltage source.
+- **Power** is the largest voltage times the largest current.
+- A **sweep** counts whichever end of its range is further from zero, whatever its direction.
+- **Resistance in auto range**: auto-ohms chooses its own test current and voltage limit, so the voltage counts as at least 21 V and the current is unknown. Such a run cannot be held to a current or power limit and is refused when one is set; turn `res_auto_range` off to choose the current.
+- A four-point probe's `fpp_power_stop_w` does not lower the worst case: it acts on a measured reading.
+
+A value exactly at a limit is allowed. When the backend knows which model is at the run's address, from an earlier identify or run, the model's own `max_source_v`, `max_source_i` and `max_power_w` are checked the same way; until it knows, the instrument enforces them itself. The window is never checked.
+
+The 422 `detail` is an object:
+
+```json
+{"message": "beyond the agent limits: voltage 60 V (vsource_voltage) is above the agent limit max_voltage_v = 30 V",
+ "violations": [{"limit": "max_voltage_v", "source": "agent_limits", "model": null,
+                 "keys": ["vsource_voltage"], "value": 60.0, "allowed": 30.0,
+                 "message": "voltage 60 V (vsource_voltage) is above the agent limit max_voltage_v = 30 V"}]}
+```
+
+`source` is `agent_limits` or `model` (then `model` names it, and `limit` is the model's field). `keys` are the settings that give `value`. `value` is null for a quantity the instrument chooses; `allowed` is null when a stored limit is itself not a valid number, which refuses every agent run until it is fixed. `POST /settings/resolve` gives the same verdict without starting anything.
 
 Cross-origin requests are accepted only from the desktop shell's origins (`tauri://localhost`, `http(s)://tauri.localhost`) and the UI dev server (`http://localhost:1420`, `http://127.0.0.1:1420`). That restricts browsers, not scripts.
 
@@ -108,7 +132,7 @@ Non-finite floats (an unmeasured temperature, an uncertainty that could not be c
 |---|---|---|---|
 | `GET /health` | | `{"status": "ok"}`. No token. Liveness only. | |
 | `GET /session` | | `SessionStatus` | |
-| `POST /session/start` | `RunRequest` (below) | **202** `{"run_id": "run-3"}` | 409 session not idle; 409 [instrument held by another process](#the-instrument-lock); 422 request malformed (FastAPI's error list: an unknown field, an unknown mode, a spot on a mode other than four-point) or settings rejected (`detail` is a string of `key: message` pairs) |
+| `POST /session/start` | `RunRequest` (below) | **202** `{"run_id": "run-3"}` | 409 session not idle; 409 [instrument held by another process](#the-instrument-lock); 422 request malformed (FastAPI's error list: an unknown field, an unknown mode, a spot on a mode other than four-point) or settings rejected (`detail` is a string of `key: message` pairs); 422 a role other than `ui` asks for a run beyond the [agent limits](#agent-limits) (`detail` is an object with `message` and `violations`) |
 | `POST /session/stop` | | `SessionStatus` | Never fails; a no-op when idle |
 | `POST /session/abort` | | `SessionStatus` | Never fails |
 | `POST /session/pause`, `POST /session/resume` | | `SessionStatus` | 409 no run in progress |
@@ -123,7 +147,7 @@ Non-finite floats (an unmeasured temperature, an uncertainty that could not be c
 |---|---|---|
 | `mode` | string | `resistance`, `source_v`, `source_i`, `four_point`, `sweep`, `vdp` |
 | `sample_name`, `username` | string, not empty | The profile of `username` supplies every setting not overridden. |
-| `overrides` | object | Flat measurement keys, e.g. `{"res_test_current": 1e-3}`. Allowed keys per mode come from `GET /schema/settings`. Refused with 422: unknown keys, the profile-owned `settling_time` and `gpib_address`, the machine's `allow_agents`, and the touch-safety keys `safety_voltage_warn_v` and `safety_voltage_warn_silenced` (a run request cannot arrange never to be asked). Values are type-checked strictly: `"1e-3"` is not a number and `"false"` is not a boolean. |
+| `overrides` | object | Flat measurement keys, e.g. `{"res_test_current": 1e-3}`. Allowed keys per mode come from `GET /schema/settings`. Refused with 422: unknown keys, the profile-owned `settling_time` and `gpib_address`, the machine's `allow_agents`, the touch-safety keys `safety_voltage_warn_v` and `safety_voltage_warn_silenced` (a run request cannot arrange never to be asked), and the agent limits `max_voltage_v`, `max_current_a` and `max_power_w`. Values are type-checked strictly: `"1e-3"` is not a number and `"false"` is not a boolean. |
 | `prompt_timeout_s` | number > 0, default 900 | How long a prompt may wait before the run is abandoned. |
 | `spot` | object or null | Four-point only (422 for other modes): `{"map_id", "index", "label", "x_mm"?, "y_mm"?, "angle_deg"?}`. See [Concepts → Spots and maps](concepts.md#spots-and-maps). |
 | `client` | object or null | `{"name", "version"}`, each 1–64 characters from letters, digits, space and `. _ + -`. Written to the file header as `client.*`. |
@@ -139,12 +163,12 @@ Non-finite floats (an unmeasured temperature, an uncertainty that could not be c
 | `GET /users` | | `{"users": [...], "last_user": ...}` | |
 | `POST /users` | `{"username"}` (1–64 chars) | **201** same shape. Idempotent; selects the user. | 422 empty name |
 | `GET /profiles/{username}` | | `{"measurement": {...}, "display": {...}, "file": {...}, "output": {...}}` with this PC's [machine-local](settings.md#machine-local-settings) values filled in | |
-| `PATCH /profiles/{username}` | any of the four sections, each with only the keys to change | The updated profile. Keys not sent keep their stored values. | 404 unknown user; 422 no section given, or the result would not be valid (`detail.issues` lists `section`, `key`, `message`; an old out-of-range value you are not touching does not block the edit); 409 the patch has `gpib_address`, `visa_library` or `gpib_interface` and a run is active; 403 a role other than `ui` changes a touch-safety key, a VISA library path or `allow_agents` |
+| `PATCH /profiles/{username}` | any of the sections (`measurement`, `display`, `file`, `output`, `agent_limits`), each with only the keys to change | The updated profile. Keys not sent keep their stored values. | 404 unknown user; 422 no section given, or the result would not be valid (`detail.issues` lists `section`, `key`, `message`; an old out-of-range value you are not touching does not block the edit); 409 the patch has `gpib_address`, `visa_library` or `gpib_interface` and a run is active; 403 a role other than `ui` changes a touch-safety key, an agent limit, a VISA library path or `allow_agents` (sending one back unchanged is not a change) |
 | `GET /agents` | | `{"enabled": bool}`: whether [agent access](#agent-access) is in force | 403 a role other than `ui` |
 | `GET /schema/settings` | | `{"modes": {mode: {"model", "fields": [...], "override_keys": [...]}}}` | |
-| `POST /settings/resolve` | `{"mode", "username", "overrides": {}, "strict": true}` | `{"settings", "derived", "ok", "issues": [{"key","message","severity"}], "hazard"}` | 422 unknown mode |
+| `POST /settings/resolve` | `{"mode", "username", "overrides": {}, "strict": true}` | `{"settings", "derived", "ok", "issues": [{"key","message","severity"}], "hazard", "agent_limits"}` | 422 unknown mode |
 
-`/settings/resolve` answers "what would this run use, and what is wrong with it" without touching the instrument. `derived` has `max_rate_hz`, plus `sweep_points` for a sweep and `worst_case_power_w` for four-point. `hazard` is `{"hazardous", "voltage_v", "threshold_v", "reason"}`, the touch-safety check on the resolved values. `ok` is false when any issue has severity `error`; `start` refuses exactly those requests. A value the mode forces (four-point and van der Pauw always run with `auto_zero: on` and a filter count of 10) wins over an override, and the reply carries a warning issue naming the key, the value in force and the one not used. A strict resolve also checks the profile's `file`, `output` and `display` sections; their issues are keyed with the section (`output.format`), and `display` problems are warnings only. JSON Schemas of the settings, events, session status and maps are in the repository under `contracts/`.
+`/settings/resolve` answers "what would this run use, and what is wrong with it" without touching the instrument. `derived` has `max_rate_hz`, plus `sweep_points` for a sweep and `worst_case_power_w` for four-point. `hazard` is `{"hazardous", "voltage_v", "threshold_v", "reason"}`, the touch-safety check on the resolved values. `agent_limits` is `{"ok", "violations"}`, the verdict an agent's start would get ([Agent limits](#agent-limits)), for whichever role asks; it is null when the settings have errors. `ok` is false when any issue has severity `error`; `start` refuses exactly those requests. A value the mode forces (four-point and van der Pauw always run with `auto_zero: on` and a filter count of 10) wins over an override, and the reply carries a warning issue naming the key, the value in force and the one not used. A strict resolve also checks the profile's `file`, `output` and `display` sections; their issues are keyed with the section (`output.format`), and `display` problems are warnings only. JSON Schemas of the settings, events, session status and maps are in the repository under `contracts/`.
 
 ### Instruments
 
