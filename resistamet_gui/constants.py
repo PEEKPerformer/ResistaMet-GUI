@@ -182,6 +182,16 @@ DEFAULT_SETTINGS = {
         "compression": "never",
         "compression_threshold_mb": 5
     },
+    # What a run started by an AI agent may put on the device
+    # (docs/design/mcp_layer.md, M4). Only the user interface can change
+    # these, and they never apply to a run a person starts. None = no cap
+    # beyond the instrument's own. 30 V is the touch-safety bound above
+    # (IEC 61010-1 SELV); current and power are the experiment's business.
+    "agent_limits": {
+        "max_voltage_v": 30.0,               # largest |V| sourced or allowed as compliance
+        "max_current_a": None,               # largest |I| sourced or allowed as compliance
+        "max_power_w": None                  # largest |V| x |I| the run could deliver
+    },
     "users": [],
     "last_user": None
 }
