@@ -51,6 +51,8 @@ class ScriptedBackend:
                                          (404, {'detail': 'Not Found'}))
         if callable(reply):
             reply = reply(body)
+        if isinstance(reply, str):
+            return httpx2.Response(status, text=reply)
         return httpx2.Response(status, json=reply)
 
 
@@ -301,3 +303,90 @@ class TestRunTools:
     def test_events_with_no_run_yet_are_none(self, call):
         assert call('get_run_events') == (False, {'run_id': None, 'events': [],
                                                   'last_seq': 0})
+
+
+RUN_FILE = """\
+# mode: resistance
+# units: s,Ω,,
+elapsed_s,R_ohm,compliance,event
+0.1,100,OK,
+0.2,102,OK,
+# --- run completed ---
+# total_samples: 2
+"""
+
+LISTING = {'root': '/data', 'files': [
+    {'path': 'alice/2_s2_R.csv', 'name': '2_s2_R.csv', 'user': 'alice', 'size': 10,
+     'modified': 2.0},
+    {'path': 'alice/1_s1_R.csv', 'name': '1_s1_R.csv', 'user': 'alice', 'size': 10,
+     'modified': 1.0},
+]}
+
+
+class TestResults:
+    @pytest.fixture(autouse=True)
+    def _files(self, scripted):
+        scripted.replies[('GET', '/results')] = (200, LISTING)
+        scripted.replies[('GET', '/results/file')] = (200, RUN_FILE)
+
+    def test_the_current_run_is_summarised_from_its_listed_file(self, call, scripted):
+        scripted.replies[('GET', '/session')] = (200, {
+            'state': 'idle', 'run_id': 'run-2', 'pending_prompt': None,
+            'path': 'measurement_data/alice/1_s1_R.csv'})
+        failed, summarised = call('get_run_summary')
+        assert not failed
+        assert (summarised['run_id'], summarised['path']) == ('run-2', 'alice/1_s1_R.csv')
+        assert summarised['columns']['R_ohm']['mean'] == 101.0
+        assert summarised['end'] == {'total_samples': 2}
+        assert scripted.requests[-1][2] == {'path': 'alice/1_s1_R.csv'}
+
+    def test_an_earlier_run_is_found_through_its_events(self, call, scripted):
+        scripted.replies[('GET', '/session')] = (200, {'state': 'idle', 'run_id': 'run-3',
+                                                       'pending_prompt': None,
+                                                       'path': 'x/alice/3.csv'})
+        scripted.replies[('GET', '/session/events')] = (200, {'gap': False, 'cursor': 2,
+                                                              'last_seq': 2, 'events': [
+            {'type': 'file_opened', 'run_id': 'run-1', 'seq': 1, 'cursor': 1,
+             'payload': {'path': 'measurement_data/alice/2_s2_R.csv'}},
+            {'type': 'run_started', 'run_id': 'run-3', 'seq': 1, 'cursor': 2,
+             'payload': {}}]})
+        failed, summarised = call('get_run_summary', {'run_id': 'run-1'})
+        assert (failed, summarised['path']) == (False, 'alice/2_s2_R.csv')
+
+    def test_a_run_that_wrote_no_file_says_so(self, call, scripted):
+        scripted.replies[('GET', '/session')] = (200, {'state': 'idle', 'run_id': 'run-2',
+                                                       'pending_prompt': None, 'path': None})
+        failed, text = call('get_run_summary')
+        assert failed and 'run-2 wrote no data file' in text
+
+    def test_a_compressed_file_is_explained(self, call, scripted):
+        scripted.replies[('GET', '/results/file')] = (415, {'detail': 'only .csv files can '
+                                                                      'be previewed'})
+        failed, text = call('get_run_summary', {'path': 'alice/1.csv.gz'})
+        assert failed and 'not a plain .csv' in text
+
+    def test_read_result_gives_a_slice(self, call):
+        failed, sliced = call('read_result', {'path': 'alice/1_s1_R.csv', 'offset': -1})
+        assert not failed
+        assert sliced['rows'] == [[0.2, 102, 'OK', '']]
+        assert (sliced['total_rows'], sliced['offset']) == (2, 1)
+
+    def test_read_result_holds_the_bound(self, call):
+        failed, text = call('read_result', {'path': 'a.csv', 'rows': 100_000})
+        assert failed and 'rows' in text
+
+    def test_list_results_by_sample(self, call, scripted):
+        failed, listed = call('list_results', {'sample': 'S2'})
+        assert [f['path'] for f in listed['files']] == ['alice/2_s2_R.csv']
+        assert scripted.requests[-1][2] == {'limit': '5000'}
+
+    def test_the_result_tools_are_read_only(self, connection_file):
+        tools = _list_tools(connection_file)
+        for name in ('get_run_summary', 'list_results', 'read_result', 'list_maps', 'get_map'):
+            assert tools[name].annotations.read_only_hint is True, name
+
+    def test_get_map_names_the_user(self, call, scripted):
+        scripted.replies[('GET', '/maps/m-1')] = (200, {'map_id': 'm-1', 'spots': []})
+        assert call('get_map', {'map_id': 'm-1', 'user': 'alice'}) == (
+            False, {'map_id': 'm-1', 'spots': []})
+        assert scripted.requests[-1][2] == {'user': 'alice'}

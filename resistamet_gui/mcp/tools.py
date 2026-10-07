@@ -23,13 +23,14 @@ import json
 from typing import Annotated, Any, Dict, List, Optional
 from urllib.parse import quote
 
+import anyio
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
 
 from ..constants import __version__
-from . import audit, waiting
+from . import audit, summary, waiting
 from .client import Backend, BackendError, BackendUnavailable
 
 #: Said wherever a prompt needs a person, so the agent can pass it on.
@@ -51,6 +52,9 @@ ACT_IDEMPOTENT = ToolAnnotations(read_only_hint=False, destructive_hint=False,
 
 #: The program that asks for a run, as the data file's client.* lines name it.
 CLIENT = {'name': 'resistamet-mcp', 'version': __version__}
+
+#: The largest file the backend serves (``routes_results.MAX_PREVIEW_BYTES``).
+MAX_FILE_BYTES = 32 * 1024 * 1024
 
 User = Annotated[str, Field(description="Operator name, as list_users gives it. Their "
                                         "profile supplies every setting not overridden.")]
@@ -121,6 +125,7 @@ def register(server: MCPServer, backend: Backend) -> None:
     _register_reads(server, backend)
     _register_runs(server, backend)
     _register_following(server, backend)
+    _register_results(server, backend)
 
 
 def _register_reads(server: MCPServer, backend: Backend) -> None:
@@ -378,6 +383,130 @@ def _register_following(server: MCPServer, backend: Backend) -> None:
         "unless named in types; include_samples adds samples thinned to max_samples, "
         "and samples_total counts them either way. For statistics over every row use "
         "get_run_summary. gap true: the backend's memory no longer reaches back that far."))
+
+
+def _register_results(server: MCPServer, backend: Backend) -> None:
+
+    async def get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+        return await ask(backend, 'GET', path, params=params)
+
+    async def read_file(path: str) -> str:
+        try:
+            return await backend.get_text('/results/file', params={'path': path},
+                                          max_bytes=MAX_FILE_BYTES)
+        except BackendUnavailable as exc:
+            raise ToolError(str(exc)) from None
+        except BackendError as exc:
+            if exc.status == 415:
+                raise ToolError(f"{path} is not a plain .csv (a compressed .csv.gz or an HDF5 "
+                                "file), and only those can be read here; it is in the data "
+                                "directory.") from None
+            raise ToolError(explain(exc)) from None
+
+    async def run_file(run_id: Optional[str]):
+        """The listed path of the file a run wrote, and the run's id."""
+        status = await get('/session')
+        run_id = run_id or status.get('run_id')
+        if not run_id:
+            raise ToolError("No run yet. list_results lists the data files; pass one as path.")
+        if run_id == status.get('run_id'):
+            # The current or last run: its status names the file, after any
+            # compression at the end.
+            run_path = status.get('path')
+        else:
+            events, _, _ = await waiting.read_history(get, run_id, 0)
+            paths = [(event.get('payload') or {}).get('path') for event in events
+                     if event.get('type') in ('file_opened', 'file_finalized', 'run_ended')]
+            run_path = next((path for path in reversed(paths) if path), None)
+            if not events:
+                raise ToolError(f"The backend no longer remembers {run_id} (run ids restart "
+                                "with the backend). list_results lists the data files; pass "
+                                "one as path.")
+        if not run_path:
+            raise ToolError(f"{run_id} wrote no data file; get_run_events says how it ended.")
+        listing = await get('/results', params={'limit': 5000})
+        listed = summary.find_listed(run_path, listing.get('files', []))
+        if listed is None:
+            raise ToolError(f"{run_path} is not among the files the backend lists.")
+        return listed, run_id
+
+    async def get_run_summary(
+            run_id: Annotated[Optional[str], Field(description=(
+                "Which run; default the current or last."))] = None,
+            path: Annotated[Optional[str], Field(description=(
+                "Or a data file, as list_results gives it."))] = None,
+    ) -> CallToolResult:
+        if path is None:
+            path, run_id = await run_file(run_id)
+        text = await read_file(path)
+        summarised = await anyio.to_thread.run_sync(summary.summarise, text)
+        audit.note_run_id(run_id)
+        return result({'run_id': run_id, 'path': path, **summarised})
+
+    server.add_tool(get_run_summary, annotations=READ, title="Run summary", description=(
+        "Statistics of a run from its data file, which holds every row: per numeric "
+        "column its unit, count, mean, sample SD, min, max and last value (over all rows, "
+        "compliance rows included); rows in compliance, by kind; marks; the header "
+        "(settings, instrument, started_by) and, once the run is over, the end block "
+        "(total_samples, duration, a four-point run's spot_stats, a van der Pauw result). "
+        "finalized false: the run is still writing. Works during a run, too. "
+        "Plain .csv files only."))
+
+    async def list_results(
+            user: Annotated[Optional[str], Field(description="Only this user's files.")] = None,
+            sample: Annotated[Optional[str], Field(description=(
+                "Only files whose name contains this, case-insensitive."))] = None,
+            limit: Annotated[int, Field(ge=1, le=500, description="At most this many.")] = 50,
+    ) -> CallToolResult:
+        params: Dict[str, Any] = {'limit': 5000 if sample else limit}
+        if user:
+            params['user'] = user
+        listing = await get('/results', params=params)
+        files = listing.get('files', [])
+        if sample:
+            files = [f for f in files if sample.lower() in str(f.get('name', '')).lower()]
+        return result({'root': listing.get('root'), 'files': files[:limit]})
+
+    server.add_tool(list_results, annotations=READ, title="List results", description=(
+        "Data files under the data directory, newest first: path (relative, to pass to "
+        "read_result or get_run_summary), name, user, size in bytes, modified (Unix "
+        "seconds)."))
+
+    async def read_result(
+            path: Annotated[str, Field(description="A data file, as list_results gives it.")],
+            offset: Annotated[int, Field(description=(
+                "First row, from 0; negative counts from the end (-10: the last ten)."))] = 0,
+            rows: Annotated[int, Field(ge=1, le=summary.MAX_ROWS, description=(
+                f"How many rows, at most {summary.MAX_ROWS}."))] = summary.DEFAULT_ROWS,
+    ) -> CallToolResult:
+        text = await read_file(path)
+        sliced = await anyio.to_thread.run_sync(summary.read_slice, text, offset, rows)
+        return result({'path': path, **sliced})
+
+    server.add_tool(read_result, annotations=READ, title="Read result", description=(
+        "A data file's header, end block, columns and units, and a slice of its rows "
+        f"(default {summary.DEFAULT_ROWS}, at most {summary.MAX_ROWS}), never the whole "
+        "file; total_rows says how many there are. For statistics use get_run_summary."))
+
+    async def list_maps(user: User) -> CallToolResult:
+        return result(await ask(backend, 'GET', '/maps', params={'user': user}))
+
+    server.add_tool(list_maps, annotations=READ, title="List maps", description=(
+        "The four-point map ids a user's runs name. A map is the set of four-point runs "
+        "that share a map_id, one spot each."))
+
+    async def get_map(
+            map_id: Annotated[str, Field(description="As list_maps gives it.")],
+            user: User,
+    ) -> CallToolResult:
+        return result(await ask(backend, 'GET', f'/maps/{_segment(map_id)}',
+                                params={'user': user}))
+
+    server.add_tool(get_map, annotations=READ, title="Get map", description=(
+        "A four-point map assembled from the run files now: each spot's index, label, "
+        "position (x_mm, y_mm, angle_deg), data file and statistics (rs in ohm/sq, rho "
+        "in ohm cm, sigma in S/cm: mean, sd, u_total), the statistics across spots, runs "
+        "that could not be read (skipped), and the stored sample photo, if any."))
 
 
 def _segment(value: str) -> str:
