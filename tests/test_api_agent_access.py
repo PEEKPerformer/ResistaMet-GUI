@@ -164,3 +164,50 @@ class TestTheAgentIsRefusedWhereAPersonIsRequired:
                                 json={'measurement': {'visa_library': str(library)}})
         assert response.status_code == 403
         assert config.get_visa_library() == ''
+
+    @pytest.mark.parametrize('value', [True, False])
+    def test_changing_allow_agents(self, agent, config, value):
+        config.set_machine_local('allow_agents', not value)
+        response = agent.patch('/profiles/alice', json={'measurement': {'allow_agents': value}})
+        assert response.status_code == 403
+        assert config.get_allow_agents() is (not value)
+
+
+class TestAllowAgentsSetting:
+    def test_it_is_off_by_default_and_in_every_profile(self, ui):
+        assert ui.get('/profiles/alice').json()['measurement']['allow_agents'] is False
+
+    def test_the_ui_may_change_it(self, ui, config):
+        response = ui.patch('/profiles/alice', json={'measurement': {'allow_agents': True}})
+        assert response.status_code == 200
+        assert response.json()['measurement']['allow_agents'] is True
+        assert config.get_allow_agents() is True
+        assert 'allow_agents' not in config.config['user_settings']['alice']['measurement']
+
+    @pytest.mark.parametrize('value', ['true', 1, None])
+    def test_it_is_true_or_false(self, ui, config, value):
+        response = ui.patch('/profiles/alice', json={'measurement': {'allow_agents': value}})
+        assert response.status_code == 422
+        assert config.get_allow_agents() is False
+
+    def test_an_agent_may_resend_it_unchanged(self, agent):
+        section = agent.get('/profiles/alice').json()['measurement']
+        section.pop('gpib_address')
+        section['nplc'] = 2.0
+        response = agent.patch('/profiles/alice', json={'measurement': section})
+        assert response.status_code == 200
+
+    def test_it_can_change_during_a_run(self, ui, session, monkeypatch):
+        """Unlike the bus keys: a person must be able to turn agents out mid-run."""
+        monkeypatch.setattr(type(session), 'state', property(lambda self: 'running'))
+        assert ui.patch('/profiles/alice', json={
+            'measurement': {'gpib_interface': ''}}).status_code == 409
+        assert ui.patch('/profiles/alice', json={
+            'measurement': {'allow_agents': True}}).status_code == 200
+
+    def test_a_run_request_cannot_carry_it(self, agent):
+        response = agent.post('/settings/resolve', json={
+            'mode': 'resistance', 'username': 'alice', 'overrides': {'allow_agents': True}})
+        assert response.json()['ok'] is False
+        assert [issue['key'] for issue in response.json()['issues']] == ['allow_agents']
+        assert response.json()['settings']['measurement']['allow_agents'] is False

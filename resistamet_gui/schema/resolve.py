@@ -46,7 +46,9 @@ from .settings_modes import MODE_MODELS
 logger = logging.getLogger(__name__)
 
 #: Keys the profile always wins on, whatever a client sends (MW gather).
-PROFILE_OWNED_KEYS = ('settling_time', 'gpib_address')
+#: ``allow_agents`` is this machine's switch, not a setting of a run: a
+#: request that sent it would change nothing and read as if it had.
+PROFILE_OWNED_KEYS = ('settling_time', 'gpib_address', 'allow_agents')
 
 #: The touch-safety group. A strict request may not send any of these: the
 #: hazardous-voltage prompt can only be answered by a person at the bench
@@ -183,6 +185,10 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
     # 7. Profile-owned keys.
     m_cfg['settling_time'] = profile['measurement']['settling_time']
     m_cfg['gpib_address'] = profile['measurement']['gpib_address']
+    if 'allow_agents' in profile['measurement']:
+        m_cfg['allow_agents'] = profile['measurement']['allow_agents']
+    else:
+        m_cfg.pop('allow_agents', None)
     if strict:
         # The request is already refused above; this makes the settings, the
         # hazard below and the run's own gate read the stored profile even if
