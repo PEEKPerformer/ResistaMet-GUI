@@ -34,7 +34,7 @@ _MACHINE_LOCAL_MEASUREMENT_KEYS = ('gpib_address', 'visa_library', 'gpib_interfa
 _MACHINE_FILE_ONLY_KEYS = ('allow_agents',)
 
 # The sections a user profile can override.
-_USER_SECTIONS = ('measurement', 'display', 'file', 'output')
+_USER_SECTIONS = ('measurement', 'display', 'file', 'output', 'agent_limits')
 
 
 # Top-level lists that are sets of names: two writers' additions are both kept.
@@ -576,7 +576,7 @@ class ConfigManager:
                 if section in user_settings and isinstance(user_settings[section], dict):
                     user_settings[section].update(settings)
         else:
-            for section in ['measurement', 'display', 'file', 'output']:
+            for section in _USER_SECTIONS:
                 if section in self.config:
                     user_settings[section] = dict(self.config[section])
 
@@ -599,7 +599,7 @@ class ConfigManager:
                 self._store_machine_local_from(settings.get('measurement'))
 
             for section, section_settings in settings.items():
-                if section in ['measurement', 'display', 'file', 'output']:
+                if section in _USER_SECTIONS:
                     if section not in self.config['user_settings'][username]:
                         self.config['user_settings'][username][section] = {}
                     stored = dict(section_settings)
@@ -670,7 +670,7 @@ class ConfigManager:
                 self._store_machine_local_from(settings.get('measurement'))
 
             for section, section_settings in settings.items():
-                if section in ['measurement', 'display', 'file', 'output'] and isinstance(self.config.get(section), dict):
+                if section in _USER_SECTIONS and isinstance(self.config.get(section), dict):
                     incoming = dict(section_settings)
                     if section == 'measurement':
                         for key in _MACHINE_LOCAL_MEASUREMENT_KEYS:

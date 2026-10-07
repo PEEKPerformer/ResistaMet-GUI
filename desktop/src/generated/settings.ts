@@ -3,6 +3,33 @@
 // Do not edit. Regenerate with `npm run gen:types`.
 
 /**
+ * What a run an AI agent starts may put on the device. Its own section.
+ *
+ * A section beside ``measurement`` rather than more keys inside it, because
+ * these are not settings of a run: the resolver never copies them into one,
+ * so they cannot reach a data file, and a run request only carries
+ * measurement keys. They bound the ``agent`` role only; a run a person
+ * starts is never held to them (``docs/design/mcp_layer.md`` M4).
+ *
+ * None is no cap beyond the instrument's own. A cap is a positive, finite
+ * number: 0 would refuse every run, which is what turning agents off is for.
+ */
+export interface AgentLimitSettings {
+  /**
+   * Largest |I| an agent's run may source or allow as compliance, in A. None = the instrument's own limit.
+   */
+  max_current_a?: number | null;
+  /**
+   * Largest |V| x |I| an agent's run could deliver, in W. None = the instrument's own limit.
+   */
+  max_power_w?: number | null;
+  /**
+   * Largest |V| an agent's run may source or allow as compliance, in V. None = the instrument's own limit.
+   */
+  max_voltage_v?: number | null;
+}
+
+/**
  * Auxiliary-sensor co-logging. Serialized inside ``measurement``.
  *
  * Co-logging is only wired into the continuous modes
@@ -294,6 +321,26 @@ export interface FieldMeta {
 
 /** Bounds, defaults and enums per model field, from the schema. */
 export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
+  "AgentLimitSettings": {
+    "max_current_a": {
+      "type": "number",
+      "nullable": true,
+      "exclusiveMin": 0,
+      "default": null
+    },
+    "max_power_w": {
+      "type": "number",
+      "nullable": true,
+      "exclusiveMin": 0,
+      "default": null
+    },
+    "max_voltage_v": {
+      "type": "number",
+      "nullable": true,
+      "exclusiveMin": 0,
+      "default": 30
+    }
+  },
   "AuxSensorSettings": {
     "aux_address": {
       "type": "string",

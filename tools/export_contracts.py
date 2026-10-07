@@ -26,8 +26,8 @@ CONTRACT_DIR = REPO_ROOT / "contracts"
 
 def settings_schema():
     from resistamet_gui.schema.settings_common import (
-        AuxSensorSettings, DisplaySettings, FileSettings, InstrumentSettings,
-        OutputSettings, SafetySettings,
+        AgentLimitSettings, AuxSensorSettings, DisplaySettings, FileSettings,
+        InstrumentSettings, OutputSettings, SafetySettings,
     )
     from resistamet_gui.schema.settings_modes import MODE_MODELS, RunRequest
     from resistamet_gui.schema.spots import SampleGeometry, SpotRequest
@@ -39,6 +39,7 @@ def settings_schema():
         'FileSettings': FileSettings,
         'OutputSettings': OutputSettings,
         'DisplaySettings': DisplaySettings,
+        'AgentLimitSettings': AgentLimitSettings,
         'RunRequest': RunRequest,
         'SampleGeometry': SampleGeometry,
         'SpotRequest': SpotRequest,

@@ -19,6 +19,7 @@ from .settings_modes import (
 )
 from .spots import SampleGeometry, SpotRequest
 from .settings_common import (
+    AgentLimitSettings,
     AuxSensorSettings,
     DisplaySettings,
     FileSettings,
@@ -34,6 +35,7 @@ __all__ = [
     'ResolvedRun',
     'allowed_override_keys',
     'resolve_run_settings',
+    'AgentLimitSettings',
     'AuxSensorSettings',
     'ClientInfo',
     'CurrentSourceSettings',

@@ -42,8 +42,8 @@ def test_defaults_come_from_default_settings():
     """
     from resistamet_gui.constants import DEFAULT_SETTINGS
     from resistamet_gui.schema import (
-        AuxSensorSettings, DisplaySettings, FileSettings, InstrumentSettings,
-        OutputSettings, SafetySettings,
+        AgentLimitSettings, AuxSensorSettings, DisplaySettings, FileSettings,
+        InstrumentSettings, OutputSettings, SafetySettings,
     )
 
     sections = {
@@ -51,6 +51,7 @@ def test_defaults_come_from_default_settings():
         'file': [FileSettings],
         'output': [OutputSettings],
         'display': [DisplaySettings],
+        'agent_limits': [AgentLimitSettings],
     }
     for section, models in sections.items():
         for model in models:
