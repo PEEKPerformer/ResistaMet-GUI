@@ -1,6 +1,6 @@
 # MCP layer: an AI agent as a client of the measurement API
 
-**Status:** design, 2026-10-07. Nothing here is built.
+**Status:** design, 2026-10-07. A1–A4 (§10) are built; the MCP server (M1–M4) is not.
 **Depends on:** `tauri_backend_split.md` (session, events, the API and its
 decision D4), `four_point_probe_spots.md` (spots and maps).
 
@@ -168,11 +168,12 @@ window, as a vdP run does at each rewire.
 
 **M6. The server stamps the role into the run.** `RunRequest.client` stays
 self-reported. The route adds `started_by: <role>`, which the client cannot
-set, to the `run_started` payload and to the file header
-(`# Started by: agent`).
+set, to the `run_started` payload, the session status and the file header
+(`# started_by: agent`, in the header's own `key: value` form).
 
 - The desktop shows a banner on a run an agent started.
-- The results browser can filter on `started_by`.
+- The results browser can filter on `started_by` once `GET /results` reads
+  file headers; today it lists files by name, size and date only.
 
 ## 6. Tools
 
