@@ -4,7 +4,8 @@
 //
 // The instrument address is machine-local and shown apart from the profile:
 // the same operator's profile on another PC has a different bus. Only the
-// Instrument section stores it; Save never sends it.
+// Instrument section stores it; Save never sends it. "Allow AI agents" is
+// machine-local too, but it is a switch rather than wiring, and Save stores it.
 
 import { useEffect, useMemo, useState } from "react";
 import { useApi } from "../../app/AppContext";
@@ -21,13 +22,14 @@ import { FieldRow } from "../forms/SettingsForm";
 import { Button, Dialog, Field, Input, Notice, Select } from "../ui";
 import styles from "./dialogs.module.css";
 
-type Section = "timing" | "instrument" | "aux" | "safety" | "files" | "display";
+type Section = "timing" | "instrument" | "aux" | "safety" | "agents" | "files" | "display";
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "timing", label: "Timing" },
   { id: "instrument", label: "Instrument" },
   { id: "aux", label: "Aux sensor" },
   { id: "safety", label: "Safety" },
+  { id: "agents", label: "AI agents" },
   { id: "files", label: "Files & output" },
   { id: "display", label: "Display" },
 ];
@@ -52,6 +54,17 @@ const AUX: FieldSpec[] = [
 const SAFETY: FieldSpec[] = [
   { key: "safety_voltage_warn_v", label: "Warn at or above", unit: "V", hint: "0 disables the warning." },
   { key: "safety_voltage_warn_silenced", label: "Warning silenced for this profile" },
+];
+
+// Machine-local, like the address, but stored by Save: it is a person's
+// switch, and the backend lets it change mid-run so agents can be turned out.
+const ALLOW_AGENTS: FieldSpec = { key: "allow_agents", label: "Allow AI agents to connect" };
+
+// The envelope a run an agent starts is held to; the window never is.
+const AGENT_LIMITS: FieldSpec[] = [
+  { key: "max_voltage_v", label: "Max voltage", unit: "V", hint: "Empty: no cap." },
+  { key: "max_current_a", label: "Max current", unit: "A", hint: "Empty: no cap." },
+  { key: "max_power_w", label: "Max power", unit: "W", hint: "Empty: no cap." },
 ];
 
 const FILES: FieldSpec[] = [
@@ -224,6 +237,31 @@ export function SettingsDialog({ onClose }: Props) {
                   />
                 ))
               : null}
+
+            {profile && section === "agents" ? (
+              <>
+                <FieldRow
+                  spec={ALLOW_AGENTS}
+                  meta={meta("InstrumentSettings")[ALLOW_AGENTS.key] ?? {}}
+                  value={measurement[ALLOW_AGENTS.key]}
+                  onChange={(v) => set("measurement", ALLOW_AGENTS.key, v)}
+                  issue={issueFor("measurement", ALLOW_AGENTS.key)}
+                  disabled={false}
+                />
+                <div className={styles.subhead}>Limits on agent-started runs</div>
+                {AGENT_LIMITS.map((spec) => (
+                  <FieldRow
+                    key={spec.key}
+                    spec={spec}
+                    meta={meta("AgentLimitSettings")[spec.key] ?? {}}
+                    value={(draft.agent_limits ?? {})[spec.key]}
+                    onChange={(v) => set("agent_limits", spec.key, v)}
+                    issue={issueFor("agent_limits", spec.key)}
+                    disabled={running}
+                  />
+                ))}
+              </>
+            ) : null}
 
             {profile && section === "files" ? (
               <>

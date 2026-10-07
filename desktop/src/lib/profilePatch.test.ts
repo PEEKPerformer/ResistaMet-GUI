@@ -32,6 +32,22 @@ test("a machine-local key is never sent, even when it is all that differs", () =
   assert.deepEqual(profilePatch(LOADED, draft), {});
 });
 
+test("allow_agents is sent: machine-local, but stored by Save rather than by Identify", () => {
+  const loaded = { ...structuredClone(LOADED), measurement: { ...LOADED.measurement, allow_agents: false } };
+  const draft = structuredClone(loaded);
+  draft.measurement.allow_agents = true;
+  assert.deepEqual(profilePatch(loaded, draft), { measurement: { allow_agents: true } });
+});
+
+test("an agent limit cleared to no cap is sent as null", () => {
+  const limits: Record<string, number | null> = { max_voltage_v: 30, max_current_a: null, max_power_w: null };
+  const loaded = { ...structuredClone(LOADED), agent_limits: limits };
+  const draft = structuredClone(loaded);
+  draft.agent_limits.max_voltage_v = null;
+  draft.agent_limits.max_current_a = 0.5;
+  assert.deepEqual(profilePatch(loaded, draft), { agent_limits: { max_voltage_v: null, max_current_a: 0.5 } });
+});
+
 test("a key the loaded profile did not have is sent", () => {
   const draft = { ...structuredClone(LOADED), display: { enable_plot: false } };
   assert.deepEqual(profilePatch(LOADED, draft), { display: { enable_plot: false } });
