@@ -5,15 +5,17 @@ calls the session, and maps the two failure modes: ``SessionBusy`` is 409
 (the instrument is doing something else) and a rejected run request is 422
 (the settings could not be resolved).
 """
+import time
 from typing import Annotated, Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, Field, StringConstraints, ValidationError
 
 from ..schema.settings_modes import RunRequest
 from ..schema.spots import LABEL_PATTERN
 from ..session.instrument_lock import InstrumentBusy
 from ..session.manager import MeasurementSession, SessionBusy
+from ..session.status import SafetyAckFields
 from .app import (UI_ROLE, agent_limit_verdict, busy_as_conflict, get_session,
                   require_token)
 
@@ -184,7 +186,7 @@ def mark(body: MarkRequest, session: MeasurementSession = Depends(get_session),
 
 
 @router.post("/prompt")
-def answer_prompt(body: AnswerRequest,
+def answer_prompt(body: AnswerRequest, request: Request,
                    session: MeasurementSession = Depends(get_session),
                    role: str = Depends(require_token)):
     """Answer the pending prompt.
@@ -192,7 +194,16 @@ def answer_prompt(body: AnswerRequest,
     409 when there is nothing to answer, or the answer is for another prompt
     or another run; 403 when the prompt needs a person and the caller is not
     one; 422 when the choice is not one the prompt offered, with the options
-    in the detail. A refused answer leaves the prompt pending.
+    in the detail, or when the fields are not ones the prompt takes. A
+    refused answer leaves the prompt pending.
+
+    An ``acknowledge`` of ``safety_voltage_ack`` that asks for a silence
+    (``SafetyAckFields``) saves it to the profile of the run's user. Saved
+    here rather than by the run: the runs own no profile file, and the
+    person who asked hears in this reply if the save failed (500, with the
+    answer already taken and the run going ahead). Only the ``ui`` role can
+    answer that prompt, so it is always the person at the window silencing
+    it, for the runs they start (``docs/design/mcp_layer.md`` M5).
     """
     current = session.status()
     pending = current['pending_prompt']
@@ -213,6 +224,19 @@ def answer_prompt(body: AnswerRequest,
         # session reports that refusal as a plain False, and "not one of the
         # options" is a different thing to tell a client than "too late".
         raise _not_an_option(body.choice, pending['options'])
+    silence, owner = {}, None
+    if body.prompt_id == pending['prompt_id'] and pending['kind'] == 'safety_voltage_ack':
+        fields = _safety_fields(body.fields)
+        if body.choice == 'acknowledge':
+            silence = fields.profile_change(time.time())
+        if silence:
+            if request.app.state.api.stored_config is None:
+                # Given profiles and no config: there is nowhere to keep the
+                # silence, and taking the answer would say it was kept.
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="this backend has no profile store to save the silence in")
+            owner = session.prompt_owner(body.prompt_id)
     try:
         accepted = session.answer_prompt(body.prompt_id, body.choice, body.fields)
     except SessionBusy as exc:
@@ -222,7 +246,22 @@ def answer_prompt(body: AnswerRequest,
     if not accepted:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                              detail="prompt_id is stale or already answered")
+    if silence and owner is not None:
+        request.app.state.api.stored_config.merge_user_settings(
+            owner, {'measurement': silence})
     return session.status()
+
+
+def _safety_fields(fields: Dict[str, Any]) -> SafetyAckFields:
+    """The fields of a touch-safety answer, or a 422 naming what is wrong."""
+    try:
+        return SafetyAckFields.model_validate(fields)
+    except ValidationError as exc:
+        problems = '; '.join(
+            f"{'.'.join(str(part) for part in error['loc']) or 'fields'}: {error['msg']}"
+            for error in exc.errors())
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                             detail=f"not fields of a touch-safety answer: {problems}")
 
 
 class _BeyondAgentLimits(Exception):
