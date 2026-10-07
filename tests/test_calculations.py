@@ -534,8 +534,20 @@ class TestThicknessCorrection:
         w = w_over_s * s
         # The X1.1 closed form agrees with the printed table to 6 parts in
         # 1e4 except at w/S = 0.9, where it gives 0.9460 against the
-        # printed 0.944.
+        # printed 0.944. Smits's Table III (below) brackets that point at
+        # 0.9600 and 0.9214 and agrees with the closed form to 2e-4, so the
+        # printed 0.944 is the odd one out.
         assert f_thickness_correction(w, s) == pytest.approx(expected, abs=tol)
+
+    # Smits 1958, Table III: F(w/s) from Uhlir, to four places.
+    @pytest.mark.parametrize("w_over_s,expected", [
+        (0.4, 0.9995), (0.5, 0.9974), (0.5555, 0.9948), (0.6250, 0.9898),
+        (0.7143, 0.9798), (0.8333, 0.9600), (1.0, 0.9214), (1.1111, 0.8907),
+        (1.25, 0.8490), (1.4286, 0.7938), (1.6666, 0.7225), (2.0, 0.6336),
+    ])
+    def test_against_smits_table_iii(self, w_over_s, expected):
+        s = 0.1
+        assert f_thickness_correction(w_over_s * s, s) == pytest.approx(expected, abs=2.5e-4)
 
     def test_invalid_inputs_return_nan(self):
         import math
