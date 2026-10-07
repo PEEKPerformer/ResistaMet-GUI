@@ -5,15 +5,7 @@ These tests run the wrapper against a FakeKeithley and verify both:
        :SENS:RES:MODE MAN-before-SOUR:CURR ordering is regression-tested
        because the auto-ohms quirk causes error 825 if violated).
     2. After configuration, ``:READ?`` produces the expected element layout
-       (e.g. resistance mode emits two elements, source modes emit three).
-
-Dead helpers: ``Keithley2400.setup_resistance``, ``setup_source_voltage``,
-``setup_source_current`` and ``common_fast`` are not called anywhere in
-``resistamet_gui``. Runs configure the instrument through
-``session/configure.py``; only ``setup_sweep`` is on a live path. The
-classes marked "dead helper" below pin those helpers' own behaviour and
-nothing a run does. The auto-ohms ordering of the live path is tested in
-``TestConfigureResistance``.
+       (a resistance run reads four elements, a source-V run three).
 """
 from __future__ import annotations
 
@@ -112,125 +104,6 @@ class TestConfigureResistance:
             inst.close()
 
 
-# ------------------------------------------ Keithley2400 setups (dead helpers)
-
-class TestSetupResistance:
-    """Dead helper: ``setup_resistance`` is not called by any run."""
-
-    def test_writes_res_mode_man_before_sour_curr(self, fake_rm):
-        """The helper sequences :SENS:RES:MODE MAN before the source, as the
-        live ``configure_resistance`` does (see TestConfigureResistance).
-        """
-        inst = Keithley2400("GPIB0::24::INSTR").connect()
-        try:
-            inst.setup_resistance(test_current=1e-3, v_comp=5.0, nplc=1.0,
-                                  auto_range=True, four_wire=True)
-            cmds = _commands(inst.dev)
-            # :SENS:RES:MODE MAN must appear before :SOUR:CURR
-            res_mode_man_idx = next(i for i, c in enumerate(cmds)
-                                     if c.upper().startswith(":SENS:RES:MODE MAN"))
-            sour_curr_idx = next(i for i, c in enumerate(cmds)
-                                  if c.upper().startswith(":SOUR:CURR ")
-                                  and not c.upper().startswith(":SOUR:CURR:"))
-            assert res_mode_man_idx < sour_curr_idx
-            # Also: no error 825 should have been queued (i.e. all writes valid)
-            err = inst.dev.query(":SYST:ERR?")
-            assert err.startswith("0,")
-        finally:
-            inst.close()
-
-    def test_4wire_enables_rsen(self, fake_rm):
-        inst = Keithley2400("GPIB0::24::INSTR").connect()
-        try:
-            inst.setup_resistance(test_current=1e-3, v_comp=5.0, nplc=1.0,
-                                  auto_range=True, four_wire=True)
-            assert inst.dev.state["syst_rsen"] is True
-        finally:
-            inst.close()
-
-    def test_2wire_disables_rsen(self, fake_rm):
-        inst = Keithley2400("GPIB0::24::INSTR").connect()
-        try:
-            inst.setup_resistance(test_current=1e-3, v_comp=5.0, nplc=1.0,
-                                  auto_range=True, four_wire=False)
-            assert inst.dev.state["syst_rsen"] is False
-        finally:
-            inst.close()
-
-    def test_form_elem_set_to_res_stat(self, fake_rm):
-        inst = Keithley2400("GPIB0::24::INSTR").connect()
-        try:
-            inst.setup_resistance(1e-3, 5.0, 1.0, True, True)
-            elem = inst.dev.query(":FORM:ELEM?")
-            # FORM:ELEM is canonical-ordered — RES,STAT preserved
-            assert elem == "RES,STAT"
-        finally:
-            inst.close()
-
-    def test_manual_range_uses_compliance_over_current(self, fake_rm):
-        inst = Keithley2400("GPIB0::24::INSTR").connect()
-        try:
-            inst.setup_resistance(1e-3, 5.0, 1.0, auto_range=False, four_wire=True)
-            # RANG should be ~ v_comp / current = 5 / 1e-3 = 5000
-            assert inst.dev.state["sens_res_rang"] == pytest.approx(5000.0, rel=1e-3)
-        finally:
-            inst.close()
-
-
-class TestSetupSourceVoltage:
-    """Dead helper: ``setup_source_voltage`` is not called by any run."""
-
-    def test_form_elem_volt_curr_stat(self, fake_rm):
-        inst = Keithley2400("GPIB0::24::INSTR").connect()
-        try:
-            inst.setup_source_voltage(voltage=1.0, i_comp=0.1, nplc=1.0,
-                                       auto_range_curr=True)
-            assert inst.dev.query(":FORM:ELEM?") == "VOLT,CURR,STAT"
-        finally:
-            inst.close()
-
-    def test_source_volt_set(self, fake_rm):
-        inst = Keithley2400("GPIB0::24::INSTR").connect()
-        try:
-            inst.setup_source_voltage(voltage=1.5, i_comp=0.05, nplc=1.0,
-                                       auto_range_curr=True)
-            assert inst.dev.state["sour_volt"] == pytest.approx(1.5)
-            assert inst.dev.state["sens_curr_prot"] == pytest.approx(0.05)
-        finally:
-            inst.close()
-
-    def test_disables_4wire_for_source_v(self, fake_rm):
-        inst = Keithley2400("GPIB0::24::INSTR").connect()
-        try:
-            inst.setup_source_voltage(1.0, 0.1, 1.0, True)
-            # Source-V mode in our wrapper always sets 2-wire
-            assert inst.dev.state["syst_rsen"] is False
-        finally:
-            inst.close()
-
-
-class TestSetupSourceCurrent:
-    """Dead helper: ``setup_source_current`` is not called by any run."""
-
-    def test_form_elem_volt_curr_stat(self, fake_rm):
-        inst = Keithley2400("GPIB0::24::INSTR").connect()
-        try:
-            inst.setup_source_current(current=1e-3, v_comp=5.0, nplc=1.0,
-                                       auto_range_volt=True)
-            assert inst.dev.query(":FORM:ELEM?") == "VOLT,CURR,STAT"
-        finally:
-            inst.close()
-
-    def test_source_curr_set(self, fake_rm):
-        inst = Keithley2400("GPIB0::24::INSTR").connect()
-        try:
-            inst.setup_source_current(2e-3, 5.0, 1.0, True)
-            assert inst.dev.state["sour_curr"] == pytest.approx(2e-3)
-            assert inst.dev.state["sens_volt_prot"] == pytest.approx(5.0)
-        finally:
-            inst.close()
-
-
 class TestSetupSweep:
     def test_voltage_sweep_point_count(self, fake_rm):
         inst = Keithley2400("GPIB0::24::INSTR").connect()
@@ -262,21 +135,6 @@ class TestSetupSweep:
         finally:
             inst.close()
 
-
-class TestCommonFast:
-    """Dead helper: ``common_fast`` is not called by any run."""
-
-    def test_writes_trig_del_zero_and_sour_del_auto(self, fake_rm):
-        inst = Keithley2400("GPIB0::24::INSTR").connect()
-        try:
-            inst.common_fast()
-            assert inst.dev.state["trig_del"] == 0.0
-            assert inst.dev.state["sour_del_auto"] is True
-        finally:
-            inst.close()
-
-
-# ----------------------------------------------------------- READ? integration
 
 class TestReadAfterConfigure:
     """:READ? layout and compliance after the configure a run uses."""
