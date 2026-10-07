@@ -198,6 +198,16 @@ class TestEnhancedResistance:
         sigma = resistance_uncertainty(1.5, 1e-3, model="2400", nplc=1.0, enhanced=True)
         assert math.isclose(sigma, 0.85, rel_tol=1e-6)
 
+    def test_2kohm_range_below_1_plc(self):
+        # Datasheet p. 7 note 1: "For 0.1 PLC, add 0.005% of range to
+        # offset specifications ... For 0.01 PLC, add 0.05% of range". On
+        # the 2 kΩ range that is 0.1 Ω and 1 Ω. At R = 1500 Ω:
+        # 0.75 + 0.1 + 0.1 = 0.95 Ω, and 0.75 + 0.1 + 1 = 1.85 Ω.
+        medium = resistance_uncertainty(1.5, 1e-3, model="2400", nplc=0.1, enhanced=True)
+        fast = resistance_uncertainty(1.5, 1e-3, model="2400", nplc=0.01, enhanced=True)
+        assert math.isclose(medium, 0.95, rel_tol=1e-6)
+        assert math.isclose(fast, 1.85, rel_tol=1e-6)
+
     def test_200ohm_range(self):
         # 200 Ω Enhanced: 0.05% + 0.01 Ω. At R=100 Ω (V=10mV, I=100µA):
         # 0.0005 × 100 + 0.01 = 0.06 Ω.
