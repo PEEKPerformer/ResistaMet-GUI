@@ -33,6 +33,7 @@ _M = DEFAULT_SETTINGS['measurement']
 _F = DEFAULT_SETTINGS['file']
 _O = DEFAULT_SETTINGS['output']
 _D = DEFAULT_SETTINGS['display']
+_A = DEFAULT_SETTINGS['agent_limits']
 
 #: pyvisa's two Prologix interface resource classes (``pyvisa/rname.py``):
 #: ``PRLGX-ASRL[board]::serial device::INTFC`` and
@@ -134,6 +135,33 @@ class SafetySettings(SettingsModel):
 
     safety_voltage_warn_v: float = Field(default=_M['safety_voltage_warn_v'], ge=0.0, le=1100.0)
     safety_voltage_warn_silenced: bool = _M['safety_voltage_warn_silenced']
+
+
+class AgentLimitSettings(SettingsModel):
+    """What a run an AI agent starts may put on the device. Its own section.
+
+    A section beside ``measurement`` rather than more keys inside it, because
+    these are not settings of a run: the resolver never copies them into one,
+    so they cannot reach a data file, and a run request only carries
+    measurement keys. They bound the ``agent`` role only; a run a person
+    starts is never held to them (``docs/design/mcp_layer.md`` M4).
+
+    None is no cap beyond the instrument's own. A cap is a positive, finite
+    number: 0 would refuse every run, which is what turning agents off is for.
+    """
+
+    max_voltage_v: Optional[float] = Field(
+        default=_A['max_voltage_v'], gt=0.0, allow_inf_nan=False, strict=True,
+        description="Largest |V| an agent's run may source or allow as compliance, in V. "
+                    "None = the instrument's own limit.")
+    max_current_a: Optional[float] = Field(
+        default=_A['max_current_a'], gt=0.0, allow_inf_nan=False, strict=True,
+        description="Largest |I| an agent's run may source or allow as compliance, in A. "
+                    "None = the instrument's own limit.")
+    max_power_w: Optional[float] = Field(
+        default=_A['max_power_w'], gt=0.0, allow_inf_nan=False, strict=True,
+        description="Largest |V| x |I| an agent's run could deliver, in W. "
+                    "None = the instrument's own limit.")
 
 
 class FileSettings(SettingsModel):

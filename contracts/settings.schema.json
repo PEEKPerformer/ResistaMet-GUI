@@ -1,5 +1,55 @@
 {
   "definitions": {
+    "AgentLimitSettings": {
+      "additionalProperties": true,
+      "description": "What a run an AI agent starts may put on the device. Its own section.\n\nA section beside ``measurement`` rather than more keys inside it, because\nthese are not settings of a run: the resolver never copies them into one,\nso they cannot reach a data file, and a run request only carries\nmeasurement keys. They bound the ``agent`` role only; a run a person\nstarts is never held to them (``docs/design/mcp_layer.md`` M4).\n\nNone is no cap beyond the instrument's own. A cap is a positive, finite\nnumber: 0 would refuse every run, which is what turning agents off is for.",
+      "properties": {
+        "max_current_a": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Largest |I| an agent's run may source or allow as compliance, in A. None = the instrument's own limit.",
+          "title": "Max Current A"
+        },
+        "max_power_w": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Largest |V| x |I| an agent's run could deliver, in W. None = the instrument's own limit.",
+          "title": "Max Power W"
+        },
+        "max_voltage_v": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 30.0,
+          "description": "Largest |V| an agent's run may source or allow as compliance, in V. None = the instrument's own limit.",
+          "title": "Max Voltage V"
+        }
+      },
+      "title": "AgentLimitSettings",
+      "type": "object"
+    },
     "AuxSensorSettings": {
       "additionalProperties": true,
       "description": "Auxiliary-sensor co-logging. Serialized inside ``measurement``.\n\nCo-logging is only wired into the continuous modes\n(``data_export.AUX_LOG_MODES``); the resolver reports an issue when a\nrequest asks for it on a sweep or vdP run.",

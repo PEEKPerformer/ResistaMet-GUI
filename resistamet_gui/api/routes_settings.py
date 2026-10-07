@@ -16,8 +16,9 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .. import visa_backend
 from ..schema.resolve import allowed_override_keys, resolve_run_settings
-from ..schema.settings_common import (AuxSensorSettings, DisplaySettings, FileSettings,
-                                       InstrumentSettings, OutputSettings, SafetySettings)
+from ..schema.settings_common import (AgentLimitSettings, AuxSensorSettings, DisplaySettings,
+                                       FileSettings, InstrumentSettings, OutputSettings,
+                                       SafetySettings)
 from ..schema.settings_modes import MODE_MODELS
 from ..session.manager import MeasurementSession, SessionBusy
 from .app import UI_ROLE, busy_as_conflict, get_session, require_token
@@ -46,6 +47,7 @@ SECTION_MODELS = {
     'display': (DisplaySettings,),
     'file': (FileSettings,),
     'output': (OutputSettings,),
+    'agent_limits': (AgentLimitSettings,),
 }
 
 
@@ -61,6 +63,7 @@ class ProfilePatch(BaseModel):
     display: Optional[Dict[str, Any]] = None
     file: Optional[Dict[str, Any]] = None
     output: Optional[Dict[str, Any]] = None
+    agent_limits: Optional[Dict[str, Any]] = None
 
     def sections(self) -> Dict[str, Any]:
         return {name: value for name, value in self.model_dump().items() if value is not None}
