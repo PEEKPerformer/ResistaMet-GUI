@@ -143,7 +143,18 @@ class RunControl:
 
     @property
     def pending_prompt(self) -> Optional[PendingPrompt]:
+        """The prompt waiting for an answer; None once it has one or the run is ending.
+
+        The run thread clears its prompt only when it wakes from
+        ``wait_for_prompt``, a moment after the answer or the stop. Until
+        then a status read here reported a prompt nobody could answer any
+        more: ``stop_run`` replied ``stopping`` with the prompt it had just
+        released still pending, and one answered a moment ago still showed,
+        asking for an answer it would refuse.
+        """
         with self._lock:
+            if self._answer is not None or self._finish_reason is not None:
+                return None
             return self._prompt
 
     def raise_prompt(self, kind: str, options: List[str],
@@ -184,7 +195,10 @@ class RunControl:
         """
         with self._lock:
             prompt = self._prompt
-            if prompt is None or prompt.prompt_id != prompt_id or self._answer is not None:
+            if (prompt is None or prompt.prompt_id != prompt_id or self._answer is not None
+                    or self._finish_reason is not None):
+                # A stop has released the prompt: what the run does next
+                # no longer depends on an answer, so none is taken.
                 return False
             if choice not in prompt.options:
                 raise InvalidPromptChoice(
