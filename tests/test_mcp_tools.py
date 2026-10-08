@@ -218,6 +218,22 @@ class TestReads:
         assert described['shared_keys'] == {
             'auto_zero': '"on", fixed by the mode (the profile\'s "once" is not used)'}
         assert described['prompts'] == VDP_PROMPTS
+        # An older backend's schema has no wiring: nothing is made up.
+        assert 'wiring' not in described and 'prompt_timeout_s' not in described
+
+    def test_describe_mode_passes_on_the_van_der_pauw_wiring(self, call, scripted):
+        wiring = [{'index': 0, 'name': 'Geometry 1 of 4', 'force_hi': 'C2',
+                   'force_lo': 'C1', 'sense_hi': 'C3', 'sense_lo': 'C4',
+                   'message': 'Geometry 1 of 4: connect ...'}]
+        timeout = {'default': 900.0, 'maximum': 86400.0}
+        scripted.replies[('GET', '/schema/settings')] = (200, {'modes': {'vdp': {
+            'model': 'VdpSettings', 'fields': [], 'override_keys': [], 'fixed': {},
+            'keys': {}, 'wiring': wiring}}, 'prompt_timeout_s': timeout})
+        scripted.replies[('POST', '/settings/resolve')] = (200, {
+            'ok': True, 'issues': [], 'settings': {'measurement': {}}})
+        failed, described = call('describe_mode', {'mode': 'vdp'})
+        assert not failed
+        assert (described['wiring'], described['prompt_timeout_s']) == (wiring, timeout)
 
     def test_the_vdp_prompts_are_the_run_s(self, connection_file):
         """Four rewiring prompts, as many as the F76 geometries the run walks."""

@@ -9,7 +9,7 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, List
 
 from ..constants import KEITHLEY_STAT_BIT_COMPLIANCE as _STAT_BIT_COMPLIANCE
 from ..data_export import build_metadata, get_column_config, make_exporter
@@ -30,15 +30,32 @@ def wiring_message(geometry) -> str:
     """What a person does before one geometry, as one sentence.
 
     The prompt's ``detail.message`` (what the desktop shows, and what an
-    agent passes on to the user) and the run's log line (the PySide6
-    status bar) both read this. The contacts used to be in the log line
-    only, in other words than the prompt's ``source_high``/``sense_low``
-    integers. Both windows answer the prompt with a button labelled
-    Measure; ``proceed`` is that button's answer on the API.
+    agent passes on to the user), the run's log line (the PySide6 status
+    bar) and ``wiring_protocol`` all read this. The contacts used to be in
+    the log line only, in other words than the prompt's
+    ``source_high``/``sense_low`` integers. Both windows answer the prompt
+    with a button labelled Measure; ``proceed`` is that button's answer on
+    the API.
     """
     return (f"{geometry.name}: connect Force HI→C{geometry.source_high}, "
             f"Force LO→C{geometry.source_low}, Sense HI→C{geometry.sense_high}, "
             f"Sense LO→C{geometry.sense_low}, then press Measure.")
+
+
+def wiring_protocol() -> List[Dict[str, Any]]:
+    """The four wirings a run will ask for, before it is started.
+
+    From ``f76_geometries``, which the run walks, with each prompt's own
+    message, so a client can tell a person beforehand what the run will
+    ask of them, in the words it will use.
+    """
+    from ..calculations_vdp import f76_geometries
+
+    return [{'index': index, 'name': geometry.name,
+             'force_hi': f"C{geometry.source_high}", 'force_lo': f"C{geometry.source_low}",
+             'sense_hi': f"C{geometry.sense_high}", 'sense_lo': f"C{geometry.sense_low}",
+             'message': wiring_message(geometry)}
+            for index, geometry in enumerate(f76_geometries())]
 
 
 class VdpRun:
