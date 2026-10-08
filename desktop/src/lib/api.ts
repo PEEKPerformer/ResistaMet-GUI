@@ -7,7 +7,7 @@
 // backend gave rather than one it made up.
 
 import type { BackendInfo } from "./backend";
-import type { AgentLimitCheck, ClientInfo, Mode, RunRequest } from "../generated/settings";
+import type { AgentLimitCheck, ClientInfo, Mode, RunRequest, SettingsWarning } from "../generated/settings";
 import type { EventEnvelope } from "../generated/events";
 import type { InstrumentInfo, SessionStatus } from "../generated/session";
 import type { MapImage, MapImageRegistration, SpotMap, SpotPreflight, SpotPreflightRequest } from "../generated/maps";
@@ -50,6 +50,9 @@ export interface Resolved {
   derived: Record<string, unknown>;
   ok: boolean;
   issues: Issue[];
+  /** What the run will warn about once it is going (a rate the timing cannot
+   *  reach, a four-point power above its warning threshold). Never blocks. */
+  warnings: SettingsWarning[];
   hazard: Hazard | null;
   /** The verdict a start from an AI agent would get; null when the settings
    *  have errors. The window itself is never held to it. */

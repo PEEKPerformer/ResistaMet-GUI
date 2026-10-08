@@ -911,6 +911,29 @@
       "title": "SampleGeometry",
       "type": "object"
     },
+    "SettingsWarning": {
+      "additionalProperties": false,
+      "description": "Something the run will warn about once it is going, said beforehand.\n\nNot an :class:`Issue`: nothing is wrong with the settings, and a start\nis never refused for one. The run itself would say it, in a log line\nor not at all (a rate it cannot reach is simply not reached); a\npreview that stayed silent left a client to find out from the run, or\nto work it out for itself and disagree. ``keys`` are the settings the\njudgement reads, the one to change first.",
+      "properties": {
+        "keys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Keys",
+          "type": "array"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "keys",
+        "message"
+      ],
+      "title": "SettingsWarning",
+      "type": "object"
+    },
     "SpotRequest": {
       "additionalProperties": false,
       "description": "One placement of the probe, as the client describes it.\n\nThe position is optional -- a spot can be a label and nothing more -- but\n``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the\ndirection of the probe array, anticlockwise from +x; absent, the run uses\nthe ``fpp_array_angle_deg`` setting.",

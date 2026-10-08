@@ -206,11 +206,12 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
   const errors = resolved?.issues.filter((i) => i.severity === "error") ?? [];
   const hazard = resolved?.hazard?.hazardous ? resolved.hazard : null;
   const maxRate = typeof resolved?.derived.max_rate_hz === "number" ? resolved.derived.max_rate_hz : null;
-  const requestedRate = typeof overrides.sampling_rate === "number" ? overrides.sampling_rate : null;
-  const rateTooHigh = maxRate !== null && requestedRate !== null && requestedRate > maxRate;
-  // The achievable rate is stated once: in the banner when the request
+  // What the run will warn about is the backend's judgement, the one an agent
+  // previewing the same settings is given.
+  const warnings = locked ? [] : (resolved?.warnings ?? []);
+  // The achievable rate is stated once: in the warning when the rate
   // exceeds it, as a quiet line under the timing fields otherwise.
-  const rateBanner = rateTooHigh && !locked;
+  const rateBanner = warnings.some((w) => w.keys.includes("sampling_rate"));
   // A run an agent started shows its own values, read-only; the tab's wait
   // underneath, untouched, for when it ends.
   const runValues = runPanelSettings(session, mode);
@@ -270,11 +271,11 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
             acknowledge before the output turns on.
           </Notice>
         ) : null}
-        {rateBanner ? (
-          <Notice tone="warn">
-            {requestedRate} Hz exceeds what these timing settings can deliver (~{maxRate!.toFixed(1)} Hz). The run will sample as fast as it can.
+        {warnings.map((w) => (
+          <Notice key={w.keys.join(",")} tone="warn">
+            {w.message}
           </Notice>
-        ) : null}
+        ))}
 
         <Readout mode={mode} final={!thisModeRunning} />
 
