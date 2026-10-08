@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..calculations import four_point_power_level, four_point_worst_case_power_w
 from ..constants import MODE_TIMING_OVERRIDES
-from ..formatting import format_power
+from ..formatting import format_power, four_point_power_warning
 from .settings_common import (
     AgentLimitSettings,
     AuxSensorSettings,
@@ -502,10 +502,10 @@ def _warnings(m_cfg: Dict[str, Any], mode: str, failed: set,
             warn_w = stop_w = None
         if warn_w is not None and four_point_power_level(worst_case, warn_w, stop_w) == 'warn':
             warnings.append(SettingsWarning(
-                keys=['fpp_power_warn_w', 'fpp_current', 'fpp_voltage_compliance'],
-                message=(f"Worst-case power {format_power(worst_case)} (source current × "
-                         f"voltage compliance) is above the {format_power(warn_w)} warning "
-                         "threshold; the run will warn and go on.")))
+                keys=['fpp_voltage_compliance', 'fpp_current', 'fpp_power_warn_w'],
+                message=four_point_power_warning(worst_case, warn_w,
+                                                 m_cfg.get('fpp_current'))
+                + " The run will warn and go on."))
     return warnings
 
 
