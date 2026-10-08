@@ -172,6 +172,27 @@ def _returns_within(seconds, target):
     return result[0]
 
 
+class TestAPendingPromptIsOneThatCanStillBeAnswered:
+    """The run thread clears its prompt only when it wakes; a status read
+    before then must not offer what nobody can answer any more."""
+
+    def test_an_answered_prompt_is_no_longer_pending(self):
+        control = RunControl()
+        prompt = control.raise_prompt('vdp_geometry', ['proceed', 'abort'])
+        assert control.pending_prompt == prompt
+        assert control.answer_prompt(prompt.prompt_id, 'proceed') is True
+        assert control.pending_prompt is None
+        assert control.wait_for_prompt(0) == ('proceed', {})
+
+    def test_a_stop_releases_the_prompt_and_takes_no_answer_after_it(self):
+        control = RunControl()
+        prompt = control.raise_prompt('vdp_geometry', ['proceed', 'abort'])
+        control.finish('user_stop')
+        assert control.pending_prompt is None
+        assert control.answer_prompt(prompt.prompt_id, 'proceed') is False
+        assert control.wait_for_prompt(0) == (None, {})
+
+
 class TestAStopIsNeverSwallowedByAPrompt:
     """finish() sets the proceed gate; raising a prompt used to clear it again.
 
