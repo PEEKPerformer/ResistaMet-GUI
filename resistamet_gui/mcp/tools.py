@@ -249,8 +249,8 @@ def _register_reads(server: MCPServer, backend: Backend) -> None:
         "shared_keys (timing, filter, aux sensor). Each line gives the value a user's run "
         "would have, in its unit, and where it comes from (the profile, or fixed by the "
         "mode), the default, what the key accepts (its choices, or its bounds), and what "
-        "it means. Any of these keys can be changed for one run in overrides. For vdp, "
-        "prompts says what a person must answer during the run, and when."))
+        "it means. A key the mode does not fix can be changed for one run in overrides. "
+        "For vdp, prompts says what a person must answer during the run, and when."))
 
     async def check_settings(user: User, mode: Mode,
                              overrides: Overrides = None) -> CallToolResult:
