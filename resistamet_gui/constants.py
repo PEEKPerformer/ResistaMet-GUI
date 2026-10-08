@@ -234,6 +234,12 @@ KEITHLEY_STAT_BIT_COMPLIANCE = 1 << 3
 KEITHLEY_COMPLIANCE_MAGIC_NUMBER = 9.9e37
 COMPLIANCE_THRESHOLD_FACTOR = 1.0
 
+# ASTM F76 §11.1 homogeneity criterion: |rho_A - rho_B| / rho_avg at most
+# this, in percent. Here rather than in calculations_vdp, which applies it,
+# so that a reader that may not import the calculations (the MCP server)
+# states the same threshold.
+F76_HOMOGENEITY_TOLERANCE_PCT = 10.0
+
 # Auxiliary-sensor co-logging timing. The sensor driver runs a background
 # reader thread that caches the newest parsed line; read_latest() is a
 # non-blocking cache read so the Keithley acquisition loop and the GUI

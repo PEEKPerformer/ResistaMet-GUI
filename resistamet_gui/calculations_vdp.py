@@ -47,10 +47,7 @@ from __future__ import annotations
 import math
 from typing import List, Mapping, NamedTuple, Optional, Tuple
 
-from .constants import KEITHLEY_COMPLIANCE_MAGIC_NUMBER
-
-
-F76_HOMOGENEITY_TOLERANCE_PCT = 10.0
+from .constants import F76_HOMOGENEITY_TOLERANCE_PCT, KEITHLEY_COMPLIANCE_MAGIC_NUMBER
 
 # pi / (4 ln 2) ~= 1.1331 -- the constant in F76 eqs. (1) and (2).
 F76_CONSTANT = math.pi / (4.0 * math.log(2.0))
