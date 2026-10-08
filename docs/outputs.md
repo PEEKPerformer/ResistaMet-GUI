@@ -350,7 +350,7 @@ Metadata `params`: `source_current_A`, `voltage_compliance_V`, `voltage_auto_ran
 | `I` | A | Current sourced through outer two probes |
 | `V_over_I` | Ω | `V/I` — the raw ratio before geometric corrections |
 | `Rs_ohm_sq` | Ω/□ | Sheet resistance = `K · α · V/I` (K modified by ASTM F84 corrections when applicable) |
-| `rho_ohm_cm` | Ω·cm | Resistivity = `Rs · thickness` |
+| `rho_ohm_cm` | Ω·cm | Resistivity = `Rs · thickness`; NaN when no thickness was entered (thin-film models) |
 | `sigma_S_cm` | S/cm | Conductivity = `1 / rho` |
 | `V_unc_V` | V | σ_V from per-range voltage-measurement spec |
 | `I_unc_A` | A | σ_I from per-range current-measurement spec |
