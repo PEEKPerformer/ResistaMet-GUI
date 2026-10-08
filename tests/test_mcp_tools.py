@@ -20,7 +20,7 @@ from mcp.types import Implementation  # noqa: E402
 from resistamet_gui.mcp.audit import AuditLog  # noqa: E402
 from resistamet_gui.mcp.client import NOT_RUNNING, Backend  # noqa: E402
 from resistamet_gui.mcp.server import build_server  # noqa: E402
-from resistamet_gui.mcp.tools import VDP_PROMPTS  # noqa: E402
+from resistamet_gui.mcp.tools import NOTE_HAZARD, VDP_PROMPTS  # noqa: E402
 
 PENDING = {'prompt_id': 'run-2:vdp_geometry-1', 'kind': 'vdp_geometry',
            'options': ['proceed', 'abort'], 'requires_human': True, 'detail': {'index': 1}}
@@ -287,7 +287,28 @@ class TestCheckSettings:
         # Valid settings an agent may not start: ok alone would read as leave.
         assert (checked['can_start'], checked['ok']) == (False, True)
         assert checked['agent_limits']['violations'] == [violation]
-        assert 'person at the' in checked['note']
+        assert checked['notes'] == [NOTE_HAZARD]
+
+    def test_auto_range_resistance_says_the_instrument_chooses_the_current(self, call,
+                                                                          scripted):
+        # The trial: 1 mA asked for, 100 mA used, 1 mA in the file name.
+        self._resolve(scripted, settings={'measurement': {
+            'res_test_current': 0.001, 'res_voltage_compliance': 5.0, 'res_auto_range': True}})
+        failed, checked = call('check_settings', {'user': 'alice', 'mode': 'resistance'})
+        assert not failed
+        [note] = checked['notes']
+        assert 'res_auto_range false' in note and 'I_meas' in note
+        # A note, not a warning: the API is unchanged.
+        assert checked['warnings'] == []
+
+    def test_manual_range_or_another_mode_has_no_such_note(self, call, scripted):
+        self._resolve(scripted, settings={'measurement': {'res_auto_range': False}})
+        assert 'notes' not in call('check_settings', {'user': 'alice',
+                                                      'mode': 'resistance'})[1]
+        # Every profile keeps res_auto_range; only a resistance run uses it.
+        self._resolve(scripted, settings={'measurement': {'res_auto_range': True}})
+        assert 'notes' not in call('check_settings', {'user': 'alice',
+                                                      'mode': 'four_point'})[1]
 
     def test_what_the_run_will_warn_about_reaches_the_agent(self, call, scripted):
         warning = {'keys': ['sampling_rate', 'nplc'],
