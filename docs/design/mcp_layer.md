@@ -190,13 +190,13 @@ Tools map onto the routes one to one, with two exceptions:
 | `identify_instrument(address)` | `POST /instruments/identify` | model and its limits |
 | `list_users`, `get_profile(user)` | `GET /users`, `GET /profiles/{user}` | read-only |
 | `describe_mode(mode)` | `GET /schema/settings` | the keys of one mode, with bounds, defaults and units; not the whole schema |
-| `check_settings(user, mode, overrides)` | `POST /settings/resolve` + M4 | the resolved settings, issues, derived values, hazard, and whether the agent limits allow it; the dry run an agent should always do first |
+| `check_settings(user, mode, overrides)` | `POST /settings/resolve` + M4 | the resolved settings, issues, warnings (what the run will warn about), derived values, hazard, and whether the agent limits allow it; the dry run an agent should always do first |
 | `start_run(user, mode, sample_name, overrides, spot?)` | `POST /session/start` | 422 with issues; 409 if busy or the bus is held |
 | `stop_run`, `abort_run`, `pause_run`, `resume_run` | same | |
 | `mark_event(label)` | `POST /session/mark` | |
-| `wait_for(until, timeout_s ≤ 120)` | polls `GET /session` | `until` ∈ `run_ended`, `prompt`, `samples:N`, `state:<s>`; returns on whichever comes first, with a status snapshot |
+| `wait_for(until, timeout_s ≤ 120, then_stop?)` | polls `GET /session` | `until` ∈ `run_ended`, `prompt`, `samples:N`, `state:<s>`; returns on whichever comes first, with a status snapshot; `then_stop` stops the run when the condition holds and waits for its end, the way to take N readings in a mode without a count |
 | `get_run_events(since_seq, types?)` | `GET /session/events` | lifecycle, errors, prompts, compliance, overpower and results; samples are left out unless asked for, and then decimated to at most 200 |
-| `get_run_summary(run_id?)` | the run's file via `GET /results/file` | count, mean, SD, min, max and last per column; compliance count; marks; the run's metadata block |
+| `get_run_summary(run_id?, first_rows?)` | the run's file via `GET /results/file` | count, mean, SD, min, max and last per column; compliance count; marks; the run's metadata block; `first_rows` limits it to the first N rows |
 | `list_results(user?, sample?)`, `read_result(path, rows?)` | `GET /results` | `read_result` returns the header and a bounded slice of rows, never a whole file |
 | `get_map(map_id)` | `GET /maps/{map_id}` | four-point spots |
 
@@ -266,11 +266,10 @@ transcript.
   yet: an agent changes a run through its overrides, which leave the profile
   as the operator set it. A `set_profile` tool over `PATCH /profiles/{user}`
   may follow.
-- **Bounds and units in `GET /schema/settings`.** The route names each mode's
-  keys only, so `describe_mode` gives the keys and a user's values, units by
-  key name, and leaves bounds to `check_settings`. The exported JSON Schema
-  has the bounds; serving them from the route would let `describe_mode` give
-  them up front.
+- **Bounds and units in `GET /schema/settings`.** Done after the first
+  usability trial (2026-10-08): the route serves each key's JSON-schema
+  fragment and a unit from its name, and the values a mode fixes;
+  `describe_mode` gives one line per key.
 - **The backend's version and the simulate flag** in `GET /health` or the
   status, which `get_status` would pass on. Neither is served today.
 - **Unattended agent runs.** Today a hazardous or vdP run needs the window.
