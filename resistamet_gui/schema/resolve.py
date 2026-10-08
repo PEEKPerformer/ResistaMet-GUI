@@ -19,8 +19,8 @@ Two validation modes:
   a JSON ``"false"`` is not a bool and ``true`` is not a current -- and the
   *validated* values are what the run receives, so nothing reaches a worker
   in a form the models never saw. Then the same issues, plus the checks the
-  GUI makes at Start — vdP needs a real thickness, 4PP must not ask for more power
-  than its own hard stop, aux co-logging only exists for the continuous modes —
+  GUI makes at Start — 4PP must not ask for more power than its own hard stop,
+  aux co-logging only exists for the continuous modes —
   and unknown or profile-owned override keys are rejected. The profile's
   ``file``, ``output`` and ``display`` sections are validated too. The touch-safety
   keys are profile-owned here: whoever may not answer the hazardous-voltage
@@ -329,10 +329,6 @@ def _validate(m_cfg: Dict[str, Any], mode: str, *, strict: bool) -> List[Issue]:
     # the models accepted: strict typing has made those real numbers, and a
     # key that failed is already an issue.
     failed = {issue.key for issue in issues}
-    if (mode == 'vdp' and 'vdp_thickness_cm' not in failed
-            and not float(m_cfg.get('vdp_thickness_cm', 0.0)) > 0):
-        issues.append(Issue('vdp_thickness_cm',
-                             'van der Pauw needs a sample thickness greater than 0 cm'))
     if mode == 'four_point' and not failed.intersection(_POWER_KEYS):
         worst_case = _worst_case_power_w(m_cfg)
         stop_w = float(m_cfg.get('fpp_power_stop_w', 0.0))

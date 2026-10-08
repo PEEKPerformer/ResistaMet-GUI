@@ -284,7 +284,7 @@ class TestResolve:
 
     def test_issues_are_reported_without_starting_anything(self, client, session):
         response = client.post('/settings/resolve', json={
-            'mode': 'vdp', 'username': 'alice', 'overrides': {'vdp_thickness_cm': 0.0},
+            'mode': 'vdp', 'username': 'alice', 'overrides': {'vdp_thickness_cm': -0.1},
         })
         body = response.json()
         assert body['ok'] is False

@@ -1234,7 +1234,7 @@
     },
     "vdp_result": {
       "additionalProperties": false,
-      "description": "The finished van der Pauw result, ASTM F76.\n\nField for field what the GUI result panel has always received, including\nthe f(Q) homogeneity check and the combined uncertainties, so the panel\nreads the same numbers the CSV metadata carries.",
+      "description": "The finished van der Pauw result, ASTM F76.\n\nField for field what the GUI result panel has always received, including\nthe f(Q) homogeneity check and the combined uncertainties, so the panel\nreads the same numbers the CSV metadata carries. The resistivities are\nnull when no thickness was given (``thickness_cm`` 0).",
       "properties": {
         "asymmetry_pct": {
           "title": "Asymmetry Pct",
@@ -1265,12 +1265,26 @@
           "type": "number"
         },
         "rho_a": {
-          "title": "Rho A",
-          "type": "number"
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Rho A"
         },
         "rho_avg": {
-          "title": "Rho Avg",
-          "type": "number"
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Rho Avg"
         },
         "rho_avg_uncertainty": {
           "anyOf": [
@@ -1285,8 +1299,15 @@
           "title": "Rho Avg Uncertainty"
         },
         "rho_b": {
-          "title": "Rho B",
-          "type": "number"
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Rho B"
         },
         "sheet_resistance": {
           "title": "Sheet Resistance",

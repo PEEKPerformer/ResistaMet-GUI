@@ -27,6 +27,12 @@ Fig. 5:
 Sample averaged rho_av = (rho_A + rho_B) / 2. Per F76 sec. 11.1 the
 homogeneity criterion is |rho_A - rho_B| / rho_av <= 10 percent.
 
+The thickness only scales: R_s = rho / t is the same expression without
+it, and the homogeneity ratio does not depend on it. So the sheet
+resistance and the homogeneity check are computed with no thickness, and
+a thickness of 0 (not given) leaves only the resistivities undefined
+(NaN), as a four-point run with no thickness does.
+
 Notation: V_AB,CD denotes V_C - V_D when current I enters contact A and
 exits contact B. Contacts numbered 1-4 counter-clockwise around the
 periphery.
@@ -39,7 +45,7 @@ Reference:
 from __future__ import annotations
 
 import math
-from typing import List, Mapping, NamedTuple, Tuple
+from typing import List, Mapping, NamedTuple, Optional, Tuple
 
 from .constants import KEITHLEY_COMPLIANCE_MAGIC_NUMBER
 
@@ -110,9 +116,10 @@ class VdpGeometry(NamedTuple):
 class VdpResult(NamedTuple):
     """Resistivity result from a vdP measurement per F76 Method A.
 
-    rho_a, rho_b: redundant resistivity values (Ohm cm).
-    rho_avg: averaged resistivity (Ohm cm).
-    sheet_resistance: rho_avg / thickness (Ohm/square).
+    rho_a, rho_b: redundant resistivity values (Ohm cm); NaN when no
+        thickness was given.
+    rho_avg: averaged resistivity (Ohm cm); NaN when no thickness was given.
+    sheet_resistance: (R_s,A + R_s,B) / 2 = rho_avg / thickness (Ohm/square).
     q_a, q_b: voltage asymmetry ratios (normalized to >= 1).
     f_a, f_b: F76 Fig. 5 geometric factors derived from Q.
     homogeneous: True iff |rho_a - rho_b| / rho_avg <= 10 percent.
@@ -244,6 +251,9 @@ def vdp_resistivity_pair(
 ) -> Tuple[float, float, float]:
     """Compute one of (rho_A, rho_B) per F76 eq. (1) or (2).
 
+    ``vdp_sheet_resistance_pair`` times the thickness; see it for the
+    readings and the checks on them.
+
     Each group consists of two source-sense geometries, each measured at
     +I and -I polarity. F76 eq. (1):
 
@@ -272,10 +282,39 @@ def vdp_resistivity_pair(
             either geometry reads the same at both polarities (Q is then
             undefined). The message names the readings.
     """
-    if current <= 0:
-        raise ValueError("current must be > 0 A; got %r" % (current,))
     if thickness_cm <= 0:
         raise ValueError("thickness must be > 0 cm; got %r" % (thickness_cm,))
+    rs, q, f = vdp_sheet_resistance_pair(v_pos, v_neg, v_perp_pos, v_perp_neg,
+                                         current, labels=labels)
+    return rs * thickness_cm, q, f
+
+
+def vdp_sheet_resistance_pair(
+    v_pos: float,
+    v_neg: float,
+    v_perp_pos: float,
+    v_perp_neg: float,
+    current: float,
+    labels: Tuple[str, str, str, str] = _GENERIC_READING_LABELS,
+) -> Tuple[float, float, float]:
+    """One of (R_s,A, R_s,B): F76 eq. (1) or (2) divided by the thickness.
+
+        R_s,A = (1.1331 * f_A / I) * [V_21,34 - V_12,34 + V_32,41 - V_23,41]
+
+    in Ohm/square, which needs no thickness. Arguments as
+    ``vdp_resistivity_pair`` without ``thickness_cm``.
+
+    Returns:
+        (R_s, Q, f). Q is normalized to >= 1.
+
+    Raises:
+        ValueError: if current is non-positive, if a reading is not finite
+            or is the instrument's overflow value, or if either geometry
+            reads the same at both polarities (Q is then undefined). The
+            message names the readings.
+    """
+    if current <= 0:
+        raise ValueError("current must be > 0 A; got %r" % (current,))
 
     for label, value in zip(labels, (v_pos, v_neg, v_perp_pos, v_perp_neg)):
         if not math.isfinite(value) or abs(value) >= _OVERFLOW_READING:
@@ -312,10 +351,8 @@ def vdp_resistivity_pair(
 
     f = vdp_geometric_factor(q)
 
-    rho = (
-        F76_CONSTANT * f * thickness_cm / current * (delta_first + delta_second)
-    )
-    return rho, q, f
+    rs = F76_CONSTANT * f / current * (delta_first + delta_second)
+    return rs, q, f
 
 
 _BASE_LABELS_A = ("V_21,34", "V_12,34", "V_32,41", "V_23,41")
@@ -326,7 +363,7 @@ _REQUIRED_BASE_LABELS = _BASE_LABELS_A + _BASE_LABELS_B
 def calculate_van_der_pauw(
     voltages: Mapping[str, float],
     current: float,
-    thickness_cm: float,
+    thickness_cm: Optional[float],
 ) -> VdpResult:
     """Compute resistivity, sheet resistance, and homogeneity per F76 Method A.
 
@@ -337,43 +374,57 @@ def calculate_van_der_pauw(
             protocol) are ignored at this level; callers that want to use
             those should average them into the base labels before calling.
         current: source current magnitude (A, positive).
-        thickness_cm: sample thickness (cm, positive).
+        thickness_cm: sample thickness (cm, positive), or 0 or None when it
+            was not given: then the resistivities are NaN and everything
+            else is computed as usual.
 
     Returns:
         VdpResult.
 
     Raises:
         KeyError: if a required label is missing from voltages.
-        ValueError: if current or thickness is non-positive, if a reading
-            is not finite or is the instrument's overflow value, or if Q
-            is undefined (a geometry reads the same at both polarities).
-            The message names the F76 labels concerned.
+        ValueError: if current is non-positive, if a thickness is given
+            and is negative or not finite, if a reading is not finite or is
+            the instrument's overflow value, or if Q is undefined (a
+            geometry reads the same at both polarities). The message names
+            the F76 labels concerned.
     """
     missing = [label for label in _REQUIRED_BASE_LABELS if label not in voltages]
     if missing:
         raise KeyError(
             "Missing required F76 voltage labels: %s" % ", ".join(missing)
         )
+    given = thickness_cm is not None and thickness_cm != 0
+    if given and not (math.isfinite(thickness_cm) and thickness_cm > 0):
+        raise ValueError("thickness must be > 0 cm, or 0 when not given; got %r"
+                         % (thickness_cm,))
 
-    rho_a, q_a, f_a = vdp_resistivity_pair(
+    rs_a, q_a, f_a = vdp_sheet_resistance_pair(
         voltages["V_21,34"], voltages["V_12,34"],
         voltages["V_32,41"], voltages["V_23,41"],
-        current, thickness_cm, labels=_BASE_LABELS_A,
+        current, labels=_BASE_LABELS_A,
     )
-    rho_b, q_b, f_b = vdp_resistivity_pair(
+    rs_b, q_b, f_b = vdp_sheet_resistance_pair(
         voltages["V_43,12"], voltages["V_34,12"],
         voltages["V_14,23"], voltages["V_41,23"],
-        current, thickness_cm, labels=_BASE_LABELS_B,
+        current, labels=_BASE_LABELS_B,
     )
 
-    rho_avg = 0.5 * (rho_a + rho_b)
-    if rho_avg > 0:
-        sheet_resistance = rho_avg / thickness_cm
-        asymmetry_pct = 100.0 * abs(rho_a - rho_b) / rho_avg
+    # F76's check is |rho_A - rho_B| / rho_av; t cancels, so it is the same
+    # on the sheet resistances, and holds whether or not t was given.
+    rs_avg = 0.5 * (rs_a + rs_b)
+    if rs_avg > 0:
+        sheet_resistance = rs_avg
+        asymmetry_pct = 100.0 * abs(rs_a - rs_b) / rs_avg
     else:
         sheet_resistance = float("nan")
         asymmetry_pct = float("inf")
     homogeneous = asymmetry_pct <= F76_HOMOGENEITY_TOLERANCE_PCT
+    if given:
+        rho_a, rho_b = rs_a * thickness_cm, rs_b * thickness_cm
+        rho_avg = 0.5 * (rho_a + rho_b)
+    else:
+        rho_a = rho_b = rho_avg = float("nan")
 
     return VdpResult(
         rho_a=rho_a,

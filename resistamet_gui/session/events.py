@@ -251,12 +251,13 @@ class VdpResultPayload(EventModel):
 
     Field for field what the GUI result panel has always received, including
     the f(Q) homogeneity check and the combined uncertainties, so the panel
-    reads the same numbers the CSV metadata carries.
+    reads the same numbers the CSV metadata carries. The resistivities are
+    null when no thickness was given (``thickness_cm`` 0).
     """
 
-    rho_a: float
-    rho_b: float
-    rho_avg: float
+    rho_a: Optional[float]
+    rho_b: Optional[float]
+    rho_avg: Optional[float]
     sheet_resistance: float
     q_a: float
     q_b: float

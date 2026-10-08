@@ -271,7 +271,7 @@ log:cleanup, run_ended
 | `geometry_warning` | `refused`, `reason` (`off_sample`, `near_edge`), `message`, `spot`, `edge_clearance_s`, `edge_warn_pct`, `factor_here`, `factor_centre`, `relative_error`, `factor_rows`, `relative_error_rows`, `compared_with` (`rows`, `centre`) | A four-point spot's position is a problem, said before the instrument is opened. Fields as in [`spot.*`](outputs.md#spot-four-point-runs-that-carry-a-spot). |
 | `spot_complete` | `spot` (or null), `path`, `stats` (`n`, `n_excluded`, `end_reason`, `rs`, `rho`, `sigma`) | A four-point file was finalized; `stats` is its [`spot_stats`](outputs.md#spot_stats-every-four-point-run) footer. |
 | `vdp_geometry_complete` | `index`, `name`, `group`, `label_pos`, `v_pos`, `label_neg`, `v_neg`, `current_a` | One F76 geometry measured. |
-| `vdp_result` | `rho_a`, `rho_b`, `rho_avg`, `sheet_resistance`, `q_a`, `q_b`, `f_a`, `f_b`, `homogeneous`, `asymmetry_pct`, `voltages`, `current_a`, `thickness_cm`, `sheet_resistance_uncertainty`, `rho_avg_uncertainty` | The finished van der Pauw result, as in the file footer. |
+| `vdp_result` | `rho_a`, `rho_b`, `rho_avg`, `sheet_resistance`, `q_a`, `q_b`, `f_a`, `f_b`, `homogeneous`, `asymmetry_pct`, `voltages`, `current_a`, `thickness_cm`, `sheet_resistance_uncertainty`, `rho_avg_uncertainty` | The finished van der Pauw result, as in the file footer. With no thickness (`thickness_cm` 0) the four resistivity fields are null. |
 | `prompt` | `prompt_id`, `kind`, `options`, `requires_human`, `detail` | The run is blocked. |
 | `prompt_resolved` | `prompt_id`, `choice` (null when a stop or the timeout ended the wait), `answered_by` (always null at this commit) | |
 | `paused`, `resumed`, `stopping` | `reason` | As observed by the acquisition thread. |

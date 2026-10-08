@@ -394,9 +394,10 @@ export interface SweepSettings {
 /**
  * van der Pauw, ASTM F76 Method A.
  *
- * Thickness stays >= 0 here because a stored profile legitimately holds 0 for
- * "never entered"; a run request needs > 0, which the resolver enforces in
- * strict mode (the UI prompts for it on Start).
+ * A thickness of 0 is "not given", as for the four-point probe: the run
+ * reports the sheet resistance and the homogeneity check, which need no
+ * thickness, and no resistivity. It used to be refused, although nothing
+ * but the resistivity reads it.
  */
 export interface VdpSettings {
   vdp_current?: number;
@@ -408,6 +409,9 @@ export interface VdpSettings {
    * Wait after each change of current, in s.
    */
   vdp_settling_s?: number;
+  /**
+   * 0 = not given: sheet resistance and the homogeneity check only, no resistivity.
+   */
   vdp_thickness_cm?: number;
   vdp_voltage_compliance?: number;
   vdp_voltage_range_auto?: boolean;

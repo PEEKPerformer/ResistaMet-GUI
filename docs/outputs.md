@@ -393,6 +393,7 @@ The final sheet resistance, resistivity, f-factors, Q ratios, and the §11.1 hom
 - `vdp_result.sheet_resistance` (Ω/□), `vdp_result.sheet_resistance_uncertainty`
 - `vdp_result.rho_avg` (Ω·cm), `vdp_result.rho_avg_uncertainty`
 - `vdp_result.rho_a`, `vdp_result.rho_b` (the two F76 group resistivities)
+- The four resistivity keys are `NaN` when no thickness was given (`thickness_cm` 0); the sheet resistance and the homogeneity check do not need one.
 - `vdp_result.q_a`, `vdp_result.q_b`, `vdp_result.f_a`, `vdp_result.f_b`
 - `vdp_result.homogeneous` (boolean — `true` when |ρ_A − ρ_B|/ρ_avg ≤ F76 §11.1 threshold)
 - `vdp_result.asymmetry_pct` (the |ρ_A − ρ_B|/ρ_avg × 100 number)
