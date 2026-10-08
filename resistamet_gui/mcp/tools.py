@@ -31,13 +31,39 @@ from pydantic import Field
 
 from ..constants import __version__
 from . import audit, summary, waiting
+from . import describe as describing
 from .client import Backend, BackendError, BackendUnavailable
 
-#: Said wherever a prompt needs a person, so the agent can pass it on.
+#: Said wherever a prompt needs a person, so the agent can pass it on. The
+#: wait it names carries the prompt's id, so it works whether or not this
+#: server process is the one that showed the prompt (a client may start a
+#: new one for every call).
 PERSON_MUST_ANSWER = ("A person must answer this at the ResistaMet window; an agent "
-                      "cannot. Tell the user what it asks, then wait_for the run.")
+                      "cannot. Tell the user what it asks (detail.message), then "
+                      "wait_for('prompt_answered', ignore_prompt_id='{prompt_id}'): it "
+                      "returns once this prompt is answered or released, or the run ends, "
+                      "with the state and any next prompt; on a timeout, call it again.")
 
 MODES = "resistance, source_v, source_i, four_point, sweep, vdp"
+
+#: What a van der Pauw run asks of a person, as ``session/vdp_run.py`` does it:
+#: the touch-safety question first when it applies, before the instrument is
+#: opened, then one rewiring prompt per F76 geometry (``f76_geometries``,
+#: four), each with the output off.
+VDP_PROMPTS = (
+    "A van der Pauw run stops at four prompts (kind vdp_geometry), one before each of "
+    "its four wirings: the output is off while it waits, the prompt's detail.message "
+    "says which contacts take Force HI/LO and Sense HI/LO, and a person rewires the "
+    "leads and presses Measure at the ResistaMet window (the answer 'proceed'). If "
+    "vdp_voltage_compliance is at or above the profile's touch-safety threshold, a "
+    "touch-safety prompt (safety_voltage_ack) comes first. Each prompt waits "
+    "prompt_timeout_s (900 s by default; start_run sets it), then the run ends. "
+    "describe_mode('vdp') gives the four wirings in the words the prompts will use. A "
+    "person must be at the bench for the whole run; an agent can start it, follow it "
+    "and stop it, but not move it on.")
+
+#: Profile keys get_profile leaves out (see ``for_an_agent``).
+HIDDEN_PROFILE_KEYS = ('allow_agents',)
 
 #: Read-only, and safe to repeat.
 READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True,
@@ -46,6 +72,9 @@ READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_h
 #: every run writes a new file.
 ACT = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False,
                       open_world_hint=False)
+#: wait_for: only reads, unless asked to stop the run when its condition holds.
+WAIT = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False,
+                       open_world_hint=False)
 #: As ACT, and asking twice is the same as asking once.
 ACT_IDEMPOTENT = ToolAnnotations(read_only_hint=False, destructive_hint=False,
                                  idempotent_hint=True, open_world_hint=False)
@@ -103,36 +132,119 @@ async def ask(backend: Backend, method: str, path: str, **kwargs) -> Any:
         raise ToolError(explain(exc)) from None
 
 
-def status_view(status: Dict[str, Any]) -> Dict[str, Any]:
-    """``GET /session`` with a prompt that needs a person said to need one."""
+def for_an_agent(profile: Dict[str, Any]) -> Dict[str, Any]:
+    """A stored profile without the keys that would mislead an agent.
+
+    ``allow_agents`` is this machine's stored switch, and it is not what lets
+    an agent in: ``--allow-agents`` turns access on without it. An agent
+    that read ``allow_agents: false`` while connected doubted it was allowed
+    to act; being connected is the answer, so the key is left out.
+    """
+    measurement = profile.get('measurement')
+    if not isinstance(measurement, dict):
+        return profile
+    return {**profile, 'measurement': {key: value for key, value in measurement.items()
+                                       if key not in HIDDEN_PROFILE_KEYS}}
+
+
+class ShownPrompt:
+    """The prompt this agent was last shown pending, by id.
+
+    ``wait_for`` waits through that prompt and returns at any other: the
+    agent has passed the first on to the user and is waiting for the
+    answer, but has not heard of the second. "Pending when the wait began"
+    is not the same thing. A prompt raised between ``start_run``'s reply
+    and the agent's first wait was pending at the start and never shown,
+    and waiting through it would leave the agent silent while the run
+    waits for a person nobody told.
+
+    It lasts as long as this server process. A client that starts a new
+    server for every call, or reconnects, has nothing remembered, and
+    each wait at a prompt came back at once with it; ``prompt_answered``
+    and ``ignore_prompt_id`` are the forms that need no memory.
+    """
+
+    def __init__(self) -> None:
+        self.prompt_id: Optional[str] = None
+
+    def note(self, status: Dict[str, Any]) -> None:
+        prompt = status.get('pending_prompt')
+        self.prompt_id = prompt.get('prompt_id') if isinstance(prompt, dict) else None
+
+
+def status_view(status: Dict[str, Any],
+                shown: Optional[ShownPrompt] = None) -> Dict[str, Any]:
+    """``GET /session`` with a prompt that needs a person said to need one.
+
+    ``shown`` notes the prompt, if any: the status is about to reach the agent.
+    """
+    if shown is not None:
+        shown.note(status)
     view = dict(status)
     prompt = view.get('pending_prompt')
     if isinstance(prompt, dict) and prompt.get('requires_human'):
-        view['pending_prompt'] = {**prompt, 'who_answers': PERSON_MUST_ANSWER}
+        view['pending_prompt'] = {**prompt, 'who_answers': PERSON_MUST_ANSWER.format(
+            prompt_id=prompt.get('prompt_id'))}
     return view
 
 
-async def mode_entry(backend: Backend, mode: str) -> Dict[str, Any]:
-    """The schema route's entry for one mode, or a tool error naming the modes."""
-    modes = (await ask(backend, 'GET', '/schema/settings')).get('modes', {})
+#: check_settings' note on a run at or above the touch-safety threshold.
+NOTE_HAZARD = ("At or above the touch-safety threshold: a run an agent starts waits at a "
+               "touch-safety prompt until a person at the ResistaMet window answers it.")
+
+#: check_settings' note on a resistance run in auto range. Not an API warning:
+#: the window's users chose auto range knowing what it does, and the desktop
+#: app greys the current and limit fields out under it. An agent reads
+#: res_test_current as the current it will source. In the third trial it asked
+#: for 1 mA, the instrument used 100 mA, and the file name and
+#: params.test_current_A still said 1 mA.
+NOTE_AUTO_RANGE = ("res_auto_range is true: the instrument's auto-ohms chooses the test "
+                   "current and the voltage limit itself, per range, so neither "
+                   "res_test_current nor res_voltage_compliance is what will be applied "
+                   "(100 mA has been seen for a 1 mA request). The file name and "
+                   "params.test_current_A still give res_test_current; the I_meas column "
+                   "records the current that flowed. To source exactly res_test_current "
+                   "under res_voltage_compliance, pass res_auto_range false in overrides.")
+
+
+def setting_notes(mode: str, measurement: Dict[str, Any],
+                  hazard: Optional[Dict[str, Any]]) -> List[str]:
+    """What a run with these settings does that an agent would not guess."""
+    notes = []
+    if hazard and hazard.get('hazardous'):
+        notes.append(NOTE_HAZARD)
+    if mode == 'resistance' and measurement.get('res_auto_range'):
+        notes.append(NOTE_AUTO_RANGE)
+    return notes
+
+
+def entry_of(schema: Dict[str, Any], mode: str) -> Dict[str, Any]:
+    """One mode's entry in the schema route's reply, or a tool error naming the modes."""
+    modes = schema.get('modes', {})
     if mode not in modes:
         raise ToolError(f"unknown mode '{mode}'; the modes are: {', '.join(sorted(modes))}")
     return modes[mode]
 
 
+async def mode_entry(backend: Backend, mode: str) -> Dict[str, Any]:
+    """The schema route's entry for one mode, or a tool error naming the modes."""
+    return entry_of(await ask(backend, 'GET', '/schema/settings'), mode)
+
+
 def register(server: MCPServer, backend: Backend) -> None:
     """Add every tool to ``server``."""
-    _register_reads(server, backend)
-    _register_runs(server, backend)
-    _register_following(server, backend)
+    shown = ShownPrompt()
+    _register_reads(server, backend, shown)
+    _register_runs(server, backend, shown)
+    _register_following(server, backend, shown)
     _register_results(server, backend)
 
 
-def _register_reads(server: MCPServer, backend: Backend) -> None:
+def _register_reads(server: MCPServer, backend: Backend, shown: ShownPrompt) -> None:
 
     async def get_status() -> CallToolResult:
         health = await ask(backend, 'GET', '/health')
-        status = status_view(await ask(backend, 'GET', '/session'))
+        status = status_view(await ask(backend, 'GET', '/session'), shown)
         return result({'backend': health.get('status'), **status})
 
     server.add_tool(get_status, annotations=READ, title="Status", description=(
@@ -148,8 +260,11 @@ def _register_reads(server: MCPServer, backend: Backend) -> None:
     server.add_tool(list_instruments, annotations=READ, title="List instruments",
                     description=(
         "VISA resources this machine can see, and which VISA implementation answered. "
-        "Only while idle: a scan puts traffic on the bus. The address a run uses is the "
-        "profile's gpib_address, set by a person."))
+        "Only while idle: a scan puts traffic on the bus. A run always talks to the "
+        "instrument at the profile's gpib_address (get_profile shows it): a run's "
+        "overrides cannot name an address, and no tool here changes the profile. If it "
+        "is not the instrument found here, ask the user to set it at the ResistaMet "
+        "window."))
 
     async def identify_instrument(
             address: Annotated[str, Field(description="VISA address, e.g. GPIB0::24::INSTR")],
@@ -170,42 +285,59 @@ def _register_reads(server: MCPServer, backend: Backend) -> None:
         "The operator profiles, and the one last used. A run is started as one of them."))
 
     async def get_profile(user: User) -> CallToolResult:
-        return result(await ask(backend, 'GET', f'/profiles/{_segment(user)}'))
+        stored = await ask(backend, 'GET', f'/profiles/{_segment(user)}')
+        return result(for_an_agent(stored))
 
     server.add_tool(get_profile, annotations=READ, title="Get profile", description=(
         "A user's stored settings: measurement (every mode's keys, in SI units), display, "
         "file, output, and agent_limits (max_voltage_v V, max_current_a A, max_power_w W; "
         "null means only the instrument's own limit). Only a person can change "
-        "agent_limits or the touch-safety keys."))
+        "agent_limits or the touch-safety keys. The machine's agent-access switch is "
+        "left out: being connected means agent access is on."))
 
     async def describe_mode(mode: Mode,
                             user: Annotated[Optional[str], Field(
                                 description="Whose stored values to show; default the "
                                             "last user.")] = None) -> CallToolResult:
-        entry = await mode_entry(backend, mode)
-        described: Dict[str, Any] = {
-            'mode': mode,
-            'mode_keys': entry.get('fields', []),
-            'override_keys': entry.get('override_keys', []),
-        }
+        schema = await ask(backend, 'GET', '/schema/settings')
+        entry = entry_of(schema, mode)
         user = user or (await ask(backend, 'GET', '/users')).get('last_user')
+        measurement = profile = None
+        issues = None
         if user:
             resolved = await ask(backend, 'POST', '/settings/resolve', json_body={
                 'mode': mode, 'username': user, 'overrides': {}})
             measurement = resolved.get('settings', {}).get('measurement', {})
-            described['user'] = user
-            described['values'] = {key: measurement[key] for key in described['override_keys']
-                                   if key in measurement}
-            described['issues'] = resolved.get('issues', [])
+            issues = resolved.get('issues', [])
+            if entry.get('fixed'):
+                stored = await ask(backend, 'GET', f'/profiles/{_segment(user)}')
+                profile = stored.get('measurement', {})
+        described: Dict[str, Any] = {'mode': mode, 'user': user,
+                                     **describing.describe(entry, measurement, profile),
+                                     'how_to_read': describing.HOW_TO_READ}
+        if mode == 'vdp':
+            described['prompts'] = VDP_PROMPTS
+            # The backend's, as its run will raise them; absent from an
+            # older backend, which this server may be talking to.
+            for key, value in (('wiring', entry.get('wiring')),
+                               ('prompt_timeout_s', schema.get('prompt_timeout_s'))):
+                if value is not None:
+                    described[key] = value
+        if issues is not None:
+            described['issues'] = issues
         return result(described)
 
     server.add_tool(describe_mode, annotations=READ, title="Describe mode", description=(
-        "The settings one mode takes: mode_keys (the mode's own), override_keys (all a "
-        "run of this mode accepts in overrides), and, for a user, the value each would "
-        "have if not overridden. Units are SI and follow the key name (…_voltage V, "
-        "…_current A, …_compliance in the unit it limits, sampling_rate Hz, …_hours, "
-        "…_s, …_cm, …_um, …_mm). Bounds are checked by check_settings, which names the "
-        "key and the bound of any value out of range."))
+        "The settings one mode takes, one line per key: mode_keys (the mode's own) and "
+        "shared_keys (timing, filter, aux sensor). Each line gives the value a user's run "
+        "would have, in its unit, and where it comes from (the profile, or fixed by the "
+        "mode), the default, what the key accepts (its choices, or its bounds), and what "
+        "it means. A key the mode does not fix can be changed for one run in overrides. "
+        "For vdp, prompts says what a person must answer during the run, and when; "
+        "wiring lists the four wirings (force_hi, force_lo, sense_hi, sense_lo and the "
+        "message each prompt will show), so you can tell the person before the run; "
+        "prompt_timeout_s gives how long each prompt waits by default, in s, and the most "
+        "start_run may ask for."))
 
     async def check_settings(user: User, mode: Mode,
                              overrides: Overrides = None) -> CallToolResult:
@@ -215,33 +347,43 @@ def _register_reads(server: MCPServer, backend: Backend) -> None:
         measurement = resolved.get('settings', {}).get('measurement', {})
         limits = resolved.get('agent_limits')
         hazard = resolved.get('hazard')
+        # can_start first, and the backend's ok after it: in a trial, an
+        # agent read "ok": true beside a refusal as leave to start.
         checked: Dict[str, Any] = {
+            'can_start': bool(resolved.get('ok') and limits and limits.get('ok')),
             'ok': resolved.get('ok'),
-            'agent_may_start': bool(resolved.get('ok') and limits and limits.get('ok')),
             'issues': resolved.get('issues', []),
+            'warnings': resolved.get('warnings', []),
             'agent_limits': limits,
             'hazard': hazard,
             'derived': resolved.get('derived'),
             'settings': {key: measurement[key] for key in keys if key in measurement},
         }
-        if hazard and hazard.get('hazardous'):
-            checked['note'] = ("At or above the touch-safety threshold: a run an agent starts "
-                               "waits at a touch-safety prompt until a person at the "
-                               "ResistaMet window answers it.")
+        notes = setting_notes(mode, measurement, hazard)
+        if notes:
+            checked['notes'] = notes
         return result(checked)
 
     server.add_tool(check_settings, annotations=READ, title="Check settings", description=(
         "Dry run: what a run would use, without touching the instrument. Call this before "
-        "every start_run. Returns ok and the issues (key, message, severity), the "
+        "every start_run. can_start: start_run would accept these settings from you (they "
+        "are valid and within the agent limits); false means it will be refused. ok: the "
+        "settings are valid, whatever the limits say. Then the issues (key, message, "
+        "severity), warnings "
+        "(keys, message: what the run will warn about once going, e.g. a sampling_rate "
+        "above what the timing settings can deliver, or four-point power above "
+        "fpp_power_warn_w; they never stop a start), the "
         "resolved values of the mode's keys, derived values (max_rate_hz, sweep_points, "
         "worst_case_power_w), hazard (the touch-safety check, voltage_v against "
-        "threshold_v), and agent_limits: whether an agent may start it, and each "
-        "violation's limit, keys, value and allowed value. agent_may_start false means "
-        "start_run will be refused. The limits (by default 30 V; current and power left "
-        "to the instrument) are per profile and only a person can change them."))
+        "threshold_v), and agent_limits: whether the limits allow it, and each "
+        "violation's limit, keys, value and allowed value. The limits (by default 30 V; "
+        "current and power left to the instrument) are per profile and only a person can "
+        "change them. notes: what these settings mean for the run that is easy to miss, "
+        "e.g. a touch-safety prompt, or a resistance run in auto range, where the "
+        "instrument chooses the test current and voltage limit itself."))
 
 
-def _register_runs(server: MCPServer, backend: Backend) -> None:
+def _register_runs(server: MCPServer, backend: Backend, shown: ShownPrompt) -> None:
 
     async def start_run(
             user: User, mode: Mode,
@@ -264,7 +406,7 @@ def _register_runs(server: MCPServer, backend: Backend) -> None:
             body['prompt_timeout_s'] = prompt_timeout_s
         started = await ask(backend, 'POST', '/session/start', json_body=body)
         audit.note_run_id(started.get('run_id'))
-        status = status_view(await ask(backend, 'GET', '/session'))
+        status = status_view(await ask(backend, 'GET', '/session'), shown)
         return result({'run_id': started.get('run_id'), 'status': status})
 
     server.add_tool(start_run, annotations=ACT, title="Start run", description=(
@@ -275,12 +417,15 @@ def _register_runs(server: MCPServer, backend: Backend) -> None:
         "or a run beyond the agent limits (each violation: limit, keys, value, allowed; "
         "only a person can raise a limit), 409 when a run is already going or another "
         "program holds the instrument. A run at or above the profile's touch-safety "
-        "threshold (30 V by default) and every van der Pauw run stop at prompts that "
-        "only a person at the ResistaMet window can answer. The data file records "
-        "started_by: agent. stop_run ends it."))
+        "threshold (30 V by default) first stops at a touch-safety prompt. A van der "
+        "Pauw run stops at four more, one before each of its four wirings, with the "
+        "output off, for a person to rewire the leads: someone must be at the bench for "
+        "the whole run (describe_mode('vdp') says more). Only a person at the "
+        "ResistaMet window can answer a prompt. The data file records started_by: "
+        "agent. stop_run ends it."))
 
     async def stop_run() -> CallToolResult:
-        return result(status_view(await ask(backend, 'POST', '/session/stop')))
+        return result(status_view(await ask(backend, 'POST', '/session/stop'), shown))
 
     server.add_tool(stop_run, annotations=ACT_IDEMPOTENT, title="Stop run", description=(
         "End the run in progress, whoever started it, the normal way: output off, data "
@@ -289,21 +434,21 @@ def _register_runs(server: MCPServer, backend: Backend) -> None:
         "the shutdown."))
 
     async def abort_run() -> CallToolResult:
-        return result(status_view(await ask(backend, 'POST', '/session/abort')))
+        return result(status_view(await ask(backend, 'POST', '/session/abort'), shown))
 
     server.add_tool(abort_run, annotations=ACT_IDEMPOTENT, title="Abort run", description=(
         "End the run as stop_run does (output off, file finished) but record the reason "
         "as aborted rather than user_stop. Always allowed."))
 
     async def pause_run() -> CallToolResult:
-        return result(status_view(await ask(backend, 'POST', '/session/pause')))
+        return result(status_view(await ask(backend, 'POST', '/session/pause'), shown))
 
     server.add_tool(pause_run, annotations=ACT_IDEMPOTENT, title="Pause run", description=(
         "Pause a continuous run: sampling stops, the output stays on. No effect on a "
         "van der Pauw run. 409 when no run is in progress."))
 
     async def resume_run() -> CallToolResult:
-        return result(status_view(await ask(backend, 'POST', '/session/resume')))
+        return result(status_view(await ask(backend, 'POST', '/session/resume'), shown))
 
     server.add_tool(resume_run, annotations=ACT_IDEMPOTENT, title="Resume run",
                     description="Resume a paused run. 409 when no run is in progress.")
@@ -313,7 +458,7 @@ def _register_runs(server: MCPServer, backend: Backend) -> None:
                 "One line of at most 80 characters, e.g. 'lamp on'."))] = 'MARK',
     ) -> CallToolResult:
         return result(status_view(await ask(backend, 'POST', '/session/mark',
-                                            json_body={'label': label})))
+                                            json_body={'label': label}), shown))
 
     server.add_tool(mark_event, annotations=ACT, title="Mark event", description=(
         "Write a label into the event column of the run's next data row, e.g. when "
@@ -321,35 +466,67 @@ def _register_runs(server: MCPServer, backend: Backend) -> None:
         "409 when no run is in progress; 422 names what the backend refused in a label."))
 
 
-def _register_following(server: MCPServer, backend: Backend) -> None:
+def _register_following(server: MCPServer, backend: Backend, shown: ShownPrompt) -> None:
 
     async def get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         return await ask(backend, 'GET', path, params=params)
 
     async def wait_for(
             until: Annotated[str, Field(description=(
-                "run_ended, prompt, samples:N (the run has written N samples) or "
-                "state:<state> (idle, identifying, running, paused, awaiting_prompt, "
-                "stopping)."))],
+                "run_ended, prompt (one pending now, or raised during the wait), "
+                "prompt_answered (the prompt pending now is no longer pending), "
+                "samples:N (the run has written N samples) or state:<state> (idle, "
+                "identifying, running, paused, awaiting_prompt, stopping)."))],
             timeout_s: Annotated[float, Field(ge=0, description=(
                 f"Seconds to wait, at most {waiting.MAX_WAIT_S:g}."))] = 60.0,
+            then_stop: Annotated[bool, Field(description=(
+                "Stop the run as soon as the condition holds, in this call, and wait "
+                "(within the same timeout) for it to end."))] = False,
+            ignore_prompt_id: Annotated[Optional[str], Field(description=(
+                "A prompt's prompt_id that does not end this wait: the one you have "
+                "told the user about. With prompt_answered, the prompt you expect to be "
+                "waiting on."))] = None,
     ) -> CallToolResult:
         try:
             condition = waiting.parse_until(until)
         except ValueError as exc:
             raise ToolError(str(exc)) from None
-        waited = await waiting.wait_for(get, condition, timeout_s)
-        waited['status'] = status_view(waited['status'])
+
+        async def stop() -> None:
+            await ask(backend, 'POST', '/session/stop')
+
+        waited = await waiting.wait_for(get, condition, timeout_s,
+                                        stop=stop if then_stop else None,
+                                        known_prompt=shown.prompt_id,
+                                        ignore_prompt=ignore_prompt_id)
+        waited['status'] = status_view(waited['status'], shown)
         audit.note_run_id(waited['status'].get('run_id'))
         return result(waited)
 
-    server.add_tool(wait_for, annotations=READ, title="Wait for", description=(
+    server.add_tool(wait_for, annotations=WAIT, title="Wait for", description=(
         "Wait on the current run instead of polling get_status. Returns once, with "
-        "fired = the condition asked for, or 'prompt' (a prompt is pending; if it "
-        "requires_human, a person must answer it at the ResistaMet window: tell the "
-        "user), or 'run_ended' (no run is in progress; run_ended then gives the reason, "
-        "ok, samples and data file), or 'timeout'; always with the session status. "
-        f"The timeout is at most {waiting.MAX_WAIT_S:g} s; call again to keep waiting."))
+        "fired = the condition asked for, or 'prompt' (a prompt you have not been shown "
+        "is pending; if it requires_human, a person must answer it at the ResistaMet "
+        "window: tell the user), or 'run_ended' (no run is in progress; run_ended then "
+        "gives the reason, ok, samples and data file), or 'timeout'; always with the "
+        "session status. To wait for a person, tell the user what the prompt asks, then "
+        "wait_for('prompt_answered', ignore_prompt_id=<its prompt_id>): it returns when "
+        "that prompt is answered or released, or the run ends, with the state and any "
+        "next prompt; a timeout means no answer yet (prompt_at_start.still_pending). "
+        "This needs nothing remembered between calls. ignore_prompt_id also lets "
+        "run_ended, state: and samples: wait through that prompt (and makes prompt wait "
+        "for the next one). A prompt already shown to you in this session does not end "
+        "a run_ended, state: or samples: wait either, but a client that reconnects or "
+        "restarts the server forgets what was shown. "
+        f"The timeout is at most {waiting.MAX_WAIT_S:g} s; call again to keep waiting. "
+        "then_stop true stops the run the moment the condition holds and returns once it "
+        "has ended (stopped true, run_ended with the final sample count). This is how to "
+        "take a fixed number of readings in a mode without a sample count (resistance, "
+        "source_v, source_i; four_point has fpp_samples): start_run, then "
+        "wait_for('samples:N', then_stop=true). The file then holds N rows or a few more, "
+        "read while the stop was on its way (at most the readings of 0.1 s, plus one); "
+        "get_run_summary with first_rows=N summarises exactly N. A prompt or a timeout "
+        "does not stop the run."))
 
     async def get_run_events(
             since_seq: Annotated[int, Field(ge=0, description=(
@@ -435,11 +612,14 @@ def _register_results(server: MCPServer, backend: Backend) -> None:
                 "Which run; default the current or last."))] = None,
             path: Annotated[Optional[str], Field(description=(
                 "Or a data file, as list_results gives it."))] = None,
+            first_rows: Annotated[Optional[int], Field(ge=1, description=(
+                "Summarise only the first N data rows, e.g. the N readings asked for "
+                "when a run was stopped after N."))] = None,
     ) -> CallToolResult:
         if path is None:
             path, run_id = await run_file(run_id)
         text = await read_file(path)
-        summarised = await anyio.to_thread.run_sync(summary.summarise, text)
+        summarised = await anyio.to_thread.run_sync(summary.summarise, text, first_rows)
         audit.note_run_id(run_id)
         return result({'run_id': run_id, 'path': path, **summarised})
 
@@ -450,7 +630,14 @@ def _register_results(server: MCPServer, backend: Backend) -> None:
         "(settings, instrument, started_by) and, once the run is over, the end block "
         "(total_samples, duration, a four-point run's spot_stats, a van der Pauw result). "
         "finalized false: the run is still writing. Works during a run, too. "
-        "Plain .csv files only."))
+        "result: the run's headline, a unit on every number, rows in compliance left "
+        "out: resistance/source modes the main quantity's mean and SD; four_point Rs "
+        "(and rho, sigma) with u_stat, u_inst, u_total; vdp R_s and rho with their "
+        "uncertainty and the F76 homogeneity verdict, criterion and threshold; sweep a "
+        "least-squares R with its standard error, intercept, n and r2. Its headline says "
+        "it in one line, and its uncertainty says what the uncertainties are (standard, "
+        "k = 1). first_rows=N: statistics, compliance and marks over the first N rows "
+        "only (rows_total says how many the file has). Plain .csv files only."))
 
     async def list_results(
             user: Annotated[Optional[str], Field(description="Only this user's files.")] = None,

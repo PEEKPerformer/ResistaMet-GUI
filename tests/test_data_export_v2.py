@@ -802,3 +802,25 @@ class TestExistingFilesAreNeverOpenedForWriting:
         with pytest.raises(FileExistsError):
             CsvExporter(base_path, basic_meta, self.COLUMNS)
         assert list(base_path.parent.iterdir()) == []
+
+
+class TestSweepColumns:
+    """The sweep's two value columns say which was sourced; the units stay V, A."""
+
+    @pytest.mark.parametrize('settings, columns', [
+        ({'sweep_source': 'voltage'}, ['point', 'V_source', 'I_meas', 'compliance']),
+        ({'sweep_source': 'current'}, ['point', 'V_meas', 'I_source', 'compliance']),
+        # No settings: the voltage sweep's, as before.
+        (None, ['point', 'V_source', 'I_meas', 'compliance']),
+    ])
+    def test_the_header_follows_the_source(self, settings, columns):
+        assert get_column_config('sweep', settings) == (columns, ['', 'V', 'A', ''])
+
+    def test_a_current_sweep_file_has_its_own_header_row(self, base_path, basic_meta):
+        columns, units = get_column_config('sweep', {'sweep_source': 'current'})
+        exp = CsvExporter(base_path, basic_meta, columns, units)
+        exp.write_row([0, 0.1, 0.001, 'OK'])
+        exp.finalize()
+        lines = base_path.with_name('run_001.csv').read_text(encoding='utf-8').splitlines()
+        assert 'point,V_meas,I_source,compliance' in lines
+        assert '# units: ,V,A,' in lines

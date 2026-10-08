@@ -42,7 +42,7 @@ What that means when one `config.json` is shared between PCs through a synced fo
 - An empty `gpib_address` is never stored. An empty `visa_library` or `gpib_interface` is a real choice (Automatic, none) and is stored.
 - Through the API these three keys cannot be changed while a run is in progress (409), and `gpib_address` can never be sent as a run override.
 
-`allow_agents` (`false` by default) is kept in the same file: whether a backend on this PC lets AI agents connect ([API → Agent access](api.md#agent-access)). It is read from `machine.json` only, never from `config.json` or an older version's entry, and anything there but `true` means off. Through the API only the `ui` role may change it (403 otherwise), also during a run, and a run request may not send it. In the desktop app it is **Allow AI agents to connect**, under Settings → AI agents.
+`allow_agents` (`false` by default) is kept in the same file: whether a backend on this PC lets AI agents connect ([API → Agent access](api.md#agent-access)). It is read from `machine.json` only, never from `config.json` or an older version's entry, and anything there but `true` means off. Through the API only the `ui` role may change it (403 otherwise), also during a run, and a run request may not send it. It is not a setting of a run: resolved run settings, the `run_started` event and the data files leave it out. In the desktop app it is **Allow AI agents to connect**, under Settings → AI agents.
 
 **Coming from an earlier version.** Versions up to 1.12 kept the address in `config.json` under `machines.<hostname>`. That broke whenever the hostname changed, which macOS does on its own depending on the network. The first time this version opens a config on a PC that has no `machine.json`, it copies that PC's old entry (or an even older shared `measurement.gpib_address`) into `machine.json`, skipping values that equal the default. The old entry is left in `config.json`, is still consulted for a key `machine.json` lacks, and is never written again, so an older ResistaMet opening the same file keeps working.
 
@@ -223,6 +223,6 @@ Some settings live on the individual mode tabs because they're per-measurement-c
 - **Delta mode (current reversal)** — Four-Point Probe tab Advanced section
 - **Geometry / dopant / temperature** — Four-Point Probe tab (drive F84 corrections)
 - **Sample thickness** — Four-Point Probe and Van der Pauw tabs
-- **Sweep start / stop / step / direction / per-step delay** — I-V Sweep tab
+- **Sweep start / stop / step / direction / per-step delay / measurement type** — I-V Sweep tab (`sweep_measurement_type`: `2-wire` by default, or `4-wire` for remote sense)
 
 These follow the same per-user persistence — they're written into the user's section of `config.json` when the user clicks **Save Settings** on the active tab.

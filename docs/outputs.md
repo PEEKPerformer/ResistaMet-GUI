@@ -350,7 +350,7 @@ Metadata `params`: `source_current_A`, `voltage_compliance_V`, `voltage_auto_ran
 | `I` | A | Current sourced through outer two probes |
 | `V_over_I` | Ω | `V/I` — the raw ratio before geometric corrections |
 | `Rs_ohm_sq` | Ω/□ | Sheet resistance = `K · α · V/I` (K modified by ASTM F84 corrections when applicable) |
-| `rho_ohm_cm` | Ω·cm | Resistivity = `Rs · thickness` |
+| `rho_ohm_cm` | Ω·cm | Resistivity = `Rs · thickness`; NaN when no thickness was entered (thin-film models) |
 | `sigma_S_cm` | S/cm | Conductivity = `1 / rho` |
 | `V_unc_V` | V | σ_V from per-range voltage-measurement spec |
 | `I_unc_A` | A | σ_I from per-range current-measurement spec |
@@ -393,6 +393,7 @@ The final sheet resistance, resistivity, f-factors, Q ratios, and the §11.1 hom
 - `vdp_result.sheet_resistance` (Ω/□), `vdp_result.sheet_resistance_uncertainty`
 - `vdp_result.rho_avg` (Ω·cm), `vdp_result.rho_avg_uncertainty`
 - `vdp_result.rho_a`, `vdp_result.rho_b` (the two F76 group resistivities)
+- The four resistivity keys are `NaN` when no thickness was given (`thickness_cm` 0); the sheet resistance and the homogeneity check do not need one.
 - `vdp_result.q_a`, `vdp_result.q_b`, `vdp_result.f_a`, `vdp_result.f_b`
 - `vdp_result.homogeneous` (boolean — `true` when |ρ_A − ρ_B|/ρ_avg ≤ F76 §11.1 threshold)
 - `vdp_result.asymmetry_pct` (the |ρ_A − ρ_B|/ρ_avg × 100 number)
@@ -406,11 +407,13 @@ Metadata `params`: `source_current_A`, `voltage_compliance_V`, `voltage_auto_ran
 | Column | Unit | What it is |
 |---|---|---|
 | `point` | | Sweep index (0…N) |
-| `V_source` | V | Sourced voltage at this step (for V-source sweeps) — for I-source sweeps this column is named `I_source` and the next is `V_meas` |
-| `I_meas` | A | Measured current (for V-source sweeps) |
+| `V_source` / `V_meas` | V | The voltage: `V_source`, sourced at this step, in a voltage sweep; `V_meas`, measured, in a current sweep |
+| `I_meas` / `I_source` | A | The current: `I_meas`, measured, in a voltage sweep; `I_source`, sourced at this step, in a current sweep |
 | `compliance` | | `OK` on a normal point, `COMP` when that point hit compliance |
 
-Metadata `params`: `source_function`, `start`, `stop`, `step`, `compliance`, `delay_s`, `direction`.
+The header row is `point,V_source,I_meas,compliance` for a voltage sweep and `point,V_meas,I_source,compliance` for a current sweep; the voltage is always the second column and the current the third. Files written before this change have `V_source,I_meas` whatever was sourced; for those, `params.source_function` says which column was sourced.
+
+Metadata `params`: `source_function`, `start`, `stop`, `step`, `compliance`, `delay_s`, `direction`, `measurement_type` (`2-wire` or `4-wire`).
 
 ## Reading the data back
 

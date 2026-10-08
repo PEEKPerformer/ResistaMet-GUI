@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -118,6 +119,13 @@ def agent(bench, steps):
     return asyncio.run(go())
 
 
+def call_once(bench, name, arguments=None):
+    """One tool call through a server of its own: a client that starts one per call."""
+    async def steps(call):
+        return await call(name, arguments)
+    return agent(bench, steps)
+
+
 async def _end_any_run(call):
     await call('stop_run')
     failed, waited = await call('wait_for', {'until': 'run_ended', 'timeout_s': 60})
@@ -153,15 +161,33 @@ def test_the_tools_are_listed(bench):
 def test_check_settings_within_and_beyond_the_agent_limit(bench):
     async def steps(call):
         failed, within = await call('check_settings', {'user': 'alice', 'mode': 'resistance'})
-        assert not failed and within['ok'] and within['agent_may_start'], within
+        assert not failed and within['ok'] and within['can_start'], within
         failed, beyond = await call('check_settings', {
             'user': 'alice', 'mode': 'source_v', 'overrides': {'vsource_voltage': 40.0}})
         assert not failed
-        assert beyond['agent_may_start'] is False
+        assert beyond['can_start'] is False
         [violation] = beyond['agent_limits']['violations']
         assert (violation['limit'], violation['value'], violation['allowed']) == (
             'max_voltage_v', 40.0, 30.0)
         assert beyond['hazard']['hazardous'] is True
+
+    agent(bench, steps)
+
+
+def test_describe_mode_says_what_each_key_accepts_and_where_it_comes_from(bench):
+    async def steps(call):
+        failed, described = await call('describe_mode', {'mode': 'four_point',
+                                                         'user': 'alice'})
+        assert not failed, described
+        assert described['mode_keys']['fpp_model'].startswith(
+            '"thin_film", from the profile (the default); '
+            'one of thin_film|semi_infinite|finite_thin|finite_alpha; ')
+        assert described['mode_keys']['fpp_temperature_c'].startswith('null, from the profile')
+        # The profile stores the defaults "once" and 5; a four-point run uses its own.
+        assert described['shared_keys']['auto_zero'].startswith(
+            '"on", fixed by the mode (the profile\'s "once" is not used)')
+        assert described['shared_keys']['filter_count'] == \
+            '10, fixed by the mode (the profile\'s 5 is not used)'
 
     agent(bench, steps)
 
@@ -204,6 +230,9 @@ def test_a_resistance_run_from_start_to_summary(bench):
         failed, final = await call('get_run_summary', {'run_id': run_id})
         assert not failed and final['finalized'] is True
         assert final['end']['total_samples'] == final['rows']
+        headline = final['result']['R']
+        assert headline['unit'] == 'Ω'
+        assert headline['mean'] == pytest.approx(100.0, rel=1e-3)
         assert final['marks'][0]['label'] == 'checked by agent'
 
         failed, events = await call('get_run_events', {'run_id': run_id})
@@ -242,6 +271,7 @@ def test_a_van_der_pauw_run_waits_for_a_person(bench):
         prompt = waited['status']['pending_prompt']
         assert prompt['kind'] == 'vdp_geometry' and prompt['requires_human'] is True
         assert 'person must answer' in prompt['who_answers']
+        assert prompt['detail']['message'].startswith("Geometry 1 of 4: connect Force HI→C2")
 
         # Nothing in the tools answers it, and the agent token cannot either.
         refused = bench.as_agent('POST', '/session/prompt', json={
@@ -250,9 +280,116 @@ def test_a_van_der_pauw_run_waits_for_a_person(bench):
         failed, status = await call('get_status')
         assert status['state'] == 'awaiting_prompt'
 
+        # Waiting for the person: the prompt the agent was shown does not
+        # end the wait, and no one answers it here.
+        failed, waited = await call('wait_for', {'until': 'run_ended', 'timeout_s': 1})
+        assert not failed and waited['fired'] == 'timeout', waited
+        assert waited['prompt_at_start'] == {'prompt_id': prompt['prompt_id'],
+                                             'still_pending': True}
+
         await _end_any_run(call)
 
     agent(bench, steps)
+
+
+def test_a_van_der_pauw_run_without_a_thickness_with_a_person_at_the_bench(bench):
+    """Four rewiring prompts, as describe_mode says; R_s, and no resistivity."""
+    async def steps(call):
+        failed, described = await call('describe_mode', {'mode': 'vdp', 'user': 'alice'})
+        assert not failed and 'four prompts' in described['prompts']
+
+        failed, started = await call('start_run', {
+            'user': 'alice', 'mode': 'vdp', 'sample_name': 'vdp-no-thickness',
+            'overrides': {'vdp_thickness_cm': 0.0}})
+        assert not failed, started
+        answered, told = [], []
+        while True:
+            failed, waited = await call('wait_for', {'until': 'prompt', 'timeout_s': 60})
+            assert not failed, waited
+            if waited['fired'] != 'prompt':
+                break
+            prompt = waited['status']['pending_prompt']
+            answered.append((prompt['kind'], prompt['detail']['index']))
+            told.append(prompt['detail']['message'])
+            # The person at the window, with the ui token, has rewired the leads.
+            bench.ui('POST', '/session/prompt', json={'prompt_id': prompt['prompt_id'],
+                                                      'choice': 'proceed'})
+        assert answered == [('vdp_geometry', 0), ('vdp_geometry', 1),
+                            ('vdp_geometry', 2), ('vdp_geometry', 3)]
+        # What describe_mode said beforehand is what the person was asked.
+        assert told == [wiring['message'] for wiring in described['wiring']]
+        assert waited['run_ended']['reason'] == 'completed', waited
+
+        failed, summarised = await call('get_run_summary', {'run_id': started['run_id']})
+        assert not failed, summarised
+        end = summarised['end']
+        assert end['vdp_result.sheet_resistance'] > 0
+        assert end['vdp_result.thickness_cm'] == 0.0
+        assert [end[f'vdp_result.{key}'] for key in ('rho_avg', 'rho_a', 'rho_b')] == \
+            [None, None, None]
+        result = summarised['result']
+        assert result['R_s']['unit'] == 'Ω/□' and result['R_s']['value'] > 0
+        assert result['R_s']['u'] > 0
+        assert result['rho'] is None
+        assert result['homogeneity']['threshold_pct'] == 10.0
+        assert result['homogeneity']['homogeneous'] is end['vdp_result.homogeneous']
+
+    agent(bench, steps)
+
+
+def test_a_van_der_pauw_run_followed_by_a_new_server_for_every_call(bench):
+    """The third trial's client: nothing is remembered between two calls.
+
+    There, wait_for('run_ended') at a prompt came back at once, five times.
+    prompt_answered and ignore_prompt_id carry what the wait needs in the
+    call itself; the person at the bench answers each prompt a moment after
+    the wait begins.
+    """
+    failed, started = call_once(bench, 'start_run', {
+        'user': 'alice', 'mode': 'vdp', 'sample_name': 'vdp-stateless',
+        'overrides': {'vdp_thickness_cm': 0.01}})
+    assert not failed, started
+    answered = []
+    for geometry in range(4):
+        failed, waited = call_once(bench, 'wait_for', {'until': 'prompt', 'timeout_s': 60})
+        assert not failed and waited['fired'] == 'prompt', waited
+        prompt = waited['status']['pending_prompt']
+        assert f"ignore_prompt_id='{prompt['prompt_id']}'" in prompt['who_answers']
+        if geometry == 0:
+            # With nothing remembered, the trial's wait returns at once...
+            failed, early = call_once(bench, 'wait_for', {'until': 'run_ended',
+                                                          'timeout_s': 30})
+            assert not failed and early['fired'] == 'prompt', early
+            assert early['waited_s'] < 5
+            # ...and naming the prompt makes it wait through it.
+            failed, held = call_once(bench, 'wait_for', {
+                'until': 'run_ended', 'timeout_s': 0.6,
+                'ignore_prompt_id': prompt['prompt_id']})
+            assert not failed and held['fired'] == 'timeout', held
+            assert held['prompt_at_start']['still_pending'] is True
+
+        person = threading.Timer(0.5, bench.ui, args=('POST', '/session/prompt'),
+                                 kwargs={'json': {'prompt_id': prompt['prompt_id'],
+                                                  'choice': 'proceed'}})
+        person.start()
+        try:
+            failed, waited = call_once(bench, 'wait_for', {
+                'until': 'prompt_answered', 'ignore_prompt_id': prompt['prompt_id'],
+                'timeout_s': 60})
+        finally:
+            person.join()
+        assert not failed and waited['fired'] == 'prompt_answered', waited
+        assert waited['waited_s'] >= 0.4
+        assert waited['prompt_at_start'] == {'prompt_id': prompt['prompt_id'],
+                                             'still_pending': False}
+        following = waited['status']['pending_prompt']
+        assert following is None or following['prompt_id'] != prompt['prompt_id']
+        answered.append(prompt['detail']['index'])
+
+    assert answered == [0, 1, 2, 3]
+    failed, ended = call_once(bench, 'wait_for', {'until': 'run_ended', 'timeout_s': 60})
+    assert not failed and ended['fired'] == 'run_ended', ended
+    assert ended['run_ended']['reason'] == 'completed'
 
 
 def test_a_hazardous_run_within_a_raised_limit_waits_for_a_person(bench):
@@ -263,7 +400,9 @@ def test_a_hazardous_run_within_a_raised_limit_waits_for_a_person(bench):
                 'user': 'alice', 'mode': 'source_v', 'sample_name': 'hazard-e2e',
                 'overrides': {'vsource_voltage': 31.0}})
             assert not failed, started
-            failed, waited = await call('wait_for', {'until': 'samples:1', 'timeout_s': 60})
+            # 'prompt', not 'samples:1': start_run's reply may already have
+            # shown the prompt, and a wait does not end at a prompt shown.
+            failed, waited = await call('wait_for', {'until': 'prompt', 'timeout_s': 60})
             assert not failed and waited['fired'] == 'prompt', waited
             prompt = waited['status']['pending_prompt']
             assert prompt['kind'] == 'safety_voltage_ack' and prompt['requires_human']
@@ -273,6 +412,64 @@ def test_a_hazardous_run_within_a_raised_limit_waits_for_a_person(bench):
         agent(bench, steps)
     finally:
         bench.ui('PATCH', '/profiles/alice', json={'agent_limits': {'max_voltage_v': 30.0}})
+
+
+def test_a_fixed_number_of_readings_in_a_mode_without_a_count(bench):
+    async def steps(call):
+        failed, started = await call('start_run', {'user': 'alice', 'mode': 'resistance',
+                                                   'sample_name': 'ten-readings'})
+        assert not failed, started
+        failed, waited = await call('wait_for', {'until': 'samples:10', 'then_stop': True,
+                                                 'timeout_s': 60})
+        assert not failed, waited
+        assert (waited['fired'], waited['stopped']) == ('samples:10', True), waited
+        assert waited['status']['state'] == 'idle'
+        assert waited['run_ended']['reason'] == 'user_stop'
+        rows = waited['run_ended']['samples']
+        # At least the ten asked for. At most a few more: the simulator reads
+        # at the profile's 10 Hz, so in the 0.1 s between two looks at the
+        # count one more can arrive, and one more is in flight when the stop
+        # lands; two more allow for a slow test machine. Two calls, wait then
+        # stop, gave 57 for 20 in the usability trial.
+        assert 10 <= rows <= 10 + 4, rows
+
+        failed, first = await call('get_run_summary', {'run_id': started['run_id'],
+                                                       'first_rows': 5})
+        assert not failed, first
+        assert first['finalized'] is True
+        assert (first['rows'], first['rows_total']) == (5, rows)
+        assert first['columns']['R_ohm']['count'] == 5
+        assert first['columns']['elapsed_s']['count'] == 5
+
+    agent(bench, steps)
+
+
+@pytest.mark.parametrize('source, overrides', [
+    ('voltage', {'sweep_start': 0.0, 'sweep_stop': 0.5, 'sweep_step': 0.1,
+                 'sweep_compliance': 0.1}),
+    ('current', {'sweep_start': 0.0, 'sweep_stop': 5e-3, 'sweep_step': 1e-3,
+                 'sweep_compliance': 5.0}),
+])
+def test_a_sweep_summary_gives_the_fitted_resistance(bench, source, overrides):
+    """The trial's agent fitted the sweep itself; the summary now does."""
+    async def steps(call):
+        failed, started = await call('start_run', {
+            'user': 'alice', 'mode': 'sweep', 'sample_name': f'sweep-{source}',
+            'overrides': {'sweep_source': source, 'sweep_delay': 0.0, **overrides}})
+        assert not failed, started
+        failed, waited = await call('wait_for', {'until': 'run_ended', 'timeout_s': 60})
+        assert not failed and waited['run_ended']['reason'] == 'completed', waited
+        failed, summarised = await call('get_run_summary', {'run_id': started['run_id']})
+        assert not failed, summarised
+        result = summarised['result']
+        assert (result['sourced'], result['n']) == (source, 6)
+        assert result['R']['unit'] == 'Ω'
+        assert result['R']['value'] == pytest.approx(100.0, rel=1e-3)  # --sim 100 Ω
+        assert result['r2'] == pytest.approx(1.0, abs=1e-6)
+        named = ['V_source', 'I_meas'] if source == 'voltage' else ['V_meas', 'I_source']
+        assert set(named) <= set(summarised['columns'])
+
+    agent(bench, steps)
 
 
 def test_the_stdio_server_answers(bench):
@@ -308,6 +505,7 @@ def test_the_audit_log_has_a_line_per_call_and_no_token(bench):
     assert all(line['client'] == {'name': 'e2e', 'version': '1'} for line in lines)
     assert bench.agent_token not in text and bench.ui_token not in text
     starts = [line for line in lines if line['tool'] == 'start_run']
-    assert [line['outcome'] for line in starts] == ['ok', 'error', 'ok', 'ok']
+    assert [line['outcome'] for line in starts] == ['ok', 'error', 'ok', 'ok', 'ok', 'ok',
+                                                     'ok', 'ok', 'ok']
     assert starts[1]['http_status'] == 422
     assert starts[0]['run_id'] and starts[0]['http_status'] == 202

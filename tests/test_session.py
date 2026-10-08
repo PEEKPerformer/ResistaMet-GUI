@@ -3,6 +3,7 @@
 No Qt anywhere — this is the path the API sidecar and the MCP layer will use.
 """
 import copy
+import json
 import os
 import re
 import time
@@ -222,8 +223,16 @@ class TestLogText:
 
         warnings = [e.payload['message'] for e in sink.of_type('log')
                     if e.payload['code'] == 'power_envelope']
-        assert warnings[0] == ("Warning: 4PP power envelope: up to 15 mW (I × V_comp). "
-                               "Above warning threshold 500 µW — proceed with care.")
+        # The same words as the settings preview's warning, with the remedy.
+        from resistamet_gui.schema.resolve import resolve_run_settings
+        assert warnings[0] == ("Warning: 4PP power envelope: Worst-case power 15 mW (source "
+                               "current × voltage compliance) is above the 500 µW warning "
+                               "threshold; lower fpp_voltage_compliance (to 0.167 V or less "
+                               "at this current) or fpp_current to bring it under.")
+        preview = resolve_run_settings(profile, 'four_point', {}).warnings
+        assert [w.message for w in preview if 'power' in w.message] == [
+            warnings[0].removeprefix("Warning: 4PP power envelope: ")
+            + " The run will warn and go on."]
         assert re.fullmatch(r"Warning: 4PP power [\d.]+ µW above warn threshold 500 µW",
                             warnings[1]), warnings[1]
 
@@ -296,7 +305,7 @@ class TestValidation:
     def test_strict_resolver_rejects_a_bad_request(self, session, profile):
         with pytest.raises(ValueError) as excinfo:
             session.start(profile, 'vdp', 'wafer1', 'alice',
-                           overrides={'vdp_thickness_cm': 0.0})
+                           overrides={'vdp_thickness_cm': -0.1})
         assert 'vdp_thickness_cm' in str(excinfo.value)
 
     def test_rejected_request_leaves_the_session_idle(self, session, profile):
@@ -338,6 +347,32 @@ class TestStatus:
         assert prompt['options'] == ['proceed', 'abort']
         assert prompt['requires_human'] is True
         assert prompt['detail']['index'] == 0
+
+    def test_a_stop_at_a_prompt_does_not_leave_it_pending(self, session, sink, fake_rm,
+                                                         profile):
+        """The trial: stop_run's reply was "stopping" with the prompt it had
+        just released still listed as pending."""
+        profile['measurement'].update({'vdp_thickness_cm': 0.05})
+        session.start(profile, 'vdp', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.status()['pending_prompt'] is not None)
+        session.stop()
+        status = session.status()
+        assert status['pending_prompt'] is None
+        assert status['state'] in ('stopping', 'idle')
+        assert _wait_for(lambda: session.state == 'idle')
+
+    def test_a_geometry_prompt_says_the_wiring_in_words_as_the_log_does(
+            self, session, sink, fake_rm, profile):
+        profile['measurement'].update({'vdp_thickness_cm': 0.05})
+        session.start(profile, 'vdp', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.status()['pending_prompt'] is not None)
+        detail = session.status()['pending_prompt']['detail']
+        session.stop()
+        assert detail['message'] == ("Geometry 1 of 4: connect Force HI→C2, Force LO→C1, "
+                                     "Sense HI→C3, Sense LO→C4, then press Measure.")
+        logged = [e.payload['message'] for e in sink.of_type('log')
+                  if e.payload['code'] == 'geometry_prompt']
+        assert logged == [detail['message']]
 
     def test_the_status_model_has_the_reply_s_keys(self, session):
         from resistamet_gui.session.status import PendingPrompt, SessionStatus
@@ -910,6 +945,17 @@ class TestStartedBy:
         assert 'started_by' not in started['settings']
         assert session.status()['started_by'] is None
 
+    def test_the_machine_s_agent_switch_reaches_neither_event_nor_file(self, session, sink,
+                                                                         fake_rm, profile):
+        profile['measurement']['allow_agents'] = False
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice',
+                      started_by='agent')
+        assert _wait_for(lambda: session.state == 'idle')
+        assert 'allow_agents' not in sink.of_type('run_started')[0].payload['settings'][
+            'measurement']
+        path = sink.of_type('run_ended')[0].payload['path']
+        assert 'allow_agents' not in Path(path).read_text(encoding='utf-8')
+
     def test_the_next_run_does_not_inherit_it(self, session, sink, fake_rm, profile):
         session.start(_four_point(profile), 'four_point', 'wafer1', 'alice',
                       started_by='agent')
@@ -1167,16 +1213,27 @@ class TestSpotStatisticsAtTheEndOfARun:
 
     def test_a_quantity_the_rows_do_not_have_is_empty_not_wrong(
             self, session, sink, fake_rm, profile):
-        """With no thickness entered the rows hold no conductivity."""
+        """With no thickness entered the rows hold no resistivity or conductivity.
+
+        A resistivity of exactly 0 used to be written (K * 0 * V/I), and a
+        statistics block of mean 0, u_total 0 followed from it.
+        """
         import math
         from resistamet_gui.data_export import parse_metadata
         profile['measurement'].update({'fpp_thickness_um': 0.0, 'fpp_model': 'thin_film'})
         path = self._run(session, sink, _four_point(profile, samples=2))
         footer = parse_metadata(path)
         assert footer['spot_stats.rs.n'] == 2
-        assert footer['spot_stats.sigma.n'] == 0
-        assert math.isnan(footer['spot_stats.sigma.mean'])
-        assert math.isnan(footer['spot_stats.sigma.u_total'])
+        for quantity in ('rho', 'sigma'):
+            assert footer[f'spot_stats.{quantity}.n'] == 0
+            assert math.isnan(footer[f'spot_stats.{quantity}.mean'])
+            assert math.isnan(footer[f'spot_stats.{quantity}.u_total'])
+        columns = _csv_columns(path)
+        assert all(math.isnan(float(cell)) for cell in columns['rho_ohm_cm'])
+        assert all(math.isfinite(float(cell)) for cell in columns['Rs_ohm_sq'])
+        # On the wire (the API, the desktop, an agent) a missing value is null.
+        samples = [json.loads(event.model_dump_json()) for event in sink.of_type('sample')]
+        assert [s['payload']['derived']['rho'] for s in samples] == [None, None]
 
     def test_spot_complete_carries_the_footer_and_the_spot(self, session, sink, fake_rm, profile):
         spot = {'map_id': 'wafer7', 'index': 4, 'label': 'D'}

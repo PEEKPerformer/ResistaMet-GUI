@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 from collections import deque
 from datetime import datetime
@@ -933,6 +934,9 @@ class ResistanceMeterApp(QMainWindow):
             "Step Delay", widget.sweep_delay,
             "NPLC", widget.sweep_nplc,
         ))
+        widget.sweep_measurement_type = QComboBox(); widget.sweep_measurement_type.addItems(["2-wire", "4-wire"])
+        widget.sweep_measurement_type.setToolTip("2-wire: Simple connection, includes lead resistance.\n4-wire (Kelvin): Separate sense leads eliminate lead resistance.\nUse 4-wire for low-resistance DUTs (<10 Ω) or precision work.")
+        param_layout.addRow("Measurement Type:", widget.sweep_measurement_type)
 
         # Points preview + Test Connection on one row
         widget.sweep_points_label = QLabel("Points: 21")
@@ -1074,7 +1078,7 @@ class ResistanceMeterApp(QMainWindow):
             "Sample thickness t in cm (F76 sec. 9.3 wants t/L_p <= 1/15).\n"
             "rho = (pi/(4*ln2)) * f * t * (V/I) per F76 eq. (1).\n"
             "Sheet resistance Rs = rho / t is reported separately.\n"
-            "0 = unset; you will be prompted when you press Start."
+            "Set to 0 if unknown — sheet resistance will still be valid."
         )
         widget.vdp_settling_s = NoScrollSpinBox(
             decimals=3, minimum=0.0, maximum=10.0, singleStep=0.05, suffix=" s"
@@ -1288,8 +1292,6 @@ class ResistanceMeterApp(QMainWindow):
         sample_name = self._require_sample_name()
         if not sample_name:
             return
-        if self._require_vdp_thickness() is None:
-            return
         try:
             current_settings = self.gather_settings_for_mode('vdp')
         except ValueError as e:
@@ -1405,7 +1407,9 @@ class ResistanceMeterApp(QMainWindow):
         # the Keithley's resolution at the configured NPLC — at NPLC=10
         # we display 6 figs (6½-digit mode); at NPLC=0.01 we display 4.
         rs = float(result['sheet_resistance'])
-        rho = float(result['rho_avg'])
+        # None (or NaN) when no thickness was given: Rs only.
+        rho = result.get('rho_avg')
+        rho = float('nan') if rho is None else float(rho)
         precision = precision_for_nplc(float(widget.nplc.value()))
 
         # Per-geometry resistance bars: each is the current-reversal-derived
@@ -1446,10 +1450,13 @@ class ResistanceMeterApp(QMainWindow):
             f"R<sub>s</sub> = {format_engineering(rs, 'Ω/sq', precision=precision)}"
             f"  ± {format_engineering(u.u_rs, 'Ω/sq', precision=2)}"
         )
-        widget.vdp_rho_label.setText(
-            f"ρ = {format_engineering(rho, 'Ω·cm', precision=precision)}"
-            f"  ± {format_engineering(u.u_rho, 'Ω·cm', precision=2)}"
-        )
+        if math.isfinite(rho):
+            widget.vdp_rho_label.setText(
+                f"ρ = {format_engineering(rho, 'Ω·cm', precision=precision)}"
+                f"  ± {format_engineering(u.u_rho, 'Ω·cm', precision=2)}"
+            )
+        else:
+            widget.vdp_rho_label.setText("ρ: — (no thickness)")
         widget.vdp_bar_chart.set_data(r_values, ["G1", "G2", "G3", "G4"])
 
         widget.vdp_stats_label.setText(
@@ -1825,6 +1832,7 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_resistance.res_test_current.setValue(m_cfg['res_test_current'])
         self.tab_resistance.res_voltage_compliance.setValue(m_cfg['res_voltage_compliance'])
         self.tab_resistance.res_measurement_type.setCurrentText(m_cfg['res_measurement_type'])
+        self.tab_sweep.sweep_measurement_type.setCurrentText(m_cfg.get('sweep_measurement_type', '2-wire'))
         self.tab_resistance.res_auto_range.setChecked(m_cfg['res_auto_range'])
         self.tab_resistance.res_offset_comp.setChecked(m_cfg.get('res_offset_comp', False))
         self.tab_resistance.sampling_rate.setValue(m_cfg['sampling_rate'])
@@ -2017,6 +2025,7 @@ class ResistanceMeterApp(QMainWindow):
                 m_cfg['sweep_compliance'] = widget.sweep_compliance.value()
                 m_cfg['sweep_delay'] = widget.sweep_delay.value()
                 m_cfg['sweep_direction'] = widget.sweep_direction.currentText()
+                m_cfg['sweep_measurement_type'] = widget.sweep_measurement_type.currentText()
             elif mode == 'vdp':
                 m_cfg['vdp_current'] = widget.vdp_current.value()
                 m_cfg['vdp_voltage_compliance'] = widget.vdp_voltage_compliance.value()
@@ -2153,32 +2162,6 @@ class ResistanceMeterApp(QMainWindow):
             return None
         self.sample_input.setText(name)
         return name
-
-    def _require_vdp_thickness(self) -> Optional[float]:
-        """Return vdP sample thickness in cm, prompting if unset (0).
-
-        Mirrors _require_sample_name: a 0 value means "user never entered a
-        thickness" — silently reporting ρ = R_s × 1 µm is worse than asking.
-        Returns the thickness on success, or None if the user cancelled.
-        """
-        widget = self.tab_vdp
-        t_cm = float(widget.vdp_thickness_cm.value())
-        if t_cm > 0.0:
-            return t_cm
-        widget.vdp_thickness_cm.setFocus()
-        t_um, ok = QInputDialog.getDouble(
-            self,
-            "Sample Thickness Required",
-            "Enter sample thickness for resistivity calculation.\n"
-            "(Sheet resistance Rs is reported regardless of thickness.)\n\n"
-            "Thickness (µm):",
-            value=1.0, min=1e-3, max=1.0e5, decimals=3,
-        )
-        if not ok:
-            return None
-        t_cm = float(t_um) * 1e-4
-        widget.vdp_thickness_cm.setValue(t_cm)
-        return t_cm
 
     def start_measurement(self, mode: str):
         if self.measurement_running:
@@ -2782,7 +2765,10 @@ class ResistanceMeterApp(QMainWindow):
             txt = f"ρ = 2π·s·(V/I) = {2*np.pi*s:.4g}·(V/I) Ω·cm"
         elif model in ('thin_film','finite_thin'):
             # Show both Rs and rho forms
-            txt = f"Rs = {k:.4g}·(V/I) Ω/□\nρ = {k:.4g}·t·(V/I) = {k*t_cm:.4g}·(V/I) Ω·cm"
+            if t_cm > 0:
+                txt = f"Rs = {k:.4g}·(V/I) Ω/□\nρ = {k:.4g}·t·(V/I) = {k*t_cm:.4g}·(V/I) Ω·cm"
+            else:
+                txt = f"Rs = {k:.4g}·(V/I) Ω/□\nρ = {k:.4g}·t·(V/I): no thickness, no ρ"
             if model == 'thin_film' and alpha and alpha != 1.0:
                 txt += f"\n(α applied: Rs = {k*alpha:.4g}·(V/I), ρ = {k*alpha:.4g}·t·(V/I))"
         else:
@@ -2982,13 +2968,11 @@ class ResistanceMeterApp(QMainWindow):
             Rs = np.array([k_factor * alpha * r if np.isfinite(r) else np.nan for r in ratio])
         else:
             Rs = np.array([k_factor * r if np.isfinite(r) else np.nan for r in ratio])
-        if model == 'semi_infinite':
-            rho = np.array([2*np.pi*s*r if np.isfinite(r) else np.nan for r in ratio])
-        elif model in ('thin_film','finite_thin'):
-            k = k_factor * (alpha if (model == 'thin_film' and alpha and alpha != 1.0) else 1.0)
-            rho = np.array([k * t_thick * r if np.isfinite(r) else np.nan for r in ratio])
-        else:
-            rho = np.array([alpha * 2*np.pi*s*r if np.isfinite(r) else np.nan for r in ratio])
+        # The run's own formula, so a thickness of 0 (not entered) gives no
+        # resistivity here either rather than a mean of exactly 0.
+        from ..calculations import calculate_resistivity
+        rho = np.array([calculate_resistivity(r, s, t_thick, k_factor, alpha, model)
+                        for r in ratio])
         # Calculate conductivity safely, avoiding divide by zero warnings
         with np.errstate(divide='ignore', invalid='ignore'):
             sigma = np.where(np.isfinite(rho) & (rho != 0), 1.0 / rho, np.nan)

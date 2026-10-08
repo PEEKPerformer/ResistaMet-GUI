@@ -16,14 +16,14 @@ from resistamet_gui.session.emitter import EventEmitter, ListSink
 from resistamet_gui.session.vdp_run import VdpRun
 
 
-def _settings(tmp_path):
+def _settings(tmp_path, thickness_cm=0.05):
     return {
         "measurement": {
             "nplc": 1.0, "gpib_address": "GPIB0::24::INSTR", "auto_zero": "on",
             "filter_enabled": False,
             "vdp_current": 1e-3, "vdp_voltage_compliance": 5.0,
             "vdp_voltage_range_auto": True, "vdp_settling_s": 0.0,
-            "vdp_readings_per_polarity": 1, "vdp_thickness_cm": 0.05,
+            "vdp_readings_per_polarity": 1, "vdp_thickness_cm": thickness_cm,
         },
         "display": {"enable_plot": False, "plot_update_interval": 100, "buffer_size": 100},
         "file": {"auto_save_interval": 60, "data_directory": str(tmp_path / "data")},
@@ -50,9 +50,9 @@ def _wait_for(predicate, timeout=5.0):
 class _Driven:
     """A vdP run on a thread, with the operator's Measure button."""
 
-    def __init__(self, tmp_path, prompt_timeout_s=None):
+    def __init__(self, tmp_path, prompt_timeout_s=None, thickness_cm=0.05):
         self.control, self.sink = RunControl(), ListSink()
-        self.run = VdpRun('wafer1', 'alice', _settings(tmp_path), self.control,
+        self.run = VdpRun('wafer1', 'alice', _settings(tmp_path, thickness_cm), self.control,
                            EventEmitter(self.sink), prompt_timeout_s=prompt_timeout_s)
         self.thread = threading.Thread(target=self.run.execute, daemon=True)
         self.thread.start()
@@ -146,6 +146,35 @@ class TestEveryExitAfterTheFileIsOpen:
         # The result is in the file before anyone is told about it.
         types = sink.types()
         assert types.index('file_finalized') < types.index('vdp_result')
+
+    def test_a_run_with_no_thickness_reports_sheet_resistance_only(self, fake_rm, tmp_path):
+        """0 is "not given": R_s and the homogeneity check need no thickness."""
+        import json
+        import math
+
+        from resistamet_gui.calculations_vdp import calculate_van_der_pauw
+
+        driven = _Driven(tmp_path, thickness_cm=0.0)
+        driven.measure(4)
+        sink = driven.join()
+        footer = _check_closed_properly(sink, fake_rm, 'completed', rows=4)
+        event = sink.of_type('vdp_result')[0]
+        result = event.payload
+        with_thickness = calculate_van_der_pauw(result['voltages'], result['current_a'], 0.05)
+        assert result['sheet_resistance'] == pytest.approx(with_thickness.sheet_resistance,
+                                                           rel=1e-12)
+        assert result['homogeneous'] is with_thickness.homogeneous
+        assert math.isfinite(result['sheet_resistance_uncertainty'])
+        # On the wire the resistivities are null; in the file, NaN like any
+        # value that was not measured.
+        wire = json.loads(event.model_dump_json())['payload']
+        assert [wire[key] for key in ('rho_a', 'rho_b', 'rho_avg', 'rho_avg_uncertainty')] == \
+            [None, None, None, None]
+        assert math.isnan(footer['vdp_result.rho_avg'])
+        assert footer['vdp_result.thickness_cm'] == 0.0
+        completed = [e.payload['message'] for e in sink.of_type('log')
+                     if e.payload['code'] == 'completed']
+        assert 'no thickness, no rho' in completed[0]
 
     def test_a_stop_before_the_file_is_open_finalizes_nothing(self, fake_rm, tmp_path,
                                                                monkeypatch):

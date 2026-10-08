@@ -22,6 +22,7 @@ const UNIT_BY_COLUMN: Record<string, string> = {
   V_meas: "V",
   V_source: "V",
   I_meas: "A",
+  I_source: "A",
   V: "V",
   I: "A",
   V_over_I: "Ω",

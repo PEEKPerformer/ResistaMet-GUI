@@ -330,9 +330,15 @@ function ContactDiagram({ geometry }: { geometry: GeometryDetail | null }) {
   );
 }
 
+/** A resistivity, or why there is none: with no thickness only R_s is measured. */
+function resistivity(value: number | null, thicknessGiven: boolean): string {
+  return thicknessGiven && value !== null ? formatEngineering(value, "Ω·cm") : "—";
+}
+
 function ResultPanel({ result }: { result: NonNullable<ReturnType<typeof useVdp>["result"]> }) {
   const uRs = result.sheet_resistance_uncertainty;
   const uRho = result.rho_avg_uncertainty;
+  const thicknessGiven = result.thickness_cm > 0;
   return (
     <div className={own.result}>
       <div className={own.headline}>
@@ -346,9 +352,12 @@ function ResultPanel({ result }: { result: NonNullable<ReturnType<typeof useVdp>
         <div>
           <div className={own.resultLabel}>Resistivity</div>
           <div className={`${own.resultValue} num`}>
-            {formatEngineering(result.rho_avg, "Ω·cm")}
-            {typeof uRho === "number" && Number.isFinite(uRho) ? <span className={own.unc}> ± {formatEngineering(uRho, "Ω·cm")}</span> : null}
+            {resistivity(result.rho_avg, thicknessGiven)}
+            {thicknessGiven && typeof uRho === "number" && Number.isFinite(uRho) ? (
+              <span className={own.unc}> ± {formatEngineering(uRho, "Ω·cm")}</span>
+            ) : null}
           </div>
+          {thicknessGiven ? null : <div className={own.resultLabel}>No thickness given</div>}
         </div>
       </div>
       <div className={own.checks}>
@@ -359,7 +368,7 @@ function ResultPanel({ result }: { result: NonNullable<ReturnType<typeof useVdp>
         <tbody>
           <tr>
             <th>ρ_A</th>
-            <td className="num">{formatEngineering(result.rho_a, "Ω·cm")}</td>
+            <td className="num">{resistivity(result.rho_a, thicknessGiven)}</td>
             <th>Q_A</th>
             <td className="num">{result.q_a.toFixed(4)}</td>
             <th>f_A</th>
@@ -367,7 +376,7 @@ function ResultPanel({ result }: { result: NonNullable<ReturnType<typeof useVdp>
           </tr>
           <tr>
             <th>ρ_B</th>
-            <td className="num">{formatEngineering(result.rho_b, "Ω·cm")}</td>
+            <td className="num">{resistivity(result.rho_b, thicknessGiven)}</td>
             <th>Q_B</th>
             <td className="num">{result.q_b.toFixed(4)}</td>
             <th>f_B</th>
@@ -377,7 +386,7 @@ function ResultPanel({ result }: { result: NonNullable<ReturnType<typeof useVdp>
             <th>I</th>
             <td className="num">{formatEngineering(result.current_a, "A")}</td>
             <th>t</th>
-            <td className="num">{formatEngineering(result.thickness_cm, "cm")}</td>
+            <td className="num">{thicknessGiven ? formatEngineering(result.thickness_cm, "cm") : "not given"}</td>
             <th />
             <td />
           </tr>

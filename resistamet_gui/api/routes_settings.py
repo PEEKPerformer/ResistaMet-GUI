@@ -15,12 +15,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, ValidationError
 
 from .. import visa_backend
+from ..schema.describe import fixed_values, key_descriptions
 from ..schema.resolve import allowed_override_keys, resolve_run_settings
 from ..schema.settings_common import (AgentLimitSettings, AuxSensorSettings, DisplaySettings,
                                        FileSettings, InstrumentSettings, OutputSettings,
                                        SafetySettings)
-from ..schema.settings_modes import MODE_MODELS
+from ..schema.settings_modes import MODE_MODELS, PROMPT_TIMEOUT_MAX_S, RunRequest
 from ..session.manager import MeasurementSession, SessionBusy
+from ..session.vdp_run import wiring_protocol
 from .app import (UI_ROLE, agent_limit_verdict, busy_as_conflict, get_session,
                   require_token)
 
@@ -288,13 +290,30 @@ def agent_access_status(request: Request, role: str = Depends(require_token)):
 
 @router.get("/schema/settings")
 def read_schema(role: str = Depends(require_token)):
-    """What a client may send, per mode."""
+    """What a client may send, per mode.
+
+    ``keys`` describes each override key (type, choices, bounds, default,
+    description, unit), so a client can say what a setting accepts before
+    a request is refused for it. ``fixed`` holds the values a run of the
+    mode always uses, whatever the profile or the request says.
+
+    ``vdp`` also has ``wiring``: the four wirings its prompts will ask a
+    person for, in the prompts' own words, so a client can say so before
+    the run. ``prompt_timeout_s`` is how long a run request's prompts wait
+    for an answer unless it says otherwise, and the most it may say.
+    """
+    modes = {mode: {
+        'model': model.__name__,
+        'fields': sorted(model.model_fields),
+        'override_keys': sorted(allowed_override_keys(mode)),
+        'keys': key_descriptions(mode),
+        'fixed': fixed_values(mode),
+    } for mode, model in MODE_MODELS.items()}
+    modes['vdp']['wiring'] = wiring_protocol()
     return {
-        'modes': {mode: {
-            'model': model.__name__,
-            'fields': sorted(model.model_fields),
-            'override_keys': sorted(allowed_override_keys(mode)),
-        } for mode, model in MODE_MODELS.items()},
+        'modes': modes,
+        'prompt_timeout_s': {'default': RunRequest.model_fields['prompt_timeout_s'].default,
+                             'maximum': PROMPT_TIMEOUT_MAX_S},
     }
 
 
@@ -309,6 +328,10 @@ def resolve(body: ResolveRequest, request: Request,
     before it asks and the window can show what an agent could not run. It
     is None when the settings have errors: a start refuses those first, and
     a verdict on values nobody accepted would mean nothing.
+
+    ``warnings`` (``SettingsWarning``) are what the run will warn about once
+    it is going -- a sampling rate the timing cannot reach, a four-point
+    power above its warning threshold. They never make ``ok`` false.
     """
     if body.mode not in MODE_MODELS:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -331,6 +354,7 @@ def resolve(body: ResolveRequest, request: Request,
         'ok': resolved.ok,
         'issues': [{'key': i.key, 'message': i.message, 'severity': i.severity}
                     for i in resolved.issues],
+        'warnings': [warning.model_dump() for warning in resolved.warnings],
         'hazard': None if hazard is None else {
             'hazardous': hazard.hazardous,
             'voltage_v': hazard.voltage_v,

@@ -7,7 +7,8 @@
     "sweep_step": 0.125,
     "sweep_compliance": 0.1,
     "sweep_delay": 0.0,
-    "sweep_direction": "down"
+    "sweep_direction": "up",
+    "sweep_measurement_type": "4-wire"
   },
   "writes": [
     "*RST",
@@ -15,14 +16,14 @@
     ":SYST:AZER:STAT ON",
     ":SENS:FUNC:CONC OFF",
     ":OUTP:SMOD HIMP",
-    ":SYST:RSEN OFF",
+    ":SYST:RSEN ON",
     ":SENS:FUNC:CONC OFF",
     ":SOUR:FUNC VOLT",
     ":SENS:FUNC 'CURR:DC'",
     ":SENS:CURR:PROT 0.1",
     ":SENS:CURR:NPLC 1.0",
-    ":SOUR:VOLT:START 0.5",
-    ":SOUR:VOLT:STOP 0.0",
+    ":SOUR:VOLT:START 0.0",
+    ":SOUR:VOLT:STOP 0.5",
     ":SOUR:VOLT:STEP 0.125",
     ":SOUR:VOLT:MODE SWE",
     ":SOUR:SWE:SPAC LIN",

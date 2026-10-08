@@ -19,8 +19,8 @@ Two validation modes:
   a JSON ``"false"`` is not a bool and ``true`` is not a current -- and the
   *validated* values are what the run receives, so nothing reaches a worker
   in a form the models never saw. Then the same issues, plus the checks the
-  GUI makes at Start — vdP needs a real thickness, 4PP must not ask for more power
-  than its own hard stop, aux co-logging only exists for the continuous modes —
+  GUI makes at Start — 4PP must not ask for more power than its own hard stop,
+  aux co-logging only exists for the continuous modes —
   and unknown or profile-owned override keys are rejected. The profile's
   ``file``, ``output`` and ``display`` sections are validated too. The touch-safety
   keys are profile-owned here: whoever may not answer the hazardous-voltage
@@ -31,8 +31,11 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from pydantic import BaseModel, ConfigDict
+
+from ..calculations import four_point_power_level, four_point_worst_case_power_w
 from ..constants import MODE_TIMING_OVERRIDES
-from ..formatting import format_power
+from ..formatting import format_power, four_point_power_warning
 from .settings_common import (
     AgentLimitSettings,
     AuxSensorSettings,
@@ -48,8 +51,26 @@ logger = logging.getLogger(__name__)
 
 #: Keys the profile always wins on, whatever a client sends (MW gather).
 #: ``allow_agents`` is this machine's switch, not a setting of a run: a
-#: request that sent it would change nothing and read as if it had.
-PROFILE_OWNED_KEYS = ('settling_time', 'gpib_address', 'allow_agents')
+#: request that sent it would change nothing and read as if it had. It is
+#: refused here and left out of the run (``MACHINE_ACCESS_KEYS``).
+#: ``visa_library`` and ``gpib_interface`` are this machine's bus, like the
+#: address: a run opens its instrument through them, and a library path is
+#: loaded into the backend as code, which only the window may choose
+#: (``docs/design/mcp_layer.md`` M3). A run request used to be able to name
+#: either.
+PROFILE_OWNED_KEYS = ('settling_time', 'gpib_address', 'allow_agents', 'visa_library',
+                      'gpib_interface')
+#: The profile-owned keys a profile may lack (an older one, or a test's):
+#: then the run has none either, rather than one a request supplied.
+_OPTIONAL_PROFILE_KEYS = ('visa_library', 'gpib_interface')
+
+#: Who may drive this machine's instrument, not how a run measures. The
+#: profile carries them (``ConfigManager`` injects the machine's switch),
+#: and a run never reads them, so they are left out of the run's settings,
+#: as ``agent_limits`` is: they would otherwise reach the ``run_started``
+#: event, where ``allow_agents: false`` sat in the settings of a run an
+#: agent had started.
+MACHINE_ACCESS_KEYS = ('allow_agents',)
 
 #: The touch-safety group. A strict request may not send any of these: the
 #: hazardous-voltage prompt can only be answered by a person at the bench
@@ -67,7 +88,12 @@ SAFETY_KEYS = tuple(SafetySettings.model_fields)
 AGENT_LIMIT_KEYS = tuple(AgentLimitSettings.model_fields)
 
 #: Override keys that are not settings: they select a value rather than be one.
-CONTROL_KEYS = ('vsource_run_continuous', 'isource_run_continuous')
+#: Each belongs to the one mode whose duration it sets to "until stopped".
+CONTROL_KEYS_BY_MODE = {
+    'source_v': ('vsource_run_continuous',),
+    'source_i': ('isource_run_continuous',),
+}
+CONTROL_KEYS = tuple(key for keys in CONTROL_KEYS_BY_MODE.values() for key in keys)
 
 #: The sections beside ``measurement``, the model of each, and how bad an
 #: invalid value is for a strict request. ``file`` and ``output`` decide where
@@ -83,6 +109,11 @@ SECTION_MODELS = (
 #: Modes whose runs can co-log an auxiliary sensor (data_export.AUX_LOG_MODES).
 AUX_LOG_MODES = ('resistance', 'source_v', 'source_i', 'four_point')
 
+#: Modes whose runs read on a timer at ``sampling_rate`` (``ContinuousRun``'s
+#: polling loop). A sweep runs on the instrument's own engine and a van der
+#: Pauw run reads at each geometry, so neither has a rate to fall short of.
+TIMED_MODES = ('resistance', 'source_v', 'source_i', 'four_point')
+
 
 @dataclass(frozen=True)
 class Issue:
@@ -97,6 +128,23 @@ class Issue:
     severity: str = 'error'
 
 
+class SettingsWarning(BaseModel):
+    """Something the run will warn about once it is going, said beforehand.
+
+    Not an :class:`Issue`: nothing is wrong with the settings, and a start
+    is never refused for one. The run itself would say it, in a log line
+    or not at all (a rate it cannot reach is simply not reached); a
+    preview that stayed silent left a client to find out from the run, or
+    to work it out for itself and disagree. ``keys`` are the settings the
+    judgement reads, the one to change first.
+    """
+
+    model_config = ConfigDict(extra='forbid', frozen=True)
+
+    keys: List[str]
+    message: str
+
+
 @dataclass
 class ResolvedRun:
     """Settings a worker can consume, plus what the caller should know."""
@@ -105,6 +153,7 @@ class ResolvedRun:
     issues: List[Issue] = field(default_factory=list)
     derived: Dict[str, Any] = field(default_factory=dict)
     hazard: Optional[Any] = None
+    warnings: List[SettingsWarning] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -114,15 +163,18 @@ class ResolvedRun:
 def allowed_override_keys(mode: str) -> set:
     """Keys a strict request may send for ``mode``.
 
-    The mode's own fields plus the instrument and aux groups, minus the keys
-    the profile owns -- the touch-safety group among them (``SAFETY_KEYS``).
-    Clients discover this through the schema endpoint rather than by trial
-    and error.
+    The mode's own fields plus the instrument and aux groups and the mode's
+    own control key, if it has one, minus the keys the profile owns -- the
+    touch-safety group among them (``SAFETY_KEYS``). Clients discover this
+    through the schema endpoint rather than by trial and error, so a key
+    listed here must mean something to a run of this mode: the source
+    modes' run-until-stopped flags used to be offered to every mode and
+    ignored by all but one.
     """
     keys = set(MODE_MODELS[mode].model_fields)
     keys |= set(InstrumentSettings.model_fields)
     keys |= set(AuxSensorSettings.model_fields)
-    keys |= set(CONTROL_KEYS)
+    keys |= set(CONTROL_KEYS_BY_MODE.get(mode, ()))
     return keys - set(PROFILE_OWNED_KEYS) - set(SAFETY_KEYS)
 
 
@@ -162,7 +214,7 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
         # The control keys choose a value, so no model sees them. Truthiness
         # is not good enough here: the string 'false' is truthy, and would
         # turn a bounded source-on run into an unbounded one.
-        for key in CONTROL_KEYS:
+        for key in CONTROL_KEYS_BY_MODE.get(mode, ()):
             if key in overrides and not isinstance(overrides[key], bool):
                 issues.append(Issue(key, f"'{key}' must be true or false, "
                                          f"not {overrides[key]!r}"))
@@ -196,10 +248,13 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
     # 7. Profile-owned keys.
     m_cfg['settling_time'] = profile['measurement']['settling_time']
     m_cfg['gpib_address'] = profile['measurement']['gpib_address']
-    if 'allow_agents' in profile['measurement']:
-        m_cfg['allow_agents'] = profile['measurement']['allow_agents']
-    else:
-        m_cfg.pop('allow_agents', None)
+    for key in _OPTIONAL_PROFILE_KEYS:
+        if key in profile['measurement']:
+            m_cfg[key] = profile['measurement'][key]
+        else:
+            m_cfg.pop(key, None)
+    for key in MACHINE_ACCESS_KEYS:
+        m_cfg.pop(key, None)
     if strict:
         # The request is already refused above; this makes the settings, the
         # hazard below and the run's own gate read the stored profile even if
@@ -230,11 +285,13 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
     #     where the caller was promised issues -- and the GUI runs this on
     #     every gather, where a raise is a Start button that does nothing.
     failed = {issue.key for issue in issues if issue.severity == 'error'}
+    derived = _derive(m_cfg, mode, failed, issues)
     return ResolvedRun(
         settings=settings,
         issues=issues,
-        derived=_derive(m_cfg, mode, failed, issues),
+        derived=derived,
         hazard=_hazard(settings, mode, failed, issues),
+        warnings=_warnings(m_cfg, mode, failed, derived),
     )
 
 
@@ -283,14 +340,11 @@ def _validate(m_cfg: Dict[str, Any], mode: str, *, strict: bool) -> List[Issue]:
     # the models accepted: strict typing has made those real numbers, and a
     # key that failed is already an issue.
     failed = {issue.key for issue in issues}
-    if (mode == 'vdp' and 'vdp_thickness_cm' not in failed
-            and not float(m_cfg.get('vdp_thickness_cm', 0.0)) > 0):
-        issues.append(Issue('vdp_thickness_cm',
-                             'van der Pauw needs a sample thickness greater than 0 cm'))
     if mode == 'four_point' and not failed.intersection(_POWER_KEYS):
         worst_case = _worst_case_power_w(m_cfg)
         stop_w = float(m_cfg.get('fpp_power_stop_w', 0.0))
-        if stop_w and worst_case > stop_w:
+        # The run's own judgement; the warning level is _warnings' business.
+        if four_point_power_level(worst_case, math.inf, stop_w) == 'stop':
             issues.append(Issue('fpp_power_stop_w',
                                  f"worst-case power {format_power(worst_case)} exceeds the "
                                  f"probe-safety hard stop {format_power(stop_w)}"))
@@ -380,8 +434,8 @@ def _sweep_points(m_cfg: Dict[str, Any]) -> Optional[int]:
 
 
 def _worst_case_power_w(m_cfg: Dict[str, Any]) -> float:
-    return abs(float(m_cfg.get('fpp_current', 0.0))) * abs(
-        float(m_cfg.get('fpp_voltage_compliance', 0.0)))
+    return four_point_worst_case_power_w(m_cfg.get('fpp_current', 0.0),
+                                         m_cfg.get('fpp_voltage_compliance', 0.0))
 
 
 def _derive(m_cfg: Dict[str, Any], mode: str, failed: set,
@@ -410,6 +464,49 @@ def _derive(m_cfg: Dict[str, Any], mode: str, failed: set,
         if value is not None:
             derived[name] = value
     return derived
+
+
+def _warnings(m_cfg: Dict[str, Any], mode: str, failed: set,
+              derived: Dict[str, Any]) -> List[SettingsWarning]:
+    """What the run would warn about, from the numbers it would judge.
+
+    Two today. A sampling rate above ``derived['max_rate_hz']``, the timing
+    model the PySide6 window caps its rate with (``timing.py``): the run
+    does not refuse it, it reads as fast as the instrument answers. And a
+    four-point worst-case power above ``fpp_power_warn_w``, judged by the
+    function the run's pre-flight uses (``session/configure.py``), which
+    logs a warning and goes on.
+
+    Each reads only values that validated, like ``_derive``. Never raises.
+    """
+    warnings: List[SettingsWarning] = []
+    max_rate = derived.get('max_rate_hz')
+    if mode in TIMED_MODES and max_rate is not None and 'sampling_rate' not in failed:
+        try:
+            rate = float(m_cfg.get('sampling_rate'))
+        except _ARITHMETIC_ERRORS:
+            rate = None
+        if rate is not None and rate > max_rate:
+            keys = ['sampling_rate'] + [key for key in _TIMING_KEYS
+                                        if key != 'res_offset_comp' or mode == 'resistance']
+            warnings.append(SettingsWarning(keys=keys, message=(
+                f"{rate:g} Hz is more than these timing settings can deliver "
+                f"(about {max_rate:.1f} Hz); the run will sample as fast as it can.")))
+    worst_case = derived.get('worst_case_power_w')
+    if (mode == 'four_point' and worst_case is not None
+            and not failed.intersection(_POWER_KEYS + ('fpp_power_warn_w',))):
+        try:
+            warn_w = float(m_cfg.get('fpp_power_warn_w'))
+            stop_w = float(m_cfg.get('fpp_power_stop_w'))
+        except _ARITHMETIC_ERRORS:
+            warn_w = stop_w = None
+        if warn_w is not None and four_point_power_level(worst_case, warn_w, stop_w) == 'warn':
+            warnings.append(SettingsWarning(
+                keys=['fpp_voltage_compliance', 'fpp_current', 'fpp_power_warn_w'],
+                message=four_point_power_warning(worst_case, warn_w,
+                                                 m_cfg.get('fpp_current'))
+                + " The run will warn and go on."))
+    return warnings
 
 
 def _hazard(settings: Dict[str, Any], mode: str, failed: set, issues: List[Issue]):

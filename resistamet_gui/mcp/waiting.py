@@ -3,8 +3,18 @@
 An agent that polls ``get_status`` in a loop spends its context on
 identical replies. ``wait_for`` polls ``GET /session`` here instead, at a
 modest interval, and returns once: when the condition it was given holds,
-when a prompt stops the run (only a person can move it on), when the run is
-over (nothing more will happen), or at the timeout, whichever comes first.
+when a new prompt stops the run (only a person can move it on, and the
+agent should tell the user), when the run is over (nothing more will
+happen), or at the timeout, whichever comes first. A prompt the agent
+has already been shown does not end it: waiting for the person to answer
+it is what the wait is for.
+
+"Already shown" is remembered by the MCP server process, and a client that
+starts a new server for every call, or reconnects, forgets it: there every
+``wait_for('run_ended')`` at a prompt came back at once with that same
+prompt. Two forms need no memory. ``prompt_answered`` waits for whatever
+prompt is pending when the call begins to stop pending; ``ignore_prompt_id``
+names the prompt a wait should go through.
 
 ``get_run_events`` reads the same history the backend keeps for polling
 clients (``GET /session/events``). Samples are left out unless asked for,
@@ -26,6 +36,9 @@ import anyio
 #: and an agent should look up now and then rather than block for an hour.
 MAX_WAIT_S = 120.0
 POLL_S = 0.5
+#: How often a wait that will stop the run looks. A stop that comes half a
+#: second late is five readings too many at 10 Hz; at 0.1 s it is about one.
+POLL_S_THEN_STOP = 0.1
 #: Samples returned by one get_run_events, at most.
 MAX_SAMPLES = 200
 #: Other events returned by one get_run_events, at most; the rest follow
@@ -51,9 +64,12 @@ class Until:
 
 
 def parse_until(text: str) -> Until:
-    """``run_ended``, ``prompt``, ``samples:N`` or ``state:<state>``. Raises ValueError."""
+    """``run_ended``, ``prompt``, ``prompt_answered``, ``samples:N`` or ``state:<state>``.
+
+    Raises ValueError.
+    """
     text = (text or '').strip()
-    if text in ('run_ended', 'prompt'):
+    if text in ('run_ended', 'prompt', 'prompt_answered'):
         return Until(text, text)
     kind, _, value = text.partition(':')
     if kind == 'samples':
@@ -68,7 +84,8 @@ def parse_until(text: str) -> Until:
         if value not in STATES:
             raise ValueError(f"'{text}': the states are {', '.join(STATES)}")
         return Until(text, 'state', state=value)
-    raise ValueError(f"'{text}': wait for run_ended, prompt, samples:N or state:<state>")
+    raise ValueError(f"'{text}': wait for run_ended, prompt, prompt_answered, samples:N "
+                     "or state:<state>")
 
 
 @dataclass
@@ -120,48 +137,125 @@ def _ended(status: Dict[str, Any], run_id: Optional[str]) -> bool:
     return status.get('state') == 'idle' or status.get('run_id') != run_id
 
 
+def _prompt_id(status: Dict[str, Any]) -> Optional[str]:
+    prompt = status.get('pending_prompt')
+    return prompt.get('prompt_id') if isinstance(prompt, dict) else None
+
+
 def _met(until: Until, status: Dict[str, Any], run_id: Optional[str],
-         samples: Optional[SampleCount]) -> bool:
+         samples: Optional[SampleCount], waited_through: Optional[str]) -> bool:
     if until.kind == 'run_ended':
         return _ended(status, run_id)
     if until.kind == 'prompt':
-        return status.get('pending_prompt') is not None
+        return _prompt_id(status) not in (None, waited_through)
+    if until.kind == 'prompt_answered':
+        return (waited_through is None or _ended(status, run_id)
+                or _prompt_id(status) != waited_through)
     if until.kind == 'state':
         return status.get('state') == until.state
     return samples is not None and samples.count >= until.samples
 
 
 async def wait_for(get: Get, until: Until, timeout_s: float, *,
-                   poll_s: float = POLL_S,
+                   stop: Optional[Callable[[], Awaitable[Any]]] = None,
+                   known_prompt: Optional[str] = None,
+                   ignore_prompt: Optional[str] = None,
+                   poll_s: Optional[float] = None,
                    clock: Callable[[], float] = time.monotonic,
                    sleep: Callable[[float], Awaitable[None]] = anyio.sleep) -> Dict[str, Any]:
     """Wait for ``until`` on the current run; say what ended the wait.
 
     ``fired`` is the condition asked for when it held; otherwise ``prompt``
-    (a prompt is pending, and the run cannot go on until a person answers
-    it), ``run_ended`` (no run is in progress, so nothing more will happen)
-    or ``timeout``. Waiting when no run is in progress returns at once.
+    (a prompt the agent has not been shown is pending, and the run cannot
+    go on until a person answers it), ``run_ended`` (no run is in progress, so nothing
+    more will happen) or ``timeout``. Waiting when no run is in progress
+    returns at once.
+
+    ``known_prompt`` is the id of the prompt the agent has been shown
+    pending. If that prompt is pending when the wait begins, it ends the
+    wait only when ``until`` is ``prompt``. Otherwise an agent told "a
+    person must answer this; tell the user, then wait" got the same prompt
+    back at once, every time it waited, and could not wait for the person
+    at all. Waiting through it is how an agent waits for the person: the
+    run moving on shows as the condition (``state:running``), the next
+    prompt, or the run's end, and ``prompt_at_start`` says whether that
+    prompt is still pending. Any other prompt ends the wait at once,
+    pending at the start or not: the agent has not heard of it.
+
+    ``ignore_prompt`` does the same as ``known_prompt``, said by the agent
+    instead of remembered for it, so it holds across server processes;
+    with ``until`` ``prompt`` it makes the wait one for the next prompt.
+
+    ``prompt_answered`` needs neither. It holds once the prompt pending
+    when the wait began is pending no longer: answered, released by a stop,
+    or gone with the run. The status then says what came next (the state,
+    and the next prompt if one is already up). With no prompt pending at
+    the start it holds at once. Given ``ignore_prompt`` too, it is the
+    prompt the agent expects to be waiting on: a different one pending at
+    the start ends the wait at once as ``prompt``, because the person
+    answered the first before the wait began and nobody has been told of
+    the second.
+
+    With ``stop``, the run is stopped as soon as the condition holds, in
+    this same call, and the wait goes on, within the same timeout, until
+    the run has ended; ``stopped`` says so. Two calls (wait, then stop)
+    leave a whole round trip of the agent's between them, in which a run
+    asked for 20 samples took 57. Here the gap is one poll, made short for
+    the purpose (``POLL_S_THEN_STOP``), and the reading in flight when the
+    stop arrives. Only the condition asked for stops the run: a prompt, a
+    run that ended or a timeout returns as without ``stop``.
     """
     timeout_s = max(0.0, min(float(timeout_s), MAX_WAIT_S))
+    if poll_s is None:
+        poll_s = POLL_S if stop is None else POLL_S_THEN_STOP
     started = clock()
     status = await get('/session')
     run_id = status.get('run_id')
+    pending_at_start = _prompt_id(status)
+    # The prompt this wait goes through. A remembered one does not stop
+    # wait_for('prompt') from returning at once: that is how an agent asks
+    # what is pending.
+    waived = (ignore_prompt,) if until.kind == 'prompt' else (known_prompt, ignore_prompt)
+    if until.kind == 'prompt_answered':
+        prompt_at_start = pending_at_start
+    elif pending_at_start is not None and pending_at_start in waived:
+        prompt_at_start = pending_at_start
+    else:
+        prompt_at_start = None
     samples = SampleCount(run_id) if until.kind == 'samples' and run_id else None
-    while True:
-        if samples is not None:
-            await samples.update(get)
-        if _met(until, status, run_id, samples):
-            fired = until.text
-            break
-        if status.get('pending_prompt') is not None:
-            fired = 'prompt'
-            break
-        if _ended(status, run_id):
-            fired = 'run_ended'
-            break
+    stopped = False
+    # A prompt the agent did not expect, pending before it began to wait.
+    unexpected = (until.kind == 'prompt_answered' and ignore_prompt is not None
+                  and pending_at_start not in (None, ignore_prompt))
+    if unexpected:
+        fired = 'prompt'
+        prompt_at_start = None
+    while not unexpected:
+        if stopped:
+            if _ended(status, run_id):
+                break
+        else:
+            if samples is not None:
+                await samples.update(get)
+            if _met(until, status, run_id, samples, prompt_at_start):
+                fired = until.text
+                if stop is None or _ended(status, run_id):
+                    break
+                await stop()
+                stopped = True
+                status = await get('/session')
+                continue
+            pending = _prompt_id(status)
+            if pending is not None and pending != prompt_at_start:
+                fired = 'prompt'
+                break
+            if _ended(status, run_id):
+                fired = 'run_ended'
+                break
         left = timeout_s - (clock() - started)
         if left <= 0:
-            fired = 'timeout'
+            if not stopped:
+                fired = 'timeout'
             break
         await sleep(min(poll_s, left))
         status = await get('/session')
@@ -172,11 +266,21 @@ async def wait_for(get: Get, until: Until, timeout_s: float, *,
         'waited_s': round(clock() - started, 2),
         'status': status,
     }
+    if prompt_at_start is not None:
+        waited['prompt_at_start'] = {
+            'prompt_id': prompt_at_start,
+            'still_pending': _prompt_id(status) == prompt_at_start,
+        }
     if samples is not None:
         waited['samples'] = samples.count
         if samples.gap:
             waited['samples_note'] = ("the backend's history no longer reaches the run's "
                                       "start, so this count is short")
+    if stopped:
+        waited['stopped'] = True
+        if not _ended(status, run_id):
+            waited['stop_note'] = ("the run was told to stop and had not ended within the "
+                                   "timeout; wait_for run_ended to see it end")
     if run_id and _ended(status, run_id):
         waited['run_ended'] = await run_ended_payload(get, run_id, status)
     return waited

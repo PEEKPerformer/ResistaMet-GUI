@@ -9,7 +9,7 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, List
 
 from ..constants import KEITHLEY_STAT_BIT_COMPLIANCE as _STAT_BIT_COMPLIANCE
 from ..data_export import build_metadata, get_column_config, make_exporter
@@ -24,6 +24,38 @@ logger = logging.getLogger(__name__)
 
 class _VdpAborted(Exception):
     """Internal: worker was stopped via stop_measurement()."""
+
+
+def wiring_message(geometry) -> str:
+    """What a person does before one geometry, as one sentence.
+
+    The prompt's ``detail.message`` (what the desktop shows, and what an
+    agent passes on to the user), the run's log line (the PySide6 status
+    bar) and ``wiring_protocol`` all read this. The contacts used to be in
+    the log line only, in other words than the prompt's
+    ``source_high``/``sense_low`` integers. Both windows answer the prompt
+    with a button labelled Measure; ``proceed`` is that button's answer on
+    the API.
+    """
+    return (f"{geometry.name}: connect Force HI→C{geometry.source_high}, "
+            f"Force LO→C{geometry.source_low}, Sense HI→C{geometry.sense_high}, "
+            f"Sense LO→C{geometry.sense_low}, then press Measure.")
+
+
+def wiring_protocol() -> List[Dict[str, Any]]:
+    """The four wirings a run will ask for, before it is started.
+
+    From ``f76_geometries``, which the run walks, with each prompt's own
+    message, so a client can tell a person beforehand what the run will
+    ask of them, in the words it will use.
+    """
+    from ..calculations_vdp import f76_geometries
+
+    return [{'index': index, 'name': geometry.name,
+             'force_hi': f"C{geometry.source_high}", 'force_lo': f"C{geometry.source_low}",
+             'sense_hi': f"C{geometry.sense_high}", 'sense_lo': f"C{geometry.sense_low}",
+             'message': wiring_message(geometry)}
+            for index, geometry in enumerate(f76_geometries())]
 
 
 class VdpRun:
@@ -396,6 +428,7 @@ class VdpRun:
                 'label_pos': geom.label_pos,
                 'label_neg': geom.label_neg,
                 'group': geom.group,
+                'message': wiring_message(geom),
             })
             self._events.emit('prompt', {
                 'prompt_id': prompt.prompt_id,
@@ -404,12 +437,7 @@ class VdpRun:
                 'requires_human': prompt.requires_human,
                 'detail': prompt.detail,
             })
-            self._events.log('geometry_prompt', 
-                f"{geom.name}: connect Force HI->C{geom.source_high}, "
-                f"Force LO->C{geom.source_low}, "
-                f"Sense HI->C{geom.sense_high}, "
-                f"Sense LO->C{geom.sense_low}; press Measure."
-            )
+            self._events.log('geometry_prompt', prompt.detail['message'])
             choice, _fields = self._control.wait_for_prompt(self._prompt_timeout_s)
             self._events.emit('prompt_resolved', {
                 'prompt_id': prompt.prompt_id, 'choice': choice})
@@ -500,7 +528,8 @@ class VdpRun:
     def _compute_and_emit_result(self) -> None:
         from ..calculations_vdp import calculate_van_der_pauw
 
-        thickness = float(self.settings['measurement']['vdp_thickness_cm'])
+        # 0 is "not given": the result carries R_s and no resistivity.
+        thickness = float(self.settings['measurement'].get('vdp_thickness_cm') or 0.0)
         result = calculate_van_der_pauw(self._voltages, self._i_mag, thickness)
 
         # Combined uncertainty on Rs and ρ. Mirrors the GUI computation in
@@ -528,9 +557,10 @@ class VdpRun:
         # The file first: a result that cannot be announced is still recorded.
         self._shut_down(result_dict)
         self._events.emit('vdp_result', result_dict)
-        self._events.log('completed', 
-            f"vdP done: Rs={result.sheet_resistance:.4g} Ω/sq, "
-            f"rho={result.rho_avg:.4g} Ω·cm, "
+        rho_text = (f"rho={result.rho_avg:.4g} Ω·cm" if thickness > 0
+                    else "no thickness, no rho")
+        self._events.log('completed',
+            f"vdP done: Rs={result.sheet_resistance:.4g} Ω/sq, {rho_text}, "
             f"asym={result.asymmetry_pct:.2f}% "
             f"({'homogeneous' if result.homogeneous else 'NON-homogeneous'})"
         )

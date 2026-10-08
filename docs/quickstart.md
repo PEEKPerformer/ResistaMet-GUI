@@ -66,7 +66,7 @@ ASTM F76-08 Method A for sheet resistance and resistivity on arbitrary-shape, ho
 ![Van der Pauw tab mid-protocol — sample diagram shows lead wiring for the current geometry; the filmstrip below tracks progress through the four geometries](screenshots/06_van_der_pauw.png)
 
 1. Number your four periphery contacts **1–4 counter-clockwise** and connect leads.
-2. Enter **sample thickness in µm** (required — you'll be prompted if you leave it blank).
+2. Enter the **sample thickness** for resistivity. Leave it at 0 if it is not known: the run then reports sheet resistance and the homogeneity check, and no resistivity.
 3. Click **Start**. The tab shows a filmstrip of the four geometries. For each one: rewire your leads as shown in the sample diagram, then click **Measure**.
 4. After all four geometries, the result panel reports sheet resistance, resistivity, F76 asymmetry, and a homogeneity pass/fail per F76 §11.1.
 
@@ -78,7 +78,8 @@ Hardware staircase sweep using the Keithley's trigger model. Source voltage or c
 
 1. Choose **Source mode** (V or I).
 2. Set **Start**, **Stop**, **Step**, **Per-step delay**, and **Direction** (`up`, `down`, or `up_down` for hysteresis curves).
-3. Click **Start**. The sweep runs on the instrument and the full I-V curve appears at the end.
+3. Choose **2-wire** or **4-wire** (Measurement Type; 2-wire by default).
+4. Click **Start**. The sweep runs on the instrument and the full I-V curve appears at the end.
 
 ## Useful inputs
 
