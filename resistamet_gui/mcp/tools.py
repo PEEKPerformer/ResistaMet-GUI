@@ -188,6 +188,36 @@ def status_view(status: Dict[str, Any],
     return view
 
 
+#: check_settings' note on a run at or above the touch-safety threshold.
+NOTE_HAZARD = ("At or above the touch-safety threshold: a run an agent starts waits at a "
+               "touch-safety prompt until a person at the ResistaMet window answers it.")
+
+#: check_settings' note on a resistance run in auto range. Not an API warning:
+#: the window's users chose auto range knowing what it does, and the desktop
+#: app greys the current and limit fields out under it. An agent reads
+#: res_test_current as the current it will source. In the third trial it asked
+#: for 1 mA, the instrument used 100 mA, and the file name and
+#: params.test_current_A still said 1 mA.
+NOTE_AUTO_RANGE = ("res_auto_range is true: the instrument's auto-ohms chooses the test "
+                   "current and the voltage limit itself, per range, so neither "
+                   "res_test_current nor res_voltage_compliance is what will be applied "
+                   "(100 mA has been seen for a 1 mA request). The file name and "
+                   "params.test_current_A still give res_test_current; the I_meas column "
+                   "records the current that flowed. To source exactly res_test_current "
+                   "under res_voltage_compliance, pass res_auto_range false in overrides.")
+
+
+def setting_notes(mode: str, measurement: Dict[str, Any],
+                  hazard: Optional[Dict[str, Any]]) -> List[str]:
+    """What a run with these settings does that an agent would not guess."""
+    notes = []
+    if hazard and hazard.get('hazardous'):
+        notes.append(NOTE_HAZARD)
+    if mode == 'resistance' and measurement.get('res_auto_range'):
+        notes.append(NOTE_AUTO_RANGE)
+    return notes
+
+
 def entry_of(schema: Dict[str, Any], mode: str) -> Dict[str, Any]:
     """One mode's entry in the schema route's reply, or a tool error naming the modes."""
     modes = schema.get('modes', {})
@@ -329,10 +359,9 @@ def _register_reads(server: MCPServer, backend: Backend, shown: ShownPrompt) -> 
             'derived': resolved.get('derived'),
             'settings': {key: measurement[key] for key in keys if key in measurement},
         }
-        if hazard and hazard.get('hazardous'):
-            checked['note'] = ("At or above the touch-safety threshold: a run an agent starts "
-                               "waits at a touch-safety prompt until a person at the "
-                               "ResistaMet window answers it.")
+        notes = setting_notes(mode, measurement, hazard)
+        if notes:
+            checked['notes'] = notes
         return result(checked)
 
     server.add_tool(check_settings, annotations=READ, title="Check settings", description=(
@@ -349,7 +378,9 @@ def _register_reads(server: MCPServer, backend: Backend, shown: ShownPrompt) -> 
         "threshold_v), and agent_limits: whether the limits allow it, and each "
         "violation's limit, keys, value and allowed value. The limits (by default 30 V; "
         "current and power left to the instrument) are per profile and only a person can "
-        "change them."))
+        "change them. notes: what these settings mean for the run that is easy to miss, "
+        "e.g. a touch-safety prompt, or a resistance run in auto range, where the "
+        "instrument chooses the test current and voltage limit itself."))
 
 
 def _register_runs(server: MCPServer, backend: Backend, shown: ShownPrompt) -> None:
