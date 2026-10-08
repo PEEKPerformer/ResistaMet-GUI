@@ -289,9 +289,11 @@ def _register_reads(server: MCPServer, backend: Backend, shown: ShownPrompt) -> 
         measurement = resolved.get('settings', {}).get('measurement', {})
         limits = resolved.get('agent_limits')
         hazard = resolved.get('hazard')
+        # can_start first, and the backend's ok after it: in a trial, an
+        # agent read "ok": true beside a refusal as leave to start.
         checked: Dict[str, Any] = {
+            'can_start': bool(resolved.get('ok') and limits and limits.get('ok')),
             'ok': resolved.get('ok'),
-            'agent_may_start': bool(resolved.get('ok') and limits and limits.get('ok')),
             'issues': resolved.get('issues', []),
             'warnings': resolved.get('warnings', []),
             'agent_limits': limits,
@@ -307,16 +309,19 @@ def _register_reads(server: MCPServer, backend: Backend, shown: ShownPrompt) -> 
 
     server.add_tool(check_settings, annotations=READ, title="Check settings", description=(
         "Dry run: what a run would use, without touching the instrument. Call this before "
-        "every start_run. Returns ok and the issues (key, message, severity), warnings "
+        "every start_run. can_start: start_run would accept these settings from you (they "
+        "are valid and within the agent limits); false means it will be refused. ok: the "
+        "settings are valid, whatever the limits say. Then the issues (key, message, "
+        "severity), warnings "
         "(keys, message: what the run will warn about once going, e.g. a sampling_rate "
         "above what the timing settings can deliver, or four-point power above "
         "fpp_power_warn_w; they never stop a start), the "
         "resolved values of the mode's keys, derived values (max_rate_hz, sweep_points, "
         "worst_case_power_w), hazard (the touch-safety check, voltage_v against "
-        "threshold_v), and agent_limits: whether an agent may start it, and each "
-        "violation's limit, keys, value and allowed value. agent_may_start false means "
-        "start_run will be refused. The limits (by default 30 V; current and power left "
-        "to the instrument) are per profile and only a person can change them."))
+        "threshold_v), and agent_limits: whether the limits allow it, and each "
+        "violation's limit, keys, value and allowed value. The limits (by default 30 V; "
+        "current and power left to the instrument) are per profile and only a person can "
+        "change them."))
 
 
 def _register_runs(server: MCPServer, backend: Backend, shown: ShownPrompt) -> None:
