@@ -50,6 +50,9 @@ READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_h
 #: every run writes a new file.
 ACT = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False,
                       open_world_hint=False)
+#: wait_for: only reads, unless asked to stop the run when its condition holds.
+WAIT = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False,
+                       open_world_hint=False)
 #: As ACT, and asking twice is the same as asking once.
 ACT_IDEMPOTENT = ToolAnnotations(read_only_hint=False, destructive_hint=False,
                                  idempotent_hint=True, open_world_hint=False)
@@ -362,23 +365,39 @@ def _register_following(server: MCPServer, backend: Backend) -> None:
                 "stopping)."))],
             timeout_s: Annotated[float, Field(ge=0, description=(
                 f"Seconds to wait, at most {waiting.MAX_WAIT_S:g}."))] = 60.0,
+            then_stop: Annotated[bool, Field(description=(
+                "Stop the run as soon as the condition holds, in this call, and wait "
+                "(within the same timeout) for it to end."))] = False,
     ) -> CallToolResult:
         try:
             condition = waiting.parse_until(until)
         except ValueError as exc:
             raise ToolError(str(exc)) from None
-        waited = await waiting.wait_for(get, condition, timeout_s)
+
+        async def stop() -> None:
+            await ask(backend, 'POST', '/session/stop')
+
+        waited = await waiting.wait_for(get, condition, timeout_s,
+                                        stop=stop if then_stop else None)
         waited['status'] = status_view(waited['status'])
         audit.note_run_id(waited['status'].get('run_id'))
         return result(waited)
 
-    server.add_tool(wait_for, annotations=READ, title="Wait for", description=(
+    server.add_tool(wait_for, annotations=WAIT, title="Wait for", description=(
         "Wait on the current run instead of polling get_status. Returns once, with "
         "fired = the condition asked for, or 'prompt' (a prompt is pending; if it "
         "requires_human, a person must answer it at the ResistaMet window: tell the "
         "user), or 'run_ended' (no run is in progress; run_ended then gives the reason, "
         "ok, samples and data file), or 'timeout'; always with the session status. "
-        f"The timeout is at most {waiting.MAX_WAIT_S:g} s; call again to keep waiting."))
+        f"The timeout is at most {waiting.MAX_WAIT_S:g} s; call again to keep waiting. "
+        "then_stop true stops the run the moment the condition holds and returns once it "
+        "has ended (stopped true, run_ended with the final sample count). This is how to "
+        "take a fixed number of readings in a mode without a sample count (resistance, "
+        "source_v, source_i; four_point has fpp_samples): start_run, then "
+        "wait_for('samples:N', then_stop=true). The file then holds N rows or a few more, "
+        "read while the stop was on its way (at most the readings of 0.1 s, plus one); "
+        "get_run_summary with first_rows=N summarises exactly N. A prompt or a timeout "
+        "does not stop the run."))
 
     async def get_run_events(
             since_seq: Annotated[int, Field(ge=0, description=(
@@ -464,11 +483,14 @@ def _register_results(server: MCPServer, backend: Backend) -> None:
                 "Which run; default the current or last."))] = None,
             path: Annotated[Optional[str], Field(description=(
                 "Or a data file, as list_results gives it."))] = None,
+            first_rows: Annotated[Optional[int], Field(ge=1, description=(
+                "Summarise only the first N data rows, e.g. the N readings asked for "
+                "when a run was stopped after N."))] = None,
     ) -> CallToolResult:
         if path is None:
             path, run_id = await run_file(run_id)
         text = await read_file(path)
-        summarised = await anyio.to_thread.run_sync(summary.summarise, text)
+        summarised = await anyio.to_thread.run_sync(summary.summarise, text, first_rows)
         audit.note_run_id(run_id)
         return result({'run_id': run_id, 'path': path, **summarised})
 
@@ -479,7 +501,8 @@ def _register_results(server: MCPServer, backend: Backend) -> None:
         "(settings, instrument, started_by) and, once the run is over, the end block "
         "(total_samples, duration, a four-point run's spot_stats, a van der Pauw result). "
         "finalized false: the run is still writing. Works during a run, too. "
-        "Plain .csv files only."))
+        "first_rows=N: statistics, compliance and marks over the first N rows only "
+        "(rows_total says how many the file has). Plain .csv files only."))
 
     async def list_results(
             user: Annotated[Optional[str], Field(description="Only this user's files.")] = None,
