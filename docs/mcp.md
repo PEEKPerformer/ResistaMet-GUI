@@ -79,13 +79,27 @@ Each tool maps onto one or two API routes. Values are SI (V, A, Ω, s, Hz). Resu
 | `mark_event(label)` | A label in the next data row's event column | `POST /session/mark` |
 | `wait_for(until, timeout_s ≤ 120, then_stop?, ignore_prompt_id?)` | Wait for `run_ended`, `prompt`, `prompt_answered`, `samples:N` or `state:<state>`; also returns early at a prompt the agent has not been shown or when no run is in progress, saying which. `prompt_answered` and `ignore_prompt_id` wait for a person without anything remembered between calls ([waiting for a person](#waiting-for-a-person)). With `then_stop`, stops the run as soon as the condition holds and returns once it has ended | polls `GET /session`; `POST /session/stop` |
 | `get_run_events(since_seq?, run_id?, types?, include_samples?, max_samples ≤ 200)` | What happened in a run; samples and progress logs left out unless asked for, samples thinned to at most 200 | `GET /session/events` |
-| `get_run_summary(run_id?, path?, first_rows?)` | Per numeric column: unit, count, mean, SD, min, max, last; compliance rows; marks; header and end block. From the data file, during or after the run. `first_rows=N`: over the first N data rows only | `GET /results/file` |
+| `get_run_summary(run_id?, path?, first_rows?)` | Per numeric column: unit, count, mean, SD, min, max, last; compliance rows; marks; header and end block; and `result`, the run's headline ([results](#results)). From the data file, during or after the run. `first_rows=N`: over the first N data rows only | `GET /results/file` |
 | `list_results(user?, sample?)`, `read_result(path, offset?, rows ≤ 500)` | Data files; one file's header and a slice of its rows | `GET /results`, `GET /results/file` |
 | `list_maps(user)`, `get_map(map_id, user)` | Four-point maps | `GET /maps`, `GET /maps/{map_id}` |
 
 There is deliberately no tool to answer a prompt (every prompt today needs a person), to send SCPI, to shut the backend down (it belongs to the window), or to edit a profile. The API lets an agent edit profile keys other than the protected ones; a tool for it may follow.
 
 Summaries read plain `.csv` files only: a compressed `.csv.gz` or an HDF5 file is reported as such.
+
+### Results
+
+`get_run_summary` gives a `result` block beside the column statistics: the number the run was for, with a unit on every number, a `headline` that says it in one line, and `uncertainty`, a line saying what the uncertainties are. Rows in compliance are left out of it and counted (`excluded_in_compliance`); a reading in compliance is the limit, not the sample.
+
+| Mode | `result` |
+|---|---|
+| `resistance` | `R`: mean, SD and n of `R_ohm` (Ω), and `u_inst_per_reading`, the mean of `R_unc_ohm` |
+| `source_v`, `source_i` | The measured quantity (`I` in A, or `V` in V) and `R` (Ω), each as above |
+| `four_point` | `Rs` (Ω/□), and `rho` (Ω·cm) and `sigma` (S/cm) when a thickness was given: mean, SD, `u_stat`, `u_inst`, `u_total` and n, from the file's `spot_stats`. While the run is going, or with `first_rows`, mean and SD from the rows instead, and a `note` saying so |
+| `vdp` | `R_s` (Ω/□) and `rho` (Ω·cm, null without a thickness), each a value with `u`; `homogeneity`: the verdict, `asymmetry_pct`, `threshold_pct` (10) and the `criterion`, \|ρ_A − ρ_B\| / ρ_avg ≤ 10 % (ASTM F76 §11.1) |
+| `sweep` | A least-squares fit of the measured quantity on the sourced one (I on V for a voltage sweep, V on I for a current sweep): `R` (Ω) with its `standard_error`, the `intercept` (A or V, with its standard error), n and `r2`, over every point not in compliance, both legs of an up-down sweep together. Either header form is read |
+
+The uncertainties are standard uncertainties, k = 1; none is expanded. The instrument parts take the Keithley 1-year datasheet accuracy as one standard deviation, as `accuracy.py` does; `u_stat` is the standard error of the mean. A sweep's `standard_error` comes from the scatter about the line alone. An SD in a resistance or source result is the readings' spread, not an uncertainty of the mean.
 
 ### A fixed number of readings
 
