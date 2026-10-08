@@ -630,8 +630,14 @@ def _register_results(server: MCPServer, backend: Backend) -> None:
         "(settings, instrument, started_by) and, once the run is over, the end block "
         "(total_samples, duration, a four-point run's spot_stats, a van der Pauw result). "
         "finalized false: the run is still writing. Works during a run, too. "
-        "first_rows=N: statistics, compliance and marks over the first N rows only "
-        "(rows_total says how many the file has). Plain .csv files only."))
+        "result: the run's headline, a unit on every number, rows in compliance left "
+        "out: resistance/source modes the main quantity's mean and SD; four_point Rs "
+        "(and rho, sigma) with u_stat, u_inst, u_total; vdp R_s and rho with their "
+        "uncertainty and the F76 homogeneity verdict, criterion and threshold; sweep a "
+        "least-squares R with its standard error, intercept, n and r2. Its headline says "
+        "it in one line, and its uncertainty says what the uncertainties are (standard, "
+        "k = 1). first_rows=N: statistics, compliance and marks over the first N rows "
+        "only (rows_total says how many the file has). Plain .csv files only."))
 
     async def list_results(
             user: Annotated[Optional[str], Field(description="Only this user's files.")] = None,
