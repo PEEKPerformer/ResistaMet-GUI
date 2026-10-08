@@ -138,6 +138,23 @@ class TestReads:
         assert status['pending_prompt']['kind'] == 'vdp_geometry'
         assert 'person must answer' in status['pending_prompt']['who_answers']
 
+    def test_get_profile_leaves_out_the_machine_s_agent_switch(self, call, scripted):
+        """Stored false while --allow-agents let this agent in: it read as a refusal."""
+        scripted.replies[('GET', '/profiles/alice')] = (200, {
+            'measurement': {'gpib_address': 'GPIB0::24::INSTR', 'allow_agents': False,
+                            'res_test_current': 0.001},
+            'agent_limits': {'max_voltage_v': 30.0}})
+        failed, profile = call('get_profile', {'user': 'alice'})
+        assert not failed
+        assert profile == {'measurement': {'gpib_address': 'GPIB0::24::INSTR',
+                                           'res_test_current': 0.001},
+                           'agent_limits': {'max_voltage_v': 30.0}}
+
+    def test_list_instruments_says_where_a_run_s_address_comes_from(self, connection_file):
+        description = _list_tools(connection_file)['list_instruments'].description
+        assert "profile's gpib_address" in description
+        assert "overrides cannot name an address" in description
+
     def test_a_user_name_is_one_path_segment(self, call, scripted):
         call('get_profile', {'user': 'a/b c'})
         assert scripted.requests[-1][4] == '/profiles/a%2Fb%20c'
