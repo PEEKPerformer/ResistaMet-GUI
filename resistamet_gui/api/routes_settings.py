@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, ValidationError
 
 from .. import visa_backend
+from ..schema.describe import fixed_values, key_descriptions
 from ..schema.resolve import allowed_override_keys, resolve_run_settings
 from ..schema.settings_common import (AgentLimitSettings, AuxSensorSettings, DisplaySettings,
                                        FileSettings, InstrumentSettings, OutputSettings,
@@ -288,12 +289,20 @@ def agent_access_status(request: Request, role: str = Depends(require_token)):
 
 @router.get("/schema/settings")
 def read_schema(role: str = Depends(require_token)):
-    """What a client may send, per mode."""
+    """What a client may send, per mode.
+
+    ``keys`` describes each override key (type, choices, bounds, default,
+    description, unit), so a client can say what a setting accepts before
+    a request is refused for it. ``fixed`` holds the values a run of the
+    mode always uses, whatever the profile or the request says.
+    """
     return {
         'modes': {mode: {
             'model': model.__name__,
             'fields': sorted(model.model_fields),
             'override_keys': sorted(allowed_override_keys(mode)),
+            'keys': key_descriptions(mode),
+            'fixed': fixed_values(mode),
         } for mode, model in MODE_MODELS.items()},
     }
 

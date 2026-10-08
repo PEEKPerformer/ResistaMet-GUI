@@ -88,14 +88,25 @@ class InstrumentSettings(SettingsModel):
             "Machine-local; only the 'ui' role may change it."
         ),
     )
-    nplc: float = Field(default=_M['nplc'], ge=0.01, le=10.0)
-    sampling_rate: float = Field(default=_M['sampling_rate'], ge=0.1, le=100.0)
+    nplc: float = Field(default=_M['nplc'], ge=0.01, le=10.0,
+                        description="Integration time per reading, in power-line cycles.")
+    sampling_rate: float = Field(
+        default=_M['sampling_rate'], ge=0.1, le=100.0,
+        description="Readings per second asked for; the timing settings may allow fewer.")
     settling_time: float = Field(default=_M['settling_time'], ge=0.0, le=10.0)
-    auto_zero: Literal['on', 'once', 'off'] = _M['auto_zero']
+    auto_zero: Literal['on', 'once', 'off'] = Field(
+        default=_M['auto_zero'],
+        description="on: re-zero with every reading (slower, no drift); once: zero at the "
+                    "start of the run; off: never.")
     filter_enabled: bool = _M['filter_enabled']
-    filter_type: Literal['repeat', 'moving'] = _M['filter_type']
+    filter_type: Literal['repeat', 'moving'] = Field(
+        default=_M['filter_type'],
+        description="repeat: each reading averages filter_count new conversions; moving: "
+                    "a running average.")
     filter_count: int = Field(default=_M['filter_count'], ge=1, le=100)
-    stop_on_compliance: bool = _M['stop_on_compliance']
+    stop_on_compliance: bool = Field(default=_M['stop_on_compliance'],
+                                     description="End the run when the output reaches "
+                                                 "its compliance limit.")
 
     @field_validator('gpib_interface')
     @classmethod

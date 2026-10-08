@@ -27,7 +27,15 @@ PENDING = {'prompt_id': 'run-2:vdp_geometry-1', 'kind': 'vdp_geometry',
 SCHEMA = {'modes': {'resistance': {
     'model': 'ResistanceSettings',
     'fields': ['res_test_current', 'res_voltage_compliance'],
-    'override_keys': ['res_test_current', 'res_voltage_compliance', 'sampling_rate']}}}
+    'override_keys': ['res_test_current', 'res_voltage_compliance', 'sampling_rate'],
+    'keys': {
+        'res_test_current': {'type': 'number', 'minimum': 1e-7, 'maximum': 3.0,
+                             'default': 0.001, 'unit': 'A'},
+        'res_voltage_compliance': {'type': 'number', 'minimum': 0.1, 'maximum': 200.0,
+                                   'default': 5.0, 'unit': 'V'},
+        'sampling_rate': {'type': 'number', 'minimum': 0.1, 'maximum': 100.0,
+                          'default': 10.0, 'unit': 'Hz'}},
+    'fixed': {}}}}
 
 
 class ScriptedBackend:
@@ -140,23 +148,42 @@ class TestReads:
         assert (failed, reply) == (False, {'model': '2420'})
         assert scripted.requests[-1][3] == {'address': 'GPIB0::24::INSTR'}
 
-    def test_describe_mode_gives_the_keys_and_the_user_s_values(self, call, scripted):
+    def test_describe_mode_gives_a_line_per_key_with_the_user_s_values(self, call, scripted):
         scripted.replies[('POST', '/settings/resolve')] = (200, {
             'ok': True, 'issues': [],
-            'settings': {'measurement': {'res_test_current': 0.001,
+            'settings': {'measurement': {'res_test_current': 0.002,
                                          'res_voltage_compliance': 5.0,
                                          'sampling_rate': 10.0, 'vsource_voltage': 1.0}}})
         failed, described = call('describe_mode', {'mode': 'resistance'})
         assert not failed
-        assert described == {
-            'mode': 'resistance',
-            'mode_keys': ['res_test_current', 'res_voltage_compliance'],
-            'override_keys': ['res_test_current', 'res_voltage_compliance', 'sampling_rate'],
-            'user': 'alice',
-            'values': {'res_test_current': 0.001, 'res_voltage_compliance': 5.0,
-                       'sampling_rate': 10.0},
-            'issues': [],
+        assert described['mode_keys'] == {
+            'res_test_current': '0.002 A, from the profile; default 0.001; 1e-07 <= x <= 3',
+            'res_voltage_compliance': '5.0 V, from the profile (the default); '
+                                      '0.1 <= x <= 200',
         }
+        assert described['shared_keys'] == {
+            'sampling_rate': '10.0 Hz, from the profile (the default); 0.1 <= x <= 100'}
+        assert (described['user'], described['issues']) == ('alice', [])
+        assert 'fixed by the mode' in described['how_to_read']
+        # Nothing is fixed in this mode, so the stored profile is not asked for.
+        assert not [r for r in scripted.requests if r[1].startswith('/profiles/')]
+
+    def test_describe_mode_says_which_values_the_mode_fixes(self, call, scripted):
+        scripted.replies[('GET', '/schema/settings')] = (200, {'modes': {'vdp': {
+            'model': 'VdpSettings', 'fields': ['vdp_current'],
+            'override_keys': ['auto_zero', 'vdp_current'], 'fixed': {'auto_zero': 'on'},
+            'keys': {'auto_zero': {'type': 'string', 'enum': ['on', 'once', 'off'],
+                                   'default': 'once'},
+                     'vdp_current': {'type': 'number', 'default': 0.001, 'unit': 'A'}}}}})
+        scripted.replies[('POST', '/settings/resolve')] = (200, {
+            'ok': True, 'issues': [],
+            'settings': {'measurement': {'auto_zero': 'on', 'vdp_current': 0.001}}})
+        scripted.replies[('GET', '/profiles/alice')] = (200, {
+            'measurement': {'auto_zero': 'once', 'vdp_current': 0.001}})
+        failed, described = call('describe_mode', {'mode': 'vdp'})
+        assert not failed
+        assert described['shared_keys'] == {
+            'auto_zero': '"on", fixed by the mode (the profile\'s "once" is not used)'}
 
     def test_an_unknown_mode_names_the_modes(self, call):
         failed, text = call('describe_mode', {'mode': 'hall'})

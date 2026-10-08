@@ -25,13 +25,25 @@ class ResistanceSettings(SettingsModel):
 
     res_test_current: float = Field(default=_M['res_test_current'], ge=1e-7, le=3.0)
     res_voltage_compliance: float = Field(default=_M['res_voltage_compliance'], ge=0.1, le=200.0)
-    res_measurement_type: Literal['2-wire', '4-wire'] = _M['res_measurement_type']
-    res_auto_range: bool = _M['res_auto_range']
+    res_measurement_type: Literal['2-wire', '4-wire'] = Field(
+        default=_M['res_measurement_type'],
+        description="4-wire senses the voltage at the sample on separate leads (remote "
+                    "sense); 2-wire includes the leads' resistance.")
+    res_auto_range: bool = Field(
+        default=_M['res_auto_range'],
+        description="Auto-ohms: the instrument chooses its own test current and voltage "
+                    "limit.")
     # Offset-compensated ohms; halves throughput, tightens sigma_R.
-    res_offset_comp: bool = _M['res_offset_comp']
+    res_offset_comp: bool = Field(
+        default=_M['res_offset_comp'],
+        description="Offset-compensated ohms: cancels thermal EMFs, halves the reading "
+                    "rate.")
     # Written by the cable-null procedure, not typed by the operator, but it
     # rides in the same dict because the worker subtracts it per reading.
-    res_cable_null: float = Field(default=_M['res_cable_null'], ge=0.0)
+    res_cable_null: float = Field(
+        default=_M['res_cable_null'], ge=0.0,
+        description="Lead resistance subtracted from every reading, in ohms; set by the "
+                    "cable-null procedure.")
 
 
 class VoltageSourceSettings(SettingsModel):
@@ -41,7 +53,8 @@ class VoltageSourceSettings(SettingsModel):
     vsource_current_compliance: float = Field(
         default=_M['vsource_current_compliance'], ge=1e-7, le=3.0)
     vsource_current_range_auto: bool = _M['vsource_current_range_auto']
-    vsource_duration_hours: float = Field(default=_M['vsource_duration_hours'], ge=0.0, le=168.0)
+    vsource_duration_hours: float = Field(default=_M['vsource_duration_hours'], ge=0.0, le=168.0,
+                                          description="0 = until stopped.")
 
 
 class CurrentSourceSettings(SettingsModel):
@@ -51,7 +64,8 @@ class CurrentSourceSettings(SettingsModel):
     isource_voltage_compliance: float = Field(
         default=_M['isource_voltage_compliance'], ge=0.1, le=200.0)
     isource_voltage_range_auto: bool = _M['isource_voltage_range_auto']
-    isource_duration_hours: float = Field(default=_M['isource_duration_hours'], ge=0.0, le=168.0)
+    isource_duration_hours: float = Field(default=_M['isource_duration_hours'], ge=0.0, le=168.0,
+                                          description="0 = until stopped.")
 
 
 #: The compliance of a sweep limits what is *measured*, so its unit follows
@@ -71,6 +85,12 @@ SWEEP_MAX_SOURCE_VOLTAGE_V = 200.0
 SWEEP_MAX_SOURCE_CURRENT_A = 3.0
 
 
+#: What sweep_start, sweep_stop and sweep_step are in.
+_SOURCED = (f"In the source's unit: V, within +/-{SWEEP_MAX_SOURCE_VOLTAGE_V:g}, when "
+            f"sweep_source is voltage; A, within +/-{SWEEP_MAX_SOURCE_CURRENT_A:g}, when it is "
+            f"current.")
+
+
 class SweepSettings(SettingsModel):
     """Bulk linear sweep, run by the instrument's own sweep engine.
 
@@ -84,15 +104,22 @@ class SweepSettings(SettingsModel):
 
     sweep_source: Literal['voltage', 'current'] = _M['sweep_source']
     sweep_start: float = Field(default=_M['sweep_start'], ge=-SWEEP_MAX_SOURCE_VOLTAGE_V,
-                               le=SWEEP_MAX_SOURCE_VOLTAGE_V)
+                               le=SWEEP_MAX_SOURCE_VOLTAGE_V, description=_SOURCED)
     sweep_stop: float = Field(default=_M['sweep_stop'], ge=-SWEEP_MAX_SOURCE_VOLTAGE_V,
-                              le=SWEEP_MAX_SOURCE_VOLTAGE_V)
-    sweep_step: float = Field(default=_M['sweep_step'], gt=0.0, le=SWEEP_MAX_SOURCE_VOLTAGE_V)
+                              le=SWEEP_MAX_SOURCE_VOLTAGE_V, description=_SOURCED)
+    sweep_step: float = Field(default=_M['sweep_step'], gt=0.0, le=SWEEP_MAX_SOURCE_VOLTAGE_V,
+                              description=_SOURCED)
     # ``le`` is the larger of the two per-source limits; the validator below
     # applies the one that goes with ``sweep_source``.
-    sweep_compliance: float = Field(default=_M['sweep_compliance'], ge=1e-7,
-                                    le=SWEEP_MAX_VOLTAGE_COMPLIANCE_V)
-    sweep_delay: float = Field(default=_M['sweep_delay'], ge=0.0, le=10.0)
+    sweep_compliance: float = Field(
+        default=_M['sweep_compliance'], ge=1e-7, le=SWEEP_MAX_VOLTAGE_COMPLIANCE_V,
+        description=f"Limit on the measured quantity: a current, at most "
+                    f"{SWEEP_MAX_CURRENT_COMPLIANCE_A:g} A, when sweep_source is voltage; a "
+                    f"voltage, at most {SWEEP_MAX_VOLTAGE_COMPLIANCE_V:g} V, when it is "
+                    f"current.")
+    sweep_delay: float = Field(default=_M['sweep_delay'], ge=0.0, le=10.0,
+                               description="Delay between sourcing and measuring at each "
+                                           "point, in s.")
     sweep_direction: Literal['up', 'down', 'up_down'] = _M['sweep_direction']
 
     @field_validator('sweep_start', 'sweep_stop', 'sweep_step')
@@ -148,8 +175,11 @@ class VdpSettings(SettingsModel):
     vdp_voltage_compliance: float = Field(default=_M['vdp_voltage_compliance'], gt=0.0, le=200.0)
     vdp_voltage_range_auto: bool = _M['vdp_voltage_range_auto']
     vdp_thickness_cm: float = Field(default=_M['vdp_thickness_cm'], ge=0.0, le=10.0)
-    vdp_settling_s: float = Field(default=_M['vdp_settling_s'], ge=0.0, le=10.0)
-    vdp_readings_per_polarity: int = Field(default=_M['vdp_readings_per_polarity'], ge=1, le=100)
+    vdp_settling_s: float = Field(default=_M['vdp_settling_s'], ge=0.0, le=10.0,
+                                  description="Wait after each change of current, in s.")
+    vdp_readings_per_polarity: int = Field(
+        default=_M['vdp_readings_per_polarity'], ge=1, le=100,
+        description="Readings averaged at each current direction of each wiring.")
 
 
 class FourPointSettings(SettingsModel):
@@ -168,21 +198,44 @@ class FourPointSettings(SettingsModel):
     fpp_voltage_range_auto: bool = _M['fpp_voltage_range_auto']
     fpp_spacing_cm: float = Field(default=_M['fpp_spacing_cm'], ge=0.001, le=5.0)
     # 0 = unknown thickness: sheet resistance only, no resistivity.
-    fpp_thickness_um: float = Field(default=_M['fpp_thickness_um'], ge=0.0, le=5000.0)
-    fpp_alpha: float = Field(default=_M['fpp_alpha'], ge=0.0, le=10.0)
-    fpp_k_factor: float = Field(default=_M['fpp_k_factor'], ge=0.1, le=50.0)
+    fpp_thickness_um: float = Field(
+        default=_M['fpp_thickness_um'], ge=0.0, le=5000.0,
+        description="0 = not given: sheet resistance only, no resistivity or conductivity "
+                    "(except fpp_model semi_infinite, which does not use it).")
+    fpp_alpha: float = Field(default=_M['fpp_alpha'], ge=0.0, le=10.0,
+                             description="Finite-size correction multiplying K "
+                                         "(fpp_model thin_film).")
+    fpp_k_factor: float = Field(default=_M['fpp_k_factor'], ge=0.1, le=50.0,
+                                description="Geometric factor K: Rs = K x V/I; 4.532 for an "
+                                            "infinite thin sheet.")
     # 0 = run until stopped.
-    fpp_samples: int = Field(default=_M['fpp_samples'], ge=0, le=1_000_000)
-    fpp_model: Literal['thin_film', 'semi_infinite', 'finite_thin', 'finite_alpha'] = _M['fpp_model']
+    fpp_samples: int = Field(default=_M['fpp_samples'], ge=0, le=1_000_000,
+                             description="Readings to take, then stop; 0 = until stopped.")
+    fpp_model: Literal['thin_film', 'semi_infinite', 'finite_thin', 'finite_alpha'] = Field(
+        default=_M['fpp_model'],
+        description="thin_film: Rs = K x alpha x V/I, rho = Rs x t; finite_thin: the same "
+                    "without alpha; semi_infinite: rho = 2 pi s x V/I (bulk, t >> s); "
+                    "finite_alpha: rho = alpha x 2 pi s x V/I. Not used when an ASTM F84 "
+                    "input is set (fpp_diameter_cm > 0, fpp_geometry not circle, or "
+                    "fpp_temperature_c with fpp_dopant_type n or p): the F84 corrections "
+                    "apply instead.")
     # 0 = treat the specimen as infinite (F2 = 4.5324).
-    fpp_diameter_cm: float = Field(default=_M['fpp_diameter_cm'], ge=0.0, le=100.0)
+    fpp_diameter_cm: float = Field(
+        default=_M['fpp_diameter_cm'], ge=0.0, le=100.0,
+        description="Sample diameter (or width) for the ASTM F84 F2 correction; 0 = "
+                    "infinite. Above 0 the F84 corrections apply.")
     fpp_geometry: Literal[
         'circle', 'square', 'rectangle_2', 'rectangle_3', 'rectangle_4'
-    ] = _M['fpp_geometry']
+    ] = Field(default=_M['fpp_geometry'],
+              description="Sample shape for the F2 correction (rectangle_N: length = N x "
+                          "width). Anything but circle applies the F84 corrections.")
     # The sample outline, for the position check of a spot. While the shape is
     # 'unbounded' the two legacy keys above describe the outline instead; see
     # ``spots.sample_geometry_from_settings``. 0 = dimension not entered.
-    fpp_sample_shape: Literal['unbounded', 'circle', 'rectangle'] = _M['fpp_sample_shape']
+    fpp_sample_shape: Literal['unbounded', 'circle', 'rectangle'] = Field(
+        default=_M['fpp_sample_shape'],
+        description="Sample outline for a spot's position check only; unbounded: "
+                    "fpp_geometry and fpp_diameter_cm describe it.")
     fpp_sample_diameter_mm: float = Field(default=_M['fpp_sample_diameter_mm'], ge=0.0, le=1000.0)
     fpp_sample_width_mm: float = Field(default=_M['fpp_sample_width_mm'], ge=0.0, le=1000.0)
     fpp_sample_length_mm: float = Field(default=_M['fpp_sample_length_mm'], ge=0.0, le=1000.0)
@@ -192,12 +245,28 @@ class FourPointSettings(SettingsModel):
     fpp_position_correction: Literal['warn'] = _M['fpp_position_correction']
     fpp_edge_warn_pct: float = Field(default=_M['fpp_edge_warn_pct'], ge=0.0, le=100.0)
     fpp_array_angle_deg: float = Field(default=_M['fpp_array_angle_deg'], ge=-360.0, le=360.0)
-    fpp_temperature_c: Optional[float] = Field(default=None, ge=-50.0, le=200.0)
-    fpp_dopant_type: Literal['none', 'n', 'p'] = _M['fpp_dopant_type']
-    fpp_delta_mode: bool = _M['fpp_delta_mode']
-    fpp_delta_settling: float = Field(default=_M['fpp_delta_settling'], ge=0.01, le=5.0)
-    fpp_power_warn_w: float = Field(default=_M['fpp_power_warn_w'], ge=1e-4, le=10.0)
-    fpp_power_stop_w: float = Field(default=_M['fpp_power_stop_w'], ge=1e-4, le=22.0)
+    fpp_temperature_c: Optional[float] = Field(
+        default=None, ge=-50.0, le=200.0,
+        description="Silicon sample temperature for the F84 correction to 23 C, with "
+                    "fpp_dopant_type; null = not measured.")
+    fpp_dopant_type: Literal['none', 'n', 'p'] = Field(
+        default=_M['fpp_dopant_type'],
+        description="Silicon dopant type for the F84 temperature correction.")
+    fpp_delta_mode: bool = Field(
+        default=_M['fpp_delta_mode'],
+        description="Current reversal: each reading combines +I and -I, cancelling "
+                    "thermal offsets.")
+    fpp_delta_settling: float = Field(default=_M['fpp_delta_settling'], ge=0.01, le=5.0,
+                                      description="Wait after each reversal, in s.")
+    fpp_power_warn_w: float = Field(
+        default=_M['fpp_power_warn_w'], ge=1e-4, le=10.0,
+        description="The run warns when |fpp_current| x fpp_voltage_compliance is above "
+                    "this.")
+    fpp_power_stop_w: float = Field(
+        default=_M['fpp_power_stop_w'], ge=1e-4, le=22.0,
+        description="The run refuses to start when |fpp_current| x fpp_voltage_compliance "
+                    "is above this, and with fpp_stop_on_overpower stops when a measured "
+                    "V x I is.")
     fpp_stop_on_overpower: bool = _M['fpp_stop_on_overpower']
 
     def worst_case_power_w(self) -> float:
