@@ -68,6 +68,40 @@ test("a sweep file is drawn as current against voltage, a trace per leg", () => 
   }
 });
 
+// A current sweep names its columns for what it did: V measured, I sourced.
+const CURRENT_SWEEP = [
+  "# mode: sweep",
+  "# params.source_function: current",
+  "# params.direction: up_down",
+  "# units: ,V,A,",
+  "point,V_meas,I_source,compliance",
+  "0,0,0,OK",
+  "1,0.1,0.001,OK",
+  "2,0.2,0.002,OK",
+  "3,0.2,0.002,OK",
+  "4,0.1,0.001,OK",
+  "5,0,0,OK",
+].join("\n");
+
+test("a current sweep's file is drawn from V_meas and I_source", () => {
+  const preview = sweepPreview(parseResistametCsv(CURRENT_SWEEP));
+  assert.deepEqual(preview, { x: "V_meas", y: "I_source", legs: [{ from: 0, to: 3 }, { from: 3, to: 6 }] });
+});
+
+test("the legs of a current sweep follow the sourced current, not the voltage", () => {
+  // The measured voltage wobbles at the top; the current turns round once.
+  const wobbly = CURRENT_SWEEP.replace("3,0.2,0.002,OK", "3,0.21,0.002,OK");
+  assert.deepEqual(sweepPreview(parseResistametCsv(wobbly))?.legs, [
+    { from: 0, to: 3 },
+    { from: 3, to: 6 },
+  ]);
+});
+
+test("a resistance file's V_meas and I_meas are not a sweep", () => {
+  const resistance = ["# mode: resistance", "elapsed_s,V_meas,I_meas,R_ohm", "0.1,0.1,0.001,100"].join("\n");
+  assert.equal(sweepPreview(parseResistametCsv(resistance)), null);
+});
+
 test("a file that is not a sweep has no I-V preview", () => {
   assert.equal(sweepPreview(parseResistametCsv(FOUR_POINT)), null);
 });

@@ -217,6 +217,33 @@ class TestFiles:
         assert messages['sweep_started'] == "Running I-V sweep (6 points)..."
         assert messages['sweep_finished'] == "Sweep complete: 6 points acquired"
 
+    @pytest.mark.parametrize('source, header, start, stop, step, compliance', [
+        ('voltage', 'point,V_source,I_meas,compliance', 0.0, 0.5, 0.1, 0.1),
+        ('current', 'point,V_meas,I_source,compliance', 0.0, 5e-3, 1e-3, 5.0),
+    ])
+    def test_the_sweep_file_names_what_was_sourced(self, session, profile, source, header,
+                                                   start, stop, step, compliance):
+        """A current sweep's file said V_source,I_meas over a measured V and a sourced I."""
+        session.start(profile, 'sweep', 'E2E-DUT', 'e2e', overrides={
+            'sweep_source': source, 'sweep_start': start, 'sweep_stop': stop,
+            'sweep_step': step, 'sweep_compliance': compliance, 'sweep_delay': 0.0,
+            'sweep_direction': 'up',
+        })
+        assert _wait_for(lambda: session.state == 'idle')
+
+        path = session.sink.of_type('file_finalized')[0].payload['path']
+        lines = [line for line in open(path, encoding='utf-8').read().splitlines()
+                 if not line.startswith('#')]
+        assert lines[0] == header
+        assert '# units: ,V,A,' in open(path, encoding='utf-8').read()
+        rows = [[float(cell) for cell in line.split(',')[1:3]] for line in lines[1:]]
+        assert len(rows) == 6
+        for volts, amps in rows:
+            assert amps == pytest.approx(volts / DUT_OHMS, abs=1e-6)
+        # The sourced column steps by the sweep's step; the measured follows.
+        sourced = [row[0 if source == 'voltage' else 1] for row in rows]
+        assert sourced == pytest.approx([start + k * step for k in range(6)])
+
 
 class TestStopInsideTheSettle:
     """A stop during the settle unwinds by exception. It must still end the
