@@ -391,7 +391,7 @@ class TestRunTools:
 
     def test_wait_for_refuses_a_condition_it_does_not_know(self, call):
         failed, text = call('wait_for', {'until': 'done'})
-        assert failed and 'run_ended, prompt, samples:N or state:<state>' in text
+        assert failed and 'run_ended, prompt, prompt_answered, samples:N' in text
 
     def test_wait_for_reports_a_prompt_and_who_answers_it(self, call, scripted):
         scripted.replies[('GET', '/session')] = (200, {'state': 'awaiting_prompt',
@@ -421,7 +421,37 @@ class TestRunTools:
                                                        'run_id': 'run-2',
                                                        'pending_prompt': PENDING})
         who = call('get_status')[1]['pending_prompt']['who_answers']
-        assert "wait_for('run_ended')" in who and 'does not end that wait' in who
+        # The stateless form, with this prompt's id filled in: it works from
+        # a server process that never showed the prompt.
+        assert ("wait_for('prompt_answered', ignore_prompt_id='run-2:vdp_geometry-1')"
+                in who)
+
+    def test_wait_for_passes_ignore_prompt_id_through(self, call, scripted):
+        # A fresh server remembers nothing; the id it is given is enough.
+        prompted = {'state': 'awaiting_prompt', 'run_id': 'run-2', 'last_seq': 3,
+                    'pending_prompt': PENDING}
+        scripted.replies[('GET', '/session')] = (200, prompted)
+        failed, waited = call('wait_for', {'until': 'run_ended', 'timeout_s': 0.6,
+                                           'ignore_prompt_id': PENDING['prompt_id']})
+        assert not failed
+        assert waited['fired'] == 'timeout'
+        assert waited['prompt_at_start'] == {'prompt_id': PENDING['prompt_id'],
+                                             'still_pending': True}
+
+    def test_wait_for_prompt_answered_returns_what_came_next(self, call, scripted):
+        prompted = {'state': 'awaiting_prompt', 'run_id': 'run-2', 'last_seq': 3,
+                    'pending_prompt': PENDING}
+        running = {'state': 'running', 'run_id': 'run-2', 'last_seq': 4,
+                   'pending_prompt': None}
+        statuses = [prompted, prompted, running]
+        scripted.replies[('GET', '/session')] = (
+            200, lambda body: statuses.pop(0) if len(statuses) > 1 else statuses[0])
+        failed, waited = call('wait_for', {'until': 'prompt_answered', 'timeout_s': 5})
+        assert not failed
+        assert waited['fired'] == 'prompt_answered'
+        assert waited['status']['state'] == 'running'
+        assert waited['prompt_at_start'] == {'prompt_id': PENDING['prompt_id'],
+                                             'still_pending': False}
 
     def test_wait_for_then_stop_stops_the_run_and_follows_it_to_its_end(self, call, scripted):
         statuses = [{'state': 'running', 'run_id': 'run-4', 'last_seq': 3,

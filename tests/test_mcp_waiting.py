@@ -56,9 +56,10 @@ class Script:
         self.now += seconds
 
 
-def _wait(script, until, timeout_s=10.0, known_prompt=None):
+def _wait(script, until, timeout_s=10.0, known_prompt=None, ignore_prompt=None):
     return asyncio.run(waiting.wait_for(script.get, parse_until(until), timeout_s,
                                         known_prompt=known_prompt,
+                                        ignore_prompt=ignore_prompt,
                                         clock=script.clock, sleep=script.sleep))
 
 
@@ -72,6 +73,7 @@ class TestParseUntil:
     @pytest.mark.parametrize('text, kind, samples, state', [
         ('run_ended', 'run_ended', 0, ''),
         ('prompt', 'prompt', 0, ''),
+        ('prompt_answered', 'prompt_answered', 0, ''),
         ('samples:5', 'samples', 5, ''),
         (' state:paused ', 'state', 0, 'paused'),
     ])
@@ -294,6 +296,95 @@ class TestWaitFor:
         waited = _wait(script, 'samples:50')
         assert waited['fired'] == 'run_ended'
         assert waited['run_ended']['reason'] == 'user_stop'
+
+
+PROMPTED = {**RUNNING, 'state': 'awaiting_prompt', 'pending_prompt': PROMPT}
+FOLLOWING = {**PROMPT, 'prompt_id': 'run-1:vdp_geometry-2'}
+
+
+class TestWithoutMemory:
+    """The forms that work from a server process that never showed the prompt.
+
+    In the third trial a client started a new MCP server for every call:
+    nothing remembered which prompt the agent had been shown, and every
+    wait_for('run_ended') at a prompt came back at once with it.
+    """
+
+    def test_with_nothing_remembered_a_pending_prompt_ends_the_wait_at_once(self):
+        # The trial's failure, kept as it is: this is what the forms below fix.
+        waited = _wait(Script([PROMPTED]), 'run_ended')
+        assert (waited['fired'], waited['waited_s']) == ('prompt', 0.0)
+
+    def test_prompt_answered_fires_once_the_person_answers(self):
+        script = Script([PROMPTED, PROMPTED, RUNNING])
+        waited = _wait(script, 'prompt_answered')
+        assert (waited['fired'], waited['waited_s']) == ('prompt_answered', 1.0)
+        assert waited['status'] == RUNNING
+        assert waited['prompt_at_start'] == {'prompt_id': PROMPT['prompt_id'],
+                                             'still_pending': False}
+
+    def test_prompt_answered_shows_the_next_prompt_when_it_is_already_up(self):
+        script = Script([PROMPTED, {**PROMPTED, 'pending_prompt': FOLLOWING}])
+        waited = _wait(script, 'prompt_answered')
+        assert waited['fired'] == 'prompt_answered'
+        assert waited['status']['pending_prompt'] == FOLLOWING
+
+    def test_prompt_answered_fires_when_the_run_ends(self):
+        # Released by a stop, or the prompt timed out and the run ended.
+        script = Script([PROMPTED, IDLE], _run_events())
+        waited = _wait(script, 'prompt_answered')
+        assert waited['fired'] == 'prompt_answered'
+        assert waited['run_ended']['reason'] == 'user_stop'
+
+    def test_prompt_answered_times_out_while_nobody_answers(self):
+        waited = _wait(Script([PROMPTED]), 'prompt_answered', timeout_s=2.0)
+        assert (waited['fired'], waited['waited_s']) == ('timeout', 2.0)
+        assert waited['prompt_at_start']['still_pending'] is True
+
+    def test_prompt_answered_with_no_prompt_pending_holds_at_once(self):
+        waited = _wait(Script([RUNNING]), 'prompt_answered')
+        assert (waited['fired'], waited['waited_s']) == ('prompt_answered', 0.0)
+        assert 'prompt_at_start' not in waited
+
+    def test_prompt_answered_at_a_prompt_the_agent_did_not_expect_returns_it(self):
+        # The person answered the first before the wait began, and the second
+        # is up: nobody has told the user of it.
+        waited = _wait(Script([{**PROMPTED, 'pending_prompt': FOLLOWING}]),
+                       'prompt_answered', ignore_prompt=PROMPT['prompt_id'])
+        assert (waited['fired'], waited['waited_s']) == ('prompt', 0.0)
+        assert waited['status']['pending_prompt'] == FOLLOWING
+        assert 'prompt_at_start' not in waited
+
+    def test_prompt_answered_at_the_prompt_expected_waits_for_it(self):
+        script = Script([PROMPTED, RUNNING])
+        waited = _wait(script, 'prompt_answered', ignore_prompt=PROMPT['prompt_id'])
+        assert waited['fired'] == 'prompt_answered'
+
+    @pytest.mark.parametrize('until', ['run_ended', 'state:running', 'samples:5'])
+    def test_an_ignored_prompt_does_not_end_the_wait(self, until):
+        waited = _wait(Script([PROMPTED]), until, timeout_s=1.0,
+                       ignore_prompt=PROMPT['prompt_id'])
+        assert (waited['fired'], waited['waited_s']) == ('timeout', 1.0)
+        assert waited['prompt_at_start'] == {'prompt_id': PROMPT['prompt_id'],
+                                             'still_pending': True}
+
+    def test_any_other_prompt_still_ends_it(self):
+        script = Script([PROMPTED, RUNNING, {**PROMPTED, 'pending_prompt': FOLLOWING}])
+        waited = _wait(script, 'run_ended', ignore_prompt=PROMPT['prompt_id'])
+        assert waited['fired'] == 'prompt'
+        assert waited['status']['pending_prompt'] == FOLLOWING
+
+    def test_an_ignored_prompt_makes_prompt_wait_for_the_next(self):
+        script = Script([PROMPTED, PROMPTED, {**PROMPTED, 'pending_prompt': FOLLOWING}])
+        waited = _wait(script, 'prompt', ignore_prompt=PROMPT['prompt_id'])
+        assert (waited['fired'], waited['waited_s']) == ('prompt', 1.0)
+        assert waited['status']['pending_prompt'] == FOLLOWING
+
+    def test_a_remembered_prompt_does_not_hold_back_prompt(self):
+        # Only the id said in the call does; wait_for('prompt') is how an
+        # agent asks what is pending.
+        waited = _wait(Script([PROMPTED]), 'prompt', known_prompt=PROMPT['prompt_id'])
+        assert (waited['fired'], waited['waited_s']) == ('prompt', 0.0)
 
 
 def _wait_then_stop(script, until, timeout_s=10.0, ends_with=None):
