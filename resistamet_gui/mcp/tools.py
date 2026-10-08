@@ -34,11 +34,15 @@ from . import audit, summary, waiting
 from . import describe as describing
 from .client import Backend, BackendError, BackendUnavailable
 
-#: Said wherever a prompt needs a person, so the agent can pass it on.
+#: Said wherever a prompt needs a person, so the agent can pass it on. The
+#: wait it names carries the prompt's id, so it works whether or not this
+#: server process is the one that showed the prompt (a client may start a
+#: new one for every call).
 PERSON_MUST_ANSWER = ("A person must answer this at the ResistaMet window; an agent "
                       "cannot. Tell the user what it asks (detail.message), then "
-                      "wait_for('run_ended'): this prompt does not end that wait; the "
-                      "next prompt, the run's end or the timeout does.")
+                      "wait_for('prompt_answered', ignore_prompt_id='{prompt_id}'): it "
+                      "returns once this prompt is answered or released, or the run ends, "
+                      "with the state and any next prompt; on a timeout, call it again.")
 
 MODES = "resistance, source_v, source_i, four_point, sweep, vdp"
 
@@ -153,6 +157,11 @@ class ShownPrompt:
     and the agent's first wait was pending at the start and never shown,
     and waiting through it would leave the agent silent while the run
     waits for a person nobody told.
+
+    It lasts as long as this server process. A client that starts a new
+    server for every call, or reconnects, has nothing remembered, and
+    each wait at a prompt came back at once with it; ``prompt_answered``
+    and ``ignore_prompt_id`` are the forms that need no memory.
     """
 
     def __init__(self) -> None:
@@ -174,7 +183,8 @@ def status_view(status: Dict[str, Any],
     view = dict(status)
     prompt = view.get('pending_prompt')
     if isinstance(prompt, dict) and prompt.get('requires_human'):
-        view['pending_prompt'] = {**prompt, 'who_answers': PERSON_MUST_ANSWER}
+        view['pending_prompt'] = {**prompt, 'who_answers': PERSON_MUST_ANSWER.format(
+            prompt_id=prompt.get('prompt_id'))}
     return view
 
 
@@ -433,6 +443,7 @@ def _register_following(server: MCPServer, backend: Backend, shown: ShownPrompt)
     async def wait_for(
             until: Annotated[str, Field(description=(
                 "run_ended, prompt (one pending now, or raised during the wait), "
+                "prompt_answered (the prompt pending now is no longer pending), "
                 "samples:N (the run has written N samples) or state:<state> (idle, "
                 "identifying, running, paused, awaiting_prompt, stopping)."))],
             timeout_s: Annotated[float, Field(ge=0, description=(
@@ -440,6 +451,10 @@ def _register_following(server: MCPServer, backend: Backend, shown: ShownPrompt)
             then_stop: Annotated[bool, Field(description=(
                 "Stop the run as soon as the condition holds, in this call, and wait "
                 "(within the same timeout) for it to end."))] = False,
+            ignore_prompt_id: Annotated[Optional[str], Field(description=(
+                "A prompt's prompt_id that does not end this wait: the one you have "
+                "told the user about. With prompt_answered, the prompt you expect to be "
+                "waiting on."))] = None,
     ) -> CallToolResult:
         try:
             condition = waiting.parse_until(until)
@@ -451,7 +466,8 @@ def _register_following(server: MCPServer, backend: Backend, shown: ShownPrompt)
 
         waited = await waiting.wait_for(get, condition, timeout_s,
                                         stop=stop if then_stop else None,
-                                        known_prompt=shown.prompt_id)
+                                        known_prompt=shown.prompt_id,
+                                        ignore_prompt=ignore_prompt_id)
         waited['status'] = status_view(waited['status'], shown)
         audit.note_run_id(waited['status'].get('run_id'))
         return result(waited)
@@ -462,12 +478,15 @@ def _register_following(server: MCPServer, backend: Backend, shown: ShownPrompt)
         "is pending; if it requires_human, a person must answer it at the ResistaMet "
         "window: tell the user), or 'run_ended' (no run is in progress; run_ended then "
         "gives the reason, ok, samples and data file), or 'timeout'; always with the "
-        "session status. A prompt already shown to you (in any tool's reply) does not "
-        "end the wait unless until is 'prompt': to wait for a person, tell the user what "
-        "the prompt asks, then wait_for('run_ended'). It returns at the next prompt (the "
-        "person answered and the run moved on), the run's end, or the timeout (no "
-        "answer yet); prompt_at_start.still_pending says whether that prompt is still "
-        "waiting. "
+        "session status. To wait for a person, tell the user what the prompt asks, then "
+        "wait_for('prompt_answered', ignore_prompt_id=<its prompt_id>): it returns when "
+        "that prompt is answered or released, or the run ends, with the state and any "
+        "next prompt; a timeout means no answer yet (prompt_at_start.still_pending). "
+        "This needs nothing remembered between calls. ignore_prompt_id also lets "
+        "run_ended, state: and samples: wait through that prompt (and makes prompt wait "
+        "for the next one). A prompt already shown to you in this session does not end "
+        "a run_ended, state: or samples: wait either, but a client that reconnects or "
+        "restarts the server forgets what was shown. "
         f"The timeout is at most {waiting.MAX_WAIT_S:g} s; call again to keep waiting. "
         "then_stop true stops the run the moment the condition holds and returns once it "
         "has ended (stopped true, run_ended with the final sample count). This is how to "

@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -116,6 +117,13 @@ def agent(bench, steps):
         finally:
             await backend.aclose()
     return asyncio.run(go())
+
+
+def call_once(bench, name, arguments=None):
+    """One tool call through a server of its own: a client that starts one per call."""
+    async def steps(call):
+        return await call(name, arguments)
+    return agent(bench, steps)
 
 
 async def _end_any_run(call):
@@ -320,6 +328,61 @@ def test_a_van_der_pauw_run_without_a_thickness_with_a_person_at_the_bench(bench
     agent(bench, steps)
 
 
+def test_a_van_der_pauw_run_followed_by_a_new_server_for_every_call(bench):
+    """The third trial's client: nothing is remembered between two calls.
+
+    There, wait_for('run_ended') at a prompt came back at once, five times.
+    prompt_answered and ignore_prompt_id carry what the wait needs in the
+    call itself; the person at the bench answers each prompt a moment after
+    the wait begins.
+    """
+    failed, started = call_once(bench, 'start_run', {
+        'user': 'alice', 'mode': 'vdp', 'sample_name': 'vdp-stateless',
+        'overrides': {'vdp_thickness_cm': 0.01}})
+    assert not failed, started
+    answered = []
+    for geometry in range(4):
+        failed, waited = call_once(bench, 'wait_for', {'until': 'prompt', 'timeout_s': 60})
+        assert not failed and waited['fired'] == 'prompt', waited
+        prompt = waited['status']['pending_prompt']
+        assert f"ignore_prompt_id='{prompt['prompt_id']}'" in prompt['who_answers']
+        if geometry == 0:
+            # With nothing remembered, the trial's wait returns at once...
+            failed, early = call_once(bench, 'wait_for', {'until': 'run_ended',
+                                                          'timeout_s': 30})
+            assert not failed and early['fired'] == 'prompt', early
+            assert early['waited_s'] < 5
+            # ...and naming the prompt makes it wait through it.
+            failed, held = call_once(bench, 'wait_for', {
+                'until': 'run_ended', 'timeout_s': 0.6,
+                'ignore_prompt_id': prompt['prompt_id']})
+            assert not failed and held['fired'] == 'timeout', held
+            assert held['prompt_at_start']['still_pending'] is True
+
+        person = threading.Timer(0.5, bench.ui, args=('POST', '/session/prompt'),
+                                 kwargs={'json': {'prompt_id': prompt['prompt_id'],
+                                                  'choice': 'proceed'}})
+        person.start()
+        try:
+            failed, waited = call_once(bench, 'wait_for', {
+                'until': 'prompt_answered', 'ignore_prompt_id': prompt['prompt_id'],
+                'timeout_s': 60})
+        finally:
+            person.join()
+        assert not failed and waited['fired'] == 'prompt_answered', waited
+        assert waited['waited_s'] >= 0.4
+        assert waited['prompt_at_start'] == {'prompt_id': prompt['prompt_id'],
+                                             'still_pending': False}
+        following = waited['status']['pending_prompt']
+        assert following is None or following['prompt_id'] != prompt['prompt_id']
+        answered.append(prompt['detail']['index'])
+
+    assert answered == [0, 1, 2, 3]
+    failed, ended = call_once(bench, 'wait_for', {'until': 'run_ended', 'timeout_s': 60})
+    assert not failed and ended['fired'] == 'run_ended', ended
+    assert ended['run_ended']['reason'] == 'completed'
+
+
 def test_a_hazardous_run_within_a_raised_limit_waits_for_a_person(bench):
     bench.ui('PATCH', '/profiles/alice', json={'agent_limits': {'max_voltage_v': 50.0}})
     try:
@@ -405,6 +468,7 @@ def test_the_audit_log_has_a_line_per_call_and_no_token(bench):
     assert all(line['client'] == {'name': 'e2e', 'version': '1'} for line in lines)
     assert bench.agent_token not in text and bench.ui_token not in text
     starts = [line for line in lines if line['tool'] == 'start_run']
-    assert [line['outcome'] for line in starts] == ['ok', 'error', 'ok', 'ok', 'ok', 'ok']
+    assert [line['outcome'] for line in starts] == ['ok', 'error', 'ok', 'ok', 'ok', 'ok',
+                                                     'ok']
     assert starts[1]['http_status'] == 422
     assert starts[0]['run_id'] and starts[0]['http_status'] == 202

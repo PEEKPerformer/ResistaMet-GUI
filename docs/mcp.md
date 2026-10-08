@@ -77,7 +77,7 @@ Each tool maps onto one or two API routes. Values are SI (V, A, Ω, s, Hz). Resu
 | `start_run(user, mode, sample_name, overrides?, spot?, prompt_timeout_s?)` | Start a run; returns the run id at once | `POST /session/start` |
 | `stop_run`, `abort_run`, `pause_run`, `resume_run` | As the routes; stopping is always allowed | `POST /session/…` |
 | `mark_event(label)` | A label in the next data row's event column | `POST /session/mark` |
-| `wait_for(until, timeout_s ≤ 120, then_stop?)` | Wait for `run_ended`, `prompt`, `samples:N` or `state:<state>`; also returns early at a prompt the agent has not been shown or when no run is in progress, saying which. A prompt it has been shown does not end the wait ([waiting for a person](#waiting-for-a-person)). With `then_stop`, stops the run as soon as the condition holds and returns once it has ended | polls `GET /session`; `POST /session/stop` |
+| `wait_for(until, timeout_s ≤ 120, then_stop?, ignore_prompt_id?)` | Wait for `run_ended`, `prompt`, `prompt_answered`, `samples:N` or `state:<state>`; also returns early at a prompt the agent has not been shown or when no run is in progress, saying which. `prompt_answered` and `ignore_prompt_id` wait for a person without anything remembered between calls ([waiting for a person](#waiting-for-a-person)). With `then_stop`, stops the run as soon as the condition holds and returns once it has ended | polls `GET /session`; `POST /session/stop` |
 | `get_run_events(since_seq?, run_id?, types?, include_samples?, max_samples ≤ 200)` | What happened in a run; samples and progress logs left out unless asked for, samples thinned to at most 200 | `GET /session/events` |
 | `get_run_summary(run_id?, path?, first_rows?)` | Per numeric column: unit, count, mean, SD, min, max, last; compliance rows; marks; header and end block. From the data file, during or after the run. `first_rows=N`: over the first N data rows only | `GET /results/file` |
 | `list_results(user?, sample?)`, `read_result(path, offset?, rows ≤ 500)` | Data files; one file's header and a slice of its rows | `GET /results`, `GET /results/file` |
@@ -93,13 +93,17 @@ Four-point runs stop by themselves after `fpp_samples`; resistance, source V and
 
 ### Waiting for a person
 
-A prompt that `requires_human` holds the run until a person answers it at the window. The agent tells the user what it asks, then calls `wait_for("run_ended")`. A prompt the agent has already been shown, by any tool's reply, does not end that wait; any other prompt ends it at once, so a prompt raised just after `start_run` is never waited through unheard. The wait returns with `fired`:
+A prompt that `requires_human` holds the run until a person answers it at the window. The agent tells the user what it asks, then calls `wait_for("prompt_answered", ignore_prompt_id="<its prompt_id>")`; the prompt's `who_answers` gives that call with the id filled in. It returns with `fired`:
 
-- `prompt`: the next prompt (the person answered and the run moved on, to the next van der Pauw wiring, say);
-- `run_ended`: the run is over (all answered, or stopped);
+- `prompt_answered`: the prompt is no longer pending. It was answered, released by a stop, or the run ended (then `run_ended` says how). The status says what came next: the state, and the next prompt if it is already up;
+- `prompt`: a different prompt was already pending when the wait began (the person answered before the agent began to wait). Tell the user about this one;
 - `timeout`: no answer yet; call again.
 
-`prompt_at_start` names the prompt that was waited through and says whether it is `still_pending`. `wait_for("state:running")` returns as soon as the person has answered; `wait_for("prompt")` returns at once while any prompt is pending.
+`prompt_at_start` names the prompt waited on and says whether it is `still_pending`. Without `ignore_prompt_id`, `prompt_answered` waits on whatever prompt is pending when the call begins, and holds at once when none is.
+
+`ignore_prompt_id` also lets `run_ended`, `state:<state>` and `samples:N` wait through that one prompt, and makes `prompt` wait for the next one. Any other prompt ends the wait at once, so a prompt raised just after `start_run` is never waited through unheard. `wait_for("prompt")` with no id returns at once while any prompt is pending.
+
+Both forms carry what the wait needs in the call itself. The MCP server also remembers the last prompt it showed the agent and waits through that one in `run_ended`, `state:` and `samples:` waits, but only for as long as the server process lives: a client that starts a new server for every call, or reconnects, has nothing remembered, and there `wait_for("run_ended")` at a prompt returns at once with it.
 
 ## What needs a person
 

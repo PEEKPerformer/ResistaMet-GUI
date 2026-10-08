@@ -194,7 +194,7 @@ Tools map onto the routes one to one, with two exceptions:
 | `start_run(user, mode, sample_name, overrides, spot?)` | `POST /session/start` | 422 with issues; 409 if busy or the bus is held |
 | `stop_run`, `abort_run`, `pause_run`, `resume_run` | same | |
 | `mark_event(label)` | `POST /session/mark` | |
-| `wait_for(until, timeout_s ≤ 120, then_stop?)` | polls `GET /session` | `until` ∈ `run_ended`, `prompt`, `samples:N`, `state:<s>`; returns on whichever comes first, with a status snapshot; `then_stop` stops the run when the condition holds and waits for its end, the way to take N readings in a mode without a count |
+| `wait_for(until, timeout_s ≤ 120, then_stop?, ignore_prompt_id?)` | polls `GET /session` | `until` ∈ `run_ended`, `prompt`, `prompt_answered`, `samples:N`, `state:<s>`; returns on whichever comes first, with a status snapshot; `prompt_answered` and `ignore_prompt_id` wait for a person with nothing remembered between calls; `then_stop` stops the run when the condition holds and waits for its end, the way to take N readings in a mode without a count |
 | `get_run_events(since_seq, types?)` | `GET /session/events` | lifecycle, errors, prompts, compliance, overpower and results; samples are left out unless asked for, and then decimated to at most 200 |
 | `get_run_summary(run_id?, first_rows?)` | the run's file via `GET /results/file` | count, mean, SD, min, max and last per column; compliance count; marks; the run's metadata block; `first_rows` limits it to the first N rows |
 | `list_results(user?, sample?)`, `read_result(path, rows?)` | `GET /results` | `read_result` returns the header and a bounded slice of rows, never a whole file |
