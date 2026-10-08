@@ -340,6 +340,19 @@ class TestStatus:
         assert prompt['requires_human'] is True
         assert prompt['detail']['index'] == 0
 
+    def test_a_geometry_prompt_says_the_wiring_in_words_as_the_log_does(
+            self, session, sink, fake_rm, profile):
+        profile['measurement'].update({'vdp_thickness_cm': 0.05})
+        session.start(profile, 'vdp', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.status()['pending_prompt'] is not None)
+        detail = session.status()['pending_prompt']['detail']
+        session.stop()
+        assert detail['message'] == ("Geometry 1 of 4: connect Force HI→C2, Force LO→C1, "
+                                     "Sense HI→C3, Sense LO→C4, then press Measure.")
+        logged = [e.payload['message'] for e in sink.of_type('log')
+                  if e.payload['code'] == 'geometry_prompt']
+        assert logged == [detail['message']]
+
     def test_the_status_model_has_the_reply_s_keys(self, session):
         from resistamet_gui.session.status import PendingPrompt, SessionStatus
         assert sorted(SessionStatus.model_fields) == sorted(session.status())

@@ -260,6 +260,7 @@ def test_a_van_der_pauw_run_waits_for_a_person(bench):
         prompt = waited['status']['pending_prompt']
         assert prompt['kind'] == 'vdp_geometry' and prompt['requires_human'] is True
         assert 'person must answer' in prompt['who_answers']
+        assert prompt['detail']['message'].startswith("Geometry 1 of 4: connect Force HI→C2")
 
         # Nothing in the tools answers it, and the agent token cannot either.
         refused = bench.as_agent('POST', '/session/prompt', json={

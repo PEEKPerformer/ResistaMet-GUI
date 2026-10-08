@@ -26,6 +26,21 @@ class _VdpAborted(Exception):
     """Internal: worker was stopped via stop_measurement()."""
 
 
+def wiring_message(geometry) -> str:
+    """What a person does before one geometry, as one sentence.
+
+    The prompt's ``detail.message`` (what the desktop shows, and what an
+    agent passes on to the user) and the run's log line (the PySide6
+    status bar) both read this. The contacts used to be in the log line
+    only, in other words than the prompt's ``source_high``/``sense_low``
+    integers. Both windows answer the prompt with a button labelled
+    Measure; ``proceed`` is that button's answer on the API.
+    """
+    return (f"{geometry.name}: connect Force HI→C{geometry.source_high}, "
+            f"Force LO→C{geometry.source_low}, Sense HI→C{geometry.sense_high}, "
+            f"Sense LO→C{geometry.sense_low}, then press Measure.")
+
+
 class VdpRun:
     """One van der Pauw run: ASTM F76 Method A, four manual geometries.
 
@@ -396,6 +411,7 @@ class VdpRun:
                 'label_pos': geom.label_pos,
                 'label_neg': geom.label_neg,
                 'group': geom.group,
+                'message': wiring_message(geom),
             })
             self._events.emit('prompt', {
                 'prompt_id': prompt.prompt_id,
@@ -404,12 +420,7 @@ class VdpRun:
                 'requires_human': prompt.requires_human,
                 'detail': prompt.detail,
             })
-            self._events.log('geometry_prompt', 
-                f"{geom.name}: connect Force HI->C{geom.source_high}, "
-                f"Force LO->C{geom.source_low}, "
-                f"Sense HI->C{geom.sense_high}, "
-                f"Sense LO->C{geom.sense_low}; press Measure."
-            )
+            self._events.log('geometry_prompt', prompt.detail['message'])
             choice, _fields = self._control.wait_for_prompt(self._prompt_timeout_s)
             self._events.emit('prompt_resolved', {
                 'prompt_id': prompt.prompt_id, 'choice': choice})

@@ -36,7 +36,7 @@ from .client import Backend, BackendError, BackendUnavailable
 
 #: Said wherever a prompt needs a person, so the agent can pass it on.
 PERSON_MUST_ANSWER = ("A person must answer this at the ResistaMet window; an agent "
-                      "cannot. Tell the user what it asks, then "
+                      "cannot. Tell the user what it asks (detail.message), then "
                       "wait_for('run_ended'): this prompt does not end that wait; the "
                       "next prompt, the run's end or the timeout does.")
 
@@ -48,11 +48,11 @@ MODES = "resistance, source_v, source_i, four_point, sweep, vdp"
 #: four), each with the output off.
 VDP_PROMPTS = (
     "A van der Pauw run stops at four prompts (kind vdp_geometry), one before each of "
-    "its four wirings: the output is off while it waits, the prompt's detail names the "
-    "contacts for Force HI/LO and Sense HI/LO, and a person rewires the leads and "
-    "answers at the ResistaMet window. If vdp_voltage_compliance is at or above the "
-    "profile's touch-safety threshold, a touch-safety prompt (safety_voltage_ack) "
-    "comes first. Each prompt waits prompt_timeout_s (900 s by default), then the run "
+    "its four wirings: the output is off while it waits, the prompt's detail.message "
+    "says which contacts take Force HI/LO and Sense HI/LO, and a person rewires the "
+    "leads and presses Measure at the ResistaMet window (the answer 'proceed'). If "
+    "vdp_voltage_compliance is at or above the profile's touch-safety threshold, a "
+    "touch-safety prompt (safety_voltage_ack) comes first. Each prompt waits prompt_timeout_s (900 s by default), then the run "
     "ends. A person must be at the bench for the whole run; an agent can start it, "
     "follow it and stop it, but not move it on.")
 

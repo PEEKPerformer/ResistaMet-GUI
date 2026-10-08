@@ -10,6 +10,7 @@ import { useApi } from "../../app/AppContext";
 import type { PendingPrompt } from "../../lib/api";
 import { ApiError } from "../../lib/api";
 import { SILENCE_CHOICES, silenceFields, type SilenceChoice } from "../../lib/safetySilence";
+import { setView, useUi } from "../../state/ui";
 import { Button, Dialog, Notice } from "../ui";
 import styles from "./dialogs.module.css";
 
@@ -18,13 +19,18 @@ interface Props {
 }
 
 export function PromptDialog({ prompt }: Props) {
+  const ui = useUi();
   switch (prompt.kind) {
     case "safety_voltage_ack":
       return <SafetyPrompt prompt={prompt} />;
+    case "vdp_geometry":
+      // The vdP view shows the wiring and its Measure button inline. A run
+      // an agent started can reach this prompt with another view open, and
+      // nothing said so; here the person reads what to do and goes there.
+      return ui.view === "vdp" ? null : <VdpGeometryPrompt prompt={prompt} />;
     default:
-      // vdp_geometry is rendered inline by the vdP view; anything else the
-      // backend may add later gets the generic form.
-      return prompt.kind === "vdp_geometry" ? null : <GenericPrompt prompt={prompt} />;
+      // Anything the backend may add later gets the generic form.
+      return <GenericPrompt prompt={prompt} />;
   }
 }
 
@@ -94,6 +100,26 @@ function SafetyPrompt({ prompt }: Props) {
           ))}
         </div>
         {error ? <Notice tone="danger">{error}</Notice> : null}
+      </div>
+    </Dialog>
+  );
+}
+
+function VdpGeometryPrompt({ prompt }: Props) {
+  const detail = prompt.detail as { name?: string; message?: string };
+  return (
+    <Dialog
+      title="van der Pauw: rewire the leads"
+      dismissable={false}
+      footer={
+        <Button variant="primary" onClick={() => setView("vdp")}>
+          Open van der Pauw
+        </Button>
+      }
+    >
+      <div className={styles.safety}>
+        <p>{detail.message ?? detail.name ?? "The run is waiting for the next wiring."}</p>
+        <p>Output off.</p>
       </div>
     </Dialog>
   );
