@@ -273,6 +273,42 @@ def test_a_van_der_pauw_run_waits_for_a_person(bench):
     agent(bench, steps)
 
 
+def test_a_van_der_pauw_run_without_a_thickness_with_a_person_at_the_bench(bench):
+    """Four rewiring prompts, as describe_mode says; R_s, and no resistivity."""
+    async def steps(call):
+        failed, described = await call('describe_mode', {'mode': 'vdp', 'user': 'alice'})
+        assert not failed and 'four prompts' in described['prompts']
+
+        failed, started = await call('start_run', {
+            'user': 'alice', 'mode': 'vdp', 'sample_name': 'vdp-no-thickness',
+            'overrides': {'vdp_thickness_cm': 0.0}})
+        assert not failed, started
+        answered = []
+        while True:
+            failed, waited = await call('wait_for', {'until': 'prompt', 'timeout_s': 60})
+            assert not failed, waited
+            if waited['fired'] != 'prompt':
+                break
+            prompt = waited['status']['pending_prompt']
+            answered.append((prompt['kind'], prompt['detail']['index']))
+            # The person at the window, with the ui token, has rewired the leads.
+            bench.ui('POST', '/session/prompt', json={'prompt_id': prompt['prompt_id'],
+                                                      'choice': 'proceed'})
+        assert answered == [('vdp_geometry', 0), ('vdp_geometry', 1),
+                            ('vdp_geometry', 2), ('vdp_geometry', 3)]
+        assert waited['run_ended']['reason'] == 'completed', waited
+
+        failed, summarised = await call('get_run_summary', {'run_id': started['run_id']})
+        assert not failed, summarised
+        end = summarised['end']
+        assert end['vdp_result.sheet_resistance'] > 0
+        assert end['vdp_result.thickness_cm'] == 0.0
+        assert [end[f'vdp_result.{key}'] for key in ('rho_avg', 'rho_a', 'rho_b')] == \
+            [None, None, None]
+
+    agent(bench, steps)
+
+
 def test_a_hazardous_run_within_a_raised_limit_waits_for_a_person(bench):
     bench.ui('PATCH', '/profiles/alice', json={'agent_limits': {'max_voltage_v': 50.0}})
     try:
@@ -356,6 +392,6 @@ def test_the_audit_log_has_a_line_per_call_and_no_token(bench):
     assert all(line['client'] == {'name': 'e2e', 'version': '1'} for line in lines)
     assert bench.agent_token not in text and bench.ui_token not in text
     starts = [line for line in lines if line['tool'] == 'start_run']
-    assert [line['outcome'] for line in starts] == ['ok', 'error', 'ok', 'ok', 'ok']
+    assert [line['outcome'] for line in starts] == ['ok', 'error', 'ok', 'ok', 'ok', 'ok']
     assert starts[1]['http_status'] == 422
     assert starts[0]['run_id'] and starts[0]['http_status'] == 202
