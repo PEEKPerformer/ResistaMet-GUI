@@ -205,7 +205,9 @@ class FourPointSettings(SettingsModel):
     fpp_thickness_um: float = Field(
         default=_M['fpp_thickness_um'], ge=0.0, le=5000.0,
         description="0 = not given: sheet resistance only, no resistivity or conductivity "
-                    "(except fpp_model semi_infinite, which does not use it).")
+                    "(fpp_model semi_infinite does not use it). With the ASTM F84 "
+                    "corrections no sheet resistance either: their thickness factor "
+                    "needs it.")
     fpp_alpha: float = Field(default=_M['fpp_alpha'], ge=0.0, le=10.0,
                              description="Finite-size correction multiplying K "
                                          "(fpp_model thin_film).")

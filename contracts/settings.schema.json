@@ -479,7 +479,7 @@
         },
         "fpp_thickness_um": {
           "default": 0.0,
-          "description": "0 = not given: sheet resistance only, no resistivity or conductivity (except fpp_model semi_infinite, which does not use it).",
+          "description": "0 = not given: sheet resistance only, no resistivity or conductivity (fpp_model semi_infinite does not use it). With the ASTM F84 corrections no sheet resistance either: their thickness factor needs it.",
           "maximum": 5000.0,
           "minimum": 0.0,
           "title": "Fpp Thickness Um",
