@@ -44,13 +44,27 @@ class TestProfileOwnedKeys:
         assert 'settling_time' not in allowed_override_keys('resistance')
         assert 'gpib_address' not in allowed_override_keys('resistance')
 
+    @pytest.mark.parametrize("key,value", [
+        ('visa_library', '/tmp/evil.dylib'),
+        ('visa_library', '@py'),
+        ('gpib_interface', 'PRLGX-ASRL::/dev/cu.usbserial-1::INTFC'),
+    ])
+    def test_a_request_cannot_choose_the_bus(self, profile, key, value):
+        """A library path is loaded into the backend as code; the bus is the machine's."""
+        profile['measurement'].update({'visa_library': '@ivi', 'gpib_interface': ''})
+        resolved = resolve_run_settings(profile, 'resistance', {key: value}, strict=True)
+        assert [(i.key, i.message) for i in resolved.issues] == [
+            (key, f"'{key}' comes from the profile and cannot be overridden")]
+        assert resolved.settings['measurement']['visa_library'] == '@ivi'
+        assert resolved.settings['measurement']['gpib_interface'] == ''
+        assert key not in allowed_override_keys('resistance')
+
 
 #: What every mode may override: the instrument group (less the
 #: profile-owned keys) and the aux sensor group.
 SHARED_OVERRIDE_KEYS = {
     'nplc', 'sampling_rate', 'auto_zero', 'filter_enabled', 'filter_type', 'filter_count',
-    'stop_on_compliance', 'visa_library', 'gpib_interface',
-    'aux_log_enabled', 'aux_driver', 'aux_address',
+    'stop_on_compliance', 'aux_log_enabled', 'aux_driver', 'aux_address',
 }
 
 
