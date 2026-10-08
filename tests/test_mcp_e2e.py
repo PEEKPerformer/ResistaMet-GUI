@@ -190,8 +190,13 @@ def test_a_resistance_run_from_start_to_summary(bench):
 
         failed, mark = await call('mark_event', {'label': 'checked by agent'})
         assert not failed, mark
-        failed, waited = await call('wait_for', {'until': 'samples:8', 'timeout_s': 60})
-        assert not failed and waited['fired'] == 'samples:8', waited
+        # The next sample carries the mark. Count from where the run is now,
+        # not from a fixed number it may already have passed.
+        failed, now = await call('wait_for', {'until': 'samples:1', 'timeout_s': 10})
+        assert not failed, now
+        target = now['samples'] + 2
+        failed, waited = await call('wait_for', {'until': f'samples:{target}', 'timeout_s': 60})
+        assert not failed and waited['fired'] == f'samples:{target}', waited
 
         ended = await _end_any_run(call)
         assert ended['run_ended']['reason'] == 'user_stop'
