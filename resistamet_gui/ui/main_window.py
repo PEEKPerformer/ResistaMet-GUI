@@ -2782,7 +2782,10 @@ class ResistanceMeterApp(QMainWindow):
             txt = f"ρ = 2π·s·(V/I) = {2*np.pi*s:.4g}·(V/I) Ω·cm"
         elif model in ('thin_film','finite_thin'):
             # Show both Rs and rho forms
-            txt = f"Rs = {k:.4g}·(V/I) Ω/□\nρ = {k:.4g}·t·(V/I) = {k*t_cm:.4g}·(V/I) Ω·cm"
+            if t_cm > 0:
+                txt = f"Rs = {k:.4g}·(V/I) Ω/□\nρ = {k:.4g}·t·(V/I) = {k*t_cm:.4g}·(V/I) Ω·cm"
+            else:
+                txt = f"Rs = {k:.4g}·(V/I) Ω/□\nρ = {k:.4g}·t·(V/I): no thickness, no ρ"
             if model == 'thin_film' and alpha and alpha != 1.0:
                 txt += f"\n(α applied: Rs = {k*alpha:.4g}·(V/I), ρ = {k*alpha:.4g}·t·(V/I))"
         else:
@@ -2982,13 +2985,11 @@ class ResistanceMeterApp(QMainWindow):
             Rs = np.array([k_factor * alpha * r if np.isfinite(r) else np.nan for r in ratio])
         else:
             Rs = np.array([k_factor * r if np.isfinite(r) else np.nan for r in ratio])
-        if model == 'semi_infinite':
-            rho = np.array([2*np.pi*s*r if np.isfinite(r) else np.nan for r in ratio])
-        elif model in ('thin_film','finite_thin'):
-            k = k_factor * (alpha if (model == 'thin_film' and alpha and alpha != 1.0) else 1.0)
-            rho = np.array([k * t_thick * r if np.isfinite(r) else np.nan for r in ratio])
-        else:
-            rho = np.array([alpha * 2*np.pi*s*r if np.isfinite(r) else np.nan for r in ratio])
+        # The run's own formula, so a thickness of 0 (not entered) gives no
+        # resistivity here either rather than a mean of exactly 0.
+        from ..calculations import calculate_resistivity
+        rho = np.array([calculate_resistivity(r, s, t_thick, k_factor, alpha, model)
+                        for r in ratio])
         # Calculate conductivity safely, avoiding divide by zero warnings
         with np.errstate(divide='ignore', invalid='ignore'):
             sigma = np.where(np.isfinite(rho) & (rho != 0), 1.0 / rho, np.nan)

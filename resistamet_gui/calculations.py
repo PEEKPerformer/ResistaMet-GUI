@@ -117,7 +117,15 @@ def calculate_resistivity(
         model: Measurement model ('thin_film', 'semi_infinite', 'finite_thin', etc.)
 
     Returns:
-        Resistivity in Ohm*cm, or NaN if ratio is invalid
+        Resistivity in Ohm*cm, or NaN if ratio is invalid, or if a thin-film
+        model has no thickness (``thickness_cm`` <= 0 or not finite)
+
+    A thickness of 0 is how the profile and both UIs say "not entered".
+    The thin-film formulas multiply by it, and a resistivity of exactly 0
+    is a wrong number in a data file that looks like a measurement; NaN is
+    what the file already writes for the conductivity of such a row. The
+    semi-infinite and alpha*2*pi*s forms do not read the thickness, so
+    they still give a resistivity without one.
     """
     if not np.isfinite(ratio):
         return float('nan')
@@ -126,6 +134,8 @@ def calculate_resistivity(
         # Bulk material: rho = 2*pi*s * (V/I)
         return 2 * np.pi * spacing_cm * ratio
     elif model in ('thin_film', 'finite_thin'):
+        if not (np.isfinite(thickness_cm) and thickness_cm > 0):
+            return float('nan')
         # Thin film: rho = K * alpha * t * (V/I)
         k_effective = k_factor
         if model == 'thin_film' and alpha and alpha != 1.0:
@@ -240,7 +250,8 @@ def calculate_four_point_probe(
         voltage: Measured voltage in Volts
         current: Source current in Amps
         spacing_cm: Probe spacing 's' in cm
-        thickness_um: Film thickness 't' in micrometers
+        thickness_um: Film thickness 't' in micrometers; 0 = not given,
+            which leaves a thin-film resistivity and conductivity NaN
         k_factor: Geometric correction factor (default: 4.532)
         alpha: Finite sample size correction factor (default: 1.0)
         model: Measurement model ('thin_film', 'semi_infinite', 'finite_thin')
