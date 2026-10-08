@@ -20,8 +20,9 @@ from ..schema.resolve import allowed_override_keys, resolve_run_settings
 from ..schema.settings_common import (AgentLimitSettings, AuxSensorSettings, DisplaySettings,
                                        FileSettings, InstrumentSettings, OutputSettings,
                                        SafetySettings)
-from ..schema.settings_modes import MODE_MODELS
+from ..schema.settings_modes import MODE_MODELS, PROMPT_TIMEOUT_MAX_S, RunRequest
 from ..session.manager import MeasurementSession, SessionBusy
+from ..session.vdp_run import wiring_protocol
 from .app import (UI_ROLE, agent_limit_verdict, busy_as_conflict, get_session,
                   require_token)
 
@@ -295,15 +296,24 @@ def read_schema(role: str = Depends(require_token)):
     description, unit), so a client can say what a setting accepts before
     a request is refused for it. ``fixed`` holds the values a run of the
     mode always uses, whatever the profile or the request says.
+
+    ``vdp`` also has ``wiring``: the four wirings its prompts will ask a
+    person for, in the prompts' own words, so a client can say so before
+    the run. ``prompt_timeout_s`` is how long a run request's prompts wait
+    for an answer unless it says otherwise, and the most it may say.
     """
+    modes = {mode: {
+        'model': model.__name__,
+        'fields': sorted(model.model_fields),
+        'override_keys': sorted(allowed_override_keys(mode)),
+        'keys': key_descriptions(mode),
+        'fixed': fixed_values(mode),
+    } for mode, model in MODE_MODELS.items()}
+    modes['vdp']['wiring'] = wiring_protocol()
     return {
-        'modes': {mode: {
-            'model': model.__name__,
-            'fields': sorted(model.model_fields),
-            'override_keys': sorted(allowed_override_keys(mode)),
-            'keys': key_descriptions(mode),
-            'fixed': fixed_values(mode),
-        } for mode, model in MODE_MODELS.items()},
+        'modes': modes,
+        'prompt_timeout_s': {'default': RunRequest.model_fields['prompt_timeout_s'].default,
+                             'maximum': PROMPT_TIMEOUT_MAX_S},
     }
 
 
