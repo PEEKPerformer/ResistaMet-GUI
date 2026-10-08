@@ -61,6 +61,8 @@ class MeasurementSession:
         #: The instrument as last seen by a run or by identify(); see status().
         self._instrument: Optional[InstrumentInfo] = None
         self._mode: Optional[str] = None
+        #: Who started the current (or last) run, as start() was told.
+        self._started_by: Optional[str] = None
         #: Whether the current run has sent its run_ended; read by _execute.
         self._run_ended_seen = False
         #: The address of the current (or last) run, for _record.
@@ -93,6 +95,7 @@ class MeasurementSession:
     def status(self) -> Dict[str, Any]:
         with self._lock:
             run_id, mode, run = self._run_id, self._mode, self._run
+            started_by = self._started_by
         prompt = self._control.pending_prompt if self._control else None
         # Built through the model so the reply and its exported contract
         # cannot drift; callers still get the plain dict they always did.
@@ -100,6 +103,7 @@ class MeasurementSession:
             state=self.state,
             run_id=run_id,
             mode=mode,
+            started_by=started_by,
             path=getattr(run, 'filename', '') or None,
             last_seq=self._last_event_seq,
             pending_prompt=None if prompt is None else PendingPrompt(
@@ -118,7 +122,10 @@ class MeasurementSession:
               overrides: Optional[Dict[str, Any]] = None,
               prompt_timeout_s: float = 900.0,
               spot: Optional[Any] = None,
-              client: Optional[Any] = None) -> str:
+              client: Optional[Any] = None,
+              check: Optional[Callable[[Dict[str, Any]], None]] = None,
+              ignore_safety_silence: bool = False,
+              started_by: Optional[str] = None) -> str:
         """Resolve settings, then run them. Returns the run id immediately.
 
         ``spot`` (a ``SpotRequest`` or its dict) says which placement of the
@@ -129,6 +136,23 @@ class MeasurementSession:
         ``client`` (a ``ClientInfo`` or its dict) names the program that asked
         for the run. It rides the same way, as ``settings['client']``, and
         ``build_metadata`` writes it into the file header.
+
+        ``check``, when given, is called with the resolved settings once they
+        are known to be valid and before anything is opened; whatever it
+        raises propagates and nothing starts. It is how a caller holds a run
+        to a rule of its own -- the API's agent limits -- on exactly the
+        values the run would use, without resolving them a second time.
+
+        ``ignore_safety_silence`` makes a hazardous run ask the touch-safety
+        question even on a profile that silenced it. The API sets it for every
+        role but the window's: the silence is a person's choice for their own
+        runs, not for one an agent started (``docs/design/mcp_layer.md`` M5).
+
+        ``started_by`` is who started the run, as the caller vouches for it:
+        the API passes the role of the token, never anything the request
+        body said (M6). It rides as ``settings['started_by']`` into the
+        ``run_started`` event and the file header, and status() reports it.
+        None, the default, records nothing.
 
         Raises ``SessionBusy`` unless idle, ``InstrumentBusy`` when another
         process holds the instrument, and ``ValueError`` when the strict
@@ -144,6 +168,10 @@ class MeasurementSession:
             resolved.settings['spot'] = SpotRequest.model_validate(spot).model_dump()
         if client is not None:
             resolved.settings['client'] = ClientInfo.model_validate(client).model_dump()
+        if started_by is not None:
+            resolved.settings['started_by'] = started_by
+        if check is not None:
+            check(resolved.settings)
 
         with self._lock:
             if self._state != 'idle':
@@ -157,6 +185,7 @@ class MeasurementSession:
             # run's *RST turns it off before any configuration; the run says
             # so (log output_off_recovered), and _record clears the doubt.
             recover_output = (address == self._output_unknown_at)
+            safety_ack = 'always' if ignore_safety_silence else 'prompt'
             try:
                 self._run_count += 1
                 run_id = f"run-{self._run_count}"
@@ -164,11 +193,11 @@ class MeasurementSession:
                 emitter = EventEmitter(self._record, run_id=run_id, clock=self._clock)
                 if mode == VDP_MODE:
                     run = VdpRun(sample_name, username, resolved.settings, control, emitter,
-                                  safety_ack='prompt', prompt_timeout_s=prompt_timeout_s,
+                                  safety_ack=safety_ack, prompt_timeout_s=prompt_timeout_s,
                                   instrument_lock=held, recover_output=recover_output)
                 else:
                     run = ContinuousRun(mode, sample_name, username, resolved.settings,
-                                         control, emitter, safety_ack='prompt',
+                                         control, emitter, safety_ack=safety_ack,
                                          prompt_timeout_s=prompt_timeout_s,
                                          instrument_lock=held, recover_output=recover_output)
                 thread = threading.Thread(target=self._execute, args=(run, held, emitter),
@@ -176,9 +205,10 @@ class MeasurementSession:
             except Exception:
                 held.release()
                 raise
-            previous = (self._run_id, self._mode, self._run, self._thread)
+            previous = (self._run_id, self._mode, self._started_by, self._run, self._thread)
             self._state = 'running'
             self._run_id, self._mode = run_id, mode
+            self._started_by = started_by
             self._run_address = address
             self._control, self._run, self._thread = control, run, thread
             self._run_ended_seen = False
@@ -192,7 +222,8 @@ class MeasurementSession:
             with self._lock:
                 self._state = 'idle'
                 self._control = None
-                self._run_id, self._mode, self._run, self._thread = previous
+                (self._run_id, self._mode, self._started_by,
+                 self._run, self._thread) = previous
             raise
         return run_id
 

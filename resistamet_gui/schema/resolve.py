@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional
 from ..constants import MODE_TIMING_OVERRIDES
 from ..formatting import format_power
 from .settings_common import (
+    AgentLimitSettings,
     AuxSensorSettings,
     DisplaySettings,
     FileSettings,
@@ -46,7 +47,9 @@ from .settings_modes import MODE_MODELS
 logger = logging.getLogger(__name__)
 
 #: Keys the profile always wins on, whatever a client sends (MW gather).
-PROFILE_OWNED_KEYS = ('settling_time', 'gpib_address')
+#: ``allow_agents`` is this machine's switch, not a setting of a run: a
+#: request that sent it would change nothing and read as if it had.
+PROFILE_OWNED_KEYS = ('settling_time', 'gpib_address', 'allow_agents')
 
 #: The touch-safety group. A strict request may not send any of these: the
 #: hazardous-voltage prompt can only be answered by a person at the bench
@@ -55,6 +58,13 @@ PROFILE_OWNED_KEYS = ('settling_time', 'gpib_address')
 #: edited -- the Settings dialog, or the profile route -- and nowhere else.
 #: The PySide6 gather path never sends them; it is left as it was.
 SAFETY_KEYS = tuple(SafetySettings.model_fields)
+
+#: The agent limits (``docs/design/mcp_layer.md`` M4). They are a section of
+#: the profile, not measurement keys, so a run never reads them from its
+#: overrides; a request that sends one is refused all the same, by name,
+#: rather than as a key no mode knows: an agent asking its own run to raise
+#: its own ceiling should be told that is what it tried.
+AGENT_LIMIT_KEYS = tuple(AgentLimitSettings.model_fields)
 
 #: Override keys that are not settings: they select a value rather than be one.
 CONTROL_KEYS = ('vsource_run_continuous', 'isource_run_continuous')
@@ -143,6 +153,9 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
             elif key in SAFETY_KEYS:
                 issues.append(Issue(key, f"'{key}' is a touch-safety setting of the profile; "
                                          "a run request cannot change it"))
+            elif key in AGENT_LIMIT_KEYS:
+                issues.append(Issue(key, f"'{key}' is an agent limit of the profile; "
+                                         "a run request cannot change it"))
             elif key not in permitted:
                 issues.append(Issue(key, f"'{key}' is not a setting of mode '{mode}'"))
 
@@ -183,6 +196,10 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
     # 7. Profile-owned keys.
     m_cfg['settling_time'] = profile['measurement']['settling_time']
     m_cfg['gpib_address'] = profile['measurement']['gpib_address']
+    if 'allow_agents' in profile['measurement']:
+        m_cfg['allow_agents'] = profile['measurement']['allow_agents']
+    else:
+        m_cfg.pop('allow_agents', None)
     if strict:
         # The request is already refused above; this makes the settings, the
         # hazard below and the run's own gate read the stored profile even if

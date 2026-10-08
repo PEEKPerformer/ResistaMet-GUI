@@ -16,16 +16,23 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .. import visa_backend
 from ..schema.resolve import allowed_override_keys, resolve_run_settings
-from ..schema.settings_common import (AuxSensorSettings, DisplaySettings, FileSettings,
-                                       InstrumentSettings, OutputSettings, SafetySettings)
+from ..schema.settings_common import (AgentLimitSettings, AuxSensorSettings, DisplaySettings,
+                                       FileSettings, InstrumentSettings, OutputSettings,
+                                       SafetySettings)
 from ..schema.settings_modes import MODE_MODELS
 from ..session.manager import MeasurementSession, SessionBusy
-from .app import UI_ROLE, busy_as_conflict, get_session, require_token
+from .app import (UI_ROLE, agent_limit_verdict, busy_as_conflict, get_session,
+                  require_token)
 
 router = APIRouter(tags=["settings"])
 
 #: Keys that describe this machine rather than this profile.
-MACHINE_LOCAL_KEYS = ('gpib_address', 'visa_library', 'gpib_interface')
+MACHINE_LOCAL_KEYS = ('gpib_address', 'visa_library', 'gpib_interface', 'allow_agents')
+
+#: The machine-local keys that say which instrument a run is talking to, and
+#: so cannot change under a run. ``allow_agents`` can: a person must be able
+#: to turn agents out while one is running something.
+BUS_KEYS = ('gpib_address', 'visa_library', 'gpib_interface')
 
 #: Keys that decide whether the hazardous-voltage prompt is asked.
 SAFETY_KEYS = tuple(SafetySettings.model_fields)
@@ -41,6 +48,7 @@ SECTION_MODELS = {
     'display': (DisplaySettings,),
     'file': (FileSettings,),
     'output': (OutputSettings,),
+    'agent_limits': (AgentLimitSettings,),
 }
 
 
@@ -56,6 +64,7 @@ class ProfilePatch(BaseModel):
     display: Optional[Dict[str, Any]] = None
     file: Optional[Dict[str, Any]] = None
     output: Optional[Dict[str, Any]] = None
+    agent_limits: Optional[Dict[str, Any]] = None
 
     def sections(self) -> Dict[str, Any]:
         return {name: value for name, value in self.model_dump().items() if value is not None}
@@ -169,7 +178,11 @@ def _refuse_a_worse_profile(sections: Dict[str, Any], role: str):
     The touch-safety keys decide whether the hazardous-voltage prompt is ever
     asked, and only a person at the bench may answer that prompt (design
     decision D4). A role that may not answer it may not raise its threshold
-    or silence it here either.
+    or silence it here either. ``allow_agents`` is the same kind of key: it
+    decides who may drive the instrument at all. So is the ``agent_limits``
+    section: it decides how far an agent may drive it
+    (``docs/design/mcp_layer.md`` M4). Each is refused only when the edit
+    would change it, so a client may send a value back as it was given.
 
     An issue blocks the edit when it is on a key the edit changes, or when the
     profile did not have it before. One that was already there and is not
@@ -183,6 +196,19 @@ def _refuse_a_worse_profile(sections: Dict[str, Any], role: str):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                                  detail="the touch-safety settings can only be changed "
                                         "from the user interface")
+        if role != UI_ROLE and (current['measurement'].get('allow_agents')
+                                != merged['measurement'].get('allow_agents')):
+            # An agent must not be able to let agents in, nor any other
+            # client that is not the person at the window.
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                 detail="agent access can only be changed from the "
+                                        "user interface")
+        if role != UI_ROLE and current.get('agent_limits') != merged.get('agent_limits'):
+            # The envelope an agent's run is held to: an agent must not
+            # widen it, and no client that is not the window may either.
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                 detail="the agent limits can only be changed from the "
+                                        "user interface")
         blocking = []
         library = merged['measurement'].get('visa_library', '')
         if library != current['measurement'].get('visa_library', '') \
@@ -224,13 +250,40 @@ def patch_profile(username: str, body: ProfilePatch, request: Request,
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                              detail=f"no user named '{username}'")
     measurement = sections.get('measurement') or {}
-    if any(key in measurement for key in MACHINE_LOCAL_KEYS) and session.state != 'idle':
+    if any(key in measurement for key in BUS_KEYS) and session.state != 'idle':
         # Changing the address mid-run would describe a run that is not the
         # one on the bus.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                              detail="cannot change the instrument address during a run")
-    return _profile_sections(config.merge_user_settings(
-        username, sections, check=_refuse_a_worse_profile(sections, role)))
+    agents_were_allowed = config.get_allow_agents()
+    merged = config.merge_user_settings(username, sections,
+                                        check=_refuse_a_worse_profile(sections, role))
+    if config.get_allow_agents() != agents_were_allowed:
+        # Takes effect now, in this backend: an agent turned out gets 401 on
+        # its next request, not after a restart. Only a change does
+        # anything, so a client resending the stored value cannot withdraw
+        # access that --allow-agents gave.
+        access = request.app.state.api.agent_access
+        if config.get_allow_agents():
+            access.enable()
+        else:
+            access.disable()
+    return _profile_sections(merged)
+
+
+@router.get("/agents")
+def agent_access_status(request: Request, role: str = Depends(require_token)):
+    """Whether AI agents can connect to this backend right now.
+
+    Not the stored setting -- that is in the profile -- but what is in force:
+    ``--allow-agents`` can turn access on without it, and another backend
+    holding the connection file keeps it off despite it. The ``ui`` role only;
+    an agent learns whether it is let in by being let in.
+    """
+    if role != UI_ROLE:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                             detail="only the user interface can see agent access")
+    return {"enabled": request.app.state.api.agent_access.enabled}
 
 
 @router.get("/schema/settings")
@@ -246,15 +299,33 @@ def read_schema(role: str = Depends(require_token)):
 
 
 @router.post("/settings/resolve")
-def resolve(body: ResolveRequest, request: Request, role: str = Depends(require_token)):
-    """Preview a run's settings without starting it."""
+def resolve(body: ResolveRequest, request: Request,
+             session: MeasurementSession = Depends(get_session),
+             role: str = Depends(require_token)):
+    """Preview a run's settings without starting it.
+
+    ``agent_limits`` is the verdict a start from an agent would get on these
+    settings (``AgentLimitCheck``), for every role, so an agent can check
+    before it asks and the window can show what an agent could not run. It
+    is None when the settings have errors: a start refuses those first, and
+    a verdict on values nobody accepted would mean nothing.
+    """
     if body.mode not in MODE_MODELS:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                              detail=f"unknown mode '{body.mode}'")
     profile = _config(request).get_user_settings(body.username)
     resolved = resolve_run_settings(profile, body.mode, body.overrides, strict=body.strict)
     hazard = resolved.hazard
+    verdict = None
+    if resolved.ok:
+        try:
+            verdict = agent_limit_verdict(session, profile, body.mode, resolved.settings)
+        except (TypeError, ValueError, ArithmeticError):
+            # Lenient resolution passes a stored value through as it is;
+            # one that validated and still is not a number gets no verdict.
+            verdict = None
     return {
+        'agent_limits': None if verdict is None else verdict.model_dump(),
         'settings': resolved.settings,
         'derived': resolved.derived,
         'ok': resolved.ok,

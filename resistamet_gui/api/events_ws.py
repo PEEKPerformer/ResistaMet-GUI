@@ -14,7 +14,6 @@ it last heard about.
 """
 import asyncio
 import logging
-import secrets
 from typing import Optional
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
@@ -50,7 +49,7 @@ async def stream_events(websocket: WebSocket, token: str = Query(default=""),
                          since_seq: int = Query(default=0, ge=0),
                          since_cursor: Optional[int] = Query(default=None, ge=0)):
     state = websocket.app.state.api
-    if not secrets.compare_digest(token.encode(), state.token.encode()):
+    if state.role_for(token) is None:
         await websocket.close(code=4401)  # application-level "unauthorized"
         return
 

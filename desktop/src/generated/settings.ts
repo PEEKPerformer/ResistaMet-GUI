@@ -3,6 +3,60 @@
 // Do not edit. Regenerate with `npm run gen:types`.
 
 /**
+ * The verdict on a run an agent would start. ``ok`` when nothing is beyond.
+ */
+export interface AgentLimitCheck {
+  ok: boolean;
+  violations: AgentLimitViolation[];
+}
+/**
+ * One way a run goes beyond what an agent may start.
+ *
+ * ``limit`` names the bound: one of the profile's ``agent_limits`` keys
+ * when ``source`` is ``'agent_limits'``, a ``ModelSpec`` field when it is
+ * ``'model'`` (and ``model`` says which). ``keys`` are the run's setting
+ * keys that produce ``value``; ``value`` is None when the instrument
+ * chooses the quantity itself, and ``allowed`` is None when the profile's
+ * limit is itself not a valid number.
+ */
+export interface AgentLimitViolation {
+  allowed: number | null;
+  keys: string[];
+  limit: "max_voltage_v" | "max_current_a" | "max_power_w" | "max_source_v" | "max_source_i";
+  message: string;
+  model: string | null;
+  source: "agent_limits" | "model";
+  value: number | null;
+}
+
+/**
+ * What a run an AI agent starts may put on the device. Its own section.
+ *
+ * A section beside ``measurement`` rather than more keys inside it, because
+ * these are not settings of a run: the resolver never copies them into one,
+ * so they cannot reach a data file, and a run request only carries
+ * measurement keys. They bound the ``agent`` role only; a run a person
+ * starts is never held to them (``docs/design/mcp_layer.md`` M4).
+ *
+ * None is no cap beyond the instrument's own. A cap is a positive, finite
+ * number: 0 would refuse every run, which is what turning agents off is for.
+ */
+export interface AgentLimitSettings {
+  /**
+   * Largest |I| an agent's run may source or allow as compliance, in A. None = the instrument's own limit.
+   */
+  max_current_a?: number | null;
+  /**
+   * Largest |V| x |I| an agent's run could deliver, in W. None = the instrument's own limit.
+   */
+  max_power_w?: number | null;
+  /**
+   * Largest |V| an agent's run may source or allow as compliance, in V. None = the instrument's own limit.
+   */
+  max_voltage_v?: number | null;
+}
+
+/**
  * Auxiliary-sensor co-logging. Serialized inside ``measurement``.
  *
  * Co-logging is only wired into the continuous modes
@@ -87,12 +141,16 @@ export interface FourPointSettings {
 /**
  * Knobs that apply to every mode, wherever the value comes from.
  *
- * ``gpib_address``, ``visa_library`` and ``gpib_interface`` are machine-local
- * — ``ConfigManager`` keeps them under ``machines[hostname]`` and injects
- * them into the profile on read, so they are never stored per user
- * (``config.py``).
+ * ``gpib_address``, ``visa_library``, ``gpib_interface`` and
+ * ``allow_agents`` are machine-local — ``ConfigManager`` keeps them in this
+ * machine's own file and injects them into the profile on read, so they are
+ * never stored per user (``config.py``).
  */
 export interface InstrumentSettings {
+  /**
+   * Let AI agents connect to a backend on this machine, through an MCP server, with a token of their own (role 'agent'). Machine-local; only the 'ui' role may change it.
+   */
+  allow_agents?: boolean;
   auto_zero?: "on" | "once" | "off";
   filter_count?: number;
   filter_enabled?: boolean;
@@ -290,6 +348,36 @@ export interface FieldMeta {
 
 /** Bounds, defaults and enums per model field, from the schema. */
 export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
+  "AgentLimitCheck": {
+    "ok": {
+      "type": "boolean",
+      "required": true
+    },
+    "violations": {
+      "type": "array",
+      "required": true
+    }
+  },
+  "AgentLimitSettings": {
+    "max_current_a": {
+      "type": "number",
+      "nullable": true,
+      "exclusiveMin": 0,
+      "default": null
+    },
+    "max_power_w": {
+      "type": "number",
+      "nullable": true,
+      "exclusiveMin": 0,
+      "default": null
+    },
+    "max_voltage_v": {
+      "type": "number",
+      "nullable": true,
+      "exclusiveMin": 0,
+      "default": 30
+    }
+  },
   "AuxSensorSettings": {
     "aux_address": {
       "type": "string",
@@ -534,6 +622,10 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
     }
   },
   "InstrumentSettings": {
+    "allow_agents": {
+      "type": "boolean",
+      "default": false
+    },
     "auto_zero": {
       "type": "string",
       "enum": [

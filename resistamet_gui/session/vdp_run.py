@@ -109,13 +109,19 @@ class VdpRun:
         with safety_ack='skip'; a headless client has no dialog, so the run
         itself must raise the question rather than silently energise leads at
         60 V.
+
+        safety_ack='always' asks even when the profile has silenced the
+        warning. The silence was a person's choice for runs they start
+        themselves; a run an agent started is not one of them
+        (``docs/design/mcp_layer.md`` M5).
         """
-        if self._safety_ack != 'prompt':
+        if self._safety_ack not in ('prompt', 'always'):
             return False
         from ..safety import is_potentially_hazardous, warning_message
 
         measurement = self.settings.get('measurement', {})
-        if bool(measurement.get('safety_voltage_warn_silenced', False)):
+        if (self._safety_ack == 'prompt'
+                and bool(measurement.get('safety_voltage_warn_silenced', False))):
             return False
         check = is_potentially_hazardous(self.settings, self.MODE)
         if not check.hazardous:
@@ -179,6 +185,7 @@ class VdpRun:
                 'username': self.username,
                 'settings': self.settings,
                 'started_at': time.time(),
+                'started_by': self.settings.get('started_by'),
             })
             if not began:
                 # Stopped before it began: nothing is opened, nothing re-armed.

@@ -533,7 +533,7 @@ class TestProfileReplyShape:
         from; a client walking the reply by section must not meet them."""
         client.post('/users', json={'username': 'alice'})
         body = client.get('/profiles/alice').json()
-        assert set(body) == {'measurement', 'display', 'file', 'output'}
+        assert set(body) == {'measurement', 'display', 'file', 'output', 'agent_limits'}
         assert all(isinstance(section, dict) for section in body.values())
         patched = client.patch('/profiles/alice', json={'display': {'enable_plot': False}}).json()
         assert set(patched) == set(body)

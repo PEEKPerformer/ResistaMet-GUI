@@ -22,6 +22,7 @@ The frozen build is the same program under the name `resistamet-api` (it ships i
 | `--simulate` | off | Run against the in-package simulator (a 2420 at `GPIB0::24::INSTR`). |
 | `--sim-resistance OHMS` | `100` | Simulated DUT. |
 | `--no-watchdog` | off | Do not exit when stdin closes. Needed when you start the sidecar from an interactive shell or in the background. |
+| `--allow-agents` | the machine's `allow_agents` | Let AI agents connect to this process ([Agent access](#agent-access)) without changing the stored setting. |
 | `--check-visa [quiet\|bus]` | | Print one JSON line describing this machine's VISA situation and exit without serving. See [GPIB → Diagnosing](gpib.md#diagnosing-with-check-visa). |
 | `--visa-library`, `--gpib-interface` | the machine's configured values | Overrides for `--check-visa` only. |
 
@@ -41,7 +42,61 @@ Every HTTP route except `GET /health` needs `Authorization: Bearer <token>`. A w
 
 The token keeps other local processes from driving the instrument. It is not an authentication system.
 
-A token carries a role. At this commit there is one token and its role is `ui`. The role matters in two places: a prompt marked `requires_human` may only be answered by the `ui` role, and only the `ui` role may change the touch-safety settings of a profile (403 otherwise). No other role can be minted yet.
+A token carries a role. The handshake's token is the `ui` role. A second token, role `agent`, exists only while [agent access](#agent-access) is on. Only the `ui` role may answer a prompt marked `requires_human`, change the touch-safety settings of a profile, change its [agent limits](#agent-limits), set a VISA library path, change `allow_agents`, or read `GET /agents`; any other role gets 403 there. Every role but `ui` is held to the agent limits when it starts a run, and is [always asked about touch safety](#an-agents-run-always-asks). Every run started through the API records the role that started it ([Who started a run](#who-started-a-run)).
+
+### Agent access
+
+An AI agent, through an MCP server, connects with a token of its own, so that it can be refused what only a person at the bench may do. Agent access is off unless the machine-local setting [`allow_agents`](settings.md#machine-local-settings) is on or the sidecar was started with `--allow-agents`.
+
+While it is on, the sidecar writes the agent token to a connection file, which is how an MCP server finds the backend:
+
+```
+~/.resistamet/api/connection.json   (Windows: C:\Users\<you>\.resistamet\api\connection.json)
+```
+
+```json
+{"url": "http://127.0.0.1:53124", "agent_token": "Zp8…", "pid": 41234, "started": 1791369600.5}
+```
+
+- The file is created readable by this user only (mode 0600, in a 0700 directory). On Windows the mode bits do nothing; the user's profile directory is what keeps other accounts out.
+- It is written once the port is bound, and removed when the sidecar exits or access is turned off. The agent token never appears on stdout or in the log.
+- The `ui` role turns access on or off at once by changing `allow_agents` with `PATCH /profiles/{username}`. Off withdraws the token: an agent holding it gets 401 on its next request. Each time access is turned on, the token is new.
+- One file serves one backend. If the file names a process that is still running, another backend is serving agents: this one leaves the file alone, runs without agent access and logs an error saying so. A file whose process is gone is stale and is replaced.
+- `GET /agents` tells the `ui` role whether access is in force (`{"enabled": true}`), which is not always the stored setting: `--allow-agents` turns it on without the setting, and another backend holding the file keeps it off.
+
+Like the `ui` token, this keeps other local programs, and agents the user did not configure, off the instrument. It is not authentication.
+
+### Agent limits
+
+A run started by any role but `ui` must stay inside the profile's [`agent_limits`](settings.md#agent-limits): by default at most 30 V, with current and power left to the instrument. `POST /session/start` checks the settings the session has resolved for the run, before anything is opened, and refuses with 422 when the worst case of the run goes beyond a limit:
+
+- **Voltage** is the sourced voltage, or the voltage compliance of a current source (an open circuit drives a current source up to it).
+- **Current** is the sourced current, or the current compliance of a voltage source.
+- **Power** is the largest voltage times the largest current.
+- A **sweep** counts whichever end of its range is further from zero, whatever its direction.
+- **Resistance in auto range**: auto-ohms chooses its own test current and voltage limit, so the voltage counts as at least 21 V and the current is unknown. Such a run cannot be held to a current or power limit and is refused when one is set; turn `res_auto_range` off to choose the current.
+- A four-point probe's `fpp_power_stop_w` does not lower the worst case: it acts on a measured reading.
+
+A value exactly at a limit is allowed. When the backend knows which model is at the run's address, from an earlier identify or run, the model's own `max_source_v`, `max_source_i` and `max_power_w` are checked the same way; until it knows, the instrument enforces them itself. The window is never checked.
+
+The 422 `detail` is an object:
+
+```json
+{"message": "beyond the agent limits: voltage 60 V (vsource_voltage) is above the agent limit max_voltage_v = 30 V",
+ "violations": [{"limit": "max_voltage_v", "source": "agent_limits", "model": null,
+                 "keys": ["vsource_voltage"], "value": 60.0, "allowed": 30.0,
+                 "message": "voltage 60 V (vsource_voltage) is above the agent limit max_voltage_v = 30 V"}]}
+```
+
+`source` is `agent_limits` or `model` (then `model` names it, and `limit` is the model's field). `keys` are the settings that give `value`. `value` is null for a quantity the instrument chooses; `allowed` is null when a stored limit is itself not a valid number, which refuses every agent run until it is fixed. `POST /settings/resolve` gives the same verdict without starting anything.
+
+### An agent's run always asks
+
+A run started by any role but `ui` raises the [`safety_voltage_ack`](#prompts) prompt whenever its gating voltage reaches the profile's threshold, even on a profile where `safety_voltage_warn_silenced` is true. The silence is a person's choice for the runs they start. The prompt is `requires_human`, so the run waits for someone at the window. The `ui` role's runs are unchanged: a silenced profile is not asked.
+
+### Who started a run
+
+`POST /session/start` stamps the role of the token that asked, as `started_by`, into the run's [`run_started`](#event-types) event, the [session status](#session-state) and the data file header (`# started_by: agent`; see [Data outputs](outputs.md#header-keys)). The request body cannot set it: a `started_by` field is refused with 422, as any unknown field is. `client` in the request says which program is asking; `started_by` says which role the server let in. Runs the PySide6 window starts do not go through the API and record no role.
 
 Cross-origin requests are accepted only from the desktop shell's origins (`tauri://localhost`, `http(s)://tauri.localhost`) and the UI dev server (`http://localhost:1420`, `http://127.0.0.1:1420`). That restricts browsers, not scripts.
 
@@ -65,6 +120,7 @@ One sidecar drives one instrument and one run at a time.
   "state": "paused",
   "run_id": "run-1",
   "mode": "resistance",
+  "started_by": "ui",
   "path": "measurement_data/alice/1789858920_lock-demo_R_1.00mA.csv",
   "last_seq": 77,
   "pending_prompt": null,
@@ -73,7 +129,7 @@ One sidecar drives one instrument and one run at a time.
 }
 ```
 
-`run_id`, `mode` and `path` describe the current run, or the last one after it ends; all are `null` before the first. `instrument` is the instrument the last run connected to or the last identify found (`model` and the limits are `null` when `*IDN?` names a model the limits table does not know). `pending_prompt` has the fields of the `prompt` event. Every key is always present.
+`run_id`, `mode`, `started_by` and `path` describe the current run, or the last one after it ends; all are `null` before the first. `started_by` is the role that [started the run](#who-started-a-run). `instrument` is the instrument the last run connected to or the last identify found (`model` and the limits are `null` when `*IDN?` names a model the limits table does not know). `pending_prompt` has the fields of the `prompt` event. Every key is always present.
 
 ## Routes
 
@@ -85,7 +141,7 @@ Non-finite floats (an unmeasured temperature, an uncertainty that could not be c
 |---|---|---|---|
 | `GET /health` | | `{"status": "ok"}`. No token. Liveness only. | |
 | `GET /session` | | `SessionStatus` | |
-| `POST /session/start` | `RunRequest` (below) | **202** `{"run_id": "run-3"}` | 409 session not idle; 409 [instrument held by another process](#the-instrument-lock); 422 request malformed (FastAPI's error list: an unknown field, an unknown mode, a spot on a mode other than four-point) or settings rejected (`detail` is a string of `key: message` pairs) |
+| `POST /session/start` | `RunRequest` (below) | **202** `{"run_id": "run-3"}` | 409 session not idle; 409 [instrument held by another process](#the-instrument-lock); 422 request malformed (FastAPI's error list: an unknown field, an unknown mode, a spot on a mode other than four-point) or settings rejected (`detail` is a string of `key: message` pairs); 422 a role other than `ui` asks for a run beyond the [agent limits](#agent-limits) (`detail` is an object with `message` and `violations`) |
 | `POST /session/stop` | | `SessionStatus` | Never fails; a no-op when idle |
 | `POST /session/abort` | | `SessionStatus` | Never fails |
 | `POST /session/pause`, `POST /session/resume` | | `SessionStatus` | 409 no run in progress |
@@ -100,7 +156,7 @@ Non-finite floats (an unmeasured temperature, an uncertainty that could not be c
 |---|---|---|
 | `mode` | string | `resistance`, `source_v`, `source_i`, `four_point`, `sweep`, `vdp` |
 | `sample_name`, `username` | string, not empty | The profile of `username` supplies every setting not overridden. |
-| `overrides` | object | Flat measurement keys, e.g. `{"res_test_current": 1e-3}`. Allowed keys per mode come from `GET /schema/settings`. Refused with 422: unknown keys, the profile-owned `settling_time` and `gpib_address`, and the touch-safety keys `safety_voltage_warn_v` and `safety_voltage_warn_silenced` (a run request cannot arrange never to be asked). Values are type-checked strictly: `"1e-3"` is not a number and `"false"` is not a boolean. |
+| `overrides` | object | Flat measurement keys, e.g. `{"res_test_current": 1e-3}`. Allowed keys per mode come from `GET /schema/settings`. Refused with 422: unknown keys, the profile-owned `settling_time` and `gpib_address`, the machine's `allow_agents`, the touch-safety keys `safety_voltage_warn_v` and `safety_voltage_warn_silenced` (a run request cannot arrange never to be asked), and the agent limits `max_voltage_v`, `max_current_a` and `max_power_w`. Values are type-checked strictly: `"1e-3"` is not a number and `"false"` is not a boolean. |
 | `prompt_timeout_s` | number > 0, default 900 | How long a prompt may wait before the run is abandoned. |
 | `spot` | object or null | Four-point only (422 for other modes): `{"map_id", "index", "label", "x_mm"?, "y_mm"?, "angle_deg"?}`. See [Concepts → Spots and maps](concepts.md#spots-and-maps). |
 | `client` | object or null | `{"name", "version"}`, each 1–64 characters from letters, digits, space and `. _ + -`. Written to the file header as `client.*`. |
@@ -116,11 +172,12 @@ Non-finite floats (an unmeasured temperature, an uncertainty that could not be c
 | `GET /users` | | `{"users": [...], "last_user": ...}` | |
 | `POST /users` | `{"username"}` (1–64 chars) | **201** same shape. Idempotent; selects the user. | 422 empty name |
 | `GET /profiles/{username}` | | `{"measurement": {...}, "display": {...}, "file": {...}, "output": {...}}` with this PC's [machine-local](settings.md#machine-local-settings) values filled in | |
-| `PATCH /profiles/{username}` | any of the four sections, each with only the keys to change | The updated profile. Keys not sent keep their stored values. | 404 unknown user; 422 no section given, or the result would not be valid (`detail.issues` lists `section`, `key`, `message`; an old out-of-range value you are not touching does not block the edit); 409 the patch has `gpib_address`, `visa_library` or `gpib_interface` and a run is active; 403 a role other than `ui` changes a touch-safety key |
+| `PATCH /profiles/{username}` | any of the sections (`measurement`, `display`, `file`, `output`, `agent_limits`), each with only the keys to change | The updated profile. Keys not sent keep their stored values. | 404 unknown user; 422 no section given, or the result would not be valid (`detail.issues` lists `section`, `key`, `message`; an old out-of-range value you are not touching does not block the edit); 409 the patch has `gpib_address`, `visa_library` or `gpib_interface` and a run is active; 403 a role other than `ui` changes a touch-safety key, an agent limit, a VISA library path or `allow_agents` (sending one back unchanged is not a change) |
+| `GET /agents` | | `{"enabled": bool}`: whether [agent access](#agent-access) is in force | 403 a role other than `ui` |
 | `GET /schema/settings` | | `{"modes": {mode: {"model", "fields": [...], "override_keys": [...]}}}` | |
-| `POST /settings/resolve` | `{"mode", "username", "overrides": {}, "strict": true}` | `{"settings", "derived", "ok", "issues": [{"key","message","severity"}], "hazard"}` | 422 unknown mode |
+| `POST /settings/resolve` | `{"mode", "username", "overrides": {}, "strict": true}` | `{"settings", "derived", "ok", "issues": [{"key","message","severity"}], "hazard", "agent_limits"}` | 422 unknown mode |
 
-`/settings/resolve` answers "what would this run use, and what is wrong with it" without touching the instrument. `derived` has `max_rate_hz`, plus `sweep_points` for a sweep and `worst_case_power_w` for four-point. `hazard` is `{"hazardous", "voltage_v", "threshold_v", "reason"}`, the touch-safety check on the resolved values. `ok` is false when any issue has severity `error`; `start` refuses exactly those requests. A value the mode forces (four-point and van der Pauw always run with `auto_zero: on` and a filter count of 10) wins over an override, and the reply carries a warning issue naming the key, the value in force and the one not used. A strict resolve also checks the profile's `file`, `output` and `display` sections; their issues are keyed with the section (`output.format`), and `display` problems are warnings only. JSON Schemas of the settings, events, session status and maps are in the repository under `contracts/`.
+`/settings/resolve` answers "what would this run use, and what is wrong with it" without touching the instrument. `derived` has `max_rate_hz`, plus `sweep_points` for a sweep and `worst_case_power_w` for four-point. `hazard` is `{"hazardous", "voltage_v", "threshold_v", "reason"}`, the touch-safety check on the resolved values. `agent_limits` is `{"ok", "violations"}`, the verdict an agent's start would get ([Agent limits](#agent-limits)), for whichever role asks; it is null when the settings have errors. `ok` is false when any issue has severity `error`; `start` refuses exactly those requests. A value the mode forces (four-point and van der Pauw always run with `auto_zero: on` and a filter count of 10) wins over an override, and the reply carries a warning issue naming the key, the value in force and the one not used. A strict resolve also checks the profile's `file`, `output` and `display` sections; their issues are keyed with the section (`output.format`), and `display` problems are warnings only. JSON Schemas of the settings, events, session status and maps are in the repository under `contracts/`.
 
 ### Instruments
 
@@ -200,7 +257,7 @@ log:cleanup, run_ended
 
 | Type | Payload | When |
 |---|---|---|
-| `run_started` | `mode`, `sample_name`, `username`, `settings` (the full resolved settings the run uses), `started_at` | First event of a run. |
+| `run_started` | `mode`, `sample_name`, `username`, `settings` (the full resolved settings the run uses), `started_at`, `started_by` (the role that [started the run](#who-started-a-run); `null` for a run started without the API) | First event of a run. |
 | `log` | `level` (`info`, `warning`, `error`), `code`, `message` | Progress in words. `message` is the text a UI shows; act on `code`. |
 | `error` | `code`, `source` (`smu`, `aux`, `file`, `run`), `message`, `fatal` | Something failed. |
 | `instrument_connected` | `address`, `idn`, `model`, `max_source_v`, `max_source_i`, `max_power_w` | `*IDN?` answered. |
@@ -232,14 +289,14 @@ A prompt is a decision the run cannot make. The run emits `prompt`, the session 
 
 | `kind` | Raised | `options` | `detail` |
 |---|---|---|---|
-| `safety_voltage_ack` | After `run_started`, before the instrument is opened, when the run's [gating voltage](concepts.md#touch-safety-warning) reaches the profile's threshold and the profile has not silenced the warning | `acknowledge`, `cancel` | `voltage_v`, `threshold_v`, `reason`, `message` |
+| `safety_voltage_ack` | After `run_started`, before the instrument is opened, when the run's [gating voltage](concepts.md#touch-safety-warning) reaches the profile's threshold and the profile has not silenced the warning; on a run started by a role other than `ui`, [whether or not it has](#an-agents-run-always-asks) | `acknowledge`, `cancel` | `voltage_v`, `threshold_v`, `reason`, `message` |
 | `vdp_geometry` | Before each of the four van der Pauw geometries, with the output off | `proceed`, `abort` | `index`, `name`, `group`, the four contact numbers `source_high`, `source_low`, `sense_high`, `sense_low`, `label_pos`, `label_neg` |
 
 A third kind, `cable_null_shorted`, is declared in the contract; no run raises it at this commit.
 
 Both kinds are `requires_human: true`: they assert something only a person at the bench can know (the leads were moved, the voltage is understood). Only the `ui` role may answer them. Software that holds the `ui` token can answer them, and then it is making that assertion.
 
-`cancel` ends the run with reason `cancelled`, no instrument opened and no file. An unanswered prompt ends the run after `prompt_timeout_s` with reason `prompt_timeout`. A stop or abort releases the wait. Answering `acknowledge` with `fields: {"silence_for_profile": true}` is logged but not saved to the profile at this commit; to silence the warning, `PATCH` `safety_voltage_warn_silenced` yourself.
+`cancel` ends the run with reason `cancelled`, no instrument opened and no file. An unanswered prompt ends the run after `prompt_timeout_s` with reason `prompt_timeout`. A stop or abort releases the wait. Answering `acknowledge` with `fields: {"silence_for_profile": true}` is logged but not saved to the profile at this commit; to silence the warning, `PATCH` `safety_voltage_warn_silenced` yourself. Either way the silence never applies to a run started by another role.
 
 ## The instrument lock
 

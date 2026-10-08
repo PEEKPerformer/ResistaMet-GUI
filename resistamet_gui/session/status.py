@@ -49,6 +49,9 @@ class SessionStatus(EventModel):
     run_id: Optional[str]
     mode: Optional[Literal['resistance', 'source_v', 'source_i', 'four_point',
                            'sweep', 'vdp']]
+    #: Who started that run: the API role of the token that asked for it
+    #: (``ui``, ``agent``); None for a run started without one.
+    started_by: Optional[str]
     #: The run's data file once it has one.
     path: Optional[str]
     #: ``seq`` of the newest event, for a client resuming the stream.

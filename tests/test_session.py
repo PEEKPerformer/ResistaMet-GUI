@@ -319,7 +319,7 @@ class TestStatus:
     def test_idle_status_is_exactly_this(self, session):
         """The reply's shape is a contract (session/status.py); pin it."""
         assert session.status() == {
-            'state': 'idle', 'run_id': None, 'mode': None, 'path': None,
+            'state': 'idle', 'run_id': None, 'mode': None, 'started_by': None, 'path': None,
             'last_seq': 0, 'pending_prompt': None, 'instrument': None,
         }
 
@@ -535,6 +535,44 @@ class TestSafetyPrompt:
         profile = self._hazardous(profile)
         profile['measurement']['safety_voltage_warn_silenced'] = True
         session.start(profile, 'source_v', 'wafer1', 'alice')
+        assert _wait_for(lambda: sink.of_type('sample'))
+        assert sink.of_type('prompt') == []
+        session.stop()
+
+    def test_ignoring_the_silence_asks_on_a_silenced_profile(self, session, sink, fake_rm,
+                                                              profile):
+        """What the API asks for on an agent's run (mcp_layer.md M5)."""
+        profile = self._hazardous(profile)
+        profile['measurement']['safety_voltage_warn_silenced'] = True
+        session.start(profile, 'source_v', 'wafer1', 'alice', ignore_safety_silence=True)
+        assert _wait_for(lambda: self._pending(session) is not None)
+
+        prompt = self._pending(session)
+        assert prompt['kind'] == 'safety_voltage_ack'
+        assert prompt['requires_human'] is True
+        assert sink.of_type('instrument_connected') == []
+        session.answer_prompt(prompt['prompt_id'], 'cancel')
+        assert _wait_for(lambda: session.state == 'idle')
+
+    def test_and_so_does_a_van_der_pauw_run(self, session, sink, fake_rm, profile):
+        profile['measurement'].update({
+            'safety_voltage_warn_v': 30.0, 'safety_voltage_warn_silenced': True,
+            'vdp_voltage_compliance': 60.0, 'vdp_thickness_cm': 0.05})
+        session.start(profile, 'vdp', 'wafer1', 'alice', ignore_safety_silence=True)
+        assert _wait_for(lambda: self._pending(session) is not None)
+
+        assert self._pending(session)['kind'] == 'safety_voltage_ack'
+        assert sink.of_type('instrument_connected') == []
+        session.answer_prompt(self._pending(session)['prompt_id'], 'cancel')
+        assert _wait_for(lambda: session.state == 'idle')
+
+    def test_ignoring_the_silence_asks_nothing_below_the_threshold(self, session, sink,
+                                                                    fake_rm, profile):
+        profile['measurement'].update({'safety_voltage_warn_v': 30.0,
+                                        'safety_voltage_warn_silenced': True,
+                                        'vsource_voltage': 1.0,
+                                        'vsource_duration_hours': 0.0})
+        session.start(profile, 'source_v', 'wafer1', 'alice', ignore_safety_silence=True)
         assert _wait_for(lambda: sink.of_type('sample'))
         assert sink.of_type('prompt') == []
         session.stop()
@@ -786,6 +824,48 @@ class TestInstrumentHeldElsewhere:
         # Free again: a fresh hold succeeds without waiting.
         with instrument_lock.hold_instrument('GPIB0::24::INSTR', wait_s=0.0):
             pass
+
+
+class TestStartedBy:
+    """Who started the run, as the caller vouches (mcp_layer.md M6)."""
+
+    def test_it_rides_into_the_event_the_settings_and_the_status(self, session, sink,
+                                                                  fake_rm, profile):
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice',
+                      started_by='agent')
+        assert _wait_for(lambda: session.state == 'idle')
+        started = sink.of_type('run_started')[0].payload
+        assert started['started_by'] == 'agent'
+        assert started['settings']['started_by'] == 'agent'
+        # Still there once the run is over: the status names the last run.
+        assert session.status()['started_by'] == 'agent'
+
+    def test_a_van_der_pauw_run_carries_it_too(self, session, sink, fake_rm, profile):
+        profile['measurement'].update({'vdp_thickness_cm': 0.05})
+        session.start(profile, 'vdp', 'wafer1', 'alice', started_by='ui')
+        assert _wait_for(lambda: sink.of_type('run_started'))
+        assert sink.of_type('run_started')[0].payload['started_by'] == 'ui'
+        session.abort()
+        assert _wait_for(lambda: session.state == 'idle')
+
+    def test_absent_means_none_and_no_key_in_the_settings(self, session, sink, fake_rm,
+                                                          profile):
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.state == 'idle')
+        started = sink.of_type('run_started')[0].payload
+        assert started['started_by'] is None
+        assert 'started_by' not in started['settings']
+        assert session.status()['started_by'] is None
+
+    def test_the_next_run_does_not_inherit_it(self, session, sink, fake_rm, profile):
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice',
+                      started_by='agent')
+        assert _wait_for(lambda: session.state == 'idle')
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice')
+        assert _wait_for(lambda: len(sink.of_type('run_ended')) == 2)
+        assert _wait_for(lambda: session.state == 'idle')
+        assert [e.payload['started_by'] for e in sink.of_type('run_started')] == ['agent', None]
+        assert session.status()['started_by'] is None
 
 
 class TestSpot:

@@ -45,6 +45,11 @@ DEFAULT_SETTINGS = {
         # "PRLGX-ASRL::/dev/cu.usbserial-XXXX::INTFC". "" = none. Machine-local
         # like gpib_address (visa_backend.py).
         "gpib_interface": "",
+        # Whether a backend on this machine lets AI agents connect through an
+        # MCP server (docs/design/mcp_layer.md, M2). Off unless a person turns
+        # it on from the user interface. Machine-local, and only ever read
+        # from this machine's own file (config.py).
+        "allow_agents": False,
         "stop_on_compliance": False,
         # auto_zero=once cuts each reading from 3 integrations to 1 (a 3×
         # speedup) by caching the zero/reference at run start. Acceptable
@@ -176,6 +181,16 @@ DEFAULT_SETTINGS = {
         #   "auto"   gzip only when the .csv exceeds compression_threshold_mb
         "compression": "never",
         "compression_threshold_mb": 5
+    },
+    # What a run started by an AI agent may put on the device
+    # (docs/design/mcp_layer.md, M4). Only the user interface can change
+    # these, and they never apply to a run a person starts. None = no cap
+    # beyond the instrument's own. 30 V is the touch-safety bound above
+    # (IEC 61010-1 SELV); current and power are the experiment's business.
+    "agent_limits": {
+        "max_voltage_v": 30.0,               # largest |V| sourced or allowed as compliance
+        "max_current_a": None,               # largest |I| sourced or allowed as compliance
+        "max_power_w": None                  # largest |V| x |I| the run could deliver
     },
     "users": [],
     "last_user": None
