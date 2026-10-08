@@ -289,8 +289,11 @@ class TestRunTools:
             annotations = tools[name].annotations
             assert annotations.read_only_hint is False, name
             assert annotations.destructive_hint is False, name
-        for name in ('wait_for', 'get_run_events'):
-            assert tools[name].annotations.read_only_hint is True, name
+        assert tools['get_run_events'].annotations.read_only_hint is True
+        # wait_for may stop the run (then_stop), so it does not claim to only read.
+        assert tools['wait_for'].annotations.read_only_hint is False
+        assert tools['wait_for'].annotations.destructive_hint is False
+        assert 'then_stop' in tools['wait_for'].description
 
     def test_start_sends_the_request_and_names_this_server_as_the_client(
             self, call, scripted, tmp_path):
@@ -353,6 +356,38 @@ class TestRunTools:
         assert not failed
         assert waited['fired'] == 'prompt'
         assert 'person must answer' in waited['status']['pending_prompt']['who_answers']
+
+    def test_wait_for_then_stop_stops_the_run_and_follows_it_to_its_end(self, call, scripted):
+        statuses = [{'state': 'running', 'run_id': 'run-4', 'last_seq': 3,
+                     'pending_prompt': None},
+                    {'state': 'idle', 'run_id': 'run-4', 'last_seq': 4,
+                     'pending_prompt': None}]
+        stops = []
+        scripted.replies[('GET', '/session')] = (
+            200, lambda body: statuses[0] if not stops else statuses[1])
+        scripted.replies[('POST', '/session/stop')] = (
+            200, lambda body: stops.append(1) or {**statuses[0], 'state': 'stopping'})
+        ended = {'reason': 'user_stop', 'ok': True, 'samples': 7, 'path': 'alice/r.csv'}
+        scripted.replies[('GET', '/session/events')] = (200, {
+            'gap': False, 'cursor': 4, 'last_seq': 4, 'events': [
+                {'type': 'run_ended', 'run_id': 'run-4', 'seq': 4, 'cursor': 4,
+                 'payload': ended}]})
+        failed, waited = call('wait_for', {'until': 'state:running', 'then_stop': True,
+                                           'timeout_s': 5})
+        assert not failed
+        assert stops == [1]
+        assert (waited['fired'], waited['stopped']) == ('state:running', True)
+        assert waited['run_ended'] == ended
+        assert waited['status']['state'] == 'idle'
+
+    def test_get_run_summary_of_the_first_rows(self, call, scripted):
+        scripted.replies[('GET', '/results')] = (200, LISTING)
+        scripted.replies[('GET', '/results/file')] = (200, RUN_FILE)
+        failed, summarised = call('get_run_summary', {'path': 'alice/1_s1_R.csv',
+                                                      'first_rows': 1})
+        assert not failed
+        assert summarised['columns']['R_ohm']['count'] == 1
+        assert (summarised['rows'], summarised['rows_total']) == (1, 2)
 
     def test_events_with_no_run_yet_are_none(self, call):
         assert call('get_run_events') == (False, {'run_id': None, 'events': [],

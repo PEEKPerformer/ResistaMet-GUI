@@ -26,6 +26,9 @@ import anyio
 #: and an agent should look up now and then rather than block for an hour.
 MAX_WAIT_S = 120.0
 POLL_S = 0.5
+#: How often a wait that will stop the run looks. A stop that comes half a
+#: second late is five readings too many at 10 Hz; at 0.1 s it is about one.
+POLL_S_THEN_STOP = 0.1
 #: Samples returned by one get_run_events, at most.
 MAX_SAMPLES = 200
 #: Other events returned by one get_run_events, at most; the rest follow
@@ -132,7 +135,8 @@ def _met(until: Until, status: Dict[str, Any], run_id: Optional[str],
 
 
 async def wait_for(get: Get, until: Until, timeout_s: float, *,
-                   poll_s: float = POLL_S,
+                   stop: Optional[Callable[[], Awaitable[Any]]] = None,
+                   poll_s: Optional[float] = None,
                    clock: Callable[[], float] = time.monotonic,
                    sleep: Callable[[float], Awaitable[None]] = anyio.sleep) -> Dict[str, Any]:
     """Wait for ``until`` on the current run; say what ended the wait.
@@ -141,27 +145,49 @@ async def wait_for(get: Get, until: Until, timeout_s: float, *,
     (a prompt is pending, and the run cannot go on until a person answers
     it), ``run_ended`` (no run is in progress, so nothing more will happen)
     or ``timeout``. Waiting when no run is in progress returns at once.
+
+    With ``stop``, the run is stopped as soon as the condition holds, in
+    this same call, and the wait goes on, within the same timeout, until
+    the run has ended; ``stopped`` says so. Two calls (wait, then stop)
+    leave a whole round trip of the agent's between them, in which a run
+    asked for 20 samples took 57. Here the gap is one poll, made short for
+    the purpose (``POLL_S_THEN_STOP``), and the reading in flight when the
+    stop arrives. Only the condition asked for stops the run: a prompt, a
+    run that ended or a timeout returns as without ``stop``.
     """
     timeout_s = max(0.0, min(float(timeout_s), MAX_WAIT_S))
+    if poll_s is None:
+        poll_s = POLL_S if stop is None else POLL_S_THEN_STOP
     started = clock()
     status = await get('/session')
     run_id = status.get('run_id')
     samples = SampleCount(run_id) if until.kind == 'samples' and run_id else None
+    stopped = False
     while True:
-        if samples is not None:
-            await samples.update(get)
-        if _met(until, status, run_id, samples):
-            fired = until.text
-            break
-        if status.get('pending_prompt') is not None:
-            fired = 'prompt'
-            break
-        if _ended(status, run_id):
-            fired = 'run_ended'
-            break
+        if stopped:
+            if _ended(status, run_id):
+                break
+        else:
+            if samples is not None:
+                await samples.update(get)
+            if _met(until, status, run_id, samples):
+                fired = until.text
+                if stop is None or _ended(status, run_id):
+                    break
+                await stop()
+                stopped = True
+                status = await get('/session')
+                continue
+            if status.get('pending_prompt') is not None:
+                fired = 'prompt'
+                break
+            if _ended(status, run_id):
+                fired = 'run_ended'
+                break
         left = timeout_s - (clock() - started)
         if left <= 0:
-            fired = 'timeout'
+            if not stopped:
+                fired = 'timeout'
             break
         await sleep(min(poll_s, left))
         status = await get('/session')
@@ -177,6 +203,11 @@ async def wait_for(get: Get, until: Until, timeout_s: float, *,
         if samples.gap:
             waited['samples_note'] = ("the backend's history no longer reaches the run's "
                                       "start, so this count is short")
+    if stopped:
+        waited['stopped'] = True
+        if not _ended(status, run_id):
+            waited['stop_note'] = ("the run was told to stop and had not ended within the "
+                                   "timeout; wait_for run_ended to see it end")
     if run_id and _ended(status, run_id):
         waited['run_ended'] = await run_ended_payload(get, run_id, status)
     return waited

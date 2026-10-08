@@ -108,9 +108,19 @@ def column_stats(cells: Sequence[str]) -> Optional[Dict[str, Any]]:
             'max': max(values), 'last': values[-1]}
 
 
-def summarise(text: str) -> Dict[str, Any]:
-    """The numbers a run's file holds, without its rows."""
+def summarise(text: str, first_rows: Optional[int] = None) -> Dict[str, Any]:
+    """The numbers a run's file holds, without its rows.
+
+    ``first_rows``: only the first N data rows count, for every statistic,
+    the compliance rows and the marks alike. A mode with no sample count
+    runs until it is stopped and always writes a few rows past the N that
+    were wanted; this summarises the N. ``rows`` is then how many were
+    summarised and ``rows_total`` how many the file holds.
+    """
     run = RunFile(text)
+    rows_total = len(run.rows)
+    if first_rows is not None:
+        run.rows = run.rows[:max(0, int(first_rows))]
     columns: Dict[str, Any] = {}
     for name in run.columns:
         if name in TEXT_COLUMNS:
@@ -125,6 +135,11 @@ def summarise(text: str) -> Dict[str, Any]:
         'rows': len(run.rows),
         'columns': columns,
     }
+    if first_rows is not None:
+        summary['rows_total'] = rows_total
+        summary['first_rows'] = int(first_rows)
+        summary['note'] = (f"statistics, compliance and marks over the first {len(run.rows)} "
+                           f"of {rows_total} data rows")
     if 'compliance' in run.columns:
         kinds: Dict[str, int] = {}
         for value in run.column('compliance'):

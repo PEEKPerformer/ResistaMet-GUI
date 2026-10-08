@@ -126,6 +126,32 @@ class TestSummarise:
         assert summary['marks_total'] == 80
 
 
+class TestFirstRows:
+    def test_only_the_first_rows_count(self):
+        summarised = summarise(RESISTANCE, first_rows=2)
+        # 100 and 102: mean 101, sd sqrt(2).
+        resistance = summarised['columns']['R_ohm']
+        assert (resistance['count'], resistance['mean'], resistance['last']) == (2, 101.0, 102.0)
+        assert resistance['sd'] == pytest.approx(math.sqrt(2))
+        assert (summarised['rows'], summarised['rows_total'], summarised['first_rows']) == \
+            (2, 4, 2)
+        assert summarised['note'] == ("statistics, compliance and marks over the first 2 "
+                                      "of 4 data rows")
+
+    def test_compliance_and_marks_are_of_those_rows_too(self):
+        summarised = summarise(RESISTANCE, first_rows=2)
+        assert summarised['compliance'] == {'rows': 0, 'kinds': {}}
+        assert [mark['label'] for mark in summarised['marks']] == ['lamp on']
+
+    def test_more_than_the_file_has_is_the_whole_file(self):
+        summarised = summarise(RESISTANCE, first_rows=10)
+        assert (summarised['rows'], summarised['rows_total']) == (4, 4)
+        assert summarised['columns']['R_ohm']['count'] == 4
+
+    def test_without_it_nothing_is_said_about_it(self):
+        assert 'rows_total' not in summarise(RESISTANCE)
+
+
 class TestReadSlice:
     def test_a_slice_from_the_start(self):
         sliced = read_slice(RESISTANCE, offset=1, rows=2)

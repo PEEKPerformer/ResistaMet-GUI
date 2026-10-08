@@ -248,3 +248,64 @@ class TestWaitFor:
         waited = _wait(script, 'samples:50')
         assert waited['fired'] == 'run_ended'
         assert waited['run_ended']['reason'] == 'user_stop'
+
+
+def _wait_then_stop(script, until, timeout_s=10.0, ends_with=None):
+    """As _wait, with a stop that records when it was sent (and ends the run)."""
+    stops = []
+
+    async def stop():
+        stops.append(script.now)
+        if ends_with is not None:
+            cursor = len(script.history) + 1
+            script.history.append(_event(cursor, 'run-1', cursor, 'run_ended', **ends_with))
+
+    waited = asyncio.run(waiting.wait_for(script.get, parse_until(until), timeout_s,
+                                          stop=stop, clock=script.clock, sleep=script.sleep))
+    return waited, stops
+
+
+class TestThenStop:
+    def test_the_run_is_stopped_when_the_condition_holds_and_followed_to_its_end(self):
+        # run_ended will be the run's fifth event (seq 5).
+        idle = {**IDLE, 'last_seq': 5}
+        script = Script([RUNNING, RUNNING, {**RUNNING, 'state': 'stopping'}, idle],
+                        _run_events()[:3])
+
+        async def more_samples(seconds):
+            script.now += seconds
+            cursor = len(script.history) + 1
+            script.history.append(_event(cursor, 'run-1', cursor, 'sample'))
+
+        script.sleep = more_samples
+        ended = {'reason': 'user_stop', 'ok': True, 'samples': 3, 'path': 'alice/x.csv'}
+        waited, stops = _wait_then_stop(script, 'samples:2', ends_with=ended)
+        # One sample in the history, a second after one poll: stopped then,
+        # at 0.1 s, the poll a wait that stops uses.
+        assert stops == [pytest.approx(0.1)]
+        assert (waited['fired'], waited['stopped'], waited['samples']) == ('samples:2', True, 2)
+        assert waited['status'] == idle
+        assert waited['run_ended'] == ended
+        assert 'stop_note' not in waited
+
+    def test_a_run_slow_to_end_is_said_to_be_still_ending(self):
+        stopping = {**RUNNING, 'state': 'stopping'}
+        script = Script([{**RUNNING, 'state': 'paused'}, stopping])
+        waited, stops = _wait_then_stop(script, 'state:paused', timeout_s=0.3)
+        assert stops == [0.0]
+        assert (waited['fired'], waited['stopped']) == ('state:paused', True)
+        assert waited['status'] == stopping
+        assert 'wait_for run_ended' in waited['stop_note']
+        assert waited['waited_s'] == pytest.approx(0.3)
+
+    def test_a_prompt_or_a_timeout_does_not_stop_the_run(self):
+        prompted = {**RUNNING, 'state': 'awaiting_prompt', 'pending_prompt': PROMPT}
+        waited, stops = _wait_then_stop(Script([prompted]), 'samples:5')
+        assert (waited['fired'], stops) == ('prompt', [])
+        waited, stops = _wait_then_stop(Script([RUNNING]), 'state:paused', timeout_s=0.2)
+        assert (waited['fired'], stops) == ('timeout', [])
+        assert 'stopped' not in waited
+
+    def test_a_run_already_over_is_not_stopped(self):
+        waited, stops = _wait_then_stop(Script([RUNNING, IDLE], _run_events()), 'run_ended')
+        assert (waited['fired'], stops) == ('run_ended', [])
