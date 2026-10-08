@@ -261,6 +261,18 @@ class TestSchema:
         assert resistance['fixed'] == {}
         assert modes['four_point']['fixed'] == {'auto_zero': 'on', 'filter_count': 10}
 
+    def test_van_der_pauw_says_its_wirings_before_the_run(self, client):
+        schema = client.get('/schema/settings').json()
+        wiring = schema['modes']['vdp']['wiring']
+        assert [(w['force_hi'], w['force_lo'], w['sense_hi'], w['sense_lo'])
+                for w in wiring] == [('C2', 'C1', 'C3', 'C4'), ('C3', 'C2', 'C4', 'C1'),
+                                     ('C4', 'C3', 'C1', 'C2'), ('C1', 'C4', 'C2', 'C3')]
+        assert wiring[0]['message'] == ("Geometry 1 of 4: connect Force HI→C2, Force LO→C1, "
+                                        "Sense HI→C3, Sense LO→C4, then press Measure.")
+        assert not any('wiring' in entry for mode, entry in schema['modes'].items()
+                       if mode != 'vdp')
+        assert schema['prompt_timeout_s'] == {'default': 900.0, 'maximum': 86400.0}
+
     def test_a_run_until_stopped_flag_is_offered_to_its_own_mode_only(self, client):
         modes = client.get('/schema/settings').json()['modes']
         offered = {mode: sorted(key for key in entry['override_keys']

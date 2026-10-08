@@ -291,7 +291,7 @@ def test_a_van_der_pauw_run_without_a_thickness_with_a_person_at_the_bench(bench
             'user': 'alice', 'mode': 'vdp', 'sample_name': 'vdp-no-thickness',
             'overrides': {'vdp_thickness_cm': 0.0}})
         assert not failed, started
-        answered = []
+        answered, told = [], []
         while True:
             failed, waited = await call('wait_for', {'until': 'prompt', 'timeout_s': 60})
             assert not failed, waited
@@ -299,11 +299,14 @@ def test_a_van_der_pauw_run_without_a_thickness_with_a_person_at_the_bench(bench
                 break
             prompt = waited['status']['pending_prompt']
             answered.append((prompt['kind'], prompt['detail']['index']))
+            told.append(prompt['detail']['message'])
             # The person at the window, with the ui token, has rewired the leads.
             bench.ui('POST', '/session/prompt', json={'prompt_id': prompt['prompt_id'],
                                                       'choice': 'proceed'})
         assert answered == [('vdp_geometry', 0), ('vdp_geometry', 1),
                             ('vdp_geometry', 2), ('vdp_geometry', 3)]
+        # What describe_mode said beforehand is what the person was asked.
+        assert told == [wiring['message'] for wiring in described['wiring']]
         assert waited['run_ended']['reason'] == 'completed', waited
 
         failed, summarised = await call('get_run_summary', {'run_id': started['run_id']})

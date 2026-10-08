@@ -52,9 +52,11 @@ VDP_PROMPTS = (
     "says which contacts take Force HI/LO and Sense HI/LO, and a person rewires the "
     "leads and presses Measure at the ResistaMet window (the answer 'proceed'). If "
     "vdp_voltage_compliance is at or above the profile's touch-safety threshold, a "
-    "touch-safety prompt (safety_voltage_ack) comes first. Each prompt waits prompt_timeout_s (900 s by default), then the run "
-    "ends. A person must be at the bench for the whole run; an agent can start it, "
-    "follow it and stop it, but not move it on.")
+    "touch-safety prompt (safety_voltage_ack) comes first. Each prompt waits "
+    "prompt_timeout_s (900 s by default; start_run sets it), then the run ends. "
+    "describe_mode('vdp') gives the four wirings in the words the prompts will use. A "
+    "person must be at the bench for the whole run; an agent can start it, follow it "
+    "and stop it, but not move it on.")
 
 #: Profile keys get_profile leaves out (see ``for_an_agent``).
 HIDDEN_PROFILE_KEYS = ('allow_agents',)
@@ -176,12 +178,17 @@ def status_view(status: Dict[str, Any],
     return view
 
 
-async def mode_entry(backend: Backend, mode: str) -> Dict[str, Any]:
-    """The schema route's entry for one mode, or a tool error naming the modes."""
-    modes = (await ask(backend, 'GET', '/schema/settings')).get('modes', {})
+def entry_of(schema: Dict[str, Any], mode: str) -> Dict[str, Any]:
+    """One mode's entry in the schema route's reply, or a tool error naming the modes."""
+    modes = schema.get('modes', {})
     if mode not in modes:
         raise ToolError(f"unknown mode '{mode}'; the modes are: {', '.join(sorted(modes))}")
     return modes[mode]
+
+
+async def mode_entry(backend: Backend, mode: str) -> Dict[str, Any]:
+    """The schema route's entry for one mode, or a tool error naming the modes."""
+    return entry_of(await ask(backend, 'GET', '/schema/settings'), mode)
 
 
 def register(server: MCPServer, backend: Backend) -> None:
@@ -252,7 +259,8 @@ def _register_reads(server: MCPServer, backend: Backend, shown: ShownPrompt) -> 
                             user: Annotated[Optional[str], Field(
                                 description="Whose stored values to show; default the "
                                             "last user.")] = None) -> CallToolResult:
-        entry = await mode_entry(backend, mode)
+        schema = await ask(backend, 'GET', '/schema/settings')
+        entry = entry_of(schema, mode)
         user = user or (await ask(backend, 'GET', '/users')).get('last_user')
         measurement = profile = None
         issues = None
@@ -269,6 +277,12 @@ def _register_reads(server: MCPServer, backend: Backend, shown: ShownPrompt) -> 
                                      'how_to_read': describing.HOW_TO_READ}
         if mode == 'vdp':
             described['prompts'] = VDP_PROMPTS
+            # The backend's, as its run will raise them; absent from an
+            # older backend, which this server may be talking to.
+            for key, value in (('wiring', entry.get('wiring')),
+                               ('prompt_timeout_s', schema.get('prompt_timeout_s'))):
+                if value is not None:
+                    described[key] = value
         if issues is not None:
             described['issues'] = issues
         return result(described)
@@ -279,7 +293,11 @@ def _register_reads(server: MCPServer, backend: Backend, shown: ShownPrompt) -> 
         "would have, in its unit, and where it comes from (the profile, or fixed by the "
         "mode), the default, what the key accepts (its choices, or its bounds), and what "
         "it means. A key the mode does not fix can be changed for one run in overrides. "
-        "For vdp, prompts says what a person must answer during the run, and when."))
+        "For vdp, prompts says what a person must answer during the run, and when; "
+        "wiring lists the four wirings (force_hi, force_lo, sense_hi, sense_lo and the "
+        "message each prompt will show), so you can tell the person before the run; "
+        "prompt_timeout_s gives how long each prompt waits by default, in s, and the most "
+        "start_run may ask for."))
 
     async def check_settings(user: User, mode: Mode,
                              overrides: Overrides = None) -> CallToolResult:
