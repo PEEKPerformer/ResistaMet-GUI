@@ -230,6 +230,9 @@ def test_a_resistance_run_from_start_to_summary(bench):
         failed, final = await call('get_run_summary', {'run_id': run_id})
         assert not failed and final['finalized'] is True
         assert final['end']['total_samples'] == final['rows']
+        headline = final['result']['R']
+        assert headline['unit'] == 'Ω'
+        assert headline['mean'] == pytest.approx(100.0, rel=1e-3)
         assert final['marks'][0]['label'] == 'checked by agent'
 
         failed, events = await call('get_run_events', {'run_id': run_id})
@@ -324,6 +327,12 @@ def test_a_van_der_pauw_run_without_a_thickness_with_a_person_at_the_bench(bench
         assert end['vdp_result.thickness_cm'] == 0.0
         assert [end[f'vdp_result.{key}'] for key in ('rho_avg', 'rho_a', 'rho_b')] == \
             [None, None, None]
+        result = summarised['result']
+        assert result['R_s']['unit'] == 'Ω/□' and result['R_s']['value'] > 0
+        assert result['R_s']['u'] > 0
+        assert result['rho'] is None
+        assert result['homogeneity']['threshold_pct'] == 10.0
+        assert result['homogeneity']['homogeneous'] is end['vdp_result.homogeneous']
 
     agent(bench, steps)
 
@@ -435,6 +444,34 @@ def test_a_fixed_number_of_readings_in_a_mode_without_a_count(bench):
     agent(bench, steps)
 
 
+@pytest.mark.parametrize('source, overrides', [
+    ('voltage', {'sweep_start': 0.0, 'sweep_stop': 0.5, 'sweep_step': 0.1,
+                 'sweep_compliance': 0.1}),
+    ('current', {'sweep_start': 0.0, 'sweep_stop': 5e-3, 'sweep_step': 1e-3,
+                 'sweep_compliance': 5.0}),
+])
+def test_a_sweep_summary_gives_the_fitted_resistance(bench, source, overrides):
+    """The trial's agent fitted the sweep itself; the summary now does."""
+    async def steps(call):
+        failed, started = await call('start_run', {
+            'user': 'alice', 'mode': 'sweep', 'sample_name': f'sweep-{source}',
+            'overrides': {'sweep_source': source, 'sweep_delay': 0.0, **overrides}})
+        assert not failed, started
+        failed, waited = await call('wait_for', {'until': 'run_ended', 'timeout_s': 60})
+        assert not failed and waited['run_ended']['reason'] == 'completed', waited
+        failed, summarised = await call('get_run_summary', {'run_id': started['run_id']})
+        assert not failed, summarised
+        result = summarised['result']
+        assert (result['sourced'], result['n']) == (source, 6)
+        assert result['R']['unit'] == 'Ω'
+        assert result['R']['value'] == pytest.approx(100.0, rel=1e-3)  # --sim 100 Ω
+        assert result['r2'] == pytest.approx(1.0, abs=1e-6)
+        named = ['V_source', 'I_meas'] if source == 'voltage' else ['V_meas', 'I_source']
+        assert set(named) <= set(summarised['columns'])
+
+    agent(bench, steps)
+
+
 def test_the_stdio_server_answers(bench):
     """``python -m resistamet_gui.mcp`` as an MCP client starts it: stdout is the protocol."""
     from mcp import StdioServerParameters
@@ -469,6 +506,6 @@ def test_the_audit_log_has_a_line_per_call_and_no_token(bench):
     assert bench.agent_token not in text and bench.ui_token not in text
     starts = [line for line in lines if line['tool'] == 'start_run']
     assert [line['outcome'] for line in starts] == ['ok', 'error', 'ok', 'ok', 'ok', 'ok',
-                                                     'ok']
+                                                     'ok', 'ok', 'ok']
     assert starts[1]['http_status'] == 422
     assert starts[0]['run_id'] and starts[0]['http_status'] == 202
