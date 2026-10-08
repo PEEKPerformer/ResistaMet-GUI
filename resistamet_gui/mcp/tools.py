@@ -40,6 +40,20 @@ PERSON_MUST_ANSWER = ("A person must answer this at the ResistaMet window; an ag
 
 MODES = "resistance, source_v, source_i, four_point, sweep, vdp"
 
+#: What a van der Pauw run asks of a person, as ``session/vdp_run.py`` does it:
+#: the touch-safety question first when it applies, before the instrument is
+#: opened, then one rewiring prompt per F76 geometry (``f76_geometries``,
+#: four), each with the output off.
+VDP_PROMPTS = (
+    "A van der Pauw run stops at four prompts (kind vdp_geometry), one before each of "
+    "its four wirings: the output is off while it waits, the prompt's detail names the "
+    "contacts for Force HI/LO and Sense HI/LO, and a person rewires the leads and "
+    "answers at the ResistaMet window. If vdp_voltage_compliance is at or above the "
+    "profile's touch-safety threshold, a touch-safety prompt (safety_voltage_ack) "
+    "comes first. Each prompt waits prompt_timeout_s (900 s by default), then the run "
+    "ends. A person must be at the bench for the whole run; an agent can start it, "
+    "follow it and stop it, but not move it on.")
+
 #: Profile keys get_profile leaves out (see ``for_an_agent``).
 HIDDEN_PROFILE_KEYS = ('allow_agents',)
 
@@ -224,6 +238,8 @@ def _register_reads(server: MCPServer, backend: Backend) -> None:
         described: Dict[str, Any] = {'mode': mode, 'user': user,
                                      **describing.describe(entry, measurement, profile),
                                      'how_to_read': describing.HOW_TO_READ}
+        if mode == 'vdp':
+            described['prompts'] = VDP_PROMPTS
         if issues is not None:
             described['issues'] = issues
         return result(described)
@@ -233,7 +249,8 @@ def _register_reads(server: MCPServer, backend: Backend) -> None:
         "shared_keys (timing, filter, aux sensor). Each line gives the value a user's run "
         "would have, in its unit, and where it comes from (the profile, or fixed by the "
         "mode), the default, what the key accepts (its choices, or its bounds), and what "
-        "it means. Any of these keys can be changed for one run in overrides."))
+        "it means. Any of these keys can be changed for one run in overrides. For vdp, "
+        "prompts says what a person must answer during the run, and when."))
 
     async def check_settings(user: User, mode: Mode,
                              overrides: Overrides = None) -> CallToolResult:
@@ -307,9 +324,12 @@ def _register_runs(server: MCPServer, backend: Backend) -> None:
         "or a run beyond the agent limits (each violation: limit, keys, value, allowed; "
         "only a person can raise a limit), 409 when a run is already going or another "
         "program holds the instrument. A run at or above the profile's touch-safety "
-        "threshold (30 V by default) and every van der Pauw run stop at prompts that "
-        "only a person at the ResistaMet window can answer. The data file records "
-        "started_by: agent. stop_run ends it."))
+        "threshold (30 V by default) first stops at a touch-safety prompt. A van der "
+        "Pauw run stops at four more, one before each of its four wirings, with the "
+        "output off, for a person to rewire the leads: someone must be at the bench for "
+        "the whole run (describe_mode('vdp') says more). Only a person at the "
+        "ResistaMet window can answer a prompt. The data file records started_by: "
+        "agent. stop_run ends it."))
 
     async def stop_run() -> CallToolResult:
         return result(status_view(await ask(backend, 'POST', '/session/stop')))
