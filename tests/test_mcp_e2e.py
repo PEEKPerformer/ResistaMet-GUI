@@ -166,6 +166,24 @@ def test_check_settings_within_and_beyond_the_agent_limit(bench):
     agent(bench, steps)
 
 
+def test_describe_mode_says_what_each_key_accepts_and_where_it_comes_from(bench):
+    async def steps(call):
+        failed, described = await call('describe_mode', {'mode': 'four_point',
+                                                         'user': 'alice'})
+        assert not failed, described
+        assert described['mode_keys']['fpp_model'].startswith(
+            '"thin_film", from the profile (the default); '
+            'one of thin_film|semi_infinite|finite_thin|finite_alpha; ')
+        assert described['mode_keys']['fpp_temperature_c'].startswith('null, from the profile')
+        # The profile stores the defaults "once" and 5; a four-point run uses its own.
+        assert described['shared_keys']['auto_zero'].startswith(
+            '"on", fixed by the mode (the profile\'s "once" is not used)')
+        assert described['shared_keys']['filter_count'] == \
+            '10, fixed by the mode (the profile\'s 5 is not used)'
+
+    agent(bench, steps)
+
+
 def test_a_resistance_run_from_start_to_summary(bench):
     async def steps(call):
         failed, started = await call('start_run', {'user': 'alice', 'mode': 'resistance',

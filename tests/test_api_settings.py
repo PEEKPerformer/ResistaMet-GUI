@@ -251,6 +251,16 @@ class TestSchema:
         assert 'gpib_address' not in keys
         assert 'settling_time' not in keys
 
+    def test_each_key_says_what_it_accepts_and_the_mode_says_what_it_fixes(self, client):
+        modes = client.get('/schema/settings').json()['modes']
+        resistance = modes['resistance']
+        assert set(resistance['keys']) == set(resistance['override_keys'])
+        assert resistance['keys']['res_test_current'] == {
+            'type': 'number', 'minimum': 1e-7, 'maximum': 3.0, 'default': 0.001, 'unit': 'A'}
+        assert resistance['keys']['res_measurement_type']['enum'] == ['2-wire', '4-wire']
+        assert resistance['fixed'] == {}
+        assert modes['four_point']['fixed'] == {'auto_zero': 'on', 'filter_count': 10}
+
     def test_a_run_until_stopped_flag_is_offered_to_its_own_mode_only(self, client):
         modes = client.get('/schema/settings').json()['modes']
         offered = {mode: sorted(key for key in entry['override_keys']
