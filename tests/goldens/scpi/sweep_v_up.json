@@ -15,6 +15,7 @@
     ":SYST:AZER:STAT ON",
     ":SENS:FUNC:CONC OFF",
     ":OUTP:SMOD HIMP",
+    ":SYST:RSEN OFF",
     ":SENS:FUNC:CONC OFF",
     ":SOUR:FUNC VOLT",
     ":SENS:FUNC 'CURR:DC'",

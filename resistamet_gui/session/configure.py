@@ -327,7 +327,13 @@ def configure_sweep(keithley, events, measurement_settings, nplc):
     sweep_compliance = float(measurement_settings.get('sweep_compliance', 0.1))
     sweep_delay = float(measurement_settings.get('sweep_delay', 0.01))
     sweep_direction = measurement_settings.get('sweep_direction', 'up')
+    measurement_type = measurement_settings.get('sweep_measurement_type', '2-wire')
 
+    # Written either way, as configure_resistance does, before the source
+    # and sense functions: the sweep must not inherit the wiring of
+    # whatever ran before it. The connect step's *RST leaves it off, so
+    # 2-wire is what every sweep had before this was a setting.
+    keithley.write(":SYST:RSEN ON" if measurement_type == "4-wire" else ":SYST:RSEN OFF")
     src_func = 'VOLT' if sweep_source == 'voltage' else 'CURR'
     # For down direction, swap start/stop
     if sweep_direction == 'down':
@@ -357,6 +363,7 @@ def configure_sweep(keithley, events, measurement_settings, nplc):
         'Delay (s)': sweep_delay,
         'Direction': sweep_direction,
         'Points': state.points,
+        'Measurement Type': measurement_type,
     }
     csv_headers = ['Point', 'Voltage (V)', 'Current (A)', 'Compliance Status']
     source_value_str = f"sweep_{sweep_start}to{sweep_stop}"

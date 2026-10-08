@@ -1073,6 +1073,16 @@
           "title": "Sweep Direction",
           "type": "string"
         },
+        "sweep_measurement_type": {
+          "default": "2-wire",
+          "description": "4-wire senses the voltage at the sample on separate leads (remote sense); 2-wire includes the leads' resistance.",
+          "enum": [
+            "2-wire",
+            "4-wire"
+          ],
+          "title": "Sweep Measurement Type",
+          "type": "string"
+        },
         "sweep_source": {
           "default": "voltage",
           "enum": [

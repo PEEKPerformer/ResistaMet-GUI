@@ -424,6 +424,10 @@ export interface SweepSettings {
    */
   sweep_delay?: number;
   sweep_direction?: "up" | "down" | "up_down";
+  /**
+   * 4-wire senses the voltage at the sample on separate leads (remote sense); 2-wire includes the leads' resistance.
+   */
+  sweep_measurement_type?: "2-wire" | "4-wire";
   sweep_source?: "voltage" | "current";
   /**
    * In the source's unit: V, within +/-200, when sweep_source is voltage; A, within +/-3, when it is current.
@@ -1077,6 +1081,14 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
         "up_down"
       ],
       "default": "up"
+    },
+    "sweep_measurement_type": {
+      "type": "string",
+      "enum": [
+        "2-wire",
+        "4-wire"
+      ],
+      "default": "2-wire"
     },
     "sweep_source": {
       "type": "string",
