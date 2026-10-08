@@ -71,15 +71,15 @@ Each tool maps onto one or two API routes. Values are SI (V, A, Ω, s, Hz). Resu
 | `get_status` | State, current or last run (with `started_by` and its data file), instrument and its limits, pending prompt | `GET /session`, `GET /health` |
 | `list_instruments` | VISA resources this PC sees (idle only) | `GET /instruments/resources` |
 | `identify_instrument(address)` | Model and its limits from `*IDN?` (idle only) | `POST /instruments/identify` |
-| `list_users`, `get_profile(user)` | Operators; one profile's stored settings, including its agent limits | `GET /users`, `GET /profiles/{user}` |
-| `describe_mode(mode, user?)` | The keys a mode takes, and the value each would have for a user | `GET /schema/settings`, `POST /settings/resolve` |
-| `check_settings(user, mode, overrides?)` | Dry run: resolved values, issues, derived values, the touch-safety check and the agent-limit verdict (`agent_may_start`) | `POST /settings/resolve` |
+| `list_users`, `get_profile(user)` | Operators; one profile's stored settings, including its agent limits, without the machine's `allow_agents` switch (a connected agent has access whatever it says) | `GET /users`, `GET /profiles/{user}` |
+| `describe_mode(mode, user?)` | One line per key a mode takes: the value a user's run would have, in its unit, and whether it comes from the profile or is fixed by the mode; the default; the choices or bounds; what it means. For `vdp`, the prompts a person must answer | `GET /schema/settings`, `POST /settings/resolve`, `GET /profiles/{user}` |
+| `check_settings(user, mode, overrides?)` | Dry run: resolved values, issues, warnings (what the run will warn about: a sampling rate the timing cannot reach, four-point power above its warning threshold), derived values, the touch-safety check and the agent-limit verdict (`agent_may_start`) | `POST /settings/resolve` |
 | `start_run(user, mode, sample_name, overrides?, spot?, prompt_timeout_s?)` | Start a run; returns the run id at once | `POST /session/start` |
 | `stop_run`, `abort_run`, `pause_run`, `resume_run` | As the routes; stopping is always allowed | `POST /session/…` |
 | `mark_event(label)` | A label in the next data row's event column | `POST /session/mark` |
-| `wait_for(until, timeout_s ≤ 120)` | Wait for `run_ended`, `prompt`, `samples:N` or `state:<state>`; also returns early at a prompt or when no run is in progress, saying which | polls `GET /session` |
+| `wait_for(until, timeout_s ≤ 120, then_stop?)` | Wait for `run_ended`, `prompt`, `samples:N` or `state:<state>`; also returns early at a prompt or when no run is in progress, saying which. With `then_stop`, stops the run as soon as the condition holds and returns once it has ended | polls `GET /session`; `POST /session/stop` |
 | `get_run_events(since_seq?, run_id?, types?, include_samples?, max_samples ≤ 200)` | What happened in a run; samples and progress logs left out unless asked for, samples thinned to at most 200 | `GET /session/events` |
-| `get_run_summary(run_id?, path?)` | Per numeric column: unit, count, mean, SD, min, max, last; compliance rows; marks; header and end block. From the data file, during or after the run | `GET /results/file` |
+| `get_run_summary(run_id?, path?, first_rows?)` | Per numeric column: unit, count, mean, SD, min, max, last; compliance rows; marks; header and end block. From the data file, during or after the run. `first_rows=N`: over the first N data rows only | `GET /results/file` |
 | `list_results(user?, sample?)`, `read_result(path, offset?, rows ≤ 500)` | Data files; one file's header and a slice of its rows | `GET /results`, `GET /results/file` |
 | `list_maps(user)`, `get_map(map_id, user)` | Four-point maps | `GET /maps`, `GET /maps/{map_id}` |
 
@@ -87,12 +87,16 @@ There is deliberately no tool to answer a prompt (every prompt today needs a per
 
 Summaries read plain `.csv` files only: a compressed `.csv.gz` or an HDF5 file is reported as such.
 
+### A fixed number of readings
+
+Four-point runs stop by themselves after `fpp_samples`; resistance, source V and source I run until they are stopped. To take N readings in those, start the run and call `wait_for("samples:N", then_stop=true)`. The stop goes out in the same call, as soon as the backend has N samples, and the call returns once the run has ended, with `stopped: true` and `run_ended` (its `samples` is the final count). While it waits to stop a run, `wait_for` looks every 0.1 s, so the file holds N rows or a few more: those read in that tenth of a second and the one in flight when the stop arrives. `get_run_summary(first_rows=N)` then summarises exactly N. Waiting and stopping in two calls leaves the agent's round trip between them; in a trial, a run asked for 20 readings wrote 57. A prompt or a timeout does not stop the run.
+
 ## What needs a person
 
 The backend applies these to the agent's token whatever the MCP server does ([API → Token and roles](api.md#token-and-roles)):
 
 - **Agent limits.** A run an agent starts must stay within the profile's [`agent_limits`](settings.md#agent-limits): 30 V by default, with current and power left to the instrument, and the connected model's own limits once the backend knows the model. Beyond them `start_run` is refused with each violation (the limit, the settings that give the value, the value, the limit's value); `check_settings` gives the same verdict first. Only the window can change the limits.
-- **Prompts.** A run at or above the profile's touch-safety threshold asks for acknowledgement at the window, even on a profile that silenced the warning, and a van der Pauw run asks before each of its four wirings. Both are `requires_human`: `wait_for` and `get_status` report them with "a person must answer this at the ResistaMet window", and the run waits for that person, or until `prompt_timeout_s` (900 s by default) and then ends.
+- **Prompts.** A run at or above the profile's touch-safety threshold asks for acknowledgement at the window, even on a profile that silenced the warning, and a van der Pauw run asks before each of its four wirings, with the output off, so a person must be at the bench for the whole of it (`describe_mode("vdp")` says so). Both are `requires_human`: `wait_for` and `get_status` report them with "a person must answer this at the ResistaMet window", and the run waits for that person, or until `prompt_timeout_s` (900 s by default) and then ends.
 - **Protected settings.** The touch-safety keys, the agent limits, `allow_agents` and a VISA library path can be changed by the window only.
 - **Provenance.** Every run an agent starts has `started_by: agent` in its data file header, set by the backend from the token, and `client.name: resistamet-mcp`. The desktop app marks such a run.
 
