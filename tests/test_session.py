@@ -297,7 +297,7 @@ class TestValidation:
     def test_strict_resolver_rejects_a_bad_request(self, session, profile):
         with pytest.raises(ValueError) as excinfo:
             session.start(profile, 'vdp', 'wafer1', 'alice',
-                           overrides={'vdp_thickness_cm': 0.0})
+                           overrides={'vdp_thickness_cm': -0.1})
         assert 'vdp_thickness_cm' in str(excinfo.value)
 
     def test_rejected_request_leaves_the_session_idle(self, session, profile):

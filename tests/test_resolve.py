@@ -252,10 +252,12 @@ class TestStrictTyping:
 
 
 class TestStartTimeChecks:
-    def test_vdp_requires_a_thickness(self, profile):
+    def test_vdp_runs_without_a_thickness(self, profile):
+        """0 is "not given": R_s needs no thickness, as on the four-point probe."""
         resolved = resolve_run_settings(profile, 'vdp',
                                          {'vdp_thickness_cm': 0.0}, strict=True)
-        assert _keys(resolved) == ['vdp_thickness_cm']
+        assert resolved.issues == []
+        assert resolved.ok
 
     def test_vdp_thickness_accepted_when_set(self, profile):
         resolved = resolve_run_settings(profile, 'vdp',
@@ -283,7 +285,8 @@ class TestStartTimeChecks:
         assert _keys(resolved) == ['aux_log_enabled']
 
     def test_start_time_checks_are_strict_only(self, profile):
-        resolved = resolve_run_settings(profile, 'vdp', {'vdp_thickness_cm': 0.0})
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_current': 1e-3, 'fpp_voltage_compliance': 100.0, 'fpp_power_stop_w': 0.05})
         assert resolved.issues == []
 
 
@@ -397,7 +400,7 @@ class TestInvalidInputIsReportedNotRaised:
         ('four_point', {'fpp_current': None}),     # the power check
         ('four_point', {'fpp_voltage_compliance': 'high'}),
         ('four_point', {'fpp_power_stop_w': None}),
-        ('vdp', {'vdp_thickness_cm': None}),       # the thickness check
+        ('vdp', {'vdp_thickness_cm': None}),
         ('vdp', {'vdp_thickness_cm': 'thin'}),
         ('source_v', {'vsource_voltage': 'abc'}),
     ]

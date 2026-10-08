@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 from collections import deque
 from datetime import datetime
@@ -1074,7 +1075,7 @@ class ResistanceMeterApp(QMainWindow):
             "Sample thickness t in cm (F76 sec. 9.3 wants t/L_p <= 1/15).\n"
             "rho = (pi/(4*ln2)) * f * t * (V/I) per F76 eq. (1).\n"
             "Sheet resistance Rs = rho / t is reported separately.\n"
-            "0 = unset; you will be prompted when you press Start."
+            "Set to 0 if unknown — sheet resistance will still be valid."
         )
         widget.vdp_settling_s = NoScrollSpinBox(
             decimals=3, minimum=0.0, maximum=10.0, singleStep=0.05, suffix=" s"
@@ -1288,8 +1289,6 @@ class ResistanceMeterApp(QMainWindow):
         sample_name = self._require_sample_name()
         if not sample_name:
             return
-        if self._require_vdp_thickness() is None:
-            return
         try:
             current_settings = self.gather_settings_for_mode('vdp')
         except ValueError as e:
@@ -1405,7 +1404,9 @@ class ResistanceMeterApp(QMainWindow):
         # the Keithley's resolution at the configured NPLC — at NPLC=10
         # we display 6 figs (6½-digit mode); at NPLC=0.01 we display 4.
         rs = float(result['sheet_resistance'])
-        rho = float(result['rho_avg'])
+        # None (or NaN) when no thickness was given: Rs only.
+        rho = result.get('rho_avg')
+        rho = float('nan') if rho is None else float(rho)
         precision = precision_for_nplc(float(widget.nplc.value()))
 
         # Per-geometry resistance bars: each is the current-reversal-derived
@@ -1446,10 +1447,13 @@ class ResistanceMeterApp(QMainWindow):
             f"R<sub>s</sub> = {format_engineering(rs, 'Ω/sq', precision=precision)}"
             f"  ± {format_engineering(u.u_rs, 'Ω/sq', precision=2)}"
         )
-        widget.vdp_rho_label.setText(
-            f"ρ = {format_engineering(rho, 'Ω·cm', precision=precision)}"
-            f"  ± {format_engineering(u.u_rho, 'Ω·cm', precision=2)}"
-        )
+        if math.isfinite(rho):
+            widget.vdp_rho_label.setText(
+                f"ρ = {format_engineering(rho, 'Ω·cm', precision=precision)}"
+                f"  ± {format_engineering(u.u_rho, 'Ω·cm', precision=2)}"
+            )
+        else:
+            widget.vdp_rho_label.setText("ρ: — (no thickness)")
         widget.vdp_bar_chart.set_data(r_values, ["G1", "G2", "G3", "G4"])
 
         widget.vdp_stats_label.setText(
@@ -2153,32 +2157,6 @@ class ResistanceMeterApp(QMainWindow):
             return None
         self.sample_input.setText(name)
         return name
-
-    def _require_vdp_thickness(self) -> Optional[float]:
-        """Return vdP sample thickness in cm, prompting if unset (0).
-
-        Mirrors _require_sample_name: a 0 value means "user never entered a
-        thickness" — silently reporting ρ = R_s × 1 µm is worse than asking.
-        Returns the thickness on success, or None if the user cancelled.
-        """
-        widget = self.tab_vdp
-        t_cm = float(widget.vdp_thickness_cm.value())
-        if t_cm > 0.0:
-            return t_cm
-        widget.vdp_thickness_cm.setFocus()
-        t_um, ok = QInputDialog.getDouble(
-            self,
-            "Sample Thickness Required",
-            "Enter sample thickness for resistivity calculation.\n"
-            "(Sheet resistance Rs is reported regardless of thickness.)\n\n"
-            "Thickness (µm):",
-            value=1.0, min=1e-3, max=1.0e5, decimals=3,
-        )
-        if not ok:
-            return None
-        t_cm = float(t_um) * 1e-4
-        widget.vdp_thickness_cm.setValue(t_cm)
-        return t_cm
 
     def start_measurement(self, mode: str):
         if self.measurement_running:

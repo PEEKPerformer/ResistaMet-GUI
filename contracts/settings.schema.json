@@ -1096,7 +1096,7 @@
     },
     "VdpSettings": {
       "additionalProperties": true,
-      "description": "van der Pauw, ASTM F76 Method A.\n\nThickness stays >= 0 here because a stored profile legitimately holds 0 for\n\"never entered\"; a run request needs > 0, which the resolver enforces in\nstrict mode (the UI prompts for it on Start).",
+      "description": "van der Pauw, ASTM F76 Method A.\n\nA thickness of 0 is \"not given\", as for the four-point probe: the run\nreports the sheet resistance and the homogeneity check, which need no\nthickness, and no resistivity. It used to be refused, although nothing\nbut the resistivity reads it.",
       "properties": {
         "vdp_current": {
           "default": 0.001,
@@ -1123,6 +1123,7 @@
         },
         "vdp_thickness_cm": {
           "default": 0.0,
+          "description": "0 = not given: sheet resistance and the homogeneity check only, no resistivity.",
           "maximum": 10.0,
           "minimum": 0.0,
           "title": "Vdp Thickness Cm",

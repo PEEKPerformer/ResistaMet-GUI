@@ -341,7 +341,8 @@ export interface VdpGeometryCompletePayload {
  *
  * Field for field what the GUI result panel has always received, including
  * the f(Q) homogeneity check and the combined uncertainties, so the panel
- * reads the same numbers the CSV metadata carries.
+ * reads the same numbers the CSV metadata carries. The resistivities are
+ * null when no thickness was given (``thickness_cm`` 0).
  */
 export interface VdpResultPayload {
   asymmetry_pct: number;
@@ -351,10 +352,10 @@ export interface VdpResultPayload {
   homogeneous: boolean;
   q_a: number;
   q_b: number;
-  rho_a: number;
-  rho_avg: number;
+  rho_a: number | null;
+  rho_avg: number | null;
   rho_avg_uncertainty?: number | null;
-  rho_b: number;
+  rho_b: number | null;
   sheet_resistance: number;
   sheet_resistance_uncertainty?: number | null;
   thickness_cm: number;

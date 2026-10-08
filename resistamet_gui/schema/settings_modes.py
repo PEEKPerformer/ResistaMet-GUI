@@ -166,15 +166,19 @@ class SweepSettings(SettingsModel):
 class VdpSettings(SettingsModel):
     """van der Pauw, ASTM F76 Method A.
 
-    Thickness stays >= 0 here because a stored profile legitimately holds 0 for
-    "never entered"; a run request needs > 0, which the resolver enforces in
-    strict mode (the UI prompts for it on Start).
+    A thickness of 0 is "not given", as for the four-point probe: the run
+    reports the sheet resistance and the homogeneity check, which need no
+    thickness, and no resistivity. It used to be refused, although nothing
+    but the resistivity reads it.
     """
 
     vdp_current: float = Field(default=_M['vdp_current'], gt=0.0, le=1.0)
     vdp_voltage_compliance: float = Field(default=_M['vdp_voltage_compliance'], gt=0.0, le=200.0)
     vdp_voltage_range_auto: bool = _M['vdp_voltage_range_auto']
-    vdp_thickness_cm: float = Field(default=_M['vdp_thickness_cm'], ge=0.0, le=10.0)
+    vdp_thickness_cm: float = Field(
+        default=_M['vdp_thickness_cm'], ge=0.0, le=10.0,
+        description="0 = not given: sheet resistance and the homogeneity check only, no "
+                    "resistivity.")
     vdp_settling_s: float = Field(default=_M['vdp_settling_s'], ge=0.0, le=10.0,
                                   description="Wait after each change of current, in s.")
     vdp_readings_per_polarity: int = Field(

@@ -26,6 +26,7 @@ from resistamet_gui.calculations_vdp import (
     f76_geometries,
     vdp_geometric_factor,
     vdp_resistivity_pair,
+    vdp_sheet_resistance_pair,
 )
 
 
@@ -359,6 +360,43 @@ class TestInputValidation:
         v = _uniform_sample_voltages(100.0, 1.0e-3)
         with pytest.raises(ValueError, match="thickness must be > 0"):
             calculate_van_der_pauw(v, 1.0e-3, -1.0e-5)
+
+    def test_a_thickness_that_is_not_a_number_raises(self):
+        v = _uniform_sample_voltages(100.0, 1.0e-3)
+        with pytest.raises(ValueError, match="thickness must be > 0"):
+            calculate_van_der_pauw(v, 1.0e-3, float('nan'))
+
+
+class TestWithoutThickness:
+    """0 or None is "not given": R_s and homogeneity, no resistivity."""
+
+    @pytest.mark.parametrize("thickness", [0.0, None])
+    def test_sheet_resistance_and_homogeneity_without_resistivity(self, thickness):
+        v = _uniform_sample_voltages(100.0, 1.0e-3)
+        result = calculate_van_der_pauw(v, 1.0e-3, thickness)
+        assert result.sheet_resistance == pytest.approx(100.0, rel=1e-9)
+        assert (result.q_a, result.f_a) == (pytest.approx(1.0), pytest.approx(1.0))
+        assert result.homogeneous is True
+        assert result.asymmetry_pct == pytest.approx(0.0, abs=1e-9)
+        assert all(math.isnan(rho) for rho in (result.rho_a, result.rho_b, result.rho_avg))
+
+    def test_the_same_sheet_resistance_and_asymmetry_as_with_a_thickness(self):
+        v = _uniform_sample_voltages(100.0, 1.0e-3)
+        v["V_43,12"] *= 1.3  # make group B differ: asymmetry above 0
+        v["V_34,12"] *= 1.3
+        without = calculate_van_der_pauw(v, 1.0e-3, 0.0)
+        given = calculate_van_der_pauw(v, 1.0e-3, 2.0e-4)
+        assert without.sheet_resistance == pytest.approx(given.sheet_resistance, rel=1e-12)
+        assert without.asymmetry_pct == pytest.approx(given.asymmetry_pct, rel=1e-12)
+        assert without.homogeneous is given.homogeneous
+
+    def test_the_sheet_resistance_pair_by_hand(self):
+        # Q = |(2 - (-2)) / (2 - (-2))| = 1, f = 1:
+        # R_s = (pi / (4 ln 2)) * 1 / 1 mA * (4 mV + 4 mV) = 9.0647 Ohm/sq.
+        rs, q, f = vdp_sheet_resistance_pair(2e-3, -2e-3, 2e-3, -2e-3, current=1e-3)
+        assert (q, f) == (1.0, 1.0)
+        assert rs == pytest.approx(math.pi / (4 * math.log(2)) * 8.0, rel=1e-12)
+        assert rs == pytest.approx(9.0647, rel=1e-4)
 
     def test_degenerate_zero_orthogonal_delta_raises(self):
         # If one geometry yields zero net delta after current reversal,
