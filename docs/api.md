@@ -294,7 +294,7 @@ A prompt is a decision the run cannot make. The run emits `prompt`, the session 
 | `kind` | Raised | `options` | `detail` |
 |---|---|---|---|
 | `safety_voltage_ack` | After `run_started`, before the instrument is opened, when the run's [gating voltage](concepts.md#touch-safety-warning) reaches the profile's threshold and the profile has not silenced the warning; on a run started by a role other than `ui`, [whether or not it has](#an-agents-run-always-asks) | `acknowledge`, `cancel` | `voltage_v`, `threshold_v`, `reason`, `message` |
-| `vdp_geometry` | Before each of the four van der Pauw geometries, with the output off | `proceed`, `abort` | `index`, `name`, `group`, the four contact numbers `source_high`, `source_low`, `sense_high`, `sense_low`, `label_pos`, `label_neg` |
+| `vdp_geometry` | Before each of the four van der Pauw geometries, with the output off | `proceed`, `abort` | `index`, `name`, `group`, the four contact numbers `source_high`, `source_low`, `sense_high`, `sense_low`, `label_pos`, `label_neg`, and `message`, the wiring in words (`Geometry 1 of 4: connect Force HI→C2, Force LO→C1, Sense HI→C3, Sense LO→C4, then press Measure.`), as the run's log line says it. Both windows answer `proceed` with a button labelled Measure |
 
 A third kind, `cable_null_shorted`, is declared in the contract; no run raises it at this commit.
 
