@@ -268,6 +268,13 @@ def test_a_van_der_pauw_run_waits_for_a_person(bench):
         failed, status = await call('get_status')
         assert status['state'] == 'awaiting_prompt'
 
+        # Waiting for the person: the prompt the agent was shown does not
+        # end the wait, and no one answers it here.
+        failed, waited = await call('wait_for', {'until': 'run_ended', 'timeout_s': 1})
+        assert not failed and waited['fired'] == 'timeout', waited
+        assert waited['prompt_at_start'] == {'prompt_id': prompt['prompt_id'],
+                                             'still_pending': True}
+
         await _end_any_run(call)
 
     agent(bench, steps)
@@ -317,7 +324,9 @@ def test_a_hazardous_run_within_a_raised_limit_waits_for_a_person(bench):
                 'user': 'alice', 'mode': 'source_v', 'sample_name': 'hazard-e2e',
                 'overrides': {'vsource_voltage': 31.0}})
             assert not failed, started
-            failed, waited = await call('wait_for', {'until': 'samples:1', 'timeout_s': 60})
+            # 'prompt', not 'samples:1': start_run's reply may already have
+            # shown the prompt, and a wait does not end at a prompt shown.
+            failed, waited = await call('wait_for', {'until': 'prompt', 'timeout_s': 60})
             assert not failed and waited['fired'] == 'prompt', waited
             prompt = waited['status']['pending_prompt']
             assert prompt['kind'] == 'safety_voltage_ack' and prompt['requires_human']

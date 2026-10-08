@@ -77,7 +77,7 @@ Each tool maps onto one or two API routes. Values are SI (V, A, Ω, s, Hz). Resu
 | `start_run(user, mode, sample_name, overrides?, spot?, prompt_timeout_s?)` | Start a run; returns the run id at once | `POST /session/start` |
 | `stop_run`, `abort_run`, `pause_run`, `resume_run` | As the routes; stopping is always allowed | `POST /session/…` |
 | `mark_event(label)` | A label in the next data row's event column | `POST /session/mark` |
-| `wait_for(until, timeout_s ≤ 120, then_stop?)` | Wait for `run_ended`, `prompt`, `samples:N` or `state:<state>`; also returns early at a prompt or when no run is in progress, saying which. With `then_stop`, stops the run as soon as the condition holds and returns once it has ended | polls `GET /session`; `POST /session/stop` |
+| `wait_for(until, timeout_s ≤ 120, then_stop?)` | Wait for `run_ended`, `prompt`, `samples:N` or `state:<state>`; also returns early at a prompt the agent has not been shown or when no run is in progress, saying which. A prompt it has been shown does not end the wait ([waiting for a person](#waiting-for-a-person)). With `then_stop`, stops the run as soon as the condition holds and returns once it has ended | polls `GET /session`; `POST /session/stop` |
 | `get_run_events(since_seq?, run_id?, types?, include_samples?, max_samples ≤ 200)` | What happened in a run; samples and progress logs left out unless asked for, samples thinned to at most 200 | `GET /session/events` |
 | `get_run_summary(run_id?, path?, first_rows?)` | Per numeric column: unit, count, mean, SD, min, max, last; compliance rows; marks; header and end block. From the data file, during or after the run. `first_rows=N`: over the first N data rows only | `GET /results/file` |
 | `list_results(user?, sample?)`, `read_result(path, offset?, rows ≤ 500)` | Data files; one file's header and a slice of its rows | `GET /results`, `GET /results/file` |
@@ -90,6 +90,16 @@ Summaries read plain `.csv` files only: a compressed `.csv.gz` or an HDF5 file i
 ### A fixed number of readings
 
 Four-point runs stop by themselves after `fpp_samples`; resistance, source V and source I run until they are stopped. To take N readings in those, start the run and call `wait_for("samples:N", then_stop=true)`. The stop goes out in the same call, as soon as the backend has N samples, and the call returns once the run has ended, with `stopped: true` and `run_ended` (its `samples` is the final count). While it waits to stop a run, `wait_for` looks every 0.1 s, so the file holds N rows or a few more: those read in that tenth of a second and the one in flight when the stop arrives. `get_run_summary(first_rows=N)` then summarises exactly N. Waiting and stopping in two calls leaves the agent's round trip between them; in a trial, a run asked for 20 readings wrote 57. A prompt or a timeout does not stop the run.
+
+### Waiting for a person
+
+A prompt that `requires_human` holds the run until a person answers it at the window. The agent tells the user what it asks, then calls `wait_for("run_ended")`. A prompt the agent has already been shown, by any tool's reply, does not end that wait; any other prompt ends it at once, so a prompt raised just after `start_run` is never waited through unheard. The wait returns with `fired`:
+
+- `prompt`: the next prompt (the person answered and the run moved on, to the next van der Pauw wiring, say);
+- `run_ended`: the run is over (all answered, or stopped);
+- `timeout`: no answer yet; call again.
+
+`prompt_at_start` names the prompt that was waited through and says whether it is `still_pending`. `wait_for("state:running")` returns as soon as the person has answered; `wait_for("prompt")` returns at once while any prompt is pending.
 
 ## What needs a person
 
