@@ -102,14 +102,24 @@ export interface SweepPreview {
   legs: { from: number; to: number }[];
 }
 
+/** A sweep file's voltage and current columns: `V_source,I_meas` for a
+ *  voltage sweep, `V_meas,I_source` for a current sweep. Files written before
+ *  the names followed the source have `V_source,I_meas` for both, and only
+ *  `params.source_function` says which was sourced. */
+const SWEEP_COLUMNS = [
+  { x: "V_source", y: "I_meas" },
+  { x: "V_meas", y: "I_source" },
+] as const;
+
 /** The I-V axes of a sweep file, or null for any other file. A sweep file
  *  has no elapsed time; its rows are the sweep's points in order. */
 export function sweepPreview(parsed: ParsedCsv): SweepPreview | null {
-  const voltage = parsed.data["V_source"];
-  const current = parsed.data["I_meas"];
-  if (!voltage || !current) return null;
-  const sourced = parsed.metadata["params.source_function"] === "current" ? current : voltage;
-  return { x: "V_source", y: "I_meas", legs: sweepLegs(sourced) };
+  const pair = SWEEP_COLUMNS.find(({ x, y }) => parsed.data[x] && parsed.data[y]);
+  if (!pair) return null;
+  const voltage = parsed.data[pair.x]!;
+  const current = parsed.data[pair.y]!;
+  const currentSourced = pair.y === "I_source" || parsed.metadata["params.source_function"] === "current";
+  return { x: pair.x, y: pair.y, legs: sweepLegs(currentSourced ? current : voltage) };
 }
 
 /** Split a swept quantity where it turns round. The leg that comes back

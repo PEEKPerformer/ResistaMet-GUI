@@ -407,9 +407,11 @@ Metadata `params`: `source_current_A`, `voltage_compliance_V`, `voltage_auto_ran
 | Column | Unit | What it is |
 |---|---|---|
 | `point` | | Sweep index (0…N) |
-| `V_source` | V | Sourced voltage at this step (for V-source sweeps) — for I-source sweeps this column is named `I_source` and the next is `V_meas` |
-| `I_meas` | A | Measured current (for V-source sweeps) |
+| `V_source` / `V_meas` | V | The voltage: `V_source`, sourced at this step, in a voltage sweep; `V_meas`, measured, in a current sweep |
+| `I_meas` / `I_source` | A | The current: `I_meas`, measured, in a voltage sweep; `I_source`, sourced at this step, in a current sweep |
 | `compliance` | | `OK` on a normal point, `COMP` when that point hit compliance |
+
+The header row is `point,V_source,I_meas,compliance` for a voltage sweep and `point,V_meas,I_source,compliance` for a current sweep; the voltage is always the second column and the current the third. Files written before this change have `V_source,I_meas` whatever was sourced; for those, `params.source_function` says which column was sourced.
 
 Metadata `params`: `source_function`, `start`, `stop`, `step`, `compliance`, `delay_s`, `direction`.
 
