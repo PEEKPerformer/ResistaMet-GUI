@@ -67,7 +67,12 @@ SAFETY_KEYS = tuple(SafetySettings.model_fields)
 AGENT_LIMIT_KEYS = tuple(AgentLimitSettings.model_fields)
 
 #: Override keys that are not settings: they select a value rather than be one.
-CONTROL_KEYS = ('vsource_run_continuous', 'isource_run_continuous')
+#: Each belongs to the one mode whose duration it sets to "until stopped".
+CONTROL_KEYS_BY_MODE = {
+    'source_v': ('vsource_run_continuous',),
+    'source_i': ('isource_run_continuous',),
+}
+CONTROL_KEYS = tuple(key for keys in CONTROL_KEYS_BY_MODE.values() for key in keys)
 
 #: The sections beside ``measurement``, the model of each, and how bad an
 #: invalid value is for a strict request. ``file`` and ``output`` decide where
@@ -114,15 +119,18 @@ class ResolvedRun:
 def allowed_override_keys(mode: str) -> set:
     """Keys a strict request may send for ``mode``.
 
-    The mode's own fields plus the instrument and aux groups, minus the keys
-    the profile owns -- the touch-safety group among them (``SAFETY_KEYS``).
-    Clients discover this through the schema endpoint rather than by trial
-    and error.
+    The mode's own fields plus the instrument and aux groups and the mode's
+    own control key, if it has one, minus the keys the profile owns -- the
+    touch-safety group among them (``SAFETY_KEYS``). Clients discover this
+    through the schema endpoint rather than by trial and error, so a key
+    listed here must mean something to a run of this mode: the source
+    modes' run-until-stopped flags used to be offered to every mode and
+    ignored by all but one.
     """
     keys = set(MODE_MODELS[mode].model_fields)
     keys |= set(InstrumentSettings.model_fields)
     keys |= set(AuxSensorSettings.model_fields)
-    keys |= set(CONTROL_KEYS)
+    keys |= set(CONTROL_KEYS_BY_MODE.get(mode, ()))
     return keys - set(PROFILE_OWNED_KEYS) - set(SAFETY_KEYS)
 
 
@@ -162,7 +170,7 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
         # The control keys choose a value, so no model sees them. Truthiness
         # is not good enough here: the string 'false' is truthy, and would
         # turn a bounded source-on run into an unbounded one.
-        for key in CONTROL_KEYS:
+        for key in CONTROL_KEYS_BY_MODE.get(mode, ()):
             if key in overrides and not isinstance(overrides[key], bool):
                 issues.append(Issue(key, f"'{key}' must be true or false, "
                                          f"not {overrides[key]!r}"))
