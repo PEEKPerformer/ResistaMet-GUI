@@ -45,6 +45,51 @@ class TestProfileOwnedKeys:
         assert 'gpib_address' not in allowed_override_keys('resistance')
 
 
+#: What every mode may override: the instrument group (less the
+#: profile-owned keys) and the aux sensor group.
+SHARED_OVERRIDE_KEYS = {
+    'nplc', 'sampling_rate', 'auto_zero', 'filter_enabled', 'filter_type', 'filter_count',
+    'stop_on_compliance', 'visa_library', 'gpib_interface',
+    'aux_log_enabled', 'aux_driver', 'aux_address',
+}
+
+
+class TestOverrideKeysPerMode:
+    """A mode is offered its own keys and the shared ones, nothing else."""
+
+    @pytest.mark.parametrize("mode,own", [
+        ('resistance', {'res_test_current', 'res_voltage_compliance', 'res_measurement_type',
+                        'res_auto_range', 'res_offset_comp', 'res_cable_null'}),
+        ('source_v', {'vsource_voltage', 'vsource_current_compliance',
+                      'vsource_current_range_auto', 'vsource_duration_hours',
+                      'vsource_run_continuous'}),
+        ('source_i', {'isource_current', 'isource_voltage_compliance',
+                      'isource_voltage_range_auto', 'isource_duration_hours',
+                      'isource_run_continuous'}),
+        ('sweep', {'sweep_source', 'sweep_start', 'sweep_stop', 'sweep_step',
+                   'sweep_compliance', 'sweep_delay', 'sweep_direction'}),
+        ('vdp', {'vdp_current', 'vdp_voltage_compliance', 'vdp_voltage_range_auto',
+                 'vdp_thickness_cm', 'vdp_settling_s', 'vdp_readings_per_polarity'}),
+        ('four_point', {
+            'fpp_current', 'fpp_voltage_compliance', 'fpp_voltage_range_auto',
+            'fpp_spacing_cm', 'fpp_thickness_um', 'fpp_alpha', 'fpp_k_factor', 'fpp_samples',
+            'fpp_model', 'fpp_diameter_cm', 'fpp_geometry', 'fpp_sample_shape',
+            'fpp_sample_diameter_mm', 'fpp_sample_width_mm', 'fpp_sample_length_mm',
+            'fpp_position_correction', 'fpp_edge_warn_pct', 'fpp_array_angle_deg',
+            'fpp_temperature_c', 'fpp_dopant_type', 'fpp_delta_mode', 'fpp_delta_settling',
+            'fpp_power_warn_w', 'fpp_power_stop_w', 'fpp_stop_on_overpower'}),
+    ])
+    def test_exactly_the_mode_s_keys_and_the_shared_ones(self, mode, own):
+        assert allowed_override_keys(mode) == own | SHARED_OVERRIDE_KEYS
+
+    @pytest.mark.parametrize("mode", ['resistance', 'four_point', 'sweep', 'vdp', 'source_i'])
+    def test_another_mode_s_run_until_stopped_flag_is_refused(self, profile, mode):
+        resolved = resolve_run_settings(profile, mode, {'vsource_run_continuous': True},
+                                         strict=True)
+        assert [i.message for i in resolved.issues if i.key == 'vsource_run_continuous'] == [
+            f"'vsource_run_continuous' is not a setting of mode '{mode}'"]
+
+
 class TestStrictKeyChecking:
     def test_unknown_key_rejected(self, profile):
         resolved = resolve_run_settings(profile, 'resistance',
