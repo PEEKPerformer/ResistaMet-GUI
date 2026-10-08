@@ -49,7 +49,16 @@ logger = logging.getLogger(__name__)
 #: Keys the profile always wins on, whatever a client sends (MW gather).
 #: ``allow_agents`` is this machine's switch, not a setting of a run: a
 #: request that sent it would change nothing and read as if it had.
-PROFILE_OWNED_KEYS = ('settling_time', 'gpib_address', 'allow_agents')
+#: ``visa_library`` and ``gpib_interface`` are this machine's bus, like the
+#: address: a run opens its instrument through them, and a library path is
+#: loaded into the backend as code, which only the window may choose
+#: (``docs/design/mcp_layer.md`` M3). A run request used to be able to name
+#: either.
+PROFILE_OWNED_KEYS = ('settling_time', 'gpib_address', 'allow_agents', 'visa_library',
+                      'gpib_interface')
+#: The profile-owned keys a profile may lack (an older one, or a test's):
+#: then the run has none either, rather than one a request supplied.
+_OPTIONAL_PROFILE_KEYS = ('allow_agents', 'visa_library', 'gpib_interface')
 
 #: The touch-safety group. A strict request may not send any of these: the
 #: hazardous-voltage prompt can only be answered by a person at the bench
@@ -204,10 +213,11 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
     # 7. Profile-owned keys.
     m_cfg['settling_time'] = profile['measurement']['settling_time']
     m_cfg['gpib_address'] = profile['measurement']['gpib_address']
-    if 'allow_agents' in profile['measurement']:
-        m_cfg['allow_agents'] = profile['measurement']['allow_agents']
-    else:
-        m_cfg.pop('allow_agents', None)
+    for key in _OPTIONAL_PROFILE_KEYS:
+        if key in profile['measurement']:
+            m_cfg[key] = profile['measurement'][key]
+        else:
+            m_cfg.pop(key, None)
     if strict:
         # The request is already refused above; this makes the settings, the
         # hazard below and the run's own gate read the stored profile even if
