@@ -56,10 +56,16 @@ _KEY_UNITS = {
 _CONTROL_FRAGMENTS = {
     'vsource_run_continuous': {
         'type': 'boolean', 'default': False,
-        'description': "true: run until stopped (vsource_duration_hours becomes 0)."},
+        'description': "true: run until stopped, as vsource_duration_hours 0 does; "
+                       "false changes nothing. Redundant for a request; it is the "
+                       "window's \"Run until stopped\" box, which keeps the hours it "
+                       "greys out."},
     'isource_run_continuous': {
         'type': 'boolean', 'default': False,
-        'description': "true: run until stopped (isource_duration_hours becomes 0)."},
+        'description': "true: run until stopped, as isource_duration_hours 0 does; "
+                       "false changes nothing. Redundant for a request; it is the "
+                       "window's \"Run until stopped\" box, which keeps the hours it "
+                       "greys out."},
 }
 
 #: Fragment keys a client has no use for: the title is the key in title case.

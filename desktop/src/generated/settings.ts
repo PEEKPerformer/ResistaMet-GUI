@@ -64,8 +64,17 @@ export interface AgentLimitSettings {
  * request asks for it on a sweep or vdP run.
  */
 export interface AuxSensorSettings {
+  /**
+   * VISA resource of the sensor, e.g. ASRL6::INSTR (serial port COM6 on Windows). Read when aux_log_enabled.
+   */
   aux_address?: string;
+  /**
+   * Sensor driver: arduino_thermocouple (a K-type thermocouple board streaming DATA lines) or stream_sensor (a device that names its channels in an HDR line). Read when aux_log_enabled.
+   */
   aux_driver?: string;
+  /**
+   * Log an auxiliary sensor's channels beside each reading, as aux_<key> columns and aux_fault; resistance, source_v, source_i and four_point only.
+   */
   aux_log_enabled?: boolean;
 }
 
@@ -78,7 +87,13 @@ export interface CurrentSourceSettings {
    * 0 = until stopped.
    */
   isource_duration_hours?: number;
+  /**
+   * Voltage limit while sourcing isource_current; readings at it are flagged V_COMP.
+   */
   isource_voltage_compliance?: number;
+  /**
+   * true: the voltage measurement autoranges; false: it stays on the range that holds isource_voltage_compliance.
+   */
   isource_voltage_range_auto?: boolean;
 }
 
@@ -118,6 +133,9 @@ export interface FourPointSettings {
    * Finite-size correction multiplying K (fpp_model thin_film).
    */
   fpp_alpha?: number;
+  /**
+   * Direction of the probe array, anticlockwise from +x (a rectangle's length); a spot's own angle_deg wins. Position check only.
+   */
   fpp_array_angle_deg?: number;
   fpp_current?: number;
   /**
@@ -136,6 +154,9 @@ export interface FourPointSettings {
    * Silicon dopant type for the F84 temperature correction.
    */
   fpp_dopant_type?: "none" | "n" | "p";
+  /**
+   * A spot with a position warns, before its first reading, when the geometry factor there differs by more than this from the one the rows use (from the factor at the sample's centre when they have none).
+   */
   fpp_edge_warn_pct?: number;
   /**
    * Sample shape for the F2 correction (rectangle_N: length = N x width). Anything but circle applies the F84 corrections.
@@ -146,9 +167,12 @@ export interface FourPointSettings {
    */
   fpp_k_factor?: number;
   /**
-   * thin_film: Rs = K x alpha x V/I, rho = Rs x t; finite_thin: the same without alpha; semi_infinite: rho = 2 pi s x V/I (bulk, t >> s); finite_alpha: rho = alpha x 2 pi s x V/I. Not used when an ASTM F84 input is set (fpp_diameter_cm > 0, fpp_geometry not circle, or fpp_temperature_c with fpp_dopant_type n or p): the F84 corrections apply instead.
+   * By default (thin_film, fpp_k_factor 4.532, fpp_alpha 1, no F84 input) Rs = 4.532 x V/I and rho = Rs x t, with no corrections. thin_film: Rs = K x alpha x V/I; finite_thin: Rs = K x V/I; both rho = Rs x t. semi_infinite: rho = 2 pi s x V/I (bulk, t >> s); finite_alpha: rho = alpha x 2 pi s x V/I; both Rs = K x V/I. Not used when an ASTM F84 input is set (fpp_diameter_cm > 0, fpp_geometry not circle, or fpp_temperature_c with fpp_dopant_type n or p): the F84 corrections apply instead.
    */
   fpp_model?: "thin_film" | "semi_infinite" | "finite_thin" | "finite_alpha";
+  /**
+   * warn: a spot's position effect (the geometry factor where the probe is, against the one the rows use) is reported, and never applied to Rs or rho. The only choice: whether a position correction may be applied is undecided, so every number in a file is the uncorrected K or F84 one.
+   */
   fpp_position_correction?: "warn";
   /**
    * The run refuses to start when |fpp_current| x fpp_voltage_compliance is above this, and with fpp_stop_on_overpower stops when a measured V x I is.
@@ -158,18 +182,33 @@ export interface FourPointSettings {
    * The run warns when |fpp_current| x fpp_voltage_compliance is above this.
    */
   fpp_power_warn_w?: number;
+  /**
+   * Diameter of a circle outline; 0 = not entered. Read only when fpp_sample_shape is circle.
+   */
   fpp_sample_diameter_mm?: number;
+  /**
+   * Side of a rectangle outline along x, the direction of a 0 deg probe array; 0 = not entered. Read only when fpp_sample_shape is rectangle.
+   */
   fpp_sample_length_mm?: number;
   /**
-   * Sample outline for a spot's position check only; unbounded: fpp_geometry and fpp_diameter_cm describe it.
+   * Sample outline for a spot's position check only; unbounded: fpp_geometry and fpp_diameter_cm describe it. circle needs fpp_sample_diameter_mm, rectangle fpp_sample_width_mm and fpp_sample_length_mm.
    */
   fpp_sample_shape?: "unbounded" | "circle" | "rectangle";
+  /**
+   * Side of a rectangle outline along y, across a 0 deg probe array; 0 = not entered. Read only when fpp_sample_shape is rectangle.
+   */
   fpp_sample_width_mm?: number;
   /**
    * Readings to take, then stop; 0 = until stopped.
    */
   fpp_samples?: number;
+  /**
+   * Probe tip spacing s (0.1016 cm = 40 mil). Read by semi_infinite and finite_alpha (rho = 2 pi s x V/I), the ASTM F84 corrections and a spot's position check; thin_film and finite_thin do not use it.
+   */
   fpp_spacing_cm?: number;
+  /**
+   * true: a reading whose measured |V x I| is above fpp_power_stop_w turns the output off and ends the run (reason overpower). false: such a reading only warns, as one above fpp_power_warn_w does.
+   */
   fpp_stop_on_overpower?: boolean;
   /**
    * Silicon sample temperature for the F84 correction to 23 C, with fpp_dopant_type; null = not measured.
@@ -179,7 +218,13 @@ export interface FourPointSettings {
    * 0 = not given: sheet resistance only, no resistivity or conductivity (fpp_model semi_infinite does not use it). With the ASTM F84 corrections no sheet resistance either: their thickness factor needs it.
    */
   fpp_thickness_um?: number;
+  /**
+   * Voltage limit while sourcing fpp_current. Readings at it are flagged V_COMP and their Rs and rho are lower bounds. |fpp_current| x this is the worst-case probe power, judged against fpp_power_warn_w and fpp_power_stop_w.
+   */
   fpp_voltage_compliance?: number;
+  /**
+   * true: the voltage measurement autoranges; false: it stays on the range that holds fpp_voltage_compliance.
+   */
   fpp_voltage_range_auto?: boolean;
 }
 
@@ -256,6 +301,9 @@ export interface ResistanceSettings {
    * Offset-compensated ohms: cancels thermal EMFs, halves the reading rate.
    */
   res_offset_comp?: boolean;
+  /**
+   * Current sourced, with res_auto_range off. With it on, auto-ohms chooses the current per range (100 mA seen for a 1 mA request) and the Current column records it; the file name (…_R_1.00mA) and params.test_current_A still give this value.
+   */
   res_test_current?: number;
   res_voltage_compliance?: number;
 }
@@ -413,7 +461,13 @@ export interface VdpSettings {
    * 0 = not given: sheet resistance and the homogeneity check only, no resistivity.
    */
   vdp_thickness_cm?: number;
+  /**
+   * Voltage limit while sourcing vdp_current at each wiring. The touch-safety check and an agent's voltage limit judge the run by it.
+   */
   vdp_voltage_compliance?: number;
+  /**
+   * true: the voltage measurement autoranges; false: it stays on the range that holds vdp_voltage_compliance.
+   */
   vdp_voltage_range_auto?: boolean;
 }
 
@@ -421,7 +475,13 @@ export interface VdpSettings {
  * Source V, measure I. ``vsource_duration_hours`` of 0 runs until stopped.
  */
 export interface VoltageSourceSettings {
+  /**
+   * Current limit while sourcing vsource_voltage; readings at it are flagged I_COMP.
+   */
   vsource_current_compliance?: number;
+  /**
+   * true: the current measurement autoranges; false: it stays on the range that holds vsource_current_compliance.
+   */
   vsource_current_range_auto?: boolean;
   /**
    * 0 = until stopped.

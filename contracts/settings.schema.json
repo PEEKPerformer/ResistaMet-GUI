@@ -159,18 +159,21 @@
       "properties": {
         "aux_address": {
           "default": "ASRL6::INSTR",
+          "description": "VISA resource of the sensor, e.g. ASRL6::INSTR (serial port COM6 on Windows). Read when aux_log_enabled.",
           "minLength": 1,
           "title": "Aux Address",
           "type": "string"
         },
         "aux_driver": {
           "default": "arduino_thermocouple",
+          "description": "Sensor driver: arduino_thermocouple (a K-type thermocouple board streaming DATA lines) or stream_sensor (a device that names its channels in an HDR line). Read when aux_log_enabled.",
           "minLength": 1,
           "title": "Aux Driver",
           "type": "string"
         },
         "aux_log_enabled": {
           "default": false,
+          "description": "Log an auxiliary sensor's channels beside each reading, as aux_<key> columns and aux_fault; resistance, source_v, source_i and four_point only.",
           "title": "Aux Log Enabled",
           "type": "boolean"
         }
@@ -199,6 +202,7 @@
         },
         "isource_voltage_compliance": {
           "default": 5.0,
+          "description": "Voltage limit while sourcing isource_current; readings at it are flagged V_COMP.",
           "maximum": 200.0,
           "minimum": 0.1,
           "title": "Isource Voltage Compliance",
@@ -206,6 +210,7 @@
         },
         "isource_voltage_range_auto": {
           "default": true,
+          "description": "true: the voltage measurement autoranges; false: it stays on the range that holds isource_voltage_compliance.",
           "title": "Isource Voltage Range Auto",
           "type": "boolean"
         }
@@ -303,6 +308,7 @@
         },
         "fpp_array_angle_deg": {
           "default": 0.0,
+          "description": "Direction of the probe array, anticlockwise from +x (a rectangle's length); a spot's own angle_deg wins. Position check only.",
           "maximum": 360.0,
           "minimum": -360.0,
           "title": "Fpp Array Angle Deg",
@@ -350,6 +356,7 @@
         },
         "fpp_edge_warn_pct": {
           "default": 1.0,
+          "description": "A spot with a position warns, before its first reading, when the geometry factor there differs by more than this from the one the rows use (from the factor at the sample's centre when they have none).",
           "maximum": 100.0,
           "minimum": 0.0,
           "title": "Fpp Edge Warn Pct",
@@ -378,7 +385,7 @@
         },
         "fpp_model": {
           "default": "thin_film",
-          "description": "thin_film: Rs = K x alpha x V/I, rho = Rs x t; finite_thin: the same without alpha; semi_infinite: rho = 2 pi s x V/I (bulk, t >> s); finite_alpha: rho = alpha x 2 pi s x V/I. Not used when an ASTM F84 input is set (fpp_diameter_cm > 0, fpp_geometry not circle, or fpp_temperature_c with fpp_dopant_type n or p): the F84 corrections apply instead.",
+          "description": "By default (thin_film, fpp_k_factor 4.532, fpp_alpha 1, no F84 input) Rs = 4.532 x V/I and rho = Rs x t, with no corrections. thin_film: Rs = K x alpha x V/I; finite_thin: Rs = K x V/I; both rho = Rs x t. semi_infinite: rho = 2 pi s x V/I (bulk, t >> s); finite_alpha: rho = alpha x 2 pi s x V/I; both Rs = K x V/I. Not used when an ASTM F84 input is set (fpp_diameter_cm > 0, fpp_geometry not circle, or fpp_temperature_c with fpp_dopant_type n or p): the F84 corrections apply instead.",
           "enum": [
             "thin_film",
             "semi_infinite",
@@ -391,6 +398,7 @@
         "fpp_position_correction": {
           "const": "warn",
           "default": "warn",
+          "description": "warn: a spot's position effect (the geometry factor where the probe is, against the one the rows use) is reported, and never applied to Rs or rho. The only choice: whether a position correction may be applied is undecided, so every number in a file is the uncorrected K or F84 one.",
           "title": "Fpp Position Correction",
           "type": "string"
         },
@@ -412,6 +420,7 @@
         },
         "fpp_sample_diameter_mm": {
           "default": 0.0,
+          "description": "Diameter of a circle outline; 0 = not entered. Read only when fpp_sample_shape is circle.",
           "maximum": 1000.0,
           "minimum": 0.0,
           "title": "Fpp Sample Diameter Mm",
@@ -419,6 +428,7 @@
         },
         "fpp_sample_length_mm": {
           "default": 0.0,
+          "description": "Side of a rectangle outline along x, the direction of a 0 deg probe array; 0 = not entered. Read only when fpp_sample_shape is rectangle.",
           "maximum": 1000.0,
           "minimum": 0.0,
           "title": "Fpp Sample Length Mm",
@@ -426,7 +436,7 @@
         },
         "fpp_sample_shape": {
           "default": "unbounded",
-          "description": "Sample outline for a spot's position check only; unbounded: fpp_geometry and fpp_diameter_cm describe it.",
+          "description": "Sample outline for a spot's position check only; unbounded: fpp_geometry and fpp_diameter_cm describe it. circle needs fpp_sample_diameter_mm, rectangle fpp_sample_width_mm and fpp_sample_length_mm.",
           "enum": [
             "unbounded",
             "circle",
@@ -437,6 +447,7 @@
         },
         "fpp_sample_width_mm": {
           "default": 0.0,
+          "description": "Side of a rectangle outline along y, across a 0 deg probe array; 0 = not entered. Read only when fpp_sample_shape is rectangle.",
           "maximum": 1000.0,
           "minimum": 0.0,
           "title": "Fpp Sample Width Mm",
@@ -452,6 +463,7 @@
         },
         "fpp_spacing_cm": {
           "default": 0.1016,
+          "description": "Probe tip spacing s (0.1016 cm = 40 mil). Read by semi_infinite and finite_alpha (rho = 2 pi s x V/I), the ASTM F84 corrections and a spot's position check; thin_film and finite_thin do not use it.",
           "maximum": 5.0,
           "minimum": 0.001,
           "title": "Fpp Spacing Cm",
@@ -459,6 +471,7 @@
         },
         "fpp_stop_on_overpower": {
           "default": true,
+          "description": "true: a reading whose measured |V x I| is above fpp_power_stop_w turns the output off and ends the run (reason overpower). false: such a reading only warns, as one above fpp_power_warn_w does.",
           "title": "Fpp Stop On Overpower",
           "type": "boolean"
         },
@@ -487,6 +500,7 @@
         },
         "fpp_voltage_compliance": {
           "default": 5.0,
+          "description": "Voltage limit while sourcing fpp_current. Readings at it are flagged V_COMP and their Rs and rho are lower bounds. |fpp_current| x this is the worst-case probe power, judged against fpp_power_warn_w and fpp_power_stop_w.",
           "maximum": 200.0,
           "minimum": 0.1,
           "title": "Fpp Voltage Compliance",
@@ -494,6 +508,7 @@
         },
         "fpp_voltage_range_auto": {
           "default": true,
+          "description": "true: the voltage measurement autoranges; false: it stays on the range that holds fpp_voltage_compliance.",
           "title": "Fpp Voltage Range Auto",
           "type": "boolean"
         }
@@ -663,6 +678,7 @@
         },
         "res_test_current": {
           "default": 0.001,
+          "description": "Current sourced, with res_auto_range off. With it on, auto-ohms chooses the current per range (100 mA seen for a 1 mA request) and the Current column records it; the file name (\u2026_R_1.00mA) and params.test_current_A still give this value.",
           "maximum": 3.0,
           "minimum": 1e-07,
           "title": "Res Test Current",
@@ -1131,6 +1147,7 @@
         },
         "vdp_voltage_compliance": {
           "default": 5.0,
+          "description": "Voltage limit while sourcing vdp_current at each wiring. The touch-safety check and an agent's voltage limit judge the run by it.",
           "exclusiveMinimum": 0.0,
           "maximum": 200.0,
           "title": "Vdp Voltage Compliance",
@@ -1138,6 +1155,7 @@
         },
         "vdp_voltage_range_auto": {
           "default": true,
+          "description": "true: the voltage measurement autoranges; false: it stays on the range that holds vdp_voltage_compliance.",
           "title": "Vdp Voltage Range Auto",
           "type": "boolean"
         }
@@ -1151,6 +1169,7 @@
       "properties": {
         "vsource_current_compliance": {
           "default": 0.1,
+          "description": "Current limit while sourcing vsource_voltage; readings at it are flagged I_COMP.",
           "maximum": 3.0,
           "minimum": 1e-07,
           "title": "Vsource Current Compliance",
@@ -1158,6 +1177,7 @@
         },
         "vsource_current_range_auto": {
           "default": true,
+          "description": "true: the current measurement autoranges; false: it stays on the range that holds vsource_current_compliance.",
           "title": "Vsource Current Range Auto",
           "type": "boolean"
         },

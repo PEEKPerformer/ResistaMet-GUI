@@ -48,8 +48,37 @@ def test_an_enum_carries_its_choices_default_and_meaning():
 
 
 def test_a_bounded_number_carries_its_bounds_and_unit():
-    assert key_descriptions('resistance')['res_test_current'] == {
+    fragment = dict(key_descriptions('resistance')['res_test_current'])
+    assert 'res_auto_range' in fragment.pop('description')
+    assert fragment == {
         'type': 'number', 'minimum': 1e-7, 'maximum': 3.0, 'default': 0.001, 'unit': 'A'}
+
+
+#: Keys the second usability trial found undescribed, by mode.
+TRIAL_KEYS = {
+    'four_point': ('fpp_spacing_cm', 'fpp_array_angle_deg', 'fpp_edge_warn_pct',
+                   'fpp_sample_shape', 'fpp_sample_diameter_mm', 'fpp_sample_width_mm',
+                   'fpp_sample_length_mm', 'fpp_stop_on_overpower', 'fpp_voltage_compliance',
+                   'fpp_voltage_range_auto', 'fpp_position_correction', 'aux_address',
+                   'aux_driver'),
+    'source_v': ('vsource_current_compliance', 'vsource_current_range_auto',
+                 'vsource_run_continuous'),
+    'source_i': ('isource_run_continuous',),
+    'vdp': ('vdp_voltage_compliance',),
+    'resistance': ('res_test_current',),
+}
+
+
+@pytest.mark.parametrize('mode', sorted(TRIAL_KEYS))
+def test_the_keys_the_trial_could_not_read_are_described(mode):
+    described = key_descriptions(mode)
+    assert [key for key in TRIAL_KEYS[mode] if not described[key].get('description')] == []
+
+
+def test_the_default_four_point_model_says_it_corrects_nothing():
+    text = key_descriptions('four_point')['fpp_model']['description']
+    assert text.startswith("By default (thin_film, fpp_k_factor 4.532, fpp_alpha 1, no F84 "
+                           "input) Rs = 4.532 x V/I")
 
 
 def test_an_exclusive_bound_is_kept_as_one():
@@ -70,9 +99,11 @@ def test_a_single_allowed_value_is_a_one_item_enum():
 
 
 def test_a_mode_s_control_key_is_described():
-    assert key_descriptions('source_v')['vsource_run_continuous'] == {
-        'type': 'boolean', 'default': False,
-        'description': "true: run until stopped (vsource_duration_hours becomes 0)."}
+    fragment = key_descriptions('source_v')['vsource_run_continuous']
+    assert (fragment['type'], fragment['default']) == ('boolean', False)
+    assert fragment['description'].startswith(
+        "true: run until stopped, as vsource_duration_hours 0 does; false changes nothing. "
+        "Redundant for a request")
 
 
 @pytest.mark.parametrize("mode", sorted(MODE_MODELS))
