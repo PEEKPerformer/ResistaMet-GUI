@@ -309,6 +309,10 @@ def resolve(body: ResolveRequest, request: Request,
     before it asks and the window can show what an agent could not run. It
     is None when the settings have errors: a start refuses those first, and
     a verdict on values nobody accepted would mean nothing.
+
+    ``warnings`` (``SettingsWarning``) are what the run will warn about once
+    it is going -- a sampling rate the timing cannot reach, a four-point
+    power above its warning threshold. They never make ``ok`` false.
     """
     if body.mode not in MODE_MODELS:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -331,6 +335,7 @@ def resolve(body: ResolveRequest, request: Request,
         'ok': resolved.ok,
         'issues': [{'key': i.key, 'message': i.message, 'severity': i.severity}
                     for i in resolved.issues],
+        'warnings': [warning.model_dump() for warning in resolved.warnings],
         'hazard': None if hazard is None else {
             'hazardous': hazard.hazardous,
             'voltage_v': hazard.voltage_v,

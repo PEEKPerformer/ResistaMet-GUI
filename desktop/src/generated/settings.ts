@@ -272,6 +272,21 @@ export interface SampleGeometry {
 }
 
 /**
+ * Something the run will warn about once it is going, said beforehand.
+ *
+ * Not an :class:`Issue`: nothing is wrong with the settings, and a start
+ * is never refused for one. The run itself would say it, in a log line
+ * or not at all (a rate it cannot reach is simply not reached); a
+ * preview that stayed silent left a client to find out from the run, or
+ * to work it out for itself and disagree. ``keys`` are the settings the
+ * judgement reads, the one to change first.
+ */
+export interface SettingsWarning {
+  keys: string[];
+  message: string;
+}
+
+/**
  * One placement of the probe, as the client describes it.
  *
  * The position is optional -- a spot can be a label and nothing more -- but
@@ -836,6 +851,16 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
       "nullable": true,
       "exclusiveMin": 0,
       "default": null
+    }
+  },
+  "SettingsWarning": {
+    "keys": {
+      "type": "array",
+      "required": true
+    },
+    "message": {
+      "type": "string",
+      "required": true
     }
   },
   "SpotRequest": {

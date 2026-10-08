@@ -198,6 +198,16 @@ class TestCheckSettings:
         assert checked['agent_limits']['violations'] == [violation]
         assert 'person at the' in checked['note']
 
+    def test_what_the_run_will_warn_about_reaches_the_agent(self, call, scripted):
+        warning = {'keys': ['sampling_rate', 'nplc'],
+                   'message': '10 Hz is more than these timing settings can deliver '
+                              '(about 4.8 Hz); the run will sample as fast as it can.'}
+        self._resolve(scripted, warnings=[warning])
+        failed, checked = call('check_settings', {'user': 'alice', 'mode': 'resistance'})
+        assert not failed
+        assert checked['warnings'] == [warning]
+        assert checked['agent_may_start'] is True
+
     def test_settings_with_errors_cannot_be_started(self, call, scripted):
         self._resolve(scripted, ok=False, agent_limits=None,
                       issues=[{'key': 'res_test_current', 'message': 'too large',

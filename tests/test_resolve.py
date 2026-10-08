@@ -321,6 +321,68 @@ class TestDerived:
         assert resolved.settings['measurement']['sampling_rate'] == 100.0
 
 
+#: NPLC 1, auto-zero once, a repeat filter of 5 and offset-compensated ohms:
+#: ((1/60 s + 3 ms) * 5 + 6 ms) * 2 = 208.7 ms a reading, 4.79 Hz.
+RESISTANCE_TIMING = {'nplc': 1.0, 'auto_zero': 'once', 'filter_enabled': True,
+                     'filter_type': 'repeat', 'filter_count': 5, 'res_offset_comp': True}
+
+
+class TestWarnings:
+    """What the run will warn about, said before it starts, never an issue."""
+
+    def test_a_rate_the_timing_cannot_deliver(self, profile):
+        resolved = resolve_run_settings(profile, 'resistance',
+                                         {**RESISTANCE_TIMING, 'sampling_rate': 10.0},
+                                         strict=True)
+        assert resolved.derived['max_rate_hz'] == pytest.approx(4.7923, rel=1e-4)
+        assert [w.model_dump() for w in resolved.warnings] == [{
+            'keys': ['sampling_rate', 'nplc', 'auto_zero', 'filter_enabled', 'filter_type',
+                     'filter_count', 'res_offset_comp'],
+            'message': "10 Hz is more than these timing settings can deliver (about "
+                       "4.8 Hz); the run will sample as fast as it can."}]
+        assert resolved.ok and resolved.issues == []
+
+    def test_a_rate_within_reach_says_nothing(self, profile):
+        resolved = resolve_run_settings(profile, 'resistance',
+                                         {**RESISTANCE_TIMING, 'sampling_rate': 4.0},
+                                         strict=True)
+        assert resolved.warnings == []
+
+    @pytest.mark.parametrize('mode', ['sweep', 'vdp'])
+    def test_modes_that_do_not_read_on_a_timer_have_no_rate_to_miss(self, profile, mode):
+        profile['measurement']['vdp_thickness_cm'] = 0.05
+        resolved = resolve_run_settings(profile, mode, {'sampling_rate': 100.0}, strict=True)
+        assert resolved.warnings == []
+
+    def test_four_point_power_above_its_warning_threshold(self, profile):
+        # 5 mA x 5 V = 25 mW: above the 10 mW warning, below the 100 mW stop.
+        # 0.5 Hz is within four-point's forced timing (0.88 Hz at NPLC 1).
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_current': 5e-3, 'fpp_voltage_compliance': 5.0, 'fpp_power_warn_w': 0.01,
+            'fpp_power_stop_w': 0.1, 'sampling_rate': 0.5, 'nplc': 1.0}, strict=True)
+        assert [w.model_dump() for w in resolved.warnings] == [{
+            'keys': ['fpp_power_warn_w', 'fpp_current', 'fpp_voltage_compliance'],
+            'message': "Worst-case power 25 mW (source current × voltage compliance) is "
+                       "above the 10 mW warning threshold; the run will warn and go on."}]
+        assert resolved.ok
+
+    def test_four_point_power_at_the_threshold_says_nothing(self, profile):
+        # 2 mA x 5 V = 10 mW: the run warns only above the threshold.
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_current': 2e-3, 'fpp_voltage_compliance': 5.0, 'fpp_power_warn_w': 0.01,
+            'sampling_rate': 0.5, 'nplc': 1.0}, strict=True)
+        assert resolved.warnings == []
+
+    def test_power_above_the_stop_is_an_issue_not_a_warning(self, profile):
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_current': 0.05, 'fpp_voltage_compliance': 5.0, 'fpp_power_warn_w': 0.01,
+            'fpp_power_stop_w': 0.1, 'sampling_rate': 0.5, 'nplc': 1.0}, strict=True)
+        assert resolved.warnings == []
+        assert [(i.key, i.message) for i in resolved.issues] == [
+            ('fpp_power_stop_w', "worst-case power 250 mW exceeds the probe-safety hard "
+                                 "stop 100 mW")]
+
+
 class TestInvalidInputIsReportedNotRaised:
     """Every one of these used to raise out of the resolver -- a 500 from the
     API, and in the GUI a Start that did nothing."""

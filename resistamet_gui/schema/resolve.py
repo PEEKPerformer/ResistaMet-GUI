@@ -31,6 +31,9 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from pydantic import BaseModel, ConfigDict
+
+from ..calculations import four_point_power_level, four_point_worst_case_power_w
 from ..constants import MODE_TIMING_OVERRIDES
 from ..formatting import format_power
 from .settings_common import (
@@ -97,6 +100,11 @@ SECTION_MODELS = (
 #: Modes whose runs can co-log an auxiliary sensor (data_export.AUX_LOG_MODES).
 AUX_LOG_MODES = ('resistance', 'source_v', 'source_i', 'four_point')
 
+#: Modes whose runs read on a timer at ``sampling_rate`` (``ContinuousRun``'s
+#: polling loop). A sweep runs on the instrument's own engine and a van der
+#: Pauw run reads at each geometry, so neither has a rate to fall short of.
+TIMED_MODES = ('resistance', 'source_v', 'source_i', 'four_point')
+
 
 @dataclass(frozen=True)
 class Issue:
@@ -111,6 +119,23 @@ class Issue:
     severity: str = 'error'
 
 
+class SettingsWarning(BaseModel):
+    """Something the run will warn about once it is going, said beforehand.
+
+    Not an :class:`Issue`: nothing is wrong with the settings, and a start
+    is never refused for one. The run itself would say it, in a log line
+    or not at all (a rate it cannot reach is simply not reached); a
+    preview that stayed silent left a client to find out from the run, or
+    to work it out for itself and disagree. ``keys`` are the settings the
+    judgement reads, the one to change first.
+    """
+
+    model_config = ConfigDict(extra='forbid', frozen=True)
+
+    keys: List[str]
+    message: str
+
+
 @dataclass
 class ResolvedRun:
     """Settings a worker can consume, plus what the caller should know."""
@@ -119,6 +144,7 @@ class ResolvedRun:
     issues: List[Issue] = field(default_factory=list)
     derived: Dict[str, Any] = field(default_factory=dict)
     hazard: Optional[Any] = None
+    warnings: List[SettingsWarning] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -248,11 +274,13 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
     #     where the caller was promised issues -- and the GUI runs this on
     #     every gather, where a raise is a Start button that does nothing.
     failed = {issue.key for issue in issues if issue.severity == 'error'}
+    derived = _derive(m_cfg, mode, failed, issues)
     return ResolvedRun(
         settings=settings,
         issues=issues,
-        derived=_derive(m_cfg, mode, failed, issues),
+        derived=derived,
         hazard=_hazard(settings, mode, failed, issues),
+        warnings=_warnings(m_cfg, mode, failed, derived),
     )
 
 
@@ -308,7 +336,8 @@ def _validate(m_cfg: Dict[str, Any], mode: str, *, strict: bool) -> List[Issue]:
     if mode == 'four_point' and not failed.intersection(_POWER_KEYS):
         worst_case = _worst_case_power_w(m_cfg)
         stop_w = float(m_cfg.get('fpp_power_stop_w', 0.0))
-        if stop_w and worst_case > stop_w:
+        # The run's own judgement; the warning level is _warnings' business.
+        if four_point_power_level(worst_case, math.inf, stop_w) == 'stop':
             issues.append(Issue('fpp_power_stop_w',
                                  f"worst-case power {format_power(worst_case)} exceeds the "
                                  f"probe-safety hard stop {format_power(stop_w)}"))
@@ -398,8 +427,8 @@ def _sweep_points(m_cfg: Dict[str, Any]) -> Optional[int]:
 
 
 def _worst_case_power_w(m_cfg: Dict[str, Any]) -> float:
-    return abs(float(m_cfg.get('fpp_current', 0.0))) * abs(
-        float(m_cfg.get('fpp_voltage_compliance', 0.0)))
+    return four_point_worst_case_power_w(m_cfg.get('fpp_current', 0.0),
+                                         m_cfg.get('fpp_voltage_compliance', 0.0))
 
 
 def _derive(m_cfg: Dict[str, Any], mode: str, failed: set,
@@ -428,6 +457,49 @@ def _derive(m_cfg: Dict[str, Any], mode: str, failed: set,
         if value is not None:
             derived[name] = value
     return derived
+
+
+def _warnings(m_cfg: Dict[str, Any], mode: str, failed: set,
+              derived: Dict[str, Any]) -> List[SettingsWarning]:
+    """What the run would warn about, from the numbers it would judge.
+
+    Two today. A sampling rate above ``derived['max_rate_hz']``, the timing
+    model the PySide6 window caps its rate with (``timing.py``): the run
+    does not refuse it, it reads as fast as the instrument answers. And a
+    four-point worst-case power above ``fpp_power_warn_w``, judged by the
+    function the run's pre-flight uses (``session/configure.py``), which
+    logs a warning and goes on.
+
+    Each reads only values that validated, like ``_derive``. Never raises.
+    """
+    warnings: List[SettingsWarning] = []
+    max_rate = derived.get('max_rate_hz')
+    if mode in TIMED_MODES and max_rate is not None and 'sampling_rate' not in failed:
+        try:
+            rate = float(m_cfg.get('sampling_rate'))
+        except _ARITHMETIC_ERRORS:
+            rate = None
+        if rate is not None and rate > max_rate:
+            keys = ['sampling_rate'] + [key for key in _TIMING_KEYS
+                                        if key != 'res_offset_comp' or mode == 'resistance']
+            warnings.append(SettingsWarning(keys=keys, message=(
+                f"{rate:g} Hz is more than these timing settings can deliver "
+                f"(about {max_rate:.1f} Hz); the run will sample as fast as it can.")))
+    worst_case = derived.get('worst_case_power_w')
+    if (mode == 'four_point' and worst_case is not None
+            and not failed.intersection(_POWER_KEYS + ('fpp_power_warn_w',))):
+        try:
+            warn_w = float(m_cfg.get('fpp_power_warn_w'))
+            stop_w = float(m_cfg.get('fpp_power_stop_w'))
+        except _ARITHMETIC_ERRORS:
+            warn_w = stop_w = None
+        if warn_w is not None and four_point_power_level(worst_case, warn_w, stop_w) == 'warn':
+            warnings.append(SettingsWarning(
+                keys=['fpp_power_warn_w', 'fpp_current', 'fpp_voltage_compliance'],
+                message=(f"Worst-case power {format_power(worst_case)} (source current × "
+                         f"voltage compliance) is above the {format_power(warn_w)} warning "
+                         "threshold; the run will warn and go on.")))
+    return warnings
 
 
 def _hazard(settings: Dict[str, Any], mode: str, failed: set, issues: List[Issue]):

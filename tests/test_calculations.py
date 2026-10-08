@@ -21,6 +21,8 @@ from resistamet_gui.calculations import (
     calculate_four_point_probe,
     calculate_four_point_probe_bound,
     estimate_current_floor,
+    four_point_power_level,
+    four_point_worst_case_power_w,
     f2_finite_diameter,
     f_thickness_correction,
     f_temperature_correction,
@@ -395,6 +397,18 @@ class TestCalculateFourPointProbeBound:
         assert result.sheet_resistance == pytest.approx(2.266e7)
         assert math.isnan(result.resistivity)
         assert math.isnan(result.conductivity)
+
+
+class TestFourPointPowerEnvelope:
+    """The run's pre-flight and the settings preview judge with these."""
+
+    def test_worst_case_is_current_times_compliance(self):
+        assert four_point_worst_case_power_w(-5e-3, 5.0) == pytest.approx(0.025)
+
+    @pytest.mark.parametrize('worst,level', [(0.25, 'stop'), (0.025, 'warn'),
+                                             (0.01, None), (0.1, 'warn')])
+    def test_levels_are_strictly_above_each_threshold(self, worst, level):
+        assert four_point_power_level(worst, warn_w=0.01, stop_w=0.1) == level
 
 
 class TestFourPointProbeWithoutThickness:

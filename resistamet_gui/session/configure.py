@@ -13,6 +13,7 @@ from typing import Optional
 
 import pyvisa
 
+from ..calculations import four_point_power_level, four_point_worst_case_power_w
 from ..formatting import format_power
 
 
@@ -277,9 +278,11 @@ def configure_four_point(keithley, events, measurement_settings, nplc):
 
     # Pre-flight power envelope check: worst case is the user
     # asking for the full source current at the full compliance
-    # voltage, i.e. probe sees I_source * V_compliance.
-    worst_case_power = abs(source_current) * abs(voltage_compliance)
-    if worst_case_power > state.power_stop_w:
+    # voltage, i.e. probe sees I_source * V_compliance. The settings
+    # preview judges it with the same two functions.
+    worst_case_power = four_point_worst_case_power_w(source_current, voltage_compliance)
+    level = four_point_power_level(worst_case_power, state.power_warn_w, state.power_stop_w)
+    if level == 'stop':
         events.error('power_envelope', 'run',
             f"Configured 4PP power ({format_power(worst_case_power)} = "
             f"{abs(source_current)*1e3:.3g} mA × {abs(voltage_compliance):.3g} V) "
@@ -289,7 +292,7 @@ def configure_four_point(keithley, events, measurement_settings, nplc):
             f"in settings if you've reviewed the probe spec."
         )
         return
-    if worst_case_power > state.power_warn_w:
+    if level == 'warn':
         events.warn('power_envelope',
             f"Warning: 4PP power envelope: up to {format_power(worst_case_power)} "
             f"(I × V_comp). Above warning threshold "

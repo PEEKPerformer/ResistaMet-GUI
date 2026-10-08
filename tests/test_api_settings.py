@@ -289,6 +289,27 @@ class TestResolve:
         assert body['hazard']['hazardous'] is True
         assert body['hazard']['voltage_v'] == 60.0
 
+    def test_what_the_run_will_warn_about_is_said_and_does_not_block(self, client):
+        # NPLC 1, auto-zero once, no filter, no offset compensation:
+        # (1/60 s + 3 ms) + 6 ms = 25.7 ms a reading, 38.96 Hz; asked for 50.
+        body = client.post('/settings/resolve', json={
+            'mode': 'resistance', 'username': 'alice', 'overrides': {
+                'nplc': 1.0, 'auto_zero': 'once', 'filter_enabled': False,
+                'res_offset_comp': False, 'sampling_rate': 50.0}}).json()
+        assert body['ok'] is True and body['issues'] == []
+        assert body['warnings'] == [{
+            'keys': ['sampling_rate', 'nplc', 'auto_zero', 'filter_enabled', 'filter_type',
+                     'filter_count', 'res_offset_comp'],
+            'message': "50 Hz is more than these timing settings can deliver (about "
+                       "39.0 Hz); the run will sample as fast as it can."}]
+
+    def test_no_warning_is_an_empty_list(self, client):
+        body = client.post('/settings/resolve', json={
+            'mode': 'resistance', 'username': 'alice', 'overrides': {
+                'nplc': 1.0, 'auto_zero': 'once', 'filter_enabled': False,
+                'res_offset_comp': False, 'sampling_rate': 10.0}}).json()
+        assert body['warnings'] == []
+
     def test_unknown_mode_is_unprocessable(self, client):
         assert client.post('/settings/resolve',
                             json={'mode': 'hall', 'username': 'alice'}).status_code == 422
