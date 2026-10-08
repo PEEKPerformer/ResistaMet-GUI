@@ -20,6 +20,7 @@ from mcp.types import Implementation  # noqa: E402
 from resistamet_gui.mcp.audit import AuditLog  # noqa: E402
 from resistamet_gui.mcp.client import NOT_RUNNING, Backend  # noqa: E402
 from resistamet_gui.mcp.server import build_server  # noqa: E402
+from resistamet_gui.mcp.tools import VDP_PROMPTS  # noqa: E402
 
 PENDING = {'prompt_id': 'run-2:vdp_geometry-1', 'kind': 'vdp_geometry',
            'options': ['proceed', 'abort'], 'requires_human': True, 'detail': {'index': 1}}
@@ -201,6 +202,19 @@ class TestReads:
         assert not failed
         assert described['shared_keys'] == {
             'auto_zero': '"on", fixed by the mode (the profile\'s "once" is not used)'}
+        assert described['prompts'] == VDP_PROMPTS
+
+    def test_the_vdp_prompts_are_the_run_s(self, connection_file):
+        """Four rewiring prompts, as many as the F76 geometries the run walks."""
+        from resistamet_gui.calculations_vdp import f76_geometries
+        assert len(f76_geometries()) == 4
+        assert VDP_PROMPTS.startswith('A van der Pauw run stops at four prompts')
+        assert 'the output is off while it waits' in VDP_PROMPTS
+        assert 'touch-safety prompt (safety_voltage_ack) comes first' in VDP_PROMPTS
+        assert 'A person must be at the bench for the whole run' in VDP_PROMPTS
+        description = _list_tools(connection_file)['start_run'].description
+        assert 'four more, one before each of its four wirings' in description
+        assert 'someone must be at the bench for the whole run' in description
 
     def test_an_unknown_mode_names_the_modes(self, call):
         failed, text = call('describe_mode', {'mode': 'hall'})
