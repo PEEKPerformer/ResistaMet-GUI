@@ -133,7 +133,8 @@ export function SweepView() {
     [sweep.segments],
   );
   // A segment does not say which quantity was sourced; the run's settings do.
-  const sourced = overrides.sweep_source === "current" ? "current" : "voltage";
+  // During a run the window did not start, those are the run's, not the tab's.
+  const sourced = panelValues.sweep_source === "current" ? "current" : "voltage";
   const fit = useMemo(() => fitResistance(sweep.segments, sourced), [sweep.segments, sourced]);
   const totalPoints = sweep.segments.reduce((n, s) => n + s.voltages.length, 0);
   const inCompliance = sweep.segments.reduce((n, s) => n + s.compliance.filter((c) => c !== "OK").length, 0);
