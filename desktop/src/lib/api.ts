@@ -225,6 +225,12 @@ export class ApiClient {
     return this.request("PATCH", `/profiles/${encodeURIComponent(username)}`, sections);
   }
 
+  /** Whether agent access is in force, which is not always the stored
+   *  allow_agents. */
+  agents(): Promise<{ enabled: boolean }> {
+    return this.request("GET", "/agents");
+  }
+
   schema(): Promise<{ modes: Record<Mode, ModeSchema> }> {
     return this.request("GET", "/schema/settings");
   }
