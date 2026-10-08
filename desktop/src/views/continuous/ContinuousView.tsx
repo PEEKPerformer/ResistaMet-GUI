@@ -16,7 +16,7 @@ import type { Resolved } from "../../lib/api";
 import { ApiError } from "../../lib/api";
 import { NAME_THE_SAMPLE } from "../../lib/copy";
 import { formatElapsed, formatEngineering } from "../../lib/format";
-import { useSession } from "../../state/session";
+import { runPanelSettings, useSession } from "../../state/session";
 import { useLatestSample } from "../../state/samples";
 import { useUi } from "../../state/ui";
 import { seedOverrides, setOverride, useOverrides } from "../../state/overrides";
@@ -211,6 +211,11 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
   // The achievable rate is stated once: in the banner when the request
   // exceeds it, as a quiet line under the timing fields otherwise.
   const rateBanner = rateTooHigh && !locked;
+  // A run an agent started shows its own values, read-only; the tab's wait
+  // underneath, untouched, for when it ends.
+  const runValues = runPanelSettings(session, mode);
+  const panelValues = runValues ?? overrides;
+  const panelIssues = runValues ? [] : (resolved?.issues ?? []);
 
   return (
     <div className={styles.view}>
@@ -313,9 +318,9 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
           <SettingsForm
             mode={mode}
             groups={MODE_FIELDS[mode]}
-            values={overrides}
+            values={panelValues}
             onChange={onChange}
-            issues={resolved?.issues ?? []}
+            issues={panelIssues}
             disabled={locked}
           />
           <div className={styles.sectionTitle}>Timing</div>
@@ -324,13 +329,13 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
               key={spec.key}
               spec={spec}
               meta={FIELD_META.InstrumentSettings?.[spec.key] ?? {}}
-              value={overrides[spec.key]}
+              value={panelValues[spec.key]}
               onChange={(v) => onChange(spec.key, v)}
-              issue={resolved?.issues.find((i) => i.key === spec.key)}
+              issue={panelIssues.find((i) => i.key === spec.key)}
               disabled={locked}
             />
           ))}
-          {maxRate !== null && !rateBanner ? (
+          {maxRate !== null && !rateBanner && !runValues ? (
             <div className={styles.derived}>
               Max rate with these settings: <span className="num">{maxRate.toFixed(1)} Hz</span>
             </div>
