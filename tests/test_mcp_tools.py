@@ -79,21 +79,36 @@ def connection_file(tmp_path):
 
 
 @pytest.fixture
-def call(scripted, connection_file, tmp_path):
-    """Call one tool through a fresh in-memory MCP session; (is_error, payload)."""
-    def run(name, arguments=None):
+def calls(scripted, connection_file, tmp_path):
+    """Call tools in turn through one fresh in-memory MCP session.
+
+    Takes ``(name, arguments)`` pairs; returns ``(is_error, payload)`` for each.
+    """
+    def run(*steps):
         async def go():
             backend = Backend(str(connection_file), transport=httpx2.MockTransport(scripted))
             server = build_server(backend, AuditLog(str(tmp_path / 'audit')))
+            replies = []
             try:
                 async with Client(server, mode='legacy',
                                   client_info=Implementation(name='test', version='1')) as client:
-                    reply = await client.call_tool(name, arguments or {})
+                    for name, arguments in steps:
+                        reply = await client.call_tool(name, arguments or {})
+                        text = reply.content[0].text
+                        replies.append((reply.is_error,
+                                        text if reply.is_error else json.loads(text)))
             finally:
                 await backend.aclose()
-            text = reply.content[0].text
-            return reply.is_error, (text if reply.is_error else json.loads(text))
+            return replies
         return asyncio.run(go())
+    return run
+
+
+@pytest.fixture
+def call(calls):
+    """Call one tool through a fresh in-memory MCP session; (is_error, payload)."""
+    def run(name, arguments=None):
+        return calls((name, arguments))[0]
     return run
 
 
@@ -370,6 +385,25 @@ class TestRunTools:
         assert not failed
         assert waited['fired'] == 'prompt'
         assert 'person must answer' in waited['status']['pending_prompt']['who_answers']
+
+    def test_wait_for_waits_through_a_prompt_the_agent_was_shown(self, calls, scripted):
+        prompted = {'state': 'awaiting_prompt', 'run_id': 'run-2', 'last_seq': 3,
+                    'pending_prompt': PENDING}
+        scripted.replies[('GET', '/session')] = (200, prompted)
+        (_, status), (failed, waited) = calls(
+            ('get_status', None), ('wait_for', {'until': 'run_ended', 'timeout_s': 0.6}))
+        assert status['pending_prompt']['prompt_id'] == PENDING['prompt_id']
+        assert not failed
+        assert waited['fired'] == 'timeout'
+        assert waited['prompt_at_start'] == {'prompt_id': PENDING['prompt_id'],
+                                             'still_pending': True}
+
+    def test_who_answers_says_how_to_wait_for_the_person(self, call, scripted):
+        scripted.replies[('GET', '/session')] = (200, {'state': 'awaiting_prompt',
+                                                       'run_id': 'run-2',
+                                                       'pending_prompt': PENDING})
+        who = call('get_status')[1]['pending_prompt']['who_answers']
+        assert "wait_for('run_ended')" in who and 'does not end that wait' in who
 
     def test_wait_for_then_stop_stops_the_run_and_follows_it_to_its_end(self, call, scripted):
         statuses = [{'state': 'running', 'run_id': 'run-4', 'last_seq': 3,

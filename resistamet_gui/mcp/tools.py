@@ -36,7 +36,9 @@ from .client import Backend, BackendError, BackendUnavailable
 
 #: Said wherever a prompt needs a person, so the agent can pass it on.
 PERSON_MUST_ANSWER = ("A person must answer this at the ResistaMet window; an agent "
-                      "cannot. Tell the user what it asks, then wait_for the run.")
+                      "cannot. Tell the user what it asks, then "
+                      "wait_for('run_ended'): this prompt does not end that wait; the "
+                      "next prompt, the run's end or the timeout does.")
 
 MODES = "resistance, source_v, source_i, four_point, sweep, vdp"
 
@@ -139,8 +141,34 @@ def for_an_agent(profile: Dict[str, Any]) -> Dict[str, Any]:
                                        if key not in HIDDEN_PROFILE_KEYS}}
 
 
-def status_view(status: Dict[str, Any]) -> Dict[str, Any]:
-    """``GET /session`` with a prompt that needs a person said to need one."""
+class ShownPrompt:
+    """The prompt this agent was last shown pending, by id.
+
+    ``wait_for`` waits through that prompt and returns at any other: the
+    agent has passed the first on to the user and is waiting for the
+    answer, but has not heard of the second. "Pending when the wait began"
+    is not the same thing. A prompt raised between ``start_run``'s reply
+    and the agent's first wait was pending at the start and never shown,
+    and waiting through it would leave the agent silent while the run
+    waits for a person nobody told.
+    """
+
+    def __init__(self) -> None:
+        self.prompt_id: Optional[str] = None
+
+    def note(self, status: Dict[str, Any]) -> None:
+        prompt = status.get('pending_prompt')
+        self.prompt_id = prompt.get('prompt_id') if isinstance(prompt, dict) else None
+
+
+def status_view(status: Dict[str, Any],
+                shown: Optional[ShownPrompt] = None) -> Dict[str, Any]:
+    """``GET /session`` with a prompt that needs a person said to need one.
+
+    ``shown`` notes the prompt, if any: the status is about to reach the agent.
+    """
+    if shown is not None:
+        shown.note(status)
     view = dict(status)
     prompt = view.get('pending_prompt')
     if isinstance(prompt, dict) and prompt.get('requires_human'):
@@ -158,17 +186,18 @@ async def mode_entry(backend: Backend, mode: str) -> Dict[str, Any]:
 
 def register(server: MCPServer, backend: Backend) -> None:
     """Add every tool to ``server``."""
-    _register_reads(server, backend)
-    _register_runs(server, backend)
-    _register_following(server, backend)
+    shown = ShownPrompt()
+    _register_reads(server, backend, shown)
+    _register_runs(server, backend, shown)
+    _register_following(server, backend, shown)
     _register_results(server, backend)
 
 
-def _register_reads(server: MCPServer, backend: Backend) -> None:
+def _register_reads(server: MCPServer, backend: Backend, shown: ShownPrompt) -> None:
 
     async def get_status() -> CallToolResult:
         health = await ask(backend, 'GET', '/health')
-        status = status_view(await ask(backend, 'GET', '/session'))
+        status = status_view(await ask(backend, 'GET', '/session'), shown)
         return result({'backend': health.get('status'), **status})
 
     server.add_tool(get_status, annotations=READ, title="Status", description=(
@@ -290,7 +319,7 @@ def _register_reads(server: MCPServer, backend: Backend) -> None:
         "to the instrument) are per profile and only a person can change them."))
 
 
-def _register_runs(server: MCPServer, backend: Backend) -> None:
+def _register_runs(server: MCPServer, backend: Backend, shown: ShownPrompt) -> None:
 
     async def start_run(
             user: User, mode: Mode,
@@ -313,7 +342,7 @@ def _register_runs(server: MCPServer, backend: Backend) -> None:
             body['prompt_timeout_s'] = prompt_timeout_s
         started = await ask(backend, 'POST', '/session/start', json_body=body)
         audit.note_run_id(started.get('run_id'))
-        status = status_view(await ask(backend, 'GET', '/session'))
+        status = status_view(await ask(backend, 'GET', '/session'), shown)
         return result({'run_id': started.get('run_id'), 'status': status})
 
     server.add_tool(start_run, annotations=ACT, title="Start run", description=(
@@ -332,7 +361,7 @@ def _register_runs(server: MCPServer, backend: Backend) -> None:
         "agent. stop_run ends it."))
 
     async def stop_run() -> CallToolResult:
-        return result(status_view(await ask(backend, 'POST', '/session/stop')))
+        return result(status_view(await ask(backend, 'POST', '/session/stop'), shown))
 
     server.add_tool(stop_run, annotations=ACT_IDEMPOTENT, title="Stop run", description=(
         "End the run in progress, whoever started it, the normal way: output off, data "
@@ -341,21 +370,21 @@ def _register_runs(server: MCPServer, backend: Backend) -> None:
         "the shutdown."))
 
     async def abort_run() -> CallToolResult:
-        return result(status_view(await ask(backend, 'POST', '/session/abort')))
+        return result(status_view(await ask(backend, 'POST', '/session/abort'), shown))
 
     server.add_tool(abort_run, annotations=ACT_IDEMPOTENT, title="Abort run", description=(
         "End the run as stop_run does (output off, file finished) but record the reason "
         "as aborted rather than user_stop. Always allowed."))
 
     async def pause_run() -> CallToolResult:
-        return result(status_view(await ask(backend, 'POST', '/session/pause')))
+        return result(status_view(await ask(backend, 'POST', '/session/pause'), shown))
 
     server.add_tool(pause_run, annotations=ACT_IDEMPOTENT, title="Pause run", description=(
         "Pause a continuous run: sampling stops, the output stays on. No effect on a "
         "van der Pauw run. 409 when no run is in progress."))
 
     async def resume_run() -> CallToolResult:
-        return result(status_view(await ask(backend, 'POST', '/session/resume')))
+        return result(status_view(await ask(backend, 'POST', '/session/resume'), shown))
 
     server.add_tool(resume_run, annotations=ACT_IDEMPOTENT, title="Resume run",
                     description="Resume a paused run. 409 when no run is in progress.")
@@ -365,7 +394,7 @@ def _register_runs(server: MCPServer, backend: Backend) -> None:
                 "One line of at most 80 characters, e.g. 'lamp on'."))] = 'MARK',
     ) -> CallToolResult:
         return result(status_view(await ask(backend, 'POST', '/session/mark',
-                                            json_body={'label': label})))
+                                            json_body={'label': label}), shown))
 
     server.add_tool(mark_event, annotations=ACT, title="Mark event", description=(
         "Write a label into the event column of the run's next data row, e.g. when "
@@ -373,16 +402,16 @@ def _register_runs(server: MCPServer, backend: Backend) -> None:
         "409 when no run is in progress; 422 names what the backend refused in a label."))
 
 
-def _register_following(server: MCPServer, backend: Backend) -> None:
+def _register_following(server: MCPServer, backend: Backend, shown: ShownPrompt) -> None:
 
     async def get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         return await ask(backend, 'GET', path, params=params)
 
     async def wait_for(
             until: Annotated[str, Field(description=(
-                "run_ended, prompt, samples:N (the run has written N samples) or "
-                "state:<state> (idle, identifying, running, paused, awaiting_prompt, "
-                "stopping)."))],
+                "run_ended, prompt (one pending now, or raised during the wait), "
+                "samples:N (the run has written N samples) or state:<state> (idle, "
+                "identifying, running, paused, awaiting_prompt, stopping)."))],
             timeout_s: Annotated[float, Field(ge=0, description=(
                 f"Seconds to wait, at most {waiting.MAX_WAIT_S:g}."))] = 60.0,
             then_stop: Annotated[bool, Field(description=(
@@ -398,17 +427,24 @@ def _register_following(server: MCPServer, backend: Backend) -> None:
             await ask(backend, 'POST', '/session/stop')
 
         waited = await waiting.wait_for(get, condition, timeout_s,
-                                        stop=stop if then_stop else None)
-        waited['status'] = status_view(waited['status'])
+                                        stop=stop if then_stop else None,
+                                        known_prompt=shown.prompt_id)
+        waited['status'] = status_view(waited['status'], shown)
         audit.note_run_id(waited['status'].get('run_id'))
         return result(waited)
 
     server.add_tool(wait_for, annotations=WAIT, title="Wait for", description=(
         "Wait on the current run instead of polling get_status. Returns once, with "
-        "fired = the condition asked for, or 'prompt' (a prompt is pending; if it "
-        "requires_human, a person must answer it at the ResistaMet window: tell the "
-        "user), or 'run_ended' (no run is in progress; run_ended then gives the reason, "
-        "ok, samples and data file), or 'timeout'; always with the session status. "
+        "fired = the condition asked for, or 'prompt' (a prompt you have not been shown "
+        "is pending; if it requires_human, a person must answer it at the ResistaMet "
+        "window: tell the user), or 'run_ended' (no run is in progress; run_ended then "
+        "gives the reason, ok, samples and data file), or 'timeout'; always with the "
+        "session status. A prompt already shown to you (in any tool's reply) does not "
+        "end the wait unless until is 'prompt': to wait for a person, tell the user what "
+        "the prompt asks, then wait_for('run_ended'). It returns at the next prompt (the "
+        "person answered and the run moved on), the run's end, or the timeout (no "
+        "answer yet); prompt_at_start.still_pending says whether that prompt is still "
+        "waiting. "
         f"The timeout is at most {waiting.MAX_WAIT_S:g} s; call again to keep waiting. "
         "then_stop true stops the run the moment the condition holds and returns once it "
         "has ended (stopped true, run_ended with the final sample count). This is how to "
