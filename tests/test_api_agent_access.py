@@ -231,7 +231,7 @@ class TestAllowAgentsSetting:
             'mode': 'resistance', 'username': 'alice', 'overrides': {'allow_agents': True}})
         assert response.json()['ok'] is False
         assert [issue['key'] for issue in response.json()['issues']] == ['allow_agents']
-        assert response.json()['settings']['measurement']['allow_agents'] is False
+        assert 'allow_agents' not in response.json()['settings']['measurement']
 
 
 # --- turning access on and off, and the connection file ----------------------
