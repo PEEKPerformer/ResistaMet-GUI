@@ -82,6 +82,7 @@ Full docs at **[bfer.land/ResistaMet-GUI](https://bfer.land/ResistaMet-GUI/)**:
 - [Data Outputs](https://bfer.land/ResistaMet-GUI/outputs/) — CSV / HDF5 / legacy JSON format, header and footer keys, every column for every mode
 - [GPIB and VISA backends](docs/gpib.md) — backend choice, NI GPIB-USB on macOS / Linux, `--check-visa`
 - [Backend API](docs/api.md) and [Desktop app](docs/desktop.md) — headless measurement over localhost HTTP + WebSocket, and the Tauri front end (development branch)
+- [AI agents (MCP)](docs/mcp.md) — an MCP server through which Claude Code or Claude Desktop drives a measurement, within limits a person sets (development branch)
 - [Troubleshooting](https://bfer.land/ResistaMet-GUI/troubleshooting/) — common errors and fixes
 
 ## Quick Start

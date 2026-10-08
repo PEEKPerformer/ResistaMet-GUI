@@ -421,11 +421,10 @@ class ContinuousRun:
         """
         if self._safety_ack not in ('prompt', 'always'):
             return False
-        from ..safety import is_potentially_hazardous, warning_message
+        from ..safety import (is_potentially_hazardous, silence_note, warning_message,
+                              warning_silenced)
 
-        measurement = self.settings.get('measurement', {})
-        if (self._safety_ack == 'prompt'
-                and bool(measurement.get('safety_voltage_warn_silenced', False))):
+        if self._safety_ack == 'prompt' and warning_silenced(self.settings, time.time()):
             return False
         check = is_potentially_hazardous(self.settings, self.mode)
         if not check.hazardous:
@@ -454,11 +453,12 @@ class ContinuousRun:
             self._events.warn('prompt_timeout',
                                "No answer to the touch-safety warning; abandoning the run.")
             return True
-        if fields.get('silence_for_profile'):
+        note = silence_note(fields) if choice == 'acknowledge' else None
+        if note:
             # Recorded on the event stream; persisting it belongs to whoever
-            # owns the profile file, not to a run.
-            self._events.log('safety_silenced',
-                              "Touch-safety warning silenced for this profile.")
+            # owns the profile file (the API saves it with the answer), not
+            # to a run.
+            self._events.log('safety_silenced', note)
         if choice != 'acknowledge':
             # Cancelled, or stopped while the question was open. Without this
             # line the log's last entry was still the previous run's: nothing

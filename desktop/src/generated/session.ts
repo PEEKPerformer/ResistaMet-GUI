@@ -3,6 +3,24 @@
 // Do not edit. Regenerate with `npm run gen:types`.
 
 /**
+ * The ``fields`` of an answer to ``safety_voltage_ack``.
+ *
+ * ``silence_for_profile`` silences the warning on the run's profile for
+ * good; ``silence_for_days`` for that many days from the answer. Either
+ * is saved only with ``acknowledge``: a person who cancelled has not
+ * agreed to stop being asked. One or the other, not both. Unknown keys
+ * are refused, so a misspelt one is an error rather than a silence that
+ * quietly never happened.
+ *
+ * The silence applies to the runs a person starts; a run an agent
+ * started asks regardless (``docs/design/mcp_layer.md`` M5).
+ */
+export interface SafetyAckFields {
+  silence_for_days?: number | null;
+  silence_for_profile?: boolean;
+}
+
+/**
  * One session: its state and the run it is on, or was last on.
  */
 export interface SessionStatus {

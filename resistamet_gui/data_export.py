@@ -147,6 +147,41 @@ def _write_metadata_block(f, meta: Dict[str, Any], units: Optional[List[str]] = 
         f.write(_metadata_line('units', ','.join(units)))
 
 
+def _absorb_metadata_line(meta: Dict[str, Any], line: str, text_keys: frozenset) -> None:
+    """Add one ``# key: value`` line to ``meta``; a key seen before keeps its value."""
+    body = line[1:].strip()
+    if not body or body.startswith('---'):
+        return
+    if ':' not in body:
+        return
+    key, _, value = body.partition(':')
+    key = key.strip()
+    value = value.strip()
+    if key == 'units':
+        meta['units'] = value.split(',')
+    elif key in text_keys:
+        meta.setdefault(key, value)
+    else:
+        meta.setdefault(key, _parse_scalar(value))
+
+
+def metadata_from_lines(lines: Iterable[str], text_keys: Iterable[str] = ()) -> Dict[str, Any]:
+    """The ``#`` metadata lines of a data file, as ``parse_metadata`` reads them.
+
+    For a file that is already in memory -- one served over HTTP, as the MCP
+    server reads it -- where ``parse_metadata`` wants a path. Lines that do
+    not start with ``#`` are skipped, so a caller may pass the head block,
+    the end block, or both.
+    """
+    text_keys = frozenset(text_keys)
+    meta: Dict[str, Any] = {}
+    for line in lines:
+        line = line.rstrip('\r\n')
+        if line.startswith('#'):
+            _absorb_metadata_line(meta, line, text_keys)
+    return meta
+
+
 def parse_metadata(path: Union[str, Path], text_keys: Iterable[str] = ()) -> Dict[str, Any]:
     """Parse the ``#`` metadata header (and trailing end block, if present) from a CSV.
 
@@ -166,20 +201,7 @@ def parse_metadata(path: Union[str, Path], text_keys: Iterable[str] = ()) -> Dic
     meta: Dict[str, Any] = {}
 
     def absorb(line: str) -> None:
-        body = line[1:].strip()
-        if not body or body.startswith('---'):
-            return
-        if ':' not in body:
-            return
-        key, _, value = body.partition(':')
-        key = key.strip()
-        value = value.strip()
-        if key == 'units':
-            meta['units'] = value.split(',')
-        elif key in text_keys:
-            meta.setdefault(key, value)
-        else:
-            meta.setdefault(key, _parse_scalar(value))
+        _absorb_metadata_line(meta, line, text_keys)
 
     # Head pass: read leading # lines until the column-header row.
     with opener(path, 'rt', encoding='utf-8') as f:

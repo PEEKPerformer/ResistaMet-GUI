@@ -9,6 +9,7 @@ import { useState } from "react";
 import { useApi } from "../../app/AppContext";
 import type { PendingPrompt } from "../../lib/api";
 import { ApiError } from "../../lib/api";
+import { SILENCE_CHOICES, silenceFields, type SilenceChoice } from "../../lib/safetySilence";
 import { Button, Dialog, Notice } from "../ui";
 import styles from "./dialogs.module.css";
 
@@ -47,6 +48,9 @@ function useAnswer(prompt: PendingPrompt) {
 
 function SafetyPrompt({ prompt }: Props) {
   const { answer, busy, error } = useAnswer(prompt);
+  // Saved to the profile with an acknowledge; it spares the runs this person
+  // starts, never an agent's, which asks regardless.
+  const [silence, setSilence] = useState<SilenceChoice>("ask");
   const detail = prompt.detail as { voltage_v?: number; threshold_v?: number; reason?: string; message?: string };
 
   return (
@@ -61,7 +65,7 @@ function SafetyPrompt({ prompt }: Props) {
           <Button
             variant="danger"
             disabled={busy}
-            onClick={() => void answer("acknowledge")}
+            onClick={() => void answer("acknowledge", { ...silenceFields(silence) })}
           >
             Acknowledge and energize
           </Button>
@@ -74,6 +78,21 @@ function SafetyPrompt({ prompt }: Props) {
           {detail.reason ?? "The configured voltage"} is at or above the {detail.threshold_v ?? 30} V touch-safety threshold
           (IEC 61010-1 SELV). Output is off.
         </p>
+        <div role="radiogroup" aria-label="Next time">
+          {SILENCE_CHOICES.map((choice) => (
+            <label key={choice.value} className={styles.checkbox}>
+              <input
+                type="radio"
+                name="safety-silence"
+                value={choice.value}
+                checked={silence === choice.value}
+                disabled={busy}
+                onChange={() => setSilence(choice.value)}
+              />
+              {choice.label}
+            </label>
+          ))}
+        </div>
         {error ? <Notice tone="danger">{error}</Notice> : null}
       </div>
     </Dialog>

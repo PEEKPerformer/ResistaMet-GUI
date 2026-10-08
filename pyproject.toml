@@ -83,6 +83,13 @@ api = [
 usb = [
     "pyusb>=1.2",
 ]
+# The MCP server (python -m resistamet_gui.mcp), through which an AI agent
+# drives a running backend. It uses the HTTP client the SDK already brings,
+# httpx2, rather than a second one. The SDK needs Python 3.10+.
+mcp = [
+    "mcp>=2,<3; python_version >= '3.10'",
+    "httpx2>=2.10; python_version >= '3.10'",
+]
 
 [project.scripts]
 resistamet-gui = "resistamet_gui.__main__:main"

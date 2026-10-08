@@ -52,6 +52,8 @@ jobs:
           pip install -r requirements.txt
           # API layer: optional at runtime, required to exercise its routes.
           pip install "fastapi>=0.110" "uvicorn>=0.27" "httpx>=0.27"
+          # MCP server: its SDK needs Python 3.10+; on 3.9 its tests skip.
+          pip install "mcp>=2,<3; python_version >= '3.10'"
 
       - name: Run pytest (unit + integration)
         env:
@@ -73,7 +75,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         # -rs so a skipped API suite (missing fastapi) is visible rather than
         # passing silently, which would hide the layer the sidecar depends on.
-        run: pytest tests/test_session.py tests/test_session_e2e.py tests/test_api_session.py tests/test_api_settings.py tests/test_api_events.py tests/test_api_sidecar.py -v -rs
+        run: pytest tests/test_session.py tests/test_session_e2e.py tests/test_api_session.py tests/test_api_settings.py tests/test_api_events.py tests/test_api_sidecar.py tests/test_mcp_tools.py -v -rs
 
       - name: Desktop contract types are current
         # The TypeScript types are generated from contracts/*.schema.json; a

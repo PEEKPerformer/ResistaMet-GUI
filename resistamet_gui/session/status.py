@@ -7,9 +7,15 @@ is generated from it.
 
 Every field is required, nullable where there may be nothing to report, so
 the reply always has the same keys. No Qt.
+
+``SafetyAckFields`` is the other half of a pending prompt: what an answer to
+the touch-safety question may carry beside its choice.
 """
 from typing import Any, Dict, List, Literal, Optional
 
+from pydantic import Field, StrictBool, model_validator
+
+from ..safety import MAX_SILENCE_DAYS, SECONDS_PER_DAY
 from .events import EventModel
 
 #: ``idle``; ``identifying`` while ``identify`` holds the bus; the rest belong
@@ -26,6 +32,40 @@ class PendingPrompt(EventModel):
     options: List[str]
     requires_human: bool
     detail: Dict[str, Any]
+
+
+class SafetyAckFields(EventModel):
+    """The ``fields`` of an answer to ``safety_voltage_ack``.
+
+    ``silence_for_profile`` silences the warning on the run's profile for
+    good; ``silence_for_days`` for that many days from the answer. Either
+    is saved only with ``acknowledge``: a person who cancelled has not
+    agreed to stop being asked. One or the other, not both. Unknown keys
+    are refused, so a misspelt one is an error rather than a silence that
+    quietly never happened.
+
+    The silence applies to the runs a person starts; a run an agent
+    started asks regardless (``docs/design/mcp_layer.md`` M5).
+    """
+
+    silence_for_profile: StrictBool = False
+    silence_for_days: Optional[float] = Field(
+        default=None, gt=0.0, le=MAX_SILENCE_DAYS, allow_inf_nan=False, strict=True)
+
+    @model_validator(mode='after')
+    def _one_silence_at_most(self) -> 'SafetyAckFields':
+        if self.silence_for_profile and self.silence_for_days is not None:
+            raise ValueError("send silence_for_profile or silence_for_days, not both")
+        return self
+
+    def profile_change(self, now: float) -> Dict[str, Any]:
+        """The ``measurement`` keys to store for this answer; empty for none."""
+        if self.silence_for_profile:
+            return {'safety_voltage_warn_silenced': True}
+        if self.silence_for_days is not None:
+            return {'safety_voltage_warn_silenced_until':
+                    now + self.silence_for_days * SECONDS_PER_DAY}
+        return {}
 
 
 class InstrumentInfo(EventModel):
