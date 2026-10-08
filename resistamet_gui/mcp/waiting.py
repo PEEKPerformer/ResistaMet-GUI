@@ -3,8 +3,11 @@
 An agent that polls ``get_status`` in a loop spends its context on
 identical replies. ``wait_for`` polls ``GET /session`` here instead, at a
 modest interval, and returns once: when the condition it was given holds,
-when a prompt stops the run (only a person can move it on), when the run is
-over (nothing more will happen), or at the timeout, whichever comes first.
+when a new prompt stops the run (only a person can move it on, and the
+agent should tell the user), when the run is over (nothing more will
+happen), or at the timeout, whichever comes first. A prompt the agent
+has already been shown does not end it: waiting for the person to answer
+it is what the wait is for.
 
 ``get_run_events`` reads the same history the backend keeps for polling
 clients (``GET /session/events``). Samples are left out unless asked for,
@@ -123,6 +126,11 @@ def _ended(status: Dict[str, Any], run_id: Optional[str]) -> bool:
     return status.get('state') == 'idle' or status.get('run_id') != run_id
 
 
+def _prompt_id(status: Dict[str, Any]) -> Optional[str]:
+    prompt = status.get('pending_prompt')
+    return prompt.get('prompt_id') if isinstance(prompt, dict) else None
+
+
 def _met(until: Until, status: Dict[str, Any], run_id: Optional[str],
          samples: Optional[SampleCount]) -> bool:
     if until.kind == 'run_ended':
@@ -136,15 +144,28 @@ def _met(until: Until, status: Dict[str, Any], run_id: Optional[str],
 
 async def wait_for(get: Get, until: Until, timeout_s: float, *,
                    stop: Optional[Callable[[], Awaitable[Any]]] = None,
+                   known_prompt: Optional[str] = None,
                    poll_s: Optional[float] = None,
                    clock: Callable[[], float] = time.monotonic,
                    sleep: Callable[[float], Awaitable[None]] = anyio.sleep) -> Dict[str, Any]:
     """Wait for ``until`` on the current run; say what ended the wait.
 
     ``fired`` is the condition asked for when it held; otherwise ``prompt``
-    (a prompt is pending, and the run cannot go on until a person answers
-    it), ``run_ended`` (no run is in progress, so nothing more will happen)
-    or ``timeout``. Waiting when no run is in progress returns at once.
+    (a prompt the agent has not been shown is pending, and the run cannot
+    go on until a person answers it), ``run_ended`` (no run is in progress, so nothing
+    more will happen) or ``timeout``. Waiting when no run is in progress
+    returns at once.
+
+    ``known_prompt`` is the id of the prompt the agent has been shown
+    pending. If that prompt is pending when the wait begins, it ends the
+    wait only when ``until`` is ``prompt``. Otherwise an agent told "a
+    person must answer this; tell the user, then wait" got the same prompt
+    back at once, every time it waited, and could not wait for the person
+    at all. Waiting through it is how an agent waits for the person: the
+    run moving on shows as the condition (``state:running``), the next
+    prompt, or the run's end, and ``prompt_at_start`` says whether that
+    prompt is still pending. Any other prompt ends the wait at once,
+    pending at the start or not: the agent has not heard of it.
 
     With ``stop``, the run is stopped as soon as the condition holds, in
     this same call, and the wait goes on, within the same timeout, until
@@ -161,6 +182,9 @@ async def wait_for(get: Get, until: Until, timeout_s: float, *,
     started = clock()
     status = await get('/session')
     run_id = status.get('run_id')
+    prompt_at_start = _prompt_id(status)
+    if prompt_at_start != known_prompt:
+        prompt_at_start = None
     samples = SampleCount(run_id) if until.kind == 'samples' and run_id else None
     stopped = False
     while True:
@@ -178,7 +202,8 @@ async def wait_for(get: Get, until: Until, timeout_s: float, *,
                 stopped = True
                 status = await get('/session')
                 continue
-            if status.get('pending_prompt') is not None:
+            pending = _prompt_id(status)
+            if pending is not None and pending != prompt_at_start:
                 fired = 'prompt'
                 break
             if _ended(status, run_id):
@@ -198,6 +223,11 @@ async def wait_for(get: Get, until: Until, timeout_s: float, *,
         'waited_s': round(clock() - started, 2),
         'status': status,
     }
+    if prompt_at_start is not None:
+        waited['prompt_at_start'] = {
+            'prompt_id': prompt_at_start,
+            'still_pending': _prompt_id(status) == prompt_at_start,
+        }
     if samples is not None:
         waited['samples'] = samples.count
         if samples.gap:
