@@ -205,6 +205,10 @@ export const SWEEP_FIELDS: FieldGroup<Keys<SweepSettings>>[] = [
       { key: "sweep_delay", label: "Source delay", unit: "s" },
     ],
   },
+  {
+    title: "Measure",
+    fields: [{ key: "sweep_measurement_type", label: "Wiring" }],
+  },
 ];
 
 export const VDP_FIELDS: FieldGroup<Keys<VdpSettings>>[] = [

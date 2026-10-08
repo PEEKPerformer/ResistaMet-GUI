@@ -136,6 +136,12 @@ class SweepSettings(SettingsModel):
                                description="Delay between sourcing and measuring at each "
                                            "point, in s.")
     sweep_direction: Literal['up', 'down', 'up_down'] = _M['sweep_direction']
+    # The sweep used to leave :SYST:RSEN as the connect step's *RST left it,
+    # off, so every sweep was 2-wire with no way to ask for 4.
+    sweep_measurement_type: Literal['2-wire', '4-wire'] = Field(
+        default=_M['sweep_measurement_type'],
+        description="4-wire senses the voltage at the sample on separate leads (remote "
+                    "sense); 2-wire includes the leads' resistance.")
 
     @field_validator('sweep_start', 'sweep_stop', 'sweep_step')
     @classmethod

@@ -80,6 +80,7 @@ def perturb(window, mode):
         widget.sweep_stop.setValue(1.0)
         widget.sweep_step.setValue(0.1)
         widget.sweep_direction.setCurrentText('up_down')
+        widget.sweep_measurement_type.setCurrentText('4-wire')
         widget.sweep_nplc.setValue(0.5)
     elif mode == 'vdp':
         widget.vdp_current.setValue(2e-3)

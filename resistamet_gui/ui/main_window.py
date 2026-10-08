@@ -934,6 +934,9 @@ class ResistanceMeterApp(QMainWindow):
             "Step Delay", widget.sweep_delay,
             "NPLC", widget.sweep_nplc,
         ))
+        widget.sweep_measurement_type = QComboBox(); widget.sweep_measurement_type.addItems(["2-wire", "4-wire"])
+        widget.sweep_measurement_type.setToolTip("2-wire: Simple connection, includes lead resistance.\n4-wire (Kelvin): Separate sense leads eliminate lead resistance.\nUse 4-wire for low-resistance DUTs (<10 Ω) or precision work.")
+        param_layout.addRow("Measurement Type:", widget.sweep_measurement_type)
 
         # Points preview + Test Connection on one row
         widget.sweep_points_label = QLabel("Points: 21")
@@ -1829,6 +1832,7 @@ class ResistanceMeterApp(QMainWindow):
         self.tab_resistance.res_test_current.setValue(m_cfg['res_test_current'])
         self.tab_resistance.res_voltage_compliance.setValue(m_cfg['res_voltage_compliance'])
         self.tab_resistance.res_measurement_type.setCurrentText(m_cfg['res_measurement_type'])
+        self.tab_sweep.sweep_measurement_type.setCurrentText(m_cfg.get('sweep_measurement_type', '2-wire'))
         self.tab_resistance.res_auto_range.setChecked(m_cfg['res_auto_range'])
         self.tab_resistance.res_offset_comp.setChecked(m_cfg.get('res_offset_comp', False))
         self.tab_resistance.sampling_rate.setValue(m_cfg['sampling_rate'])
@@ -2021,6 +2025,7 @@ class ResistanceMeterApp(QMainWindow):
                 m_cfg['sweep_compliance'] = widget.sweep_compliance.value()
                 m_cfg['sweep_delay'] = widget.sweep_delay.value()
                 m_cfg['sweep_direction'] = widget.sweep_direction.currentText()
+                m_cfg['sweep_measurement_type'] = widget.sweep_measurement_type.currentText()
             elif mode == 'vdp':
                 m_cfg['vdp_current'] = widget.vdp_current.value()
                 m_cfg['vdp_voltage_compliance'] = widget.vdp_voltage_compliance.value()
