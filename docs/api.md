@@ -289,7 +289,7 @@ After a run ended with `output_verified: false`, the session's first connection 
 
 ## Prompts
 
-A prompt is a decision the run cannot make. The run emits `prompt`, the session state becomes `awaiting_prompt`, and `GET /session` shows it under `pending_prompt`, so a client that connects late still sees the question. Answer with `POST /session/prompt`, quoting the prompt's `prompt_id` (for example `run-2:safety_voltage_ack-1`; the run id is part of it, so an answer left over from an earlier run cannot be taken by the next) and one of its `options`. The first valid answer wins. Anything else is a 409 and the prompt stays pending.
+A prompt is a decision the run cannot make. The run emits `prompt`, the session state becomes `awaiting_prompt`, and `GET /session` shows it under `pending_prompt`, so a client that connects late still sees the question. Answer with `POST /session/prompt`, quoting the prompt's `prompt_id` (for example `run-2:safety_voltage_ack-1`; the run id is part of it, so an answer left over from an earlier run cannot be taken by the next) and one of its `options`. The first valid answer wins. Anything else is a 409 and the prompt stays pending. A prompt is pending until it is answered or the run is stopped: from that moment `pending_prompt` is null, also in the reply to `POST /session/stop`, and an answer is a 409.
 
 | `kind` | Raised | `options` | `detail` |
 |---|---|---|---|

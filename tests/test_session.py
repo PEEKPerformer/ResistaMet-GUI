@@ -340,6 +340,19 @@ class TestStatus:
         assert prompt['requires_human'] is True
         assert prompt['detail']['index'] == 0
 
+    def test_a_stop_at_a_prompt_does_not_leave_it_pending(self, session, sink, fake_rm,
+                                                         profile):
+        """The trial: stop_run's reply was "stopping" with the prompt it had
+        just released still listed as pending."""
+        profile['measurement'].update({'vdp_thickness_cm': 0.05})
+        session.start(profile, 'vdp', 'wafer1', 'alice')
+        assert _wait_for(lambda: session.status()['pending_prompt'] is not None)
+        session.stop()
+        status = session.status()
+        assert status['pending_prompt'] is None
+        assert status['state'] in ('stopping', 'idle')
+        assert _wait_for(lambda: session.state == 'idle')
+
     def test_a_geometry_prompt_says_the_wiring_in_words_as_the_log_does(
             self, session, sink, fake_rm, profile):
         profile['measurement'].update({'vdp_thickness_cm': 0.05})
