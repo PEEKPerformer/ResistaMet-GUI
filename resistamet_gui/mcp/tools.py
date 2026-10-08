@@ -40,6 +40,9 @@ PERSON_MUST_ANSWER = ("A person must answer this at the ResistaMet window; an ag
 
 MODES = "resistance, source_v, source_i, four_point, sweep, vdp"
 
+#: Profile keys get_profile leaves out (see ``for_an_agent``).
+HIDDEN_PROFILE_KEYS = ('allow_agents',)
+
 #: Read-only, and safe to repeat.
 READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True,
                        open_world_hint=False)
@@ -104,6 +107,21 @@ async def ask(backend: Backend, method: str, path: str, **kwargs) -> Any:
         raise ToolError(explain(exc)) from None
 
 
+def for_an_agent(profile: Dict[str, Any]) -> Dict[str, Any]:
+    """A stored profile without the keys that would mislead an agent.
+
+    ``allow_agents`` is this machine's stored switch, and it is not what lets
+    an agent in: ``--allow-agents`` turns access on without it. An agent
+    that read ``allow_agents: false`` while connected doubted it was allowed
+    to act; being connected is the answer, so the key is left out.
+    """
+    measurement = profile.get('measurement')
+    if not isinstance(measurement, dict):
+        return profile
+    return {**profile, 'measurement': {key: value for key, value in measurement.items()
+                                       if key not in HIDDEN_PROFILE_KEYS}}
+
+
 def status_view(status: Dict[str, Any]) -> Dict[str, Any]:
     """``GET /session`` with a prompt that needs a person said to need one."""
     view = dict(status)
@@ -149,8 +167,11 @@ def _register_reads(server: MCPServer, backend: Backend) -> None:
     server.add_tool(list_instruments, annotations=READ, title="List instruments",
                     description=(
         "VISA resources this machine can see, and which VISA implementation answered. "
-        "Only while idle: a scan puts traffic on the bus. The address a run uses is the "
-        "profile's gpib_address, set by a person."))
+        "Only while idle: a scan puts traffic on the bus. A run always talks to the "
+        "instrument at the profile's gpib_address (get_profile shows it): a run's "
+        "overrides cannot name an address, and no tool here changes the profile. If it "
+        "is not the instrument found here, ask the user to set it at the ResistaMet "
+        "window."))
 
     async def identify_instrument(
             address: Annotated[str, Field(description="VISA address, e.g. GPIB0::24::INSTR")],
@@ -171,13 +192,15 @@ def _register_reads(server: MCPServer, backend: Backend) -> None:
         "The operator profiles, and the one last used. A run is started as one of them."))
 
     async def get_profile(user: User) -> CallToolResult:
-        return result(await ask(backend, 'GET', f'/profiles/{_segment(user)}'))
+        stored = await ask(backend, 'GET', f'/profiles/{_segment(user)}')
+        return result(for_an_agent(stored))
 
     server.add_tool(get_profile, annotations=READ, title="Get profile", description=(
         "A user's stored settings: measurement (every mode's keys, in SI units), display, "
         "file, output, and agent_limits (max_voltage_v V, max_current_a A, max_power_w W; "
         "null means only the instrument's own limit). Only a person can change "
-        "agent_limits or the touch-safety keys."))
+        "agent_limits or the touch-safety keys. The machine's agent-access switch is "
+        "left out: being connected means agent access is on."))
 
     async def describe_mode(mode: Mode,
                             user: Annotated[Optional[str], Field(
