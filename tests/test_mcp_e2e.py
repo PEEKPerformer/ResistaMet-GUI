@@ -293,6 +293,36 @@ def test_a_hazardous_run_within_a_raised_limit_waits_for_a_person(bench):
         bench.ui('PATCH', '/profiles/alice', json={'agent_limits': {'max_voltage_v': 30.0}})
 
 
+def test_a_fixed_number_of_readings_in_a_mode_without_a_count(bench):
+    async def steps(call):
+        failed, started = await call('start_run', {'user': 'alice', 'mode': 'resistance',
+                                                   'sample_name': 'ten-readings'})
+        assert not failed, started
+        failed, waited = await call('wait_for', {'until': 'samples:10', 'then_stop': True,
+                                                 'timeout_s': 60})
+        assert not failed, waited
+        assert (waited['fired'], waited['stopped']) == ('samples:10', True), waited
+        assert waited['status']['state'] == 'idle'
+        assert waited['run_ended']['reason'] == 'user_stop'
+        rows = waited['run_ended']['samples']
+        # At least the ten asked for. At most a few more: the simulator reads
+        # at the profile's 10 Hz, so in the 0.1 s between two looks at the
+        # count one more can arrive, and one more is in flight when the stop
+        # lands; two more allow for a slow test machine. Two calls, wait then
+        # stop, gave 57 for 20 in the usability trial.
+        assert 10 <= rows <= 10 + 4, rows
+
+        failed, first = await call('get_run_summary', {'run_id': started['run_id'],
+                                                       'first_rows': 5})
+        assert not failed, first
+        assert first['finalized'] is True
+        assert (first['rows'], first['rows_total']) == (5, rows)
+        assert first['columns']['R_ohm']['count'] == 5
+        assert first['columns']['elapsed_s']['count'] == 5
+
+    agent(bench, steps)
+
+
 def test_the_stdio_server_answers(bench):
     """``python -m resistamet_gui.mcp`` as an MCP client starts it: stdout is the protocol."""
     from mcp import StdioServerParameters
@@ -326,6 +356,6 @@ def test_the_audit_log_has_a_line_per_call_and_no_token(bench):
     assert all(line['client'] == {'name': 'e2e', 'version': '1'} for line in lines)
     assert bench.agent_token not in text and bench.ui_token not in text
     starts = [line for line in lines if line['tool'] == 'start_run']
-    assert [line['outcome'] for line in starts] == ['ok', 'error', 'ok', 'ok']
+    assert [line['outcome'] for line in starts] == ['ok', 'error', 'ok', 'ok', 'ok']
     assert starts[1]['http_status'] == 422
     assert starts[0]['run_id'] and starts[0]['http_status'] == 202
