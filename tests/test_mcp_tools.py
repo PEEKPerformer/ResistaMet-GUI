@@ -252,7 +252,8 @@ class TestCheckSettings:
         failed, checked = call('check_settings', {'user': 'alice', 'mode': 'resistance',
                                                   'overrides': {'res_test_current': 0.002}})
         assert not failed
-        assert checked['agent_may_start'] is True
+        assert checked['can_start'] is True
+        assert next(iter(checked)) == 'can_start'
         assert checked['settings'] == {'res_test_current': 0.002,
                                        'res_voltage_compliance': 5.0, 'sampling_rate': 10.0}
         assert scripted.requests[-1][3] == {'mode': 'resistance', 'username': 'alice',
@@ -267,7 +268,8 @@ class TestCheckSettings:
                               'reason': 'Source V'})
         failed, checked = call('check_settings', {'user': 'alice', 'mode': 'resistance'})
         assert not failed
-        assert checked['agent_may_start'] is False
+        # Valid settings an agent may not start: ok alone would read as leave.
+        assert (checked['can_start'], checked['ok']) == (False, True)
         assert checked['agent_limits']['violations'] == [violation]
         assert 'person at the' in checked['note']
 
@@ -279,14 +281,14 @@ class TestCheckSettings:
         failed, checked = call('check_settings', {'user': 'alice', 'mode': 'resistance'})
         assert not failed
         assert checked['warnings'] == [warning]
-        assert checked['agent_may_start'] is True
+        assert checked['can_start'] is True
 
     def test_settings_with_errors_cannot_be_started(self, call, scripted):
         self._resolve(scripted, ok=False, agent_limits=None,
                       issues=[{'key': 'res_test_current', 'message': 'too large',
                                'severity': 'error'}])
         failed, checked = call('check_settings', {'user': 'alice', 'mode': 'resistance'})
-        assert checked['agent_may_start'] is False
+        assert checked['can_start'] is False
         assert checked['issues'][0]['key'] == 'res_test_current'
 
 

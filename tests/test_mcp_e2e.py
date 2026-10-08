@@ -153,11 +153,11 @@ def test_the_tools_are_listed(bench):
 def test_check_settings_within_and_beyond_the_agent_limit(bench):
     async def steps(call):
         failed, within = await call('check_settings', {'user': 'alice', 'mode': 'resistance'})
-        assert not failed and within['ok'] and within['agent_may_start'], within
+        assert not failed and within['ok'] and within['can_start'], within
         failed, beyond = await call('check_settings', {
             'user': 'alice', 'mode': 'source_v', 'overrides': {'vsource_voltage': 40.0}})
         assert not failed
-        assert beyond['agent_may_start'] is False
+        assert beyond['can_start'] is False
         [violation] = beyond['agent_limits']['violations']
         assert (violation['limit'], violation['value'], violation['allowed']) == (
             'max_voltage_v', 40.0, 30.0)
