@@ -31,6 +31,7 @@ from pydantic import Field
 
 from ..constants import __version__
 from . import audit, summary, waiting
+from . import describe as describing
 from .client import Backend, BackendError, BackendUnavailable
 
 #: Said wherever a prompt needs a person, so the agent can pass it on.
@@ -183,29 +184,30 @@ def _register_reads(server: MCPServer, backend: Backend) -> None:
                                 description="Whose stored values to show; default the "
                                             "last user.")] = None) -> CallToolResult:
         entry = await mode_entry(backend, mode)
-        described: Dict[str, Any] = {
-            'mode': mode,
-            'mode_keys': entry.get('fields', []),
-            'override_keys': entry.get('override_keys', []),
-        }
         user = user or (await ask(backend, 'GET', '/users')).get('last_user')
+        measurement = profile = None
+        issues = None
         if user:
             resolved = await ask(backend, 'POST', '/settings/resolve', json_body={
                 'mode': mode, 'username': user, 'overrides': {}})
             measurement = resolved.get('settings', {}).get('measurement', {})
-            described['user'] = user
-            described['values'] = {key: measurement[key] for key in described['override_keys']
-                                   if key in measurement}
-            described['issues'] = resolved.get('issues', [])
+            issues = resolved.get('issues', [])
+            if entry.get('fixed'):
+                stored = await ask(backend, 'GET', f'/profiles/{_segment(user)}')
+                profile = stored.get('measurement', {})
+        described: Dict[str, Any] = {'mode': mode, 'user': user,
+                                     **describing.describe(entry, measurement, profile),
+                                     'how_to_read': describing.HOW_TO_READ}
+        if issues is not None:
+            described['issues'] = issues
         return result(described)
 
     server.add_tool(describe_mode, annotations=READ, title="Describe mode", description=(
-        "The settings one mode takes: mode_keys (the mode's own), override_keys (all a "
-        "run of this mode accepts in overrides), and, for a user, the value each would "
-        "have if not overridden. Units are SI and follow the key name (…_voltage V, "
-        "…_current A, …_compliance in the unit it limits, sampling_rate Hz, …_hours, "
-        "…_s, …_cm, …_um, …_mm). Bounds are checked by check_settings, which names the "
-        "key and the bound of any value out of range."))
+        "The settings one mode takes, one line per key: mode_keys (the mode's own) and "
+        "shared_keys (timing, filter, aux sensor). Each line gives the value a user's run "
+        "would have, in its unit, and where it comes from (the profile, or fixed by the "
+        "mode), the default, what the key accepts (its choices, or its bounds), and what "
+        "it means. Any of these keys can be changed for one run in overrides."))
 
     async def check_settings(user: User, mode: Mode,
                              overrides: Overrides = None) -> CallToolResult:

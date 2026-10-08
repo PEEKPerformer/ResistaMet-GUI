@@ -74,6 +74,9 @@ export interface AuxSensorSettings {
  */
 export interface CurrentSourceSettings {
   isource_current?: number;
+  /**
+   * 0 = until stopped.
+   */
   isource_duration_hours?: number;
   isource_voltage_compliance?: number;
   isource_voltage_range_auto?: boolean;
@@ -111,28 +114,70 @@ export interface FileSettings {
  * ``None``. The consumers read both as "not measured".
  */
 export interface FourPointSettings {
+  /**
+   * Finite-size correction multiplying K (fpp_model thin_film).
+   */
   fpp_alpha?: number;
   fpp_array_angle_deg?: number;
   fpp_current?: number;
+  /**
+   * Current reversal: each reading combines +I and -I, cancelling thermal offsets.
+   */
   fpp_delta_mode?: boolean;
+  /**
+   * Wait after each reversal, in s.
+   */
   fpp_delta_settling?: number;
+  /**
+   * Sample diameter (or width) for the ASTM F84 F2 correction; 0 = infinite. Above 0 the F84 corrections apply.
+   */
   fpp_diameter_cm?: number;
+  /**
+   * Silicon dopant type for the F84 temperature correction.
+   */
   fpp_dopant_type?: "none" | "n" | "p";
   fpp_edge_warn_pct?: number;
+  /**
+   * Sample shape for the F2 correction (rectangle_N: length = N x width). Anything but circle applies the F84 corrections.
+   */
   fpp_geometry?: "circle" | "square" | "rectangle_2" | "rectangle_3" | "rectangle_4";
+  /**
+   * Geometric factor K: Rs = K x V/I; 4.532 for an infinite thin sheet.
+   */
   fpp_k_factor?: number;
+  /**
+   * thin_film: Rs = K x alpha x V/I, rho = Rs x t; finite_thin: the same without alpha; semi_infinite: rho = 2 pi s x V/I (bulk, t >> s); finite_alpha: rho = alpha x 2 pi s x V/I. Not used when an ASTM F84 input is set (fpp_diameter_cm > 0, fpp_geometry not circle, or fpp_temperature_c with fpp_dopant_type n or p): the F84 corrections apply instead.
+   */
   fpp_model?: "thin_film" | "semi_infinite" | "finite_thin" | "finite_alpha";
   fpp_position_correction?: "warn";
+  /**
+   * The run refuses to start when |fpp_current| x fpp_voltage_compliance is above this, and with fpp_stop_on_overpower stops when a measured V x I is.
+   */
   fpp_power_stop_w?: number;
+  /**
+   * The run warns when |fpp_current| x fpp_voltage_compliance is above this.
+   */
   fpp_power_warn_w?: number;
   fpp_sample_diameter_mm?: number;
   fpp_sample_length_mm?: number;
+  /**
+   * Sample outline for a spot's position check only; unbounded: fpp_geometry and fpp_diameter_cm describe it.
+   */
   fpp_sample_shape?: "unbounded" | "circle" | "rectangle";
   fpp_sample_width_mm?: number;
+  /**
+   * Readings to take, then stop; 0 = until stopped.
+   */
   fpp_samples?: number;
   fpp_spacing_cm?: number;
   fpp_stop_on_overpower?: boolean;
+  /**
+   * Silicon sample temperature for the F84 correction to 23 C, with fpp_dopant_type; null = not measured.
+   */
   fpp_temperature_c?: number | null;
+  /**
+   * 0 = not given: sheet resistance only, no resistivity or conductivity (except fpp_model semi_infinite, which does not use it).
+   */
   fpp_thickness_um?: number;
   fpp_voltage_compliance?: number;
   fpp_voltage_range_auto?: boolean;
@@ -151,18 +196,33 @@ export interface InstrumentSettings {
    * Let AI agents connect to a backend on this machine, through an MCP server, with a token of their own (role 'agent'). Machine-local; only the 'ui' role may change it.
    */
   allow_agents?: boolean;
+  /**
+   * on: re-zero with every reading (slower, no drift); once: zero at the start of the run; off: never.
+   */
   auto_zero?: "on" | "once" | "off";
   filter_count?: number;
   filter_enabled?: boolean;
+  /**
+   * repeat: each reading averages filter_count new conversions; moving: a running average.
+   */
   filter_type?: "repeat" | "moving";
   gpib_address?: string;
   /**
    * Interface resource of a Prologix-style GPIB adapter (Prologix GPIB-USB / GPIB-ETHERNET, AR488), opened before the instrument so that GPIB<board>::<addr>::INSTR resolves; pyvisa-py only. Empty = none. Serial: PRLGX-ASRL[board]::<device>::INTFC, where <device> is the port path on macOS and Linux (PRLGX-ASRL::/dev/cu.usbserial-PX12345::INTFC, PRLGX-ASRL::/dev/ttyUSB0::INTFC) and the COM port number alone on Windows (PRLGX-ASRL::5::INTFC for COM5). Ethernet: PRLGX-TCPIP[board]::<host>[::port]::INTFC, port 1234 by default. [board] defaults to 0 and is the <board> of the instrument address.
    */
   gpib_interface?: string;
+  /**
+   * Integration time per reading, in power-line cycles.
+   */
   nplc?: number;
+  /**
+   * Readings per second asked for; the timing settings may allow fewer.
+   */
   sampling_rate?: number;
   settling_time?: number;
+  /**
+   * End the run when the output reaches its compliance limit.
+   */
   stop_on_compliance?: boolean;
   visa_library?: string;
 }
@@ -180,9 +240,21 @@ export interface OutputSettings {
  * Source I, measure R. 2-wire or 4-wire, optional cable null.
  */
 export interface ResistanceSettings {
+  /**
+   * Auto-ohms: the instrument chooses its own test current and voltage limit.
+   */
   res_auto_range?: boolean;
+  /**
+   * Lead resistance subtracted from every reading, in ohms; set by the cable-null procedure.
+   */
   res_cable_null?: number;
+  /**
+   * 4-wire senses the voltage at the sample on separate leads (remote sense); 2-wire includes the leads' resistance.
+   */
   res_measurement_type?: "2-wire" | "4-wire";
+  /**
+   * Offset-compensated ohms: cancels thermal EMFs, halves the reading rate.
+   */
   res_offset_comp?: boolean;
   res_test_current?: number;
   res_voltage_compliance?: number;
@@ -295,12 +367,27 @@ export interface SettingsWarning {
  * the ``fpp_array_angle_deg`` setting.
  */
 export interface SweepSettings {
+  /**
+   * Limit on the measured quantity: a current, at most 3.15 A, when sweep_source is voltage; a voltage, at most 210 V, when it is current.
+   */
   sweep_compliance?: number;
+  /**
+   * Delay between sourcing and measuring at each point, in s.
+   */
   sweep_delay?: number;
   sweep_direction?: "up" | "down" | "up_down";
   sweep_source?: "voltage" | "current";
+  /**
+   * In the source's unit: V, within +/-200, when sweep_source is voltage; A, within +/-3, when it is current.
+   */
   sweep_start?: number;
+  /**
+   * In the source's unit: V, within +/-200, when sweep_source is voltage; A, within +/-3, when it is current.
+   */
   sweep_step?: number;
+  /**
+   * In the source's unit: V, within +/-200, when sweep_source is voltage; A, within +/-3, when it is current.
+   */
   sweep_stop?: number;
 }
 
@@ -313,7 +400,13 @@ export interface SweepSettings {
  */
 export interface VdpSettings {
   vdp_current?: number;
+  /**
+   * Readings averaged at each current direction of each wiring.
+   */
   vdp_readings_per_polarity?: number;
+  /**
+   * Wait after each change of current, in s.
+   */
   vdp_settling_s?: number;
   vdp_thickness_cm?: number;
   vdp_voltage_compliance?: number;
@@ -326,6 +419,9 @@ export interface VdpSettings {
 export interface VoltageSourceSettings {
   vsource_current_compliance?: number;
   vsource_current_range_auto?: boolean;
+  /**
+   * 0 = until stopped.
+   */
   vsource_duration_hours?: number;
   vsource_voltage?: number;
 }
