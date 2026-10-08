@@ -14,7 +14,7 @@ from typing import Optional
 import pyvisa
 
 from ..calculations import four_point_power_level, four_point_worst_case_power_w
-from ..formatting import format_power
+from ..formatting import format_power, four_point_power_warning
 
 
 @dataclass(frozen=True)
@@ -293,11 +293,9 @@ def configure_four_point(keithley, events, measurement_settings, nplc):
         )
         return
     if level == 'warn':
-        events.warn('power_envelope',
-            f"Warning: 4PP power envelope: up to {format_power(worst_case_power)} "
-            f"(I × V_comp). Above warning threshold "
-            f"{format_power(state.power_warn_w)} — proceed with care."
-        )
+        events.warn('power_envelope', "Warning: 4PP power envelope: " +
+                    four_point_power_warning(worst_case_power, state.power_warn_w,
+                                             source_current))
 
     metadata = {
         'Mode': 'Four-Point Probe',

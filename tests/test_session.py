@@ -223,8 +223,16 @@ class TestLogText:
 
         warnings = [e.payload['message'] for e in sink.of_type('log')
                     if e.payload['code'] == 'power_envelope']
-        assert warnings[0] == ("Warning: 4PP power envelope: up to 15 mW (I × V_comp). "
-                               "Above warning threshold 500 µW — proceed with care.")
+        # The same words as the settings preview's warning, with the remedy.
+        from resistamet_gui.schema.resolve import resolve_run_settings
+        assert warnings[0] == ("Warning: 4PP power envelope: Worst-case power 15 mW (source "
+                               "current × voltage compliance) is above the 500 µW warning "
+                               "threshold; lower fpp_voltage_compliance (to 0.167 V or less "
+                               "at this current) or fpp_current to bring it under.")
+        preview = resolve_run_settings(profile, 'four_point', {}).warnings
+        assert [w.message for w in preview if 'power' in w.message] == [
+            warnings[0].removeprefix("Warning: 4PP power envelope: ")
+            + " The run will warn and go on."]
         assert re.fullmatch(r"Warning: 4PP power [\d.]+ µW above warn threshold 500 µW",
                             warnings[1]), warnings[1]
 

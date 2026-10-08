@@ -382,9 +382,11 @@ class TestWarnings:
             'fpp_current': 5e-3, 'fpp_voltage_compliance': 5.0, 'fpp_power_warn_w': 0.01,
             'fpp_power_stop_w': 0.1, 'sampling_rate': 0.5, 'nplc': 1.0}, strict=True)
         assert [w.model_dump() for w in resolved.warnings] == [{
-            'keys': ['fpp_power_warn_w', 'fpp_current', 'fpp_voltage_compliance'],
+            'keys': ['fpp_voltage_compliance', 'fpp_current', 'fpp_power_warn_w'],
             'message': "Worst-case power 25 mW (source current × voltage compliance) is "
-                       "above the 10 mW warning threshold; the run will warn and go on."}]
+                       "above the 10 mW warning threshold; lower fpp_voltage_compliance "
+                       "(to 2 V or less at this current) or fpp_current to bring it "
+                       "under. The run will warn and go on."}]
         assert resolved.ok
 
     def test_four_point_power_at_the_threshold_says_nothing(self, profile):

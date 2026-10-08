@@ -1,7 +1,7 @@
 """format_power: the one way a power is written into a message."""
 import pytest
 
-from resistamet_gui.formatting import format_power
+from resistamet_gui.formatting import format_power, four_point_power_warning
 
 
 @pytest.mark.parametrize("watts, text", [
@@ -34,3 +34,15 @@ def test_large_values_have_no_exponent():
 def test_not_a_number_does_not_raise():
     assert format_power(float('nan')) == "nan W"
     assert format_power(float('inf')) == "inf W"
+
+
+def test_the_power_warning_says_what_lowers_it():
+    # 5 mA x 5 V = 25 mW over 10 mW: 10 mW / 5 mA = 2 V of compliance at most.
+    text = four_point_power_warning(25e-3, 10e-3, -5e-3)
+    assert text.endswith("lower fpp_voltage_compliance (to 2 V or less at this current) "
+                         "or fpp_current to bring it under.")
+
+
+def test_without_a_current_it_names_the_knobs_alone():
+    text = four_point_power_warning(0.0, 10e-3, 0.0)
+    assert text.endswith("; lower fpp_voltage_compliance or fpp_current to bring it under.")
