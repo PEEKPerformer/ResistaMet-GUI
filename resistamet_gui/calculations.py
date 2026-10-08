@@ -841,3 +841,31 @@ def four_point_combined_uncertainty(
         u_inst=u_inst,
         u_total=u_total,
     )
+
+
+# ---------------------------------------------------------------------------
+# Four-point probe power envelope
+# ---------------------------------------------------------------------------
+
+
+def four_point_worst_case_power_w(source_current: float, voltage_compliance: float) -> float:
+    """|I| x |V_compliance|: the most the probe can dissipate, in W.
+
+    The run's pre-flight (``session/configure.py``) and the settings preview
+    (``schema/resolve.py``) both judge this number, so it is worked out here
+    once and the preview cannot say something the run will not.
+    """
+    return abs(float(source_current)) * abs(float(voltage_compliance))
+
+
+def four_point_power_level(worst_case_w: float, warn_w: float, stop_w: float) -> Optional[str]:
+    """``'stop'`` above the hard stop, ``'warn'`` above the warning threshold, else None.
+
+    ``'stop'``: the run refuses to turn the output on. ``'warn'``: it warns
+    and goes on.
+    """
+    if worst_case_w > float(stop_w):
+        return 'stop'
+    if worst_case_w > float(warn_w):
+        return 'warn'
+    return None
