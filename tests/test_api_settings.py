@@ -255,7 +255,8 @@ class TestSchema:
         modes = client.get('/schema/settings').json()['modes']
         resistance = modes['resistance']
         assert set(resistance['keys']) == set(resistance['override_keys'])
-        assert resistance['keys']['res_test_current'] == {
+        assert {key: value for key, value in resistance['keys']['res_test_current'].items()
+                if key != 'description'} == {
             'type': 'number', 'minimum': 1e-7, 'maximum': 3.0, 'default': 0.001, 'unit': 'A'}
         assert resistance['keys']['res_measurement_type']['enum'] == ['2-wire', '4-wire']
         assert resistance['fixed'] == {}

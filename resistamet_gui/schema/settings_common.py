@@ -127,9 +127,20 @@ class AuxSensorSettings(SettingsModel):
     request asks for it on a sweep or vdP run.
     """
 
-    aux_log_enabled: bool = _M['aux_log_enabled']
-    aux_driver: str = Field(default=_M['aux_driver'], min_length=1)
-    aux_address: str = Field(default=_M['aux_address'], min_length=1)
+    aux_log_enabled: bool = Field(
+        default=_M['aux_log_enabled'],
+        description="Log an auxiliary sensor's channels beside each reading, as aux_<key> "
+                    "columns and aux_fault; resistance, source_v, source_i and four_point "
+                    "only.")
+    aux_driver: str = Field(
+        default=_M['aux_driver'], min_length=1,
+        description="Sensor driver: arduino_thermocouple (a K-type thermocouple board "
+                    "streaming DATA lines) or stream_sensor (a device that names its "
+                    "channels in an HDR line). Read when aux_log_enabled.")
+    aux_address: str = Field(
+        default=_M['aux_address'], min_length=1,
+        description="VISA resource of the sensor, e.g. ASRL6::INSTR (serial port COM6 on "
+                    "Windows). Read when aux_log_enabled.")
 
 
 class SafetySettings(SettingsModel):

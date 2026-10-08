@@ -23,7 +23,12 @@ _M = DEFAULT_SETTINGS['measurement']
 class ResistanceSettings(SettingsModel):
     """Source I, measure R. 2-wire or 4-wire, optional cable null."""
 
-    res_test_current: float = Field(default=_M['res_test_current'], ge=1e-7, le=3.0)
+    res_test_current: float = Field(
+        default=_M['res_test_current'], ge=1e-7, le=3.0,
+        description="Current sourced, with res_auto_range off. With it on, auto-ohms "
+                    "chooses the current per range (100 mA seen for a 1 mA request) and "
+                    "the Current column records it; the file name (…_R_1.00mA) and "
+                    "params.test_current_A still give this value.")
     res_voltage_compliance: float = Field(default=_M['res_voltage_compliance'], ge=0.1, le=200.0)
     res_measurement_type: Literal['2-wire', '4-wire'] = Field(
         default=_M['res_measurement_type'],
@@ -51,8 +56,13 @@ class VoltageSourceSettings(SettingsModel):
 
     vsource_voltage: float = Field(default=_M['vsource_voltage'], ge=-200.0, le=200.0)
     vsource_current_compliance: float = Field(
-        default=_M['vsource_current_compliance'], ge=1e-7, le=3.0)
-    vsource_current_range_auto: bool = _M['vsource_current_range_auto']
+        default=_M['vsource_current_compliance'], ge=1e-7, le=3.0,
+        description="Current limit while sourcing vsource_voltage; readings at it are "
+                    "flagged I_COMP.")
+    vsource_current_range_auto: bool = Field(
+        default=_M['vsource_current_range_auto'],
+        description="true: the current measurement autoranges; false: it stays on the "
+                    "range that holds vsource_current_compliance.")
     vsource_duration_hours: float = Field(default=_M['vsource_duration_hours'], ge=0.0, le=168.0,
                                           description="0 = until stopped.")
 
@@ -62,8 +72,13 @@ class CurrentSourceSettings(SettingsModel):
 
     isource_current: float = Field(default=_M['isource_current'], ge=-3.0, le=3.0)
     isource_voltage_compliance: float = Field(
-        default=_M['isource_voltage_compliance'], ge=0.1, le=200.0)
-    isource_voltage_range_auto: bool = _M['isource_voltage_range_auto']
+        default=_M['isource_voltage_compliance'], ge=0.1, le=200.0,
+        description="Voltage limit while sourcing isource_current; readings at it are "
+                    "flagged V_COMP.")
+    isource_voltage_range_auto: bool = Field(
+        default=_M['isource_voltage_range_auto'],
+        description="true: the voltage measurement autoranges; false: it stays on the "
+                    "range that holds isource_voltage_compliance.")
     isource_duration_hours: float = Field(default=_M['isource_duration_hours'], ge=0.0, le=168.0,
                                           description="0 = until stopped.")
 
@@ -173,8 +188,14 @@ class VdpSettings(SettingsModel):
     """
 
     vdp_current: float = Field(default=_M['vdp_current'], gt=0.0, le=1.0)
-    vdp_voltage_compliance: float = Field(default=_M['vdp_voltage_compliance'], gt=0.0, le=200.0)
-    vdp_voltage_range_auto: bool = _M['vdp_voltage_range_auto']
+    vdp_voltage_compliance: float = Field(
+        default=_M['vdp_voltage_compliance'], gt=0.0, le=200.0,
+        description="Voltage limit while sourcing vdp_current at each wiring. The "
+                    "touch-safety check and an agent's voltage limit judge the run by it.")
+    vdp_voltage_range_auto: bool = Field(
+        default=_M['vdp_voltage_range_auto'],
+        description="true: the voltage measurement autoranges; false: it stays on the "
+                    "range that holds vdp_voltage_compliance.")
     vdp_thickness_cm: float = Field(
         default=_M['vdp_thickness_cm'], ge=0.0, le=10.0,
         description="0 = not given: sheet resistance and the homogeneity check only, no "
@@ -198,9 +219,21 @@ class FourPointSettings(SettingsModel):
     """
 
     fpp_current: float = Field(default=_M['fpp_current'], ge=-3.0, le=3.0)
-    fpp_voltage_compliance: float = Field(default=_M['fpp_voltage_compliance'], ge=0.1, le=200.0)
-    fpp_voltage_range_auto: bool = _M['fpp_voltage_range_auto']
-    fpp_spacing_cm: float = Field(default=_M['fpp_spacing_cm'], ge=0.001, le=5.0)
+    fpp_voltage_compliance: float = Field(
+        default=_M['fpp_voltage_compliance'], ge=0.1, le=200.0,
+        description="Voltage limit while sourcing fpp_current. Readings at it are "
+                    "flagged V_COMP and their Rs and rho are lower bounds. "
+                    "|fpp_current| x this is the worst-case probe power, judged against "
+                    "fpp_power_warn_w and fpp_power_stop_w.")
+    fpp_voltage_range_auto: bool = Field(
+        default=_M['fpp_voltage_range_auto'],
+        description="true: the voltage measurement autoranges; false: it stays on the "
+                    "range that holds fpp_voltage_compliance.")
+    fpp_spacing_cm: float = Field(
+        default=_M['fpp_spacing_cm'], ge=0.001, le=5.0,
+        description="Probe tip spacing s (0.1016 cm = 40 mil). Read by semi_infinite and "
+                    "finite_alpha (rho = 2 pi s x V/I), the ASTM F84 corrections and a "
+                    "spot's position check; thin_film and finite_thin do not use it.")
     # 0 = unknown thickness: sheet resistance only, no resistivity.
     fpp_thickness_um: float = Field(
         default=_M['fpp_thickness_um'], ge=0.0, le=5000.0,
@@ -219,12 +252,14 @@ class FourPointSettings(SettingsModel):
                              description="Readings to take, then stop; 0 = until stopped.")
     fpp_model: Literal['thin_film', 'semi_infinite', 'finite_thin', 'finite_alpha'] = Field(
         default=_M['fpp_model'],
-        description="thin_film: Rs = K x alpha x V/I, rho = Rs x t; finite_thin: the same "
-                    "without alpha; semi_infinite: rho = 2 pi s x V/I (bulk, t >> s); "
-                    "finite_alpha: rho = alpha x 2 pi s x V/I. Not used when an ASTM F84 "
-                    "input is set (fpp_diameter_cm > 0, fpp_geometry not circle, or "
-                    "fpp_temperature_c with fpp_dopant_type n or p): the F84 corrections "
-                    "apply instead.")
+        description="By default (thin_film, fpp_k_factor 4.532, fpp_alpha 1, no F84 "
+                    "input) Rs = 4.532 x V/I and rho = Rs x t, with no corrections. "
+                    "thin_film: Rs = K x alpha x V/I; finite_thin: Rs = K x V/I; both rho = "
+                    "Rs x t. semi_infinite: rho = 2 pi s x V/I (bulk, t >> s); "
+                    "finite_alpha: rho = alpha x 2 pi s x V/I; both Rs = K x V/I. Not used "
+                    "when an ASTM F84 input is set (fpp_diameter_cm > 0, fpp_geometry not "
+                    "circle, or fpp_temperature_c with fpp_dopant_type n or p): the F84 "
+                    "corrections apply instead.")
     # 0 = treat the specimen as infinite (F2 = 4.5324).
     fpp_diameter_cm: float = Field(
         default=_M['fpp_diameter_cm'], ge=0.0, le=100.0,
@@ -241,16 +276,41 @@ class FourPointSettings(SettingsModel):
     fpp_sample_shape: Literal['unbounded', 'circle', 'rectangle'] = Field(
         default=_M['fpp_sample_shape'],
         description="Sample outline for a spot's position check only; unbounded: "
-                    "fpp_geometry and fpp_diameter_cm describe it.")
-    fpp_sample_diameter_mm: float = Field(default=_M['fpp_sample_diameter_mm'], ge=0.0, le=1000.0)
-    fpp_sample_width_mm: float = Field(default=_M['fpp_sample_width_mm'], ge=0.0, le=1000.0)
-    fpp_sample_length_mm: float = Field(default=_M['fpp_sample_length_mm'], ge=0.0, le=1000.0)
+                    "fpp_geometry and fpp_diameter_cm describe it. circle needs "
+                    "fpp_sample_diameter_mm, rectangle fpp_sample_width_mm and "
+                    "fpp_sample_length_mm.")
+    fpp_sample_diameter_mm: float = Field(
+        default=_M['fpp_sample_diameter_mm'], ge=0.0, le=1000.0,
+        description="Diameter of a circle outline; 0 = not entered. Read only when "
+                    "fpp_sample_shape is circle.")
+    fpp_sample_width_mm: float = Field(
+        default=_M['fpp_sample_width_mm'], ge=0.0, le=1000.0,
+        description="Side of a rectangle outline along y, across a 0 deg probe array; 0 = "
+                    "not entered. Read only when fpp_sample_shape is rectangle.")
+    fpp_sample_length_mm: float = Field(
+        default=_M['fpp_sample_length_mm'], ge=0.0, le=1000.0,
+        description="Side of a rectangle outline along x, the direction of a 0 deg probe "
+                    "array; 0 = not entered. Read only when fpp_sample_shape is rectangle.")
     # Only 'warn' exists: whether a position-aware correction ('apply') may be
     # offered at all is an open question of the design, and until it is
     # answered every number in a file is F84 as written.
-    fpp_position_correction: Literal['warn'] = _M['fpp_position_correction']
-    fpp_edge_warn_pct: float = Field(default=_M['fpp_edge_warn_pct'], ge=0.0, le=100.0)
-    fpp_array_angle_deg: float = Field(default=_M['fpp_array_angle_deg'], ge=-360.0, le=360.0)
+    fpp_position_correction: Literal['warn'] = Field(
+        default=_M['fpp_position_correction'],
+        description="warn: a spot's position effect (the geometry factor where the probe "
+                    "is, against the one the rows use) is reported, and never applied to "
+                    "Rs or rho. The only choice: whether a position correction may be "
+                    "applied is undecided, so every number in a file is the uncorrected "
+                    "K or F84 one.")
+    fpp_edge_warn_pct: float = Field(
+        default=_M['fpp_edge_warn_pct'], ge=0.0, le=100.0,
+        description="A spot with a position warns, before its first reading, when the "
+                    "geometry factor there differs by more than this from the one the "
+                    "rows use (from the factor at the sample's centre when they have "
+                    "none).")
+    fpp_array_angle_deg: float = Field(
+        default=_M['fpp_array_angle_deg'], ge=-360.0, le=360.0,
+        description="Direction of the probe array, anticlockwise from +x (a rectangle's "
+                    "length); a spot's own angle_deg wins. Position check only.")
     fpp_temperature_c: Optional[float] = Field(
         default=None, ge=-50.0, le=200.0,
         description="Silicon sample temperature for the F84 correction to 23 C, with "
@@ -273,7 +333,11 @@ class FourPointSettings(SettingsModel):
         description="The run refuses to start when |fpp_current| x fpp_voltage_compliance "
                     "is above this, and with fpp_stop_on_overpower stops when a measured "
                     "V x I is.")
-    fpp_stop_on_overpower: bool = _M['fpp_stop_on_overpower']
+    fpp_stop_on_overpower: bool = Field(
+        default=_M['fpp_stop_on_overpower'],
+        description="true: a reading whose measured |V x I| is above fpp_power_stop_w "
+                    "turns the output off and ends the run (reason overpower). false: such "
+                    "a reading only warns, as one above fpp_power_warn_w does.")
 
     def worst_case_power_w(self) -> float:
         """|I| x |V_compliance|: the most the probe can dissipate.
