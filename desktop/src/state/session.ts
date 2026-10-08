@@ -9,6 +9,7 @@
 
 import { useSyncExternalStore } from "react";
 import type { AnyEvent, LogPayload } from "../generated/events";
+import type { Mode } from "../generated/settings";
 import type { InstrumentInfo, SessionStatus } from "../lib/api";
 
 export interface LogLine {
@@ -54,6 +55,9 @@ export interface SessionSnapshot {
    *  Set by run_started, and by every status, which still has it after a
    *  reload has lost the event. */
   runStartedBy: string | null;
+  /** The settings the last run_started announced, with the run they are
+   *  for. Not in the status: after a reload that lost the event, unknown. */
+  runSettings: { runId: string | null; settings: Record<string, unknown> } | null;
 }
 
 const MAX_LOG_LINES = 500;
@@ -68,6 +72,7 @@ let snapshot: SessionSnapshot = {
   gap: false,
   outputUnverified: false,
   runStartedBy: null,
+  runSettings: null,
 };
 
 const listeners = new Set<() => void>();
@@ -116,7 +121,7 @@ export function markPromptAnswered(promptId: string): void {
  *  what was remembered about the old one's would be held against them. */
 export function backendRestarted(): void {
   answeredPrompts.clear();
-  publish({ ...snapshot, lastRunEnded: null, gap: false });
+  publish({ ...snapshot, lastRunEnded: null, gap: false, runSettings: null });
 }
 
 /** The run the pending prompt belongs to, for an answer to name. */
@@ -228,7 +233,13 @@ export function applyEvent(event: AnyEvent): void {
       });
       return;
     case "run_started":
-      publish({ ...snapshot, lastRunEnded: null, gap: false, runStartedBy: event.payload.started_by ?? null });
+      publish({
+        ...snapshot,
+        lastRunEnded: null,
+        gap: false,
+        runStartedBy: event.payload.started_by ?? null,
+        runSettings: { runId: event.run_id ?? null, settings: event.payload.settings ?? {} },
+      });
       return;
     case "run_ended":
       publish({
@@ -258,4 +269,21 @@ export function clearLog(): void {
 /** The operator has checked the front panel. */
 export function dismissOutputNotice(): void {
   if (snapshot.outputUnverified) publish({ ...snapshot, outputUnverified: false });
+}
+
+/** What a mode's settings panel shows in place of the window's own values:
+ *  the measurement settings of the run going in that mode when the window
+ *  did not start it (an AI agent did), so the panel says what the run uses.
+ *  Null for no such run, or one whose run_started was not seen; the panel
+ *  then shows the window's own values. */
+export function runPanelSettings(
+  session: Pick<SessionSnapshot, "status" | "runSettings">,
+  mode: Mode,
+): Record<string, unknown> | null {
+  const { status, runSettings } = session;
+  if (status === null || status.state === "idle" || status.mode !== mode) return null;
+  if (status.started_by === "ui") return null;
+  if (runSettings === null || runSettings.runId !== status.run_id) return null;
+  const measurement = runSettings.settings.measurement;
+  return typeof measurement === "object" && measurement !== null ? (measurement as Record<string, unknown>) : null;
 }

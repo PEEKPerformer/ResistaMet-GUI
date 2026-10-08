@@ -13,7 +13,7 @@ import { MODE_FIELDS, MODE_LABEL, MODE_TIMING, TIMING_FIELDS } from "../../lib/f
 import { ApiError, type PendingPrompt, type Resolved } from "../../lib/api";
 import { NAME_THE_SAMPLE } from "../../lib/copy";
 import { formatEngineering } from "../../lib/format";
-import { useSession } from "../../state/session";
+import { runPanelSettings, useSession } from "../../state/session";
 import { useVdp } from "../../state/vdp";
 import { useUi } from "../../state/ui";
 import { seedOverrides, setOverride, useOverrides } from "../../state/overrides";
@@ -61,6 +61,12 @@ export function VdpView() {
   // Said before Start, as the other modes do: the compliance voltage reaches
   // contacts the operator rewires by hand.
   const hazard = resolved?.hazard?.hazardous ? resolved.hazard : null;
+
+  // A run an agent started shows its own values, read-only; the tab's wait
+  // underneath, untouched, for when it ends.
+  const runValues = runPanelSettings(session, MODE);
+  const panelValues = runValues ?? overrides;
+  const panelIssues = runValues ? [] : (resolved?.issues ?? []);
 
   const fieldKeys = useMemo(() => [...Object.keys(FIELD_META.VdpSettings ?? {}), ...MODE_TIMING.vdp], []);
   useEffect(() => {
@@ -238,16 +244,16 @@ export function VdpView() {
 
       <aside className={styles.settings}>
         <Panel title="Settings" bodyClassName={styles.settingsBody}>
-          <SettingsForm mode={MODE} groups={MODE_FIELDS.vdp} values={overrides} onChange={onChange} issues={resolved?.issues ?? []} disabled={running} />
+          <SettingsForm mode={MODE} groups={MODE_FIELDS.vdp} values={panelValues} onChange={onChange} issues={panelIssues} disabled={running} />
           <div className={styles.sectionTitle}>Timing</div>
           {TIMING_FIELDS.filter((f) => MODE_TIMING.vdp.includes(f.key)).map((spec) => (
             <FieldRow
               key={spec.key}
               spec={spec}
               meta={FIELD_META.InstrumentSettings?.[spec.key] ?? {}}
-              value={overrides[spec.key]}
+              value={panelValues[spec.key]}
               onChange={(v) => onChange(spec.key, v)}
-              issue={resolved?.issues.find((i) => i.key === spec.key)}
+              issue={panelIssues.find((i) => i.key === spec.key)}
               disabled={running}
             />
           ))}
