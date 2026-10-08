@@ -176,7 +176,7 @@ export interface FourPointSettings {
    */
   fpp_temperature_c?: number | null;
   /**
-   * 0 = not given: sheet resistance only, no resistivity or conductivity (except fpp_model semi_infinite, which does not use it).
+   * 0 = not given: sheet resistance only, no resistivity or conductivity (fpp_model semi_infinite does not use it). With the ASTM F84 corrections no sheet resistance either: their thickness factor needs it.
    */
   fpp_thickness_um?: number;
   fpp_voltage_compliance?: number;
