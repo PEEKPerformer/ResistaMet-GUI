@@ -475,6 +475,8 @@ def build_metadata(
             'compliance': measurement_settings.get('sweep_compliance'),
             'delay_s': measurement_settings.get('sweep_delay'),
             'direction': measurement_settings.get('sweep_direction'),
+            # configure_sweep's default, so the header says what was sent.
+            'measurement_type': measurement_settings.get('sweep_measurement_type', '2-wire'),
         }
 
     # Auxiliary-sensor provenance (any continuous mode) — only recorded when

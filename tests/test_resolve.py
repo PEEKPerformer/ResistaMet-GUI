@@ -99,7 +99,8 @@ class TestOverrideKeysPerMode:
                       'isource_voltage_range_auto', 'isource_duration_hours',
                       'isource_run_continuous'}),
         ('sweep', {'sweep_source', 'sweep_start', 'sweep_stop', 'sweep_step',
-                   'sweep_compliance', 'sweep_delay', 'sweep_direction'}),
+                   'sweep_compliance', 'sweep_delay', 'sweep_direction',
+                   'sweep_measurement_type'}),
         ('vdp', {'vdp_current', 'vdp_voltage_compliance', 'vdp_voltage_range_auto',
                  'vdp_thickness_cm', 'vdp_settling_s', 'vdp_readings_per_polarity'}),
         ('four_point', {

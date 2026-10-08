@@ -78,7 +78,8 @@ Hardware staircase sweep using the Keithley's trigger model. Source voltage or c
 
 1. Choose **Source mode** (V or I).
 2. Set **Start**, **Stop**, **Step**, **Per-step delay**, and **Direction** (`up`, `down`, or `up_down` for hysteresis curves).
-3. Click **Start**. The sweep runs on the instrument and the full I-V curve appears at the end.
+3. Choose **2-wire** or **4-wire** (Measurement Type; 2-wire by default).
+4. Click **Start**. The sweep runs on the instrument and the full I-V curve appears at the end.
 
 ## Useful inputs
 

@@ -413,7 +413,7 @@ Metadata `params`: `source_current_A`, `voltage_compliance_V`, `voltage_auto_ran
 
 The header row is `point,V_source,I_meas,compliance` for a voltage sweep and `point,V_meas,I_source,compliance` for a current sweep; the voltage is always the second column and the current the third. Files written before this change have `V_source,I_meas` whatever was sourced; for those, `params.source_function` says which column was sourced.
 
-Metadata `params`: `source_function`, `start`, `stop`, `step`, `compliance`, `delay_s`, `direction`.
+Metadata `params`: `source_function`, `start`, `stop`, `step`, `compliance`, `delay_s`, `direction`, `measurement_type` (`2-wire` or `4-wire`).
 
 ## Reading the data back
 

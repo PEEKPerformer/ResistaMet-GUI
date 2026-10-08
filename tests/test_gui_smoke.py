@@ -67,6 +67,7 @@ class TestTabCreation:
         assert hasattr(w, 'sweep_delay')
         assert hasattr(w, 'sweep_direction')
         assert hasattr(w, 'sweep_nplc')
+        assert hasattr(w, 'sweep_measurement_type')
         assert hasattr(w, 'iv_canvas')
         assert hasattr(w, 'start_button')
         assert hasattr(w, 'stop_button')
@@ -317,6 +318,16 @@ class TestGatherSettings:
         assert 'sweep_step' in m
         assert 'sweep_compliance' in m
         assert 'nplc' in m
+
+    def test_sweep_wiring_reaches_the_run(self, main_window):
+        w = main_window.tab_sweep
+        assert w.sweep_measurement_type.currentText() == '2-wire'  # the default
+        w.sweep_measurement_type.setCurrentText('4-wire')
+        s = main_window.gather_settings_for_mode('sweep')
+        assert s['measurement']['sweep_measurement_type'] == '4-wire'
+        w.sweep_measurement_type.setCurrentText('2-wire')
+        s = main_window.gather_settings_for_mode('sweep')
+        assert s['measurement']['sweep_measurement_type'] == '2-wire'
 
     def test_four_point_settings(self, main_window):
         s = main_window.gather_settings_for_mode('four_point')

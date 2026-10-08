@@ -858,6 +858,30 @@ class TestSCPIContract:
             f":FORM:ELEM in 4PP must include STAT: {form_elem[-1]}"
         )
 
+    @pytest.mark.parametrize("wiring, sent, never", [
+        # The default: what every sweep was before the setting, now said.
+        (None, ":SYST:RSEN OFF", ":SYST:RSEN ON"),
+        ("2-wire", ":SYST:RSEN OFF", ":SYST:RSEN ON"),
+        ("4-wire", ":SYST:RSEN ON", ":SYST:RSEN OFF"),
+    ])
+    def test_sweep_sets_the_wiring_it_was_asked_for(self, qapp, fake_rm, tmp_path,
+                                                    wiring, sent, never):
+        # A sweep used to leave RSEN as *RST left it: always 2-wire.
+        settings = _sweep_settings(tmp_path)
+        settings["output"]["format"] = "csv"  # the header that records it
+        if wiring is not None:
+            settings["measurement"]["sweep_measurement_type"] = wiring
+        worker = MeasurementWorker("sweep", "swp1", "alice", settings)
+        spies = _drive_worker(qapp, worker, timeout_s=10.0)
+        assert spies.error_occurred == []
+        cmds = _setup_writes(fake_rm.opened[0])
+        assert sent in cmds and never not in cmds, cmds
+        # Before the sweep engine is set up, as resistance sets it before RES.
+        assert cmds.index(sent) < cmds.index(":SOUR:FUNC VOLT")
+        csv_path = next((tmp_path / "data").rglob("*.csv"))
+        header = csv_path.read_text(encoding="utf-8")
+        assert f"# params.measurement_type: {wiring or '2-wire'}\n" in header
+
 
 class TestFourPointF84Path:
     """Exercise the F84 calculation branch end-to-end through the worker.

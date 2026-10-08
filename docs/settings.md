@@ -223,6 +223,6 @@ Some settings live on the individual mode tabs because they're per-measurement-c
 - **Delta mode (current reversal)** — Four-Point Probe tab Advanced section
 - **Geometry / dopant / temperature** — Four-Point Probe tab (drive F84 corrections)
 - **Sample thickness** — Four-Point Probe and Van der Pauw tabs
-- **Sweep start / stop / step / direction / per-step delay** — I-V Sweep tab
+- **Sweep start / stop / step / direction / per-step delay / measurement type** — I-V Sweep tab (`sweep_measurement_type`: `2-wire` by default, or `4-wire` for remote sense)
 
 These follow the same per-user persistence — they're written into the user's section of `config.json` when the user clicks **Save Settings** on the active tab.
