@@ -251,6 +251,15 @@ class TestSchema:
         assert 'gpib_address' not in keys
         assert 'settling_time' not in keys
 
+    def test_a_run_until_stopped_flag_is_offered_to_its_own_mode_only(self, client):
+        modes = client.get('/schema/settings').json()['modes']
+        offered = {mode: sorted(key for key in entry['override_keys']
+                                if key.endswith('_run_continuous'))
+                   for mode, entry in modes.items()}
+        assert offered == {'resistance': [], 'source_v': ['vsource_run_continuous'],
+                           'source_i': ['isource_run_continuous'], 'four_point': [],
+                           'sweep': [], 'vdp': []}
+
 
 class TestResolve:
     def test_preview_returns_the_settings_a_run_would_use(self, client):
