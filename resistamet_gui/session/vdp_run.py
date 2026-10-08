@@ -500,7 +500,8 @@ class VdpRun:
     def _compute_and_emit_result(self) -> None:
         from ..calculations_vdp import calculate_van_der_pauw
 
-        thickness = float(self.settings['measurement']['vdp_thickness_cm'])
+        # 0 is "not given": the result carries R_s and no resistivity.
+        thickness = float(self.settings['measurement'].get('vdp_thickness_cm') or 0.0)
         result = calculate_van_der_pauw(self._voltages, self._i_mag, thickness)
 
         # Combined uncertainty on Rs and ρ. Mirrors the GUI computation in
@@ -528,9 +529,10 @@ class VdpRun:
         # The file first: a result that cannot be announced is still recorded.
         self._shut_down(result_dict)
         self._events.emit('vdp_result', result_dict)
-        self._events.log('completed', 
-            f"vdP done: Rs={result.sheet_resistance:.4g} Ω/sq, "
-            f"rho={result.rho_avg:.4g} Ω·cm, "
+        rho_text = (f"rho={result.rho_avg:.4g} Ω·cm" if thickness > 0
+                    else "no thickness, no rho")
+        self._events.log('completed',
+            f"vdP done: Rs={result.sheet_resistance:.4g} Ω/sq, {rho_text}, "
             f"asym={result.asymmetry_pct:.2f}% "
             f"({'homogeneous' if result.homogeneous else 'NON-homogeneous'})"
         )
