@@ -3,6 +3,7 @@
 No Qt anywhere — this is the path the API sidecar and the MCP layer will use.
 """
 import copy
+import json
 import os
 import re
 import time
@@ -1167,16 +1168,27 @@ class TestSpotStatisticsAtTheEndOfARun:
 
     def test_a_quantity_the_rows_do_not_have_is_empty_not_wrong(
             self, session, sink, fake_rm, profile):
-        """With no thickness entered the rows hold no conductivity."""
+        """With no thickness entered the rows hold no resistivity or conductivity.
+
+        A resistivity of exactly 0 used to be written (K * 0 * V/I), and a
+        statistics block of mean 0, u_total 0 followed from it.
+        """
         import math
         from resistamet_gui.data_export import parse_metadata
         profile['measurement'].update({'fpp_thickness_um': 0.0, 'fpp_model': 'thin_film'})
         path = self._run(session, sink, _four_point(profile, samples=2))
         footer = parse_metadata(path)
         assert footer['spot_stats.rs.n'] == 2
-        assert footer['spot_stats.sigma.n'] == 0
-        assert math.isnan(footer['spot_stats.sigma.mean'])
-        assert math.isnan(footer['spot_stats.sigma.u_total'])
+        for quantity in ('rho', 'sigma'):
+            assert footer[f'spot_stats.{quantity}.n'] == 0
+            assert math.isnan(footer[f'spot_stats.{quantity}.mean'])
+            assert math.isnan(footer[f'spot_stats.{quantity}.u_total'])
+        columns = _csv_columns(path)
+        assert all(math.isnan(float(cell)) for cell in columns['rho_ohm_cm'])
+        assert all(math.isfinite(float(cell)) for cell in columns['Rs_ohm_sq'])
+        # On the wire (the API, the desktop, an agent) a missing value is null.
+        samples = [json.loads(event.model_dump_json()) for event in sink.of_type('sample')]
+        assert [s['payload']['derived']['rho'] for s in samples] == [None, None]
 
     def test_spot_complete_carries_the_footer_and_the_spot(self, session, sink, fake_rm, profile):
         spot = {'map_id': 'wafer7', 'index': 4, 'label': 'D'}
