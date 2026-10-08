@@ -12,7 +12,7 @@ import { MODE_FIELDS, MODE_LABEL, MODE_TIMING, TIMING_FIELDS } from "../../lib/f
 import { ApiError, type Resolved } from "../../lib/api";
 import { NAME_THE_SAMPLE } from "../../lib/copy";
 import { formatEngineering } from "../../lib/format";
-import { useSession } from "../../state/session";
+import { runPanelSettings, useSession } from "../../state/session";
 import { fitResistance, useSweep } from "../../state/sweep";
 import { useUi } from "../../state/ui";
 import { seedOverrides, setOverride, useOverrides } from "../../state/overrides";
@@ -95,7 +95,13 @@ export function SweepView() {
     [overrides.sweep_source],
   );
 
-  const sourceIsVoltage = (overrides.sweep_source ?? "voltage") === "voltage";
+  // A run an agent started shows its own values, read-only; the tab's wait
+  // underneath, untouched, for when it ends.
+  const runValues = runPanelSettings(session, MODE);
+  const panelValues = runValues ?? overrides;
+  const panelIssues = runValues ? [] : (resolved?.issues ?? []);
+
+  const sourceIsVoltage = (panelValues.sweep_source ?? "voltage") === "voltage";
   const sourceUnit = sourceIsVoltage ? "V" : "A";
   const complianceUnit = sourceIsVoltage ? "A" : "V";
   const points = typeof resolved?.derived.sweep_points === "number" ? resolved.derived.sweep_points : null;
@@ -238,9 +244,9 @@ export function SweepView() {
                     : f,
               ),
             }))}
-            values={overrides}
+            values={panelValues}
             onChange={onChange}
-            issues={resolved?.issues ?? []}
+            issues={panelIssues}
             disabled={running}
           />
           <div className={styles.sectionTitle}>Timing</div>
@@ -249,13 +255,13 @@ export function SweepView() {
               key={spec.key}
               spec={spec}
               meta={FIELD_META.InstrumentSettings?.[spec.key] ?? {}}
-              value={overrides[spec.key]}
+              value={panelValues[spec.key]}
               onChange={(v) => onChange(spec.key, v)}
-              issue={resolved?.issues.find((i) => i.key === spec.key)}
+              issue={panelIssues.find((i) => i.key === spec.key)}
               disabled={running}
             />
           ))}
-          {points !== null ? (
+          {points !== null && !runValues ? (
             <div className={styles.derived}>
               This sweep: <span className="num">{points}</span> points
             </div>
