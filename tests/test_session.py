@@ -911,6 +911,17 @@ class TestStartedBy:
         assert 'started_by' not in started['settings']
         assert session.status()['started_by'] is None
 
+    def test_the_machine_s_agent_switch_reaches_neither_event_nor_file(self, session, sink,
+                                                                         fake_rm, profile):
+        profile['measurement']['allow_agents'] = False
+        session.start(_four_point(profile), 'four_point', 'wafer1', 'alice',
+                      started_by='agent')
+        assert _wait_for(lambda: session.state == 'idle')
+        assert 'allow_agents' not in sink.of_type('run_started')[0].payload['settings'][
+            'measurement']
+        path = sink.of_type('run_ended')[0].payload['path']
+        assert 'allow_agents' not in Path(path).read_text(encoding='utf-8')
+
     def test_the_next_run_does_not_inherit_it(self, session, sink, fake_rm, profile):
         session.start(_four_point(profile), 'four_point', 'wafer1', 'alice',
                       started_by='agent')

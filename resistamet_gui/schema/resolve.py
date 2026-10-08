@@ -51,7 +51,8 @@ logger = logging.getLogger(__name__)
 
 #: Keys the profile always wins on, whatever a client sends (MW gather).
 #: ``allow_agents`` is this machine's switch, not a setting of a run: a
-#: request that sent it would change nothing and read as if it had.
+#: request that sent it would change nothing and read as if it had. It is
+#: refused here and left out of the run (``MACHINE_ACCESS_KEYS``).
 #: ``visa_library`` and ``gpib_interface`` are this machine's bus, like the
 #: address: a run opens its instrument through them, and a library path is
 #: loaded into the backend as code, which only the window may choose
@@ -61,7 +62,15 @@ PROFILE_OWNED_KEYS = ('settling_time', 'gpib_address', 'allow_agents', 'visa_lib
                       'gpib_interface')
 #: The profile-owned keys a profile may lack (an older one, or a test's):
 #: then the run has none either, rather than one a request supplied.
-_OPTIONAL_PROFILE_KEYS = ('allow_agents', 'visa_library', 'gpib_interface')
+_OPTIONAL_PROFILE_KEYS = ('visa_library', 'gpib_interface')
+
+#: Who may drive this machine's instrument, not how a run measures. The
+#: profile carries them (``ConfigManager`` injects the machine's switch),
+#: and a run never reads them, so they are left out of the run's settings,
+#: as ``agent_limits`` is: they would otherwise reach the ``run_started``
+#: event, where ``allow_agents: false`` sat in the settings of a run an
+#: agent had started.
+MACHINE_ACCESS_KEYS = ('allow_agents',)
 
 #: The touch-safety group. A strict request may not send any of these: the
 #: hazardous-voltage prompt can only be answered by a person at the bench
@@ -244,6 +253,8 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
             m_cfg[key] = profile['measurement'][key]
         else:
             m_cfg.pop(key, None)
+    for key in MACHINE_ACCESS_KEYS:
+        m_cfg.pop(key, None)
     if strict:
         # The request is already refused above; this makes the settings, the
         # hazard below and the run's own gate read the stored profile even if

@@ -59,6 +59,24 @@ class TestProfileOwnedKeys:
         assert resolved.settings['measurement']['gpib_interface'] == ''
         assert key not in allowed_override_keys('resistance')
 
+    @pytest.mark.parametrize('mode', sorted(MODE_MODELS))
+    @pytest.mark.parametrize('strict', [False, True])
+    def test_the_machine_s_agent_switch_is_not_a_setting_of_the_run(self, profile, mode,
+                                                                    strict):
+        """It decides who may drive the instrument; it would read as a property
+        of the run, and ``false`` in the run of a connected agent."""
+        profile['measurement']['allow_agents'] = True
+        resolved = resolve_run_settings(profile, mode, {}, strict=strict)
+        assert 'allow_agents' not in resolved.settings['measurement']
+        assert profile['measurement']['allow_agents'] is True
+
+    def test_a_request_that_sends_it_is_refused_and_it_stays_out(self, profile):
+        profile['measurement']['allow_agents'] = False
+        resolved = resolve_run_settings(profile, 'resistance', {'allow_agents': True},
+                                        strict=True)
+        assert _keys(resolved) == ['allow_agents']
+        assert 'allow_agents' not in resolved.settings['measurement']
+
 
 #: What every mode may override: the instrument group (less the
 #: profile-owned keys) and the aux sensor group.
