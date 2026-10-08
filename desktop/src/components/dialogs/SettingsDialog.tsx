@@ -5,11 +5,13 @@
 // The instrument address is machine-local and shown apart from the profile:
 // the same operator's profile on another PC has a different bus. Only the
 // Instrument section stores it; Save never sends it. "Allow AI agents" is
-// machine-local too, but it is a switch rather than wiring, and Save stores it.
+// machine-local too, but it is a switch rather than wiring, and Save stores it;
+// a line under it says when the access in force is not what is stored.
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useApi } from "../../app/AppContext";
 import { FIELD_META } from "../../generated/settings";
+import { agentAccessNote } from "../../lib/agentAccess";
 import type { FieldSpec } from "../../lib/fields";
 import { patchIssues, type PatchIssue } from "../../lib/patchIssues";
 import { profilePatch, withMachineLocal } from "../../lib/profilePatch";
@@ -95,6 +97,9 @@ export function SettingsDialog({ onClose }: Props) {
   const [issues, setIssues] = useState<PatchIssue[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  /** Whether agent access is in force; null until GET /agents answers, or
+   *  when it did not. */
+  const [agentsEnabled, setAgentsEnabled] = useState<boolean | null>(null);
 
   const running = session.status !== null && session.status.state !== "idle";
 
@@ -108,6 +113,14 @@ export function SettingsDialog({ onClose }: Props) {
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   }, [api, ui.username]);
+
+  const readAgentAccess = useCallback(() => {
+    api
+      .agents()
+      .then((reply) => setAgentsEnabled(reply.enabled))
+      .catch(() => setAgentsEnabled(null));
+  }, [api]);
+  useEffect(readAgentAccess, [readAgentAccess]);
 
   const patch = useMemo(() => (profile ? profilePatch(profile, draft) : {}), [draft, profile]);
   const dirtySections = Object.keys(patch);
@@ -131,6 +144,7 @@ export function SettingsDialog({ onClose }: Props) {
       const updated = await api.patchProfile(ui.username, patch);
       setProfile(updated);
       setDraft(structuredClone(updated));
+      if (patch.measurement && ALLOW_AGENTS.key in patch.measurement) readAgentAccess();
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } catch (e) {
@@ -158,6 +172,7 @@ export function SettingsDialog({ onClose }: Props) {
 
   const measurement = draft.measurement ?? {};
   const meta = (model: string) => FIELD_META[model] ?? {};
+  const agentNote = agentAccessNote(profile?.measurement?.[ALLOW_AGENTS.key], agentsEnabled);
 
   return (
     <Dialog
@@ -258,6 +273,7 @@ export function SettingsDialog({ onClose }: Props) {
                   issue={issueFor("measurement", ALLOW_AGENTS.key)}
                   disabled={false}
                 />
+                {agentNote ? <div className={styles.muted}>{agentNote}</div> : null}
                 <div className={styles.subhead}>Limits on agent-started runs</div>
                 {AGENT_LIMITS.map((spec) => (
                   <FieldRow
