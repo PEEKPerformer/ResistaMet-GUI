@@ -101,12 +101,23 @@ Seven settings describe the sample a four-point spot sits on and how its positio
 
 Only the dimensions the chosen shape has are read: a width left over from a rectangle is ignored once the shape is a circle. Positions are in millimeters from the center of the sample.
 
-**Relation to `fpp_geometry` and `fpp_diameter_cm`.** Those two older settings (Four-Point Probe tab: specimen shape and diameter) still drive the ASTM F84 / Smits table look-up behind every `Rs_ohm_sq` in the data rows. The `fpp_sample_*` keys feed only the position check. The two are tied together as follows:
+**Relation to `fpp_geometry` and `fpp_diameter_cm`.** Those two older settings (Four-Point Probe tab: specimen shape and diameter) still drive the F₂ geometry factor (ASTM F84 Table 3 or the closed-form image solution; see [Data outputs](outputs.md#four-point-probe)) behind every `Rs_ohm_sq` in the data rows. The `fpp_sample_*` keys feed only the position check. The two are tied together as follows:
 
 - While `fpp_sample_shape` is `unbounded`, the outline is derived from the legacy keys, so an existing profile needs no change: `circle` with `fpp_diameter_cm` = D gives a circle of diameter 10·D mm; `square`, `rectangle_2`, `rectangle_3`, `rectangle_4` give a rectangle whose width is 10·D mm and whose length is 1, 2, 3 or 4 times that; `fpp_diameter_cm` = 0 gives an unbounded sheet, for which no position check is made.
 - When `fpp_sample_shape` names a shape, that outline is used for the position check, with any aspect ratio. The rows still use the legacy keys. If the two describe different samples the run is allowed and `POST /settings/resolve` returns a `warning` issue on `fpp_sample_shape` saying so; the file then shows the disagreement as a large `spot.relative_error_rows`.
 
 The desktop app has the first six in the **Sample** group of the four-point settings panel. The PySide6 window has no fields for them at this commit; there, set them in `config.json` (or through `PATCH /profiles/{user}`). An API run can send them as overrides.
+
+### Four-point current finder
+
+| Setting | Default | Bounds | What it does |
+|---|---|---|---|
+| **Auto-select current** (`fpp_autoselect_current`) | `False` | on / off | Before the run, probe the sample and choose the source current. `fpp_current` (**Source current**) is then the current the probe is made at, not necessarily the one the run uses. |
+| **Target sig figs** (`fpp_autoselect_sigfigs`) | `4` | `1 – 6` | Significant figures the finder aims for: a sense voltage of 10ⁿ times the noise floor the probe measured. |
+
+With the setting on, a four-point run starts with a current-reversal probe at `fpp_current`: nine +I / −I pairs, the first thrown away, which give V/I and, as the noise floor, the scatter of the eight pair values (never taken as less than 1 µV). The run then sources the smallest current, not below 1 µA, whose sense voltage reaches the target; the current is capped where the sense voltage would pass half of `fpp_voltage_compliance`, at the connected model's current limit, and where current × compliance would pass `fpp_power_stop_w`. When the target is met inside those caps the run goes on at that current without asking. Otherwise it asks **Proceed / Abort** with the output off (prompt `fpp_current_decision` through the [API](api.md#prompts)): when the capped current falls short of the target, when it gives less than one significant figure, and when the sample is too resistive, meaning 1 µA would already need more than half the compliance voltage or the source is still in compliance at 1 µA. Abort, or no answer within the prompt's timeout, ends the run before a data file is opened.
+
+The file name and `params.source_current_A` carry the current the run used; the header also records the one asked for ([Data outputs → Four-Point Probe](outputs.md#four-point-probe)). The PySide6 window has both fields on the Four-Point Probe tab, the desktop app in the **Auto-select current** group of the four-point panel. Checked against the simulator only at this commit.
 
 ### I-V sweep compliance
 
@@ -221,6 +232,7 @@ Some settings live on the individual mode tabs because they're per-measurement-c
 - **Source Range Auto / Voltage Range Auto** — every tab
 - **Cable null** — Resistance tab
 - **Delta mode (current reversal)** — Four-Point Probe tab Advanced section
+- **Auto-select current / Target sig figs** — Four-Point Probe tab (see [Four-point current finder](#four-point-current-finder))
 - **Geometry / dopant / temperature** — Four-Point Probe tab (drive F84 corrections)
 - **Sample thickness** — Four-Point Probe and Van der Pauw tabs
 - **Sweep start / stop / step / direction / per-step delay / measurement type** — I-V Sweep tab (`sweep_measurement_type`: `2-wire` by default, or `4-wire` for remote sense)

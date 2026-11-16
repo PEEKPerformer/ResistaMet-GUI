@@ -151,6 +151,85 @@ class TestUserSettings:
         assert stored == {'nplc': 5.0}
 
 
+class TestEffectiveSettingsLayers:
+    """A user's settings are the defaults, then the shared ones, then their own.
+
+    Per key: storing one key of one section must not move any other value.
+    """
+
+    SHARED = {'file': {'data_directory': '/lab/share/data'},
+              'output': {'compression': 'always'},
+              'measurement': {'sampling_rate': 3.0, 'nplc': 2.0}}
+
+    @pytest.fixture
+    def manager(self, config_manager):
+        config_manager.update_global_settings(self.SHARED)
+        config_manager.add_user("alice")
+        return config_manager
+
+    @staticmethod
+    def _flat(settings):
+        return {(section, key): value
+                for section, values in settings.items() if isinstance(values, dict)
+                for key, value in values.items()}
+
+    def test_a_user_with_nothing_stored_gets_the_shared_values(self, manager):
+        settings = manager.get_user_settings("alice")
+
+        assert settings['file']['data_directory'] == '/lab/share/data'
+        assert settings['output']['compression'] == 'always'
+
+    def test_storing_one_section_leaves_the_other_sections_shared(self, manager):
+        manager.update_user_settings("alice", {'measurement': {'nplc': 5.0}})
+
+        settings = manager.get_user_settings("alice")
+        assert settings['measurement']['nplc'] == 5.0
+        assert settings['file']['data_directory'] == '/lab/share/data'
+        assert settings['output']['compression'] == 'always'
+
+    def test_storing_one_key_leaves_the_rest_of_its_section_shared(self, manager):
+        manager.update_user_settings("alice", {'measurement': {'nplc': 5.0}})
+
+        settings = manager.get_user_settings("alice")
+        assert settings['measurement']['sampling_rate'] == 3.0
+
+    def test_storing_one_key_changes_no_other_effective_value(self, manager):
+        before = self._flat(manager.get_user_settings("alice"))
+
+        manager.update_user_settings(
+            "alice", {'measurement': {'safety_voltage_warn_silenced': True}})
+
+        after = self._flat(manager.get_user_settings("alice"))
+        changed = {key for key in before
+                   if not (before[key] == after[key]
+                           or (before[key] != before[key] and after[key] != after[key]))}
+        assert changed == {('measurement', 'safety_voltage_warn_silenced')}
+        assert set(after) == set(before)
+
+    def test_a_key_in_no_layer_but_the_defaults_is_the_default(self, temp_config_file):
+        with open(temp_config_file, 'w') as f:
+            json.dump({'users': ['alice'], 'file': {'data_directory': '/lab/share/data'},
+                       'user_settings': {'alice': {'file': {'auto_save_interval': 5}}}}, f)
+        settings = ConfigManager(config_file=temp_config_file).get_user_settings('alice')
+
+        assert settings['file'] == {'auto_save_interval': 5,
+                                    'data_directory': '/lab/share/data'}
+        assert settings['display'] == DEFAULT_SETTINGS['display']
+
+    def test_the_returned_settings_are_the_callers_own(self, manager):
+        settings = manager.get_user_settings("alice")
+        settings['file']['data_directory'] = 'elsewhere'
+        settings['measurement']['nplc'] = 9.0
+
+        assert manager.config['file']['data_directory'] == '/lab/share/data'
+        assert manager.get_user_settings("alice")['measurement']['nplc'] == 2.0
+
+    def test_a_section_that_is_not_a_mapping_is_ignored(self, manager):
+        manager.config.setdefault('user_settings', {})['alice'] = {'file': 'broken'}
+
+        assert manager.get_user_settings("alice")['file']['data_directory'] == '/lab/share/data'
+
+
 class TestMergeUserSettings:
     """Per-key edits: what a client that sends only its changes needs."""
 

@@ -367,12 +367,16 @@ class TestStatus:
         session.start(profile, 'vdp', 'wafer1', 'alice')
         assert _wait_for(lambda: session.status()['pending_prompt'] is not None)
         detail = session.status()['pending_prompt']['detail']
+
+        def logged():
+            return [e.payload['message'] for e in sink.of_type('log')
+                    if e.payload['code'] == 'geometry_prompt']
+        # The prompt is pending a moment before its log line is emitted.
+        assert _wait_for(lambda: logged() != [])
         session.stop()
         assert detail['message'] == ("Geometry 1 of 4: connect Force HI→C2, Force LO→C1, "
                                      "Sense HI→C3, Sense LO→C4, then press Measure.")
-        logged = [e.payload['message'] for e in sink.of_type('log')
-                  if e.payload['code'] == 'geometry_prompt']
-        assert logged == [detail['message']]
+        assert logged() == [detail['message']]
 
     def test_the_status_model_has_the_reply_s_keys(self, session):
         from resistamet_gui.session.status import PendingPrompt, SessionStatus
@@ -1161,8 +1165,15 @@ class TestSpotStatisticsAtTheEndOfARun:
         'params.voltage_auto_range', 'params.probe_spacing_cm', 'params.thickness_um',
         'params.k_factor', 'params.alpha', 'params.model', 'params.target_samples',
         'params.auto_zero',
+        # What decides how the rows were computed and acquired, which the
+        # header did not use to say.
+        'params.method', 'params.diameter_cm', 'params.geometry',
+        'params.temperature_c', 'params.dopant_type', 'params.delta_mode',
+        # Whether the pre-run current finder chose source_current_A.
+        'params.autoselect_current',
+        'filter.enabled', 'filter.type', 'filter.count',
     }
-    FOOTER_KEYS_BEFORE = {'ended_at', 'total_samples', 'duration_s'}
+    FOOTER_KEYS_BEFORE = {'ended_at', 'total_samples', 'duration_s', 'end_reason'}
     #: The one thing that changed for a run without a spot.
     FOOTER_KEYS_ADDED = {'spot_stats.n', 'spot_stats.n_excluded', 'spot_stats.end_reason'} | {
         f'spot_stats.{quantity}.{field}'

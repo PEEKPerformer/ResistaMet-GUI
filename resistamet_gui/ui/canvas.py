@@ -46,6 +46,14 @@ def _style_histogram_axes(ax):
     ax.set_axisbelow(True)
 
 
+def _finite_number(value) -> bool:
+    """A real, finite number: not None, not NaN, not infinite."""
+    try:
+        return bool(np.isfinite(float(value)))
+    except (TypeError, ValueError):
+        return False
+
+
 class HistogramCanvas(FigureCanvas):
     """Histogram display for 4-Point Probe measurement distribution.
 
@@ -119,6 +127,14 @@ class HistogramCanvas(FigureCanvas):
             self.clear_histogram()
             return
 
+        # A spot with no Rs (every row in compliance, say) has a NaN mean,
+        # and a one-sample spot can have a NaN SD. Such a spot keeps its
+        # place on the axis and draws no bar; it is in neither the y range
+        # nor the inter-spot figures. A missing SD draws no error bar.
+        means = [float(m) if _finite_number(m) else float('nan') for m in means]
+        stds = [float(s) if _finite_number(s) else 0.0 for s in stds]
+        drawn = [(m, s) for m, s in zip(means, stds) if np.isfinite(m)]
+
         x = np.arange(len(spot_names))
         bars = self.axes.bar(x, means, yerr=stds, capsize=4,
                              color=_HIST_BAR, edgecolor='white', linewidth=0.6,
@@ -132,17 +148,17 @@ class HistogramCanvas(FigureCanvas):
         self.axes.set_title('Spot-to-Spot Uniformity')
 
         # Auto-zoom y-axis around the data range so small variation is visible
-        finite = [m for m in means if np.isfinite(m)]
-        if finite:
-            lo = min(m - s for m, s in zip(means, stds) if np.isfinite(m))
-            hi = max(m + s for m, s in zip(means, stds) if np.isfinite(m))
+        if drawn:
+            lo = min(m - s for m, s in drawn)
+            hi = max(m + s for m, s in drawn)
             span = hi - lo if hi > lo else max(abs(hi), 1.0) * 0.1
             self.axes.set_ylim(lo - span * 0.15, hi + span * 0.25)
 
         # Annotate overall stats
-        if len(means) > 1:
-            overall_mean = np.mean(means)
-            overall_std = np.std(means, ddof=1)
+        if len(drawn) > 1:
+            finite_means = [m for m, _ in drawn]
+            overall_mean = np.mean(finite_means)
+            overall_std = np.std(finite_means, ddof=1)
             rsd = (overall_std / overall_mean * 100) if overall_mean != 0 else 0
             self.axes.axhline(overall_mean, color=_HIST_MEAN, linewidth=1.2,
                               linestyle='--', alpha=0.75)

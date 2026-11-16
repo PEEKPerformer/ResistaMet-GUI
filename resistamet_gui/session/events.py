@@ -234,7 +234,12 @@ class AcquisitionFinishedPayload(EventModel):
 
 
 class VdpGeometryCompletePayload(EventModel):
-    """One F76 geometry measured: the +I and -I voltages at this wiring."""
+    """One F76 geometry measured: the +I and -I voltages at this wiring.
+
+    ``compliance`` names the readings of this geometry taken in voltage
+    compliance (their F76 labels, ``label_pos`` and/or ``label_neg``); empty
+    when neither was. Such a reading is the limit, not the sample.
+    """
 
     index: int
     name: str
@@ -244,6 +249,7 @@ class VdpGeometryCompletePayload(EventModel):
     label_neg: str
     v_neg: float
     current_a: float
+    compliance: List[str] = Field(default_factory=list)
 
 
 class VdpResultPayload(EventModel):
@@ -253,6 +259,13 @@ class VdpResultPayload(EventModel):
     the f(Q) homogeneity check and the combined uncertainties, so the panel
     reads the same numbers the CSV metadata carries. The resistivities are
     null when no thickness was given (``thickness_cm`` 0).
+
+    ``valid`` false: the numbers are kept for diagnosis and are not a
+    measurement; ``invalid_reason`` says why (readings in compliance, or
+    readings whose signs cannot be one sample's). ``homogeneous`` is then
+    false whatever the asymmetry. ``compliance_readings`` holds the F76
+    labels of the readings taken in compliance, space-separated as in the
+    file's footer (the labels themselves contain commas).
     """
 
     rho_a: Optional[float]
@@ -270,16 +283,41 @@ class VdpResultPayload(EventModel):
     thickness_cm: float
     sheet_resistance_uncertainty: Optional[float] = None
     rho_avg_uncertainty: Optional[float] = None
+    valid: bool = True
+    invalid_reason: str = ''
+    compliance: bool = False
+    compliance_readings: str = ''
 
 
 class PromptPayload(EventModel):
     """The run is blocked until someone answers."""
 
     prompt_id: str
-    kind: Literal['vdp_geometry', 'safety_voltage_ack', 'cable_null_shorted']
+    kind: Literal['vdp_geometry', 'safety_voltage_ack', 'cable_null_shorted',
+                  'fpp_current_decision']
     options: List[str] = Field(default_factory=list)
     requires_human: bool = True
     detail: Dict[str, Any] = Field(default_factory=dict)
+
+
+class FppCurrentSelectedPayload(EventModel):
+    """The 4PP current finder chose the run's source current.
+
+    ``resistance_ohm`` is a lower bound when ``bound`` is true: the source
+    was still in compliance at the smallest current, and nothing else was
+    measured.
+    """
+
+    current_a: float
+    requested_current_a: float
+    verdict: Literal['ok', 'marginal', 'too_conductive', 'too_resistive']
+    resistance_ohm: Optional[float] = None
+    bound: bool = False
+    expected_voltage_v: Optional[float] = None
+    noise_floor_v: Optional[float] = None
+    snr: Optional[float] = None
+    sig_figs: Optional[float] = None
+    target_sig_figs: float
 
 
 class PromptResolvedPayload(EventModel):
@@ -386,6 +424,7 @@ PAYLOAD_MODELS = {
     'vdp_result': VdpResultPayload,
     'prompt': PromptPayload,
     'prompt_resolved': PromptResolvedPayload,
+    'fpp_current_selected': FppCurrentSelectedPayload,
     'run_started': RunStartedPayload,
     'aux_connected': AuxConnectedPayload,
     'file_opened': FileOpenedPayload,

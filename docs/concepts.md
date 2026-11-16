@@ -79,7 +79,7 @@ The 4PP tab computes all three from V, I, geometric factors, and thickness. The 
 
 ## Four-point probe (4PP) quick anatomy
 
-Four collinear probe tips, evenly spaced (default spacing `s = 0.1016 cm` = 40 mil for the Signatone SP4). Outer two source current, inner two measure voltage. Standards-aligned with ASTM F84-02; correction factors F₂ (geometry), F(w/S) (thickness), F_T (temperature, for n-/p-type silicon) compose multiplicatively to give the effective K.
+Four collinear probe tips, evenly spaced (default spacing `s = 0.1016 cm` = 40 mil for the Signatone SP4). Outer two source current, inner two measure voltage. Standards-aligned with ASTM F84-02; correction factors F₂ (geometry), F(w/S) (thickness), F_T (temperature, for n-/p-type silicon) compose multiplicatively to give the effective K. F₂ for a circle is ASTM F84 Table 3 up to S/D = 0.10 and the closed-form image solution beyond the end of the table; for a square or rectangle it is the closed-form image series everywhere (Smits's printed table agrees to 6 parts in 10 000). A sample the probe does not fit on has no factor, and its Rs is NaN.
 
 ## Spots and maps
 
@@ -92,13 +92,13 @@ Because the description lives in the files, the per-spot means and the inter-spo
 
 **Who decides the map id.** A client that knows its map sends the id. The PySide6 window has no map display, so it mints one from its existing controls: a new map starts with the first four-point run after the application starts, after the user or the sample name changes, and after **Clear All**; the spot counter gives the index and the *Spot name* field the label. Its ids look like `20260919-185521_wafer-07_3fa2`. When in doubt it starts a new map, because two maps of one sample can be merged later from their files and two samples written into one map cannot be separated.
 
-**Position and edges.** The F84 and Smits correction tables assume the probe is at the center of the sample. When a spot has a position and the sample has an outline (a circle or a rectangle; see [Settings](settings.md#four-point-sample-outline-and-spot-position)), ResistaMet evaluates the closed-form geometry factor of a thin sheet with insulating edges at that position and compares it with the factor the rows actually use. A probe tip on or beyond the edge refuses the run before the output is turned on. A position that costs more than `fpp_edge_warn_pct` (default 1 %) produces a warning, and the file records the size of the effect. The effect is **reported, never applied**: every Rs in every row is ASTM F84 as written, and correcting for position is left to you. The closed form is checked against ASTM F84 Table 3 at the center; its off-center values have not been compared with measurements.
+**Position and edges.** The F₂ factor behind the rows assumes the probe is at the center of the sample. When a spot has a position and the sample has an outline (a circle or a rectangle; see [Settings](settings.md#four-point-sample-outline-and-spot-position)), ResistaMet evaluates the closed-form geometry factor of a thin sheet with insulating edges at that position and compares it with the factor the rows actually use. A probe tip on or beyond the edge refuses the run before the output is turned on. A position that costs more than `fpp_edge_warn_pct` (default 1 %) produces a warning, and the file records the size of the effect. The effect is **reported, never applied**: every Rs in every row is ASTM F84 as written, and correcting for position is left to you. The closed form is checked against ASTM F84 Table 3 at the center; its off-center values have not been compared with measurements.
 
 Field-by-field definitions are in [Data outputs](outputs.md#spot-four-point-runs-that-carry-a-spot).
 
 ## Van der Pauw (vdP) quick anatomy
 
-Sheet resistance of arbitrary-shape samples with four periphery contacts. Procedure per ASTM F76-08 Method A: cable up four geometries in sequence (the GUI walks you through each), source `+I` then `−I` at each, for 8 voltage readings total. The implicit `f(Q)` factor is solved numerically. F76 §11.1 flags the sample as non-homogeneous when `|ρ_A − ρ_B|/ρ_avg > 10%`.
+Sheet resistance of arbitrary-shape samples with four periphery contacts. Procedure per ASTM F76-08 Method A: cable up four geometries in sequence (the GUI walks you through each), source `+I` then `−I` at each, for 8 voltage readings total. The implicit `f(Q)` factor is solved numerically. F76 §11.1 flags the sample as non-homogeneous when `|ρ_A − ρ_B|/ρ_avg > 10%`. A result is marked **invalid**, with its reason, when a reading was taken in voltage compliance or when the signs of the readings cannot be one sample's (swapped sense leads); its numbers are kept for diagnosis and it is neither homogeneous nor non-homogeneous.
 
 The per-geometry bar chart on the vdP result panel color-codes the four R values by deviation from the mean: **green** for `|R_i − mean|/mean < 3%` (clearly uniform), **orange** for `< 10%` (within the F76 gate but worth watching), **red** for `≥ 10%` (outlier; sample probably bad).
 
@@ -147,8 +147,8 @@ Source-then-measure timing matters: switch the source level, wait, then read. To
 
 Three flavors appear in the GUI and CSV:
 
-- **Instrument** uncertainty (`u_inst`): floor from the Keithley datasheet's per-range accuracy specs. Doesn't reduce with more samples (it's systematic — every reading inherits it).
-- **Statistical** uncertainty (`u_stat`): standard error of the mean, `std / √N`. Reduces with more samples (random component).
+- **Instrument** uncertainty (`u_inst`): floor from the Keithley datasheet's per-range accuracy specs. Doesn't reduce with more samples (it's systematic — every reading inherits it). In four-point mode it is the measurement accuracy of V and the *source* accuracy of I (the current is sourced, not measured); in van der Pauw the voltage accuracy of the eight readings, the current taken as exact. With auto range off the voltage spec is that of the range the run was pinned to.
+- **Statistical** uncertainty (`u_stat`): for four-point, the standard error of the mean, `std / √N`; reduces with more samples (random component). For van der Pauw, from the disagreement of the two reciprocal pairs of geometries (1 with 3, 2 with 4), `(1/4)·√((R₁ − R₃)² + (R₂ − R₄)²)`: the four resistances are not four repeats of one quantity (the pairs differ by Q on a sample that is not square), so their standard deviation is not used.
 - **Combined** uncertainty (`u_total = √(u_stat² + u_inst²)`): the right way to roll them up under GUM §5.1.2.
 
 The live results panel and CSV finalize metadata report all three for 4PP per-spot stats and for vdP final results.

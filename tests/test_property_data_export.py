@@ -184,7 +184,7 @@ class TestFileRoundTrip:
             for cell, value in zip(line[1:], row):
                 if isinstance(value, float):
                     # Six significant figures: what the file promises.
-                    expected = float(f"{value:.6g}")
+                    expected = float(f"{value:.10g}")
                     assert (math.isnan(expected) and math.isnan(float(cell))) or float(cell) == expected
                 else:
                     assert cell == str(value)

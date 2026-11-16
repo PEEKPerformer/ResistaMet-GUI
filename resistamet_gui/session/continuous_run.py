@@ -17,26 +17,29 @@ import numpy as np
 import pyvisa
 
 from ..constants import (
-    AUX_READY_TIMEOUT_S, MODE_DISPLAY_NAMES,
+    AUX_READY_TIMEOUT_S, FPP_AUTOSELECT_DISCARD_READINGS,
+    KEITHLEY_COMPLIANCE_MAGIC_NUMBER, MODE_DISPLAY_NAMES,
     KEITHLEY_STAT_BIT_COMPLIANCE as _STAT_BIT_COMPLIANCE,
 )
-from ..data_export import AUX_LOG_MODES, splice_before_tail
+from ..data_export import AUX_LOG_MODES, effective_filter_type, splice_before_tail
 from ..formatting import format_power
 from ..instrument import Keithley2400, humanize_connection_error
 from ..sensors import aux_column_names, make_sensor, reading_to_columns
 from ..system_utils import SleepInhibitor
+from ..timing import TimingSettings
+from . import current_finder
 from .control import RunStopped
 from .instrument_lock import HeldInstrument, InstrumentBusy
 from .configure import (
     configure_four_point, configure_resistance, configure_source_i,
-    configure_source_v, configure_sweep,
+    configure_source_v, configure_sweep, four_point_at_current, rejected_settings,
 )
 from .run_files import create_base_path, open_exporter
 from .spot_map import write_map_summary
 from .spot_record import spot_record_from_settings
 from .spot_stats import SpotSamples, spot_statistics
 from .samples import (
-    build_row, parse_four_point, parse_resistance, parse_source_i, parse_source_v,
+    build_row, fixed_range_for, parse_four_point, parse_resistance, parse_source_i, parse_source_v,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,10 +100,13 @@ class ContinuousRun:
         self._instrument_lock = instrument_lock
         # Set by the configure step: the frozen per-mode state the loop reads.
         self._mode_state = None
+        self._reading_time_s = 1.0
         # Set by each delta read: the per-polarity values the row builder logs.
         self._last_delta = None
         #: The negative-V/I warning is given once per run, not per sample.
         self._fpp_negative_ratio_warned = False
+        #: True once the pre-run current finder has chosen this run's current.
+        self._autoselected = False
         # Set before anything is opened: this run's spot resolved against the
         # sample outline, or None for a run that carries no spot.
         self._spot_record = None
@@ -280,9 +286,16 @@ class ContinuousRun:
                 if self._control.stopped():
                     raise RunStopped()
                 self.keithley.write(":OUTP ON")
-                # Increase timeout for long sweeps
+                # One :READ? returns the whole sweep, so it has to be given
+                # the whole sweep's time: every point's conversions (NPLC,
+                # averaging, auto-zero) and its step delay. A flat second a
+                # point timed out any sweep slower than that, with no rows.
                 if self.keithley.dev:
-                    self.keithley.dev.timeout = max(10000, self._mode_state.points * 1000)
+                    delay_s = max(0.0, float(
+                        self.settings['measurement'].get('sweep_delay', 0.0) or 0.0))
+                    per_point_s = self._reading_time_s + delay_s
+                    self.keithley.dev.timeout = max(
+                        10000, int(self._mode_state.points * per_point_s * 1500) + 5000)
                 response = self.keithley.query(":READ?").strip()
                 self.keithley.write(":OUTP OFF")
 
@@ -366,10 +379,102 @@ class ContinuousRun:
                 # First writer wins, so the 'completed' below leaves this be.
                 self._control.finish('sweep_error')
                 self._events.error('sweep_error', 'smu', f"Sweep error: {str(e)}")
+                self._abort_sweep()
             # Sweep is done — skip to finalization
             self._control.finish('completed')
             # Fall through to cleanup below
 
+
+    def _abort_sweep(self) -> None:
+        """Stop a sweep the instrument may still be running.
+
+        After a failed bulk read the sweep engine can still be stepping the
+        source with the output on. A device clear is what interrupts it; the
+        output-off that the shutdown sends next would otherwise wait behind
+        the sweep. Best effort: the shutdown reads the output state back
+        whatever happens here.
+        """
+        for action in (lambda: self.keithley.dev.clear(),
+                       lambda: self.keithley.write(":ABOR")):
+            try:
+                action()
+            except Exception:
+                pass
+
+    def _autoselect_current(self, measurement_settings, settling_time):
+        """Run the pre-run current finder and take its current for the run.
+
+        Returns ``(measurement_settings, source_value_str)`` at the chosen
+        current, or None when the run is not to start: declined, stopped,
+        unanswered, or the probe failed. The output is off either way.
+
+        The settings are a copy. ``fpp_current`` becomes the current used,
+        which is what the header's ``source_current_A`` and the per-spot
+        statistics read; the one asked for is kept beside it.
+        """
+        requested = self._mode_state.source_current
+        spec = self._model_spec
+        try:
+            chosen = current_finder.find_current(
+                self.keithley, self._control, self._events, measurement_settings,
+                self._mode_state,
+                model_max_current=spec.max_source_i if spec is not None else 1.05,
+                settling_time=settling_time, prompt_timeout_s=self._prompt_timeout_s)
+        except RunStopped:
+            return None
+        except Exception as e:
+            self._events.error('autoselect_failed', 'smu',
+                                f"Error selecting the source current: {str(e)}")
+            self._control.finish('autoselect_failed')
+            return None
+        if chosen is None:
+            return None
+        self._mode_state, source_value_str = four_point_at_current(self._mode_state, chosen)
+        measurement_settings = {
+            **measurement_settings, 'fpp_current': chosen,
+            'fpp_autoselect_requested_current': requested,
+        }
+        self.settings = {**self.settings, 'measurement': measurement_settings}
+        self._autoselected = True
+        return measurement_settings, source_value_str
+
+    def _discard_readings(self, count: int) -> None:
+        """Read and throw away ``count`` readings before the first row.
+
+        After the current finder the first readings at the run's level
+        follow a change of source level and range.
+        """
+        for _ in range(count):
+            if self._control.stopped():
+                raise RunStopped()
+            self.keithley.query(":READ?")
+
+    @staticmethod
+    def _estimate_reading_time_s(measurement_settings, line_freq, mode=None) -> float:
+        """How long one reading takes at these settings, by the timing model."""
+        try:
+            rate = TimingSettings.from_dict(measurement_settings, mode).max_rate_hz(line_freq)
+            return 1.0 / rate if rate > 0 else 1.0
+        except Exception:
+            return 1.0
+
+    def _allow_for_reading_time(self) -> None:
+        """Give :READ? at least three readings' time before it times out.
+
+        The session's 5 s is ample for most settings and too short for the
+        slow ones a profile may hold (10 PLC averaged ten times with
+        auto-zero on is about 5 s a reading): every read then timed out and
+        the run ended with no rows.
+        """
+        dev = getattr(self.keithley, 'dev', None)
+        if dev is None:
+            return
+        needed_ms = int(self._reading_time_s * 3000) + 2000
+        try:
+            if dev.timeout is not None and dev.timeout < needed_ms:
+                dev.timeout = needed_ms
+        except Exception:
+            pass
 
     def _write_sweep_row(self, row_data) -> None:
         """Write one sweep point; a row that cannot be written is reported.
@@ -694,6 +799,7 @@ class ContinuousRun:
                         self._control.finish('power_envelope')
                         return  # pre-flight refused the power envelope
                     self._fpp_overpower_emitted = False  # debounce: emit once
+                    self._fpp_power_warned = False
                 elif self.mode == 'sweep':
                     configured = configure_sweep(self.keithley, self._events, measurement_settings, nplc)
                 else:
@@ -703,7 +809,12 @@ class ContinuousRun:
 
                 # Hardware averaging filter (2400 series uses :SENS:AVER, not per-function paths)
                 if measurement_settings.get('filter_enabled', False):
-                    ftype = str(measurement_settings.get('filter_type', 'repeat')).upper()[:3]
+                    ftype = effective_filter_type(self.mode, measurement_settings).upper()[:3]
+                    requested = str(measurement_settings.get('filter_type', 'repeat')).upper()[:3]
+                    if ftype != requested:
+                        self._events.warn('filter_type_overridden',
+                            "Warning: Delta mode reads two polarities per sample; "
+                            "using a repeat filter instead of the moving filter.")
                     fcount = int(measurement_settings.get('filter_count', 10))
                     self.keithley.write(f":SENS:AVER:TCON {ftype}")
                     self.keithley.write(f":SENS:AVER:COUN {fcount}")
@@ -711,7 +822,23 @@ class ContinuousRun:
                     self._events.log('filter', f"Hardware filter: {ftype} x{fcount}")
 
                 self.keithley.write(":TRIG:DEL 0")
-                self.keithley.write(":SOUR:DEL:AUTO ON")
+                if self.mode != 'sweep':
+                    # A sweep has set its own step delay (:SOUR:DEL, in
+                    # setup_sweep). Auto delay sent after it replaces it with
+                    # 1 ms (bench, 2026-11-16), and the header recorded a
+                    # delay the points never had.
+                    self.keithley.write(":SOUR:DEL:AUTO ON")
+                refused_settings = rejected_settings(self.keithley)
+                if refused_settings:
+                    self._events.error('configure_rejected', 'smu',
+                        "The instrument refused a setting: "
+                        + "; ".join(refused_settings)
+                        + ". The run was not started.")
+                    self._control.finish('configure_failed')
+                    return
+                self._reading_time_s = self._estimate_reading_time_s(
+                    measurement_settings, line_freq, self.mode)
+                self._allow_for_reading_time()
             except Exception as e:
                 self._events.error('configure_failed', 'smu', f"Error configuring instrument: {str(e)}")
                 self._control.finish('configure_failed')
@@ -731,6 +858,20 @@ class ContinuousRun:
             if self._control.stopped():
                 refused = True
                 return
+
+            # The pre-run current finder (4PP, opt-in). After the configure
+            # step, which it needs, and before the file, whose name and
+            # header carry the current it chooses.
+            if current_finder.enabled(self.mode, measurement_settings):
+                selected = self._autoselect_current(measurement_settings, settling_time)
+                if selected is None:
+                    refused = True
+                    # finish() keeps the first reason: a stop or a timeout
+                    # reports as itself.
+                    self._control.finish('cancelled')
+                    return
+                measurement_settings, source_value_str = selected
+
             if not self._open_output_file(measurement_settings, source_value_str):
                 return
             file_ready = True
@@ -752,6 +893,8 @@ class ContinuousRun:
                     self.keithley.write(":OUTP ON")
                     self._events.log('settling', f"Waiting for settling time ({settling_time}s)...")
                     self._control.sleep(settling_time)
+                    if self._autoselected:
+                        self._discard_readings(FPP_AUTOSELECT_DISCARD_READINGS)
                 except RunStopped:
                     raise
                 except Exception as e:
@@ -819,8 +962,9 @@ class ContinuousRun:
                     if use_delta:
                         for retry in range(max_retries):
                             try:
+                                read_began = time.time()
                                 reading_str = self._read_delta()
-                                last_measurement_time = time.time()
+                                read_ended = time.time()
                                 read_success = True
                                 if retry > 0:
                                     self._events.log('recovered', f"Delta read recovered after {retry} retries")
@@ -848,8 +992,9 @@ class ContinuousRun:
                     else:
                         for retry in range(max_retries):
                             try:
+                                read_began = time.time()
                                 reading_str = self.keithley.query(":READ?").strip()
-                                last_measurement_time = time.time()
+                                read_ended = time.time()
                                 read_success = True
                                 if retry > 0:
                                     self._events.log('recovered', f"Communication recovered after {retry} retries")
@@ -882,7 +1027,17 @@ class ContinuousRun:
                         self._control.finish('read_error')
                         break
 
-                    elapsed_time = now - self.start_time
+                    # The next reading is due one interval after this one was
+                    # asked for. Counting from when it came back added the
+                    # read time to every period: 10 Hz asked for with a 50 ms
+                    # read ran at 6 Hz under a header that said 10.
+                    last_measurement_time = now
+                    # The middle of the read that produced the row. The
+                    # instrument integrates across that whole span (half a
+                    # second with ten averaged conversions), and the time of
+                    # the request put every row that much early, further
+                    # still after a retry.
+                    elapsed_time = (read_began + read_ended) / 2.0 - self.start_time
                     compliance_status = 'OK'
                     compliance_type = None
                     data_dict: Dict[str, float] = {}
@@ -968,7 +1123,10 @@ class ContinuousRun:
                     if self.mode == 'four_point':
                         v_meas = data_dict.get('voltage', float('nan'))
                         i_meas = data_dict.get('current', float('nan'))
-                        if np.isfinite(v_meas) and np.isfinite(i_meas):
+                        # An overflow reading (9.9e37) is not a voltage, and
+                        # as one it is 1e34 W.
+                        if (np.isfinite(v_meas) and np.isfinite(i_meas)
+                                and abs(v_meas) < KEITHLEY_COMPLIANCE_MAGIC_NUMBER):
                             measured_power = abs(v_meas * i_meas)
                             stop_w = self._mode_state.power_stop_w
                             warn_w = self._mode_state.power_warn_w
@@ -991,7 +1149,10 @@ class ContinuousRun:
                                 except Exception:
                                     pass
                                 self._control.finish('overpower')
-                            elif measured_power > warn_w:
+                            elif measured_power > warn_w and not self._fpp_power_warned:
+                                # Once a run: the same line on every row
+                                # buried the rest of the log.
+                                self._fpp_power_warned = True
                                 self._events.warn('power_envelope', 
                                     f"Warning: 4PP power {format_power(measured_power)} above "
                                     f"warn threshold {format_power(warn_w)}"
@@ -1166,7 +1327,11 @@ class ContinuousRun:
                 end_metadata = {
                     'ended_at': end_time.isoformat(),
                     'total_samples': self.exporter.row_count,
-                    'duration_s': time.time() - self.start_time
+                    'duration_s': time.time() - self.start_time,
+                    # Why the run ended. The marker above this block reads
+                    # "run completed" for every run that got a footer, a
+                    # read error or a compliance stop included.
+                    'end_reason': self._control.finish_reason or 'completed',
                 }
                 # Marks made after the last row, or whose rows never reached
                 # the file: the footer is the only place left for them.
@@ -1256,7 +1421,11 @@ class ContinuousRun:
         if self._spot_samples is None:
             return None
         try:
-            stats = spot_statistics(self._spot_samples, model=self._model_name, nplc=nplc)
+            stats = spot_statistics(
+                self._spot_samples, model=self._model_name, nplc=nplc,
+                v_fixed_range=fixed_range_for(
+                    self.settings.get('measurement', {}),
+                    'fpp_voltage_range_auto', 'fpp_voltage_compliance'))
             # The same expression run_ended uses. It lets a map tell a spot
             # that was stopped early from one that ran its course; what a map
             # should do about it is not decided here.

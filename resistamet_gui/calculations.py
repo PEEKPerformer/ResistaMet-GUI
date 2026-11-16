@@ -16,9 +16,13 @@ Reference:
 """
 
 import math
-from typing import NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
+
+from .constants import (
+    FPP_AUTOSELECT_COMPLIANCE_HEADROOM, FPP_AUTOSELECT_MIN_CURRENT, FPP_AUTOSELECT_MIN_SNR,
+)
 
 
 class FourPointProbeResult(NamedTuple):
@@ -214,6 +218,188 @@ def calculate_four_point_probe_bound(
     )
 
 
+class CurrentSelection(NamedTuple):
+    """Result of :func:`select_four_point_current`.
+
+    Attributes:
+        current: Recommended source-current magnitude, A.
+        expected_voltage: |I * R| the sense probes should see at ``current``, V.
+        snr: expected_voltage over the noise floor at that voltage.
+        sig_figs: significant figures the SNR supports (log10 of it).
+        verdict: 'ok' (the target is reached), 'marginal' (the ceilings stop
+            short of the target, with at least ``min_snr``), 'too_conductive'
+            (under ``min_snr`` at the ceiling) or 'too_resistive' (the minimum
+            current already exceeds the voltage headroom). Only 'ok' may run
+            without asking.
+        reason: one line for the log and the decision prompt.
+    """
+    current: float
+    expected_voltage: float
+    snr: float
+    sig_figs: float
+    verdict: str
+    reason: str
+
+
+def _snr_to_sig_figs(snr: float) -> float:
+    """Significant figures an SNR supports: log10(SNR), floored at 0."""
+    if not np.isfinite(snr):
+        return float('inf')
+    if snr <= 1.0:
+        return 0.0
+    return math.log10(snr)
+
+
+def delta_probe_statistics(v_deltas: Sequence[float], current: float) -> Tuple[float, float]:
+    """R and the noise floor from the reversal pairs of a probe.
+
+    ``v_deltas`` are the per-pair (V+ - V-) / 2 values and ``current`` the
+    programmed magnitude both polarities were sourced at. Returns
+    ``(resistance, sigma_v)``: the mean over the pairs divided by the
+    programmed current, and the sample standard deviation of the pairs. One
+    pair has no scatter to estimate, so its own magnitude stands in: nothing
+    is then known to be resolved.
+    """
+    n = len(v_deltas)
+    i_mag = abs(current)
+    if n == 0 or not i_mag > 0:
+        return float('nan'), float('nan')
+    mean = sum(v_deltas) / n
+    if n > 1:
+        sigma = math.sqrt(sum((v - mean) ** 2 for v in v_deltas) / (n - 1))
+    else:
+        sigma = abs(mean)
+    return mean / i_mag, sigma
+
+
+def four_point_current_ceiling(model_max_current: float, power_stop_w: float,
+                               compliance_v: float, min_current: float) -> float:
+    """The most current the finder may select, A.
+
+    The smaller of the instrument's limit and the current at which the worst
+    case I x V_compliance reaches the power stop -- the same envelope the
+    pre-flight check refuses a run on. Never below ``min_current``.
+    """
+    ceiling = abs(model_max_current)
+    if compliance_v and abs(compliance_v) > 0:
+        ceiling = min(ceiling, abs(power_stop_w) / abs(compliance_v))
+    return max(ceiling, min_current)
+
+
+def select_four_point_current(
+    resistance_ohms: float,
+    target_snr: float,
+    max_current: float,
+    sigma_v: Callable[[float], float],
+    min_current: float = FPP_AUTOSELECT_MIN_CURRENT,
+    min_snr: float = FPP_AUTOSELECT_MIN_SNR,
+    compliance_v: Optional[float] = None,
+    compliance_headroom: float = FPP_AUTOSELECT_COMPLIANCE_HEADROOM,
+) -> 'CurrentSelection':
+    """Choose a 4PP source current for a target number of significant figures.
+
+    The smallest current whose sense voltage reaches ``target_snr`` times the
+    noise floor, under the current ceiling and the voltage headroom. The
+    smallest, not the largest: it gives the asked-for quality with the least
+    Joule heating.
+
+    ``sigma_v`` maps a voltage to its 1-sigma noise floor. For a
+    current-reversal measurement pass the measured scatter of the reversal
+    pairs, not the datasheet accuracy: the datasheet offset is systematic and
+    cancels on reversal.
+
+    A target the ceilings do not allow is 'marginal', never 'ok': the current
+    returned is then the ceiling, and whoever runs at it has to be asked.
+
+    Args:
+        resistance_ohms: Measured 4-point V/I (sign ignored), Ohm.
+        target_snr: 10**significant figures wanted.
+        max_current: Ceiling on the source current, A (model limit and
+            power stop; see :func:`four_point_current_ceiling`).
+        sigma_v: V -> noise floor at that voltage, V.
+        min_current: Lower clamp on the chosen current, A.
+        min_snr: SNR under which the sample is 'too_conductive'.
+        compliance_v: Voltage compliance, V (None = no voltage limit).
+        compliance_headroom: Fraction of the compliance the chosen sense
+            voltage may reach.
+    """
+    def _floor(v: float) -> float:
+        try:
+            return float(sigma_v(v))
+        except Exception:
+            return float('nan')
+
+    r = abs(resistance_ohms)
+    if not np.isfinite(r) or r <= 0.0:
+        return CurrentSelection(
+            current=max_current, expected_voltage=0.0, snr=0.0, sig_figs=0.0,
+            verdict='too_conductive',
+            reason="No measurable resistance: the sense voltage is below the noise floor.",
+        )
+
+    i_ceiling = max_current
+    limit = 'the current ceiling'
+    has_comp = compliance_v is not None and np.isfinite(compliance_v) and compliance_v > 0
+    if has_comp:
+        v_ceiling = compliance_headroom * compliance_v
+        if v_ceiling / r < i_ceiling:
+            i_ceiling = v_ceiling / r
+            limit = f"{compliance_headroom:.0%} of the {compliance_v:.3g} V compliance"
+        if min_current * r > v_ceiling:
+            v_at_min = min_current * r
+            return CurrentSelection(
+                current=min_current, expected_voltage=v_at_min, snr=float('inf'),
+                sig_figs=float('inf'), verdict='too_resistive',
+                reason=(f"R≈{r:.3g} Ω: the minimum {min_current*1e6:.3g} µA needs "
+                        f"{v_at_min:.3g} V, above {limit}."),
+            )
+
+    # Smallest current whose voltage is target_snr x the floor at that
+    # voltage; iterated because the floor may depend on the voltage.
+    i_ideal = min_current
+    for _ in range(3):
+        sv = _floor(i_ideal * r)
+        if np.isfinite(sv) and sv > 0:
+            i_ideal = (target_snr * sv) / r
+        else:
+            i_ideal = min_current  # no floor known: the minimum current suffices
+            break
+
+    i_chosen = min(max(i_ideal, min_current), i_ceiling)
+    # To six figures, more than the source can be programmed to. The
+    # arithmetic above ends a few units in the last place off a round value,
+    # differently from one platform to the next, and that reached the
+    # instrument, the file name and the header as 0.00010000000000000002.
+    i_chosen = float(f"{i_chosen:.6g}")
+    v_chosen = i_chosen * r
+    sv_chosen = _floor(v_chosen)
+    snr = v_chosen / sv_chosen if (np.isfinite(sv_chosen) and sv_chosen > 0) else float('inf')
+    figs = _snr_to_sig_figs(snr)
+    at = f"{i_chosen*1e3:.4g} mA (V≈{v_chosen*1e3:.3g} mV, SNR≈{snr:.3g})"
+
+    if snr < min_snr:
+        return CurrentSelection(
+            current=i_chosen, expected_voltage=v_chosen, snr=snr, sig_figs=figs,
+            verdict='too_conductive',
+            reason=(f"R≈{r:.3g} Ω: under 1 significant figure at {at}, "
+                    f"limited by {limit}."),
+        )
+    # A relative tolerance: the current that reaches the target must not be
+    # called short of it by its own rounding to six figures.
+    if snr < target_snr * (1.0 - 1e-5):
+        return CurrentSelection(
+            current=i_chosen, expected_voltage=v_chosen, snr=snr, sig_figs=figs,
+            verdict='marginal',
+            reason=(f"R≈{r:.3g} Ω: {figs:.1f} significant figures at {at}, not the "
+                    f"{_snr_to_sig_figs(target_snr):.1f} asked for; limited by {limit}."),
+        )
+    return CurrentSelection(
+        current=i_chosen, expected_voltage=v_chosen, snr=snr, sig_figs=figs,
+        verdict='ok',
+        reason=f"R≈{r:.3g} Ω: {figs:.1f} significant figures at {at}.",
+    )
+
+
 def calculate_conductivity(resistivity: float) -> float:
     """Calculate conductivity from resistivity.
 
@@ -294,6 +480,33 @@ def calculate_four_point_probe(
         resistivity=resistivity,
         conductivity=conductivity
     )
+
+
+def four_point_method(measurement_settings) -> str:
+    """Which calculation a four-point run uses: ``'f84'`` or ``'legacy'``.
+
+    The F84 decomposition is selected by any input only it uses: a finite
+    sample dimension, a geometry other than a circle, or a temperature with a
+    dopant type. Otherwise the K * alpha path is used. On the F84 path
+    ``fpp_k_factor``, ``fpp_alpha`` and ``fpp_model`` play no part.
+
+    One function, because the rows are built by it and the file header says
+    which path built them.
+    """
+    try:
+        diameter_cm = float(measurement_settings.get('fpp_diameter_cm') or 0.0)
+    except (TypeError, ValueError):
+        diameter_cm = 0.0
+    geometry = str(measurement_settings.get('fpp_geometry') or 'circle')
+    try:
+        temperature = float(measurement_settings.get('fpp_temperature_c'))
+    except (TypeError, ValueError):
+        temperature = float('nan')
+    dopant = str(measurement_settings.get('fpp_dopant_type') or 'none').lower()
+    if (diameter_cm > 0 or geometry != 'circle'
+            or (math.isfinite(temperature) and dopant in ('n', 'p'))):
+        return 'f84'
+    return 'legacy'
 
 
 def calculate_four_point_probe_f84(
@@ -476,17 +689,21 @@ def f2_finite_diameter(
     diameter_cm: Optional[float] = None,
     geometry: str = 'circle',
 ) -> float:
-    """Geometry correction factor for a finite-size specimen.
+    """Geometry correction factor for a finite-size specimen, probe centred.
 
     For `geometry='circle'` this is F2 from ASTM F84-02 Table 3, a function of
-    S/D (probe spacing / wafer diameter). Returns 4.5324 = pi/ln(2) at the
-    infinite-diameter limit and decreases for finite slices (~4.171 at S/D=0.10).
+    S/D (probe spacing / wafer diameter), up to the table's last row at
+    S/D = 0.10 (4.171). For a smaller disc the table has no value and the
+    closed-form image solution it was computed from is used
+    (`calculations_geometry.circle_factor`).
 
     For `geometry in ('square', 'rectangle_2', 'rectangle_3', 'rectangle_4')`
-    this returns the Smits 1958 correction factor for a square or rectangular
-    sample of aspect ratio L/W ∈ {2, 3, 4}, indexed by D/s where D = sample
-    width (dimension perpendicular to the probe array), from Smits 1958
-    Table I.
+    this is the image series for a square or a rectangle of aspect ratio
+    L/W in {2, 3, 4} (`calculations_geometry.rectangle_factor`), with D the
+    sample width, perpendicular to the probe array. Smits 1958 Table I prints
+    the same factor at a few D/s; its rows agree to 6 parts in 10 000.
+
+    A sample the probe does not fit on (three spacings long) has no factor.
 
     Args:
         spacing_cm: Probe-tip spacing S, cm.
@@ -498,8 +715,9 @@ def f2_finite_diameter(
             'rectangle_4'. Default 'circle' preserves prior behavior.
 
     Returns:
-        Correction factor (dimensionless). NaN if `geometry` is unrecognized
-        or if `spacing_cm` is non-finite/non-positive.
+        Correction factor (dimensionless). NaN if `geometry` is unrecognized,
+        if `spacing_cm` is non-finite/non-positive, or if the probe does not
+        fit on the sample.
     """
     if diameter_cm is None or diameter_cm <= 0 or not np.isfinite(diameter_cm):
         return _F84_TABLE3_F2[0][1]
@@ -508,7 +726,14 @@ def f2_finite_diameter(
 
     geom = geometry.lower().strip()
     if geom == 'circle':
-        return _linear_interp(spacing_cm / diameter_cm, _F84_TABLE3_F2, 1)
+        s_over_d = spacing_cm / diameter_cm
+        if s_over_d <= _F84_TABLE3_F2[-1][0]:
+            return _linear_interp(s_over_d, _F84_TABLE3_F2, 1)
+        # Past the end of Table 3 (S/D > 0.10) the table has no value. It was
+        # clamped at its last entry, 4.171, which is 25 % high for a 5 mm disc
+        # on a 1.016 mm probe. The closed form the table was computed from
+        # covers every disc the probe fits on.
+        return _centred_factor('circle', diameter_cm, spacing_cm)
 
     if geom not in _GEOMETRIES:
         return float('nan')
@@ -517,18 +742,48 @@ def f2_finite_diameter(
     col_idx = {'square': 1, 'rectangle_2': 2,
                'rectangle_3': 3, 'rectangle_4': 4}[geom]
 
-    # Square uses only the main Smits table (D/s >= 3). Rectangles can dip
-    # below D/s = 3 via the low-D/s extension; pick which table applies.
-    if d_over_s < 3.0 and geom != 'square':
-        low_col = {'rectangle_2': 1, 'rectangle_3': 2, 'rectangle_4': 3}[geom]
-        val = _linear_interp(d_over_s, _SMITS_RECT_LOW_DS, low_col)
-        # rectangle_2 is undefined below D/s = 1.5; NaN propagates.
-        if np.isfinite(val):
-            return val
-        # Below the L/W=2 floor: clamp to the lowest defined value.
-        return _SMITS_RECT_LOW_DS[2][low_col]  # row at D/s = 1.5
+    # The image sum the Smits table was computed from, at every D/s. Straight
+    # lines between rows as sparse as the table's were up to 1.6 % low (a
+    # square at D/s = 3.5), and everything above D/s = 40 got the D/s = 40
+    # value. The printed rows agree with it to 6 parts in 10 000.
+    if d_over_s >= 1e6:
+        # The unbounded sheet, pi / ln 2: the edges take less than one part
+        # in 1e10 off it here, and the series cannot resolve tips this close
+        # together against the sample.
+        return math.pi / math.log(2.0)
+    factor = _centred_factor(geom, diameter_cm, spacing_cm)
+    if np.isfinite(factor):
+        return factor
+    # The probe does not fit. Smits still prints a value where the end tips
+    # sit exactly on the edge (L/W = 3 at D/s = 1); that row is returned as
+    # printed, and anything else has no factor.
+    for table, col in ((_SMITS_GEOMETRY_CF, col_idx),
+                       (_SMITS_RECT_LOW_DS, col_idx - 1)):
+        if col < 1:
+            continue  # the low-D/s rows have no square column
+        for row in table:
+            if math.isclose(d_over_s, row[0], rel_tol=1e-9) and np.isfinite(row[col]):
+                return row[col]
+    return float('nan')
 
-    return _linear_interp(d_over_s, _SMITS_GEOMETRY_CF, col_idx)
+
+def _centred_factor(geom: str, dimension_cm: float, spacing_cm: float) -> float:
+    """The geometry factor for a probe at the centre, from the closed forms.
+
+    NaN when the probe does not fit on the sample: there is then no
+    four-point measurement to correct.
+    """
+    from .calculations_geometry import circle_factor, rectangle_factor
+    try:
+        if geom == 'circle':
+            return circle_factor(dimension_cm, spacing_cm)
+        aspect = {'square': 1.0, 'rectangle_2': 2.0,
+                  'rectangle_3': 3.0, 'rectangle_4': 4.0}[geom]
+        # Smits's d is the width, across the probe line; the probe runs along
+        # the length a = aspect * d.
+        return rectangle_factor(dimension_cm, aspect * dimension_cm, spacing_cm)
+    except ValueError:
+        return float('nan')
 
 
 def f_thickness_correction(thickness_cm: float, spacing_cm: float) -> float:
@@ -781,13 +1036,17 @@ def four_point_combined_uncertainty(
     i_readings,
     model: str = "2400",
     nplc: float = 1.0,
+    v_fixed_range: Optional[float] = None,
 ) -> Optional[FourPointCombinedUncertainty]:
     """Combine statistical and instrument uncertainty for a 4PP statistic.
 
     ``values`` is the list of per-reading derived quantities (Rs, ρ, or σ).
     ``v_readings`` / ``i_readings`` are the parallel raw V and I per row,
-    used to compute the relative instrument floor σ_R/R via
-    ``accuracy.resistance_uncertainty``. Lists must have matching length.
+    used to compute the relative instrument floor σ_R/R: the measurement
+    accuracy of V and the source accuracy of I, the same two the rows'
+    ``V_unc_V`` and ``I_unc_A`` columns carry. Lists must have matching
+    length. ``v_fixed_range`` is the voltage range value the run was pinned
+    to when auto range was off (``accuracy._measure_range``).
 
     The instrument contribution is treated as a *systematic* per-reading
     floor (mean of σ_R/R across readings) that does NOT reduce with N —
@@ -798,7 +1057,7 @@ def four_point_combined_uncertainty(
 
     Returns ``None`` if no finite values are provided. NaN-safe on inputs.
     """
-    from .accuracy import resistance_uncertainty
+    from .accuracy import current_source_uncertainty, voltage_uncertainty
     if not values:
         return None
     finite_values = [v for v in values if isinstance(v, (int, float)) and math.isfinite(v)]
@@ -827,7 +1086,12 @@ def four_point_combined_uncertainty(
         r = v / i
         if r == 0 or not math.isfinite(r):
             continue
-        sigma_r = resistance_uncertainty(v, i, model=model, nplc=nplc)
+        # V is measured and I is sourced, so the measure specification for V
+        # and the source specification for I, in quadrature (GUM 5.1.6 Eq. 12
+        # in the form accuracy.resistance_uncertainty uses).
+        sigma_v = voltage_uncertainty(v, model, nplc, fixed_range=v_fixed_range)
+        sigma_i = current_source_uncertainty(i, model)
+        sigma_r = math.hypot(sigma_v, abs(r) * sigma_i) / abs(i)
         if math.isfinite(sigma_r) and sigma_r > 0:
             rel_floors.append(sigma_r / abs(r))
     mean_rel_inst = sum(rel_floors) / len(rel_floors) if rel_floors else 0.0

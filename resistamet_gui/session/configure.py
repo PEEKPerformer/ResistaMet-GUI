@@ -8,7 +8,7 @@ explicitly, so nothing here needs a worker.
 The SCPI order in these functions is bench-verified; see ``instrument.py`` for
 the 2400-series quirks it works around.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 import pyvisa
@@ -70,6 +70,34 @@ def _read_back_voltage_limit(keithley, events, max_source_v: Optional[float]) ->
                     f"which it cannot have. The file will not record an effective limit.")
         return None
     return value
+
+
+def rejected_settings(keithley, limit: int = 10) -> list:
+    """The instrument's error queue after configuration, emptied.
+
+    A setting the instrument refuses changes nothing and says so only here:
+    a source level above the model's range leaves the level at 0 V, and the
+    run used to go on, its header recording the request. Every configure
+    sequence a run sends leaves this queue empty on a 2420 (bench,
+    2026-11-16), so anything in it is a setting that did not take.
+
+    An instrument that will not answer the query is not a refusal; the run's
+    own reads will report that.
+    """
+    found = []
+    for _ in range(limit):
+        try:
+            reply = keithley.query(":SYST:ERR?").strip()
+        except (pyvisa.errors.VisaIOError, ValueError):
+            break
+        code = reply.split(',', 1)[0].strip()
+        try:
+            if int(float(code)) == 0:
+                break
+        except ValueError:
+            pass
+        found.append(reply)
+    return found
 
 
 @dataclass(frozen=True)
@@ -309,11 +337,43 @@ def configure_four_point(keithley, events, measurement_settings, nplc):
         'Delta Mode': state.delta_mode,
     }
     csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Voltage (V)', 'Current (A)', 'V/I (Ohms)', 'Sheet Rs (Ohms/sq)', 'Resistivity (Ohm*cm)', 'Conductivity (S/cm)', 'Compliance Status', 'Event']
-    source_value_str = f"{source_current*1000:.2f}mA"
-    if state.delta_mode:
-        source_value_str += "_delta"
+    source_value_str = _four_point_fragment(state)
 
     return state, metadata, csv_headers, source_value_str
+
+
+def current_label(amps: float) -> str:
+    """A source current as it appears in a file name: ``1.00mA``, ``2.50uA``.
+
+    Milliamps to two decimals, as the names have always had, down to the
+    last current that form can show; below that, microamps. A 1 uA run was
+    named ``0.00mA``.
+    """
+    if abs(amps) >= 5e-6 or amps == 0:
+        return f"{amps*1000:.2f}mA"
+    return f"{amps*1e6:.2f}uA"
+
+
+def _four_point_fragment(state: FourPointState) -> str:
+    """The source part of a 4PP file name."""
+    fragment = current_label(state.source_current)
+    if state.delta_mode:
+        fragment += "_delta"
+    return fragment
+
+
+def four_point_at_current(state: FourPointState, source_current: float):
+    """The configured 4PP state re-issued for another source current.
+
+    For the pre-run current finder, which decides the current after the
+    configure step. The state is frozen, so this is a new one. The caller
+    has already programmed the instrument.
+
+    Returns (state, source_value_str).
+    """
+    state = replace(state, source_current=source_current)
+    return state, _four_point_fragment(state)
+
 
 def configure_sweep(keithley, events, measurement_settings, nplc):
     """Bulk linear sweep, set up on the instrument's own sweep engine.

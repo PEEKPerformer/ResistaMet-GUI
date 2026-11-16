@@ -39,12 +39,26 @@ cd desktop && npm run dev      # then open http://localhost:1420/?backend=http:/
 | | Source checkout | Installed app |
 |---|---|---|
 | `config.json` (operators, profiles, machine-local settings) | Repository root | The app's per-user data directory |
-| Data files | `data_directory` from the profile; the default `measurement_data` resolves against the repository root | The same setting; the default resolves to `measurement_data` inside the app's data directory. Set an absolute data directory under Settings ▸ Files & output to put data somewhere you back up. |
+| Data files | `data_directory` from the profile; the default `measurement_data` resolves against the repository root | The same setting, resolved against the **data folder**: `Documents/ResistaMet` until you choose another. With the default profile, files go to `<data folder>/measurement_data/<operator>/`. |
+| The data folder choice | not used | `data-folder.json` in the app's per-user data directory |
 | Backend log | The terminal you started `tauri dev` from | One file per launch, `backend-<milliseconds since 1970>.log`, in the app's log directory; the newest ten are kept |
 | Instrument locks | `~/.resistamet/locks/` | the same |
 | Window state (selected operator, sample name, each operator's tab values, theme, current map id) | the webview's local storage | the same |
 
-The app's identifier is `edu.uconn.adamson.resistamet`, and the two directories are wherever Tauri puts per-user data and logs for that identifier. By Tauri's convention that is `~/Library/Application Support/<identifier>` and `~/Library/Logs/<identifier>` on macOS, and `%APPDATA%\<identifier>` and `%LOCALAPPDATA%\<identifier>\logs` on Windows. These paths were not checked on an installed build for this page; the **Results** view shows the data directory's absolute path, which settles it.
+The app's identifier is `edu.uconn.adamson.resistamet`, and the two directories are wherever Tauri puts per-user data and logs for that identifier. By Tauri's convention that is `~/Library/Application Support/<identifier>` and `~/Library/Logs/<identifier>` on macOS, and `%APPDATA%\<identifier>` and `%LOCALAPPDATA%\<identifier>\logs` on Windows. These paths were not checked on an installed build for this page.
+
+### The data folder
+
+An installed app keeps its measurement files under one folder per computer, the data folder. It is the directory the backend runs in, so it is what a relative `data_directory` in a profile resolves against. `config.json`, the logs and the locks are not in it; they stay where the table says.
+
+- **Default.** `Documents/ResistaMet`, created when first needed. If the Documents folder cannot be found or written to, the app's per-user data directory is used and the dialog says **Documents folder unavailable.**
+- **Choosing.** The first time an installed app starts, a **Data folder** dialog shows the folder and offers **Browse…** and **Save**. Saving the default counts as a choice; closing the dialog leaves the default in force and the dialog returns at the next launch. Later, Settings ▸ Files & output shows the folder with **Change…**. The folder is created if it does not exist and must be writable.
+- **Changing it restarts the backend**, since a process cannot be moved to another working directory from outside. It is refused while a run is in progress or the backend is not answering, and the window reloads afterwards. Files already written stay where they are.
+- **A chosen folder that is missing at launch** (an unplugged drive, a share that is gone) is not replaced in silence: that launch runs in the default folder, and the dialog opens with **Unavailable:** and the folder's path so you can reconnect it or choose another. The stored choice is kept until you save a new one.
+- **Profiles.** A relative `data_directory` (the default is `measurement_data`) lands inside the data folder, so the default layout is `<data folder>/measurement_data/<operator>/…`, the same tree the PySide6 app writes next to itself; point the data folder at the folder that holds an existing `measurement_data` and both apps share it. An absolute `data_directory` is used as it is and ignores the data folder. Settings ▸ Files & output shows under the field where its value resolves, and the **Results** view shows the directory it is reading.
+- **Versions 2.0.0-1 to 2.0.0-3** had no data folder: the backend ran in the app's per-user data directory, so their files are in `%APPDATA%\edu.uconn.adamson.resistamet\measurement_data` on Windows (`~/Library/Application Support/edu.uconn.adamson.resistamet/measurement_data` on macOS). They are not moved or copied. While files are there, the Data folder dialog lists the location as **Earlier files:**.
+
+A source checkout has no data folder to choose: the backend runs at the repository root, and neither the dialog nor the Settings row appears.
 
 Files are laid out under the data directory exactly as the PySide6 app lays them out: one folder per operator, names as in [Data outputs](outputs.md#file-names). Every file the desktop app starts records `client.name: resistamet-desktop` and the app's version in its header.
 
@@ -52,7 +66,7 @@ Files are laid out under the data directory exactly as the PySide6 app lays them
 
 **Top bar.** The sample name (locked during a run), a chip with the instrument the backend last identified or connected to, a chip with the state of the connection to the backend, the operator, and Settings. **Left rail.** The six measurement modes and Results; a dot marks the mode that is running. Only one run exists at a time, whichever view you look at. **Bottom.** The log: the backend's messages in the operator's words, refilled from the backend after a reload.
 
-An **operator** must be chosen before anything else; the picker opens by itself and creates profiles. Every file is stored under the operator's name, and the operator's profile supplies the settings.
+An **operator** must be chosen before anything else; the picker opens by itself and creates profiles. In an installed app that has no [data folder](#the-data-folder) chosen yet, the Data folder dialog comes first. Every file is stored under the operator's name, and the operator's profile supplies the settings.
 
 Each measurement view has its settings panel on the right. Values you type there are this tab's values on top of the profile, kept per operator; they are sent to the backend as you type, and the backend answers with what the run would actually use, any issues, the achievable sampling rate and the touch-safety check. **Start** is enabled only when the backend is reachable, an operator and a sample name exist, no run is active and the backend accepts the settings. Numeric fields take engineering input (`100u`, `1e-4`, `0.1 mA`); the prefix is case-sensitive (`m` is milli, `M` is mega), and text that is not wholly a number is refused, not guessed at.
 
@@ -82,15 +96,15 @@ Configure, run once, look at the curve: one trace per direction, the point count
 
 ### van der Pauw
 
-A four-step wizard for ASTM F76 Method A. At each geometry the backend stops at a prompt with the output off; the view shows which contact each of Force HI, Force LO, Sense HI and Sense LO goes to on a diagram of the sample, and waits for **Measure**. If another view is open when a geometry prompt arrives (a run an AI agent started, say), a dialog gives the wiring in words and opens the van der Pauw view. Both current polarities are taken automatically. Readings fill a table as they arrive, and the result panel gives sheet resistance and resistivity with combined uncertainties and the f(Q) homogeneity verdict.
+A four-step wizard for ASTM F76 Method A. At each geometry the backend stops at a prompt with the output off; the view shows which contact each of Force HI, Force LO, Sense HI and Sense LO goes to on a diagram of the sample, and waits for **Measure**. If another view is open when a geometry prompt arrives (a run an AI agent started, say), a dialog gives the wiring in words and opens the van der Pauw view. Both current polarities are taken automatically. Readings fill a table as they arrive, and the result panel gives sheet resistance and resistivity with combined uncertainties and the f(Q) homogeneity verdict, or, for a result that is not valid (a reading in compliance, inconsistent signs), that it is invalid and why. A reading taken in voltage compliance is marked in the table.
 
 ### Results
 
-The operator's files, newest first, and a preview of one: the metadata header and footer as written, and any numeric column plotted against elapsed time. Only `.csv` files are previewed; `.csv.gz`, `.h5` and legacy `.json` files are listed. The absolute path of the data directory is shown at the top.
+The operator's files, newest first, and a preview of one: the metadata header and footer as written, and any numeric column plotted against elapsed time. Only `.csv` files are previewed; `.csv.gz`, `.h5` and legacy `.json` files are listed. The absolute path of the data directory is shown in full under the file list.
 
 ### Settings
 
-Profile settings that do not belong to one tab, in six sections: **Timing** (NPLC, sampling rate, settling time, auto zero, hardware filter, stop on compliance), **Instrument**, **Aux sensor**, **Safety**, **Files & output**, and **Display** (the theme, stored on this computer, not in the profile). Instrument holds the three [machine-local](settings.md#machine-local-settings) values: VISA backend, GPIB interface (Prologix) and address. **Scan** and **Identify** use the backend and interface as typed, before they are saved, and report which VISA implementation answered. They are refused while a run is active.
+Profile settings that do not belong to one tab, in six sections: **Timing** (NPLC, sampling rate, settling time, auto zero, hardware filter, stop on compliance), **Instrument**, **Aux sensor**, **Safety**, **Files & output** (with, in an installed app, the [data folder](#the-data-folder) and **Change…**), and **Display** (the theme, stored on this computer, not in the profile). Instrument holds the three [machine-local](settings.md#machine-local-settings) values: VISA backend, GPIB interface (Prologix) and address. **Scan** and **Identify** use the backend and interface as typed, before they are saved, and report which VISA implementation answered. They are refused while a run is active.
 
 ### Prompts
 

@@ -3,7 +3,7 @@ import math
 import time
 from collections import deque
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ from ..resources import app_icon
 from ..schema.map_session import MapSession
 from ..schema.resolve import resolve_run_settings
 from ..session.instrument_lock import InstrumentBusy, hold_instrument
+from ..session.samples import fixed_range_for
 from ..constants import (
     __version__,
     AUX_PREVIEW_GIVEUP_TICKS,
@@ -36,6 +37,19 @@ from .canvas import HistogramCanvas, IVCanvas, PgLiveCanvas
 from .widgets import EngineeringSpinBox, NoScrollSpinBox, NoScrollIntSpinBox, VdpSampleDiagram, VdpProtocolFilmstrip, VdpPerGeometryBarChart, format_engineering, format_readout_html, format_with_uncertainty, precision_for_nplc
 from .dialogs import SettingsDialog, UserSelectionDialog
 from .visa_helpers import configured_resource_manager, query_idn
+
+
+def _is_finite(value) -> bool:
+    """A real, finite number (not NaN, not None, not a string)."""
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
+
+
+def _rsd_pct(mean, sd) -> float:
+    """SD as a percentage of |mean|; NaN where either is missing or the mean is 0."""
+    if not (_is_finite(mean) and _is_finite(sd)) or mean == 0:
+        return float('nan')
+    return sd / abs(mean) * 100.0
 
 
 class ResistanceMeterApp(QMainWindow):
@@ -84,6 +98,9 @@ class ResistanceMeterApp(QMainWindow):
         self._active_model_name = "2400"
         # Last derived 4PP values from the worker (see _on_sample_derived).
         self._last_fpp_derived = None
+        # The four-point run the table's rows came from: the settings it was
+        # started with and which formula it used. A saved spot keeps its own.
+        self._fpp_run = None
         # Targets for the dynamic sampling-rate cap: each entry is the tab
         # widget that exposes a .sampling_rate spinbox. Refreshed whenever
         # user_settings changes (Settings dialog save, profile switch) and
@@ -625,6 +642,26 @@ class ResistanceMeterApp(QMainWindow):
             "V Compliance", main_container.fpp_voltage_compliance,
         ))
 
+        # Pre-run current finder. While it is on, Source Current is the
+        # current the probe starts at, and shows the one it chose.
+        main_container.fpp_autoselect_current = QCheckBox()
+        main_container.fpp_autoselect_current.setToolTip(
+            "Delta-probe the sample before the run and source the smallest current\n"
+            "that reaches the target significant figures. Source Current is the probe current.")
+        main_container.fpp_autoselect_sigfigs = NoScrollIntSpinBox(minimum=1, maximum=6)
+        main_container.fpp_autoselect_sigfigs.setValue(4)
+        main_container.fpp_autoselect_sigfigs.setToolTip(
+            "Sense voltage = 10^n × the measured scatter of the probe's reversal pairs.")
+        main_container.fpp_autoselect_sigfigs.setEnabled(False)
+        layout.addRow(*self._form_pair(
+            "Auto-select current", main_container.fpp_autoselect_current,
+            "Target sig figs", main_container.fpp_autoselect_sigfigs,
+        ))
+        main_container.fpp_autoselect_current.toggled.connect(
+            lambda on: main_container.fpp_current.setEnabled(not on))
+        main_container.fpp_autoselect_current.toggled.connect(
+            main_container.fpp_autoselect_sigfigs.setEnabled)
+
         main_container.fpp_voltage_range_auto = QCheckBox("Auto Range Voltage Measurement")
         main_container.fpp_voltage_range_auto.setToolTip("Automatically select the best voltage measurement range.")
         main_container.fpp_spacing_cm = QDoubleSpinBox(decimals=5, minimum=0.001, maximum=5.0, singleStep=0.001, suffix=" cm")
@@ -1071,8 +1108,9 @@ class ResistanceMeterApp(QMainWindow):
             "V Compliance", widget.vdp_voltage_compliance,
         ))
 
+        # 7 decimals of a cm is 1 nm: at 6, a 15 nm film became 20 nm.
         widget.vdp_thickness_cm = NoScrollSpinBox(
-            decimals=6, minimum=0.0, maximum=10.0, singleStep=1e-4, suffix=" cm"
+            decimals=7, minimum=0.0, maximum=10.0, singleStep=1e-4, suffix=" cm"
         )
         widget.vdp_thickness_cm.setValue(0.0)
         widget.vdp_thickness_cm.setToolTip(
@@ -1393,6 +1431,15 @@ class ResistanceMeterApp(QMainWindow):
         widget.vdp_readings_table.item(2 * idx, 2).setBackground(QBrush(QColor("#e8f5e9")))
         widget.vdp_readings_table.item(2 * idx + 1, 2).setText(f"{readings['v_neg']:.6e}")
         widget.vdp_readings_table.item(2 * idx + 1, 2).setBackground(QBrush(QColor("#e8f5e9")))
+        # A reading taken in voltage compliance is the limit, not the
+        # sample: marked as the file's compliance column marks its row.
+        in_compliance = readings.get('compliance') or ()
+        for row, label in ((2 * idx, readings.get('label_pos')),
+                           (2 * idx + 1, readings.get('label_neg'))):
+            if label in in_compliance:
+                item = widget.vdp_readings_table.item(row, 2)
+                item.setText(f"{item.text()}  V_COMP")
+                item.setBackground(QBrush(QColor("#ffcdd2")))
         widget.vdp_filmstrip.mark_completed(idx)
 
     def _vdp_on_complete(self, result: Dict):
@@ -1428,23 +1475,29 @@ class ResistanceMeterApp(QMainWindow):
         ]
 
         # Combined uncertainty on Rs / ρ. Two contributions:
-        #   u_stat — from the four per-geometry R values: std/√N treating
-        #     them as repeated samples of the same underlying R (homogeneity
-        #     assumption — F76 asymmetry_pct quantifies the violation).
+        #   u_stat — from the disagreement of each reciprocal pair of
+        #     geometries (1 with 3, 2 with 4), which measure the same
+        #     quantity twice. Not the SD of the four R: the two pairs
+        #     differ by Q on any sample that is not square.
         #   u_inst — from voltage measurement spec on each of the 8 V
         #     readings, propagated through the (V_pos − V_neg)/(2I) average
-        #     to a per-geometry σ_R, then averaged. Treats the sourced
-        #     current as exact (source-accuracy not tracked yet).
+        #     to a per-geometry σ_R, then averaged. The sourced current is
+        #     treated as exact.
         # σ_Rs/Rs = σ_R/R because the F76 prefactor (π/ln2)·f and the
         # thickness t are treated as exact for this calculation.
-        # Single source of truth: the same helper the worker calls at
-        # finalize() so the panel and the CSV metadata cannot drift.
+        # Single source of truth: the same helper the run calls for the
+        # file's footer, with the same fixed voltage range when auto range
+        # is off, so the panel and the CSV metadata cannot drift.
         from ..calculations_vdp import vdp_combined_uncertainty
         nplc_now = float(widget.nplc.value())
         u = vdp_combined_uncertainty(
             voltages=voltages, current=current,
             sheet_resistance=rs, rho_avg=rho,
             model=self._active_model_name, nplc=nplc_now,
+            v_fixed_range=fixed_range_for({
+                'vdp_voltage_range_auto': widget.vdp_voltage_range_auto.isChecked(),
+                'vdp_voltage_compliance': widget.vdp_voltage_compliance.value(),
+            }, 'vdp_voltage_range_auto', 'vdp_voltage_compliance'),
         )
 
         widget.vdp_rs_label.setText(
@@ -1456,6 +1509,10 @@ class ResistanceMeterApp(QMainWindow):
                 f"ρ = {format_engineering(rho, 'Ω·cm', precision=precision)}"
                 f"  ± {format_engineering(u.u_rho, 'Ω·cm', precision=2)}"
             )
+        elif float(result.get('thickness_cm') or 0.0) > 0:
+            # A thickness was given and there is still no ρ: an invalid
+            # result whose signs rule one out.
+            widget.vdp_rho_label.setText("ρ: —")
         else:
             widget.vdp_rho_label.setText("ρ: — (no thickness)")
         widget.vdp_bar_chart.set_data(r_values, ["G1", "G2", "G3", "G4"])
@@ -1469,7 +1526,18 @@ class ResistanceMeterApp(QMainWindow):
             f"<br>asymmetry = {result['asymmetry_pct']:.3f} %"
         )
 
-        if result['homogeneous']:
+        # An invalid result (readings in compliance, or signs that cannot be
+        # one sample's) is neither verdict: the banner says so, and why.
+        invalid = not result.get('valid', True)
+        widget.vdp_homogeneity_banner.setWordWrap(invalid)
+        if invalid:
+            widget.vdp_homogeneity_banner.setText(
+                f"INVALID  ({result.get('invalid_reason') or 'no reason given'})"
+            )
+            widget.vdp_homogeneity_banner.setStyleSheet(
+                "color: white; background: #c62828; border-radius: 4px; padding: 6px;"
+            )
+        elif result['homogeneous']:
             widget.vdp_homogeneity_banner.setText(
                 f"HOMOGENEOUS  (asymmetry {result['asymmetry_pct']:.2f}% ≤ 10% F76 gate)"
             )
@@ -1762,41 +1830,13 @@ class ResistanceMeterApp(QMainWindow):
             import json
             with open(filename, 'r') as f:
                 prof = json.load(f)
-            # Apply known fields to current tab UI
-            w = mode_widget
-            if mode == 'resistance':
-                if 'res_test_current' in prof: w.res_test_current.setValue(float(prof['res_test_current']))
-                if 'res_voltage_compliance' in prof: w.res_voltage_compliance.setValue(float(prof['res_voltage_compliance']))
-                if 'res_measurement_type' in prof: w.res_measurement_type.setCurrentText(str(prof['res_measurement_type']))
-                if 'res_auto_range' in prof: w.res_auto_range.setChecked(bool(prof['res_auto_range']))
-            elif mode == 'source_v':
-                if 'vsource_voltage' in prof: w.vsource_voltage.setValue(float(prof['vsource_voltage']))
-                if 'vsource_current_compliance' in prof: w.vsource_current_compliance.setValue(float(prof['vsource_current_compliance']))
-                if 'vsource_current_range_auto' in prof: w.vsource_current_range_auto.setChecked(bool(prof['vsource_current_range_auto']))
-                if 'vsource_duration_hours' in prof: w.vsource_duration.setValue(float(prof['vsource_duration_hours']))
-            elif mode == 'source_i':
-                if 'isource_current' in prof: w.isource_current.setValue(float(prof['isource_current']))
-                if 'isource_voltage_compliance' in prof: w.isource_voltage_compliance.setValue(float(prof['isource_voltage_compliance']))
-                if 'isource_voltage_range_auto' in prof: w.isource_voltage_range_auto.setChecked(bool(prof['isource_voltage_range_auto']))
-                if 'isource_duration_hours' in prof: w.isource_duration.setValue(float(prof['isource_duration_hours']))
-            elif mode == 'four_point':
-                if 'fpp_current' in prof: w.fpp_current.setValue(float(prof['fpp_current']))
-                if 'fpp_voltage_compliance' in prof: w.fpp_voltage_compliance.setValue(float(prof['fpp_voltage_compliance']))
-                if 'fpp_voltage_range_auto' in prof: w.fpp_voltage_range_auto.setChecked(bool(prof['fpp_voltage_range_auto']))
-                if 'fpp_spacing_cm' in prof: w.fpp_spacing_cm.setValue(float(prof['fpp_spacing_cm']))
-                # Accept either µm or legacy cm
-                if 'fpp_thickness_um' in prof:
-                    w.fpp_thickness_um.setValue(float(prof['fpp_thickness_um']))
-                elif 'fpp_thickness_cm' in prof:
-                    w.fpp_thickness_um.setValue(float(prof['fpp_thickness_cm']) * 1e4)
-                if 'fpp_alpha' in prof: w.fpp_alpha.setValue(float(prof['fpp_alpha']))
-                if 'fpp_k_factor' in prof: w.fpp_k_factor.setValue(float(prof['fpp_k_factor']))
-                if 'fpp_model' in prof: w.fpp_model.setCurrentText(str(prof['fpp_model']))
-            # Load NPLC and sampling rate if present (applies to all modes)
-            if 'nplc' in prof and hasattr(w, 'nplc'):
-                w.nplc.setValue(float(prof['nplc']))
-            if 'sampling_rate' in prof and hasattr(w, 'sampling_rate'):
-                w.sampling_rate.setValue(float(prof['sampling_rate']))
+            if not isinstance(prof, dict):
+                raise ValueError("not a profile: expected a JSON object of settings")
+            # Everything Save Profile wrote that this tab holds. The file also
+            # carries the keys a tab has no widget for (instrument address,
+            # filter, touch-safety); those belong to the user's settings and
+            # this machine, and a file does not change them.
+            self._apply_measurement_to_tabs(prof, modes=(mode,))
             self.log_status(f"Profile loaded: {filename}")
         except Exception as e:
             QMessageBox.critical(self, "Load Profile", f"Failed to load profile: {e}")
@@ -1826,84 +1866,163 @@ class ResistanceMeterApp(QMainWindow):
                 self.log_status("No user selected. Please select or create a user.")
                 self.set_all_controls_enabled(False)
 
-    def update_ui_from_settings(self):
+    def _tab_setters(self) -> Dict[str, Dict[str, Any]]:
+        """For each mode, how a measurement key is put on that mode's tab.
+
+        The mirror of ``_overrides_from_widgets``: every key that method reads
+        from a widget has a setter here (tests/test_gui_tab_settings.py holds
+        the two together), so loading a profile -- a user's, or a file from
+        Load Profile -- leaves no widget showing what the last one set.
+        Order matters within a mode: a setter may rely on an earlier one.
+        """
+        res, vsrc, isrc = self.tab_resistance, self.tab_voltage_source, self.tab_current_source
+        fpp, sweep, vdp = self.tab_four_point, self.tab_sweep, self.tab_vdp
+
+        def text(combo):
+            return lambda value: combo.setCurrentText(str(value))
+
+        def number(box, kind=float):
+            return lambda value: box.setValue(kind(value))
+
+        def flag(box):
+            return lambda value: box.setChecked(bool(value))
+
+        def duration(box, run_until_stopped):
+            # A duration of 0 is "run until stopped", which the tab shows as
+            # its own checkbox.
+            def apply(value):
+                box.setValue(float(value))
+                run_until_stopped.setChecked(float(value) == 0.0)
+            return apply
+
+        def temperature(value):
+            # NaN / None is "not measured": the spinbox's minimum, shown as
+            # its special text and read back as NaN.
+            measured = isinstance(value, (int, float)) and value == value
+            fpp.fpp_temperature_c.setValue(float(value) if measured else -50.0)
+
+        return {
+            'resistance': {
+                'res_test_current': number(res.res_test_current),
+                'res_voltage_compliance': number(res.res_voltage_compliance),
+                'res_measurement_type': text(res.res_measurement_type),
+                'res_auto_range': flag(res.res_auto_range),
+                'res_offset_comp': flag(res.res_offset_comp),
+                'sampling_rate': number(res.sampling_rate),
+                'auto_zero': text(res.auto_zero),
+            },
+            'source_v': {
+                'vsource_voltage': number(vsrc.vsource_voltage),
+                'vsource_current_compliance': number(vsrc.vsource_current_compliance),
+                'vsource_current_range_auto': flag(vsrc.vsource_current_range_auto),
+                'vsource_duration_hours': duration(vsrc.vsource_duration,
+                                                   vsrc.vsource_run_continuous),
+                'sampling_rate': number(vsrc.sampling_rate),
+                'auto_zero': text(vsrc.auto_zero),
+            },
+            'source_i': {
+                'isource_current': number(isrc.isource_current),
+                'isource_voltage_compliance': number(isrc.isource_voltage_compliance),
+                'isource_voltage_range_auto': flag(isrc.isource_voltage_range_auto),
+                'isource_duration_hours': duration(isrc.isource_duration,
+                                                   isrc.isource_run_continuous),
+                'sampling_rate': number(isrc.sampling_rate),
+                'auto_zero': text(isrc.auto_zero),
+            },
+            'four_point': {
+                'fpp_current': number(fpp.fpp_current),
+                'fpp_voltage_compliance': number(fpp.fpp_voltage_compliance),
+                'fpp_voltage_range_auto': flag(fpp.fpp_voltage_range_auto),
+                'fpp_spacing_cm': number(fpp.fpp_spacing_cm),
+                'fpp_thickness_um': number(fpp.fpp_thickness_um),
+                'fpp_alpha': number(fpp.fpp_alpha),
+                'fpp_model': text(fpp.fpp_model),
+                'fpp_k_factor': number(fpp.fpp_k_factor),
+                'fpp_samples': number(fpp.fpp_samples, int),
+                # F84 correction-factor inputs. The defaults (D=0, circle, no
+                # temperature) keep the run on the legacy K formula.
+                'fpp_diameter_cm': number(fpp.fpp_diameter_cm),
+                'fpp_geometry': text(fpp.fpp_geometry),
+                'fpp_temperature_c': temperature,
+                'fpp_dopant_type': text(fpp.fpp_dopant_type),
+                'fpp_delta_mode': flag(fpp.fpp_delta_mode),
+                'fpp_delta_settling': number(fpp.fpp_delta_settling),
+                'fpp_power_warn_w': number(fpp.fpp_power_warn_w),
+                'fpp_power_stop_w': number(fpp.fpp_power_stop_w),
+                'fpp_stop_on_overpower': flag(fpp.fpp_stop_on_overpower),
+                'fpp_autoselect_current': flag(fpp.fpp_autoselect_current),
+                'fpp_autoselect_sigfigs': number(fpp.fpp_autoselect_sigfigs, int),
+                'nplc': number(fpp.nplc),
+                'sampling_rate': number(fpp.sampling_rate),
+            },
+            'sweep': {
+                # Source first: it sets the units the other boxes display in.
+                'sweep_source': text(sweep.sweep_source),
+                'sweep_start': number(sweep.sweep_start),
+                'sweep_stop': number(sweep.sweep_stop),
+                'sweep_step': number(sweep.sweep_step),
+                'sweep_compliance': number(sweep.sweep_compliance),
+                'sweep_delay': number(sweep.sweep_delay),
+                'sweep_direction': text(sweep.sweep_direction),
+                'sweep_measurement_type': text(sweep.sweep_measurement_type),
+                'nplc': number(sweep.sweep_nplc),
+            },
+            'vdp': {
+                'vdp_current': number(vdp.vdp_current),
+                'vdp_voltage_compliance': number(vdp.vdp_voltage_compliance),
+                'vdp_voltage_range_auto': flag(vdp.vdp_voltage_range_auto),
+                'vdp_thickness_cm': number(vdp.vdp_thickness_cm),
+                'vdp_settling_s': number(vdp.vdp_settling_s),
+                'vdp_readings_per_polarity': number(vdp.vdp_readings_per_polarity, int),
+                'nplc': number(vdp.nplc),
+                'sampling_rate': number(vdp.sampling_rate),
+            },
+        }
+
+    def _apply_measurement_to_tabs(self, m_cfg: Dict, modes=None, only_keys=None) -> None:
+        """Set the tab widgets from flat measurement keys.
+
+        ``modes`` limits it to those tabs and ``only_keys`` to those keys;
+        left out, every tab and every key ``m_cfg`` holds. A key ``m_cfg``
+        does not hold leaves its widget alone.
+        """
+        m_cfg = dict(m_cfg)
+        if m_cfg.get('fpp_thickness_um') is None and m_cfg.get('fpp_thickness_cm') is not None:
+            # Profiles from before the thickness was kept in micrometres.
+            m_cfg['fpp_thickness_um'] = float(m_cfg['fpp_thickness_cm']) * 1e4
+        for mode, setters in self._tab_setters().items():
+            if modes is not None and mode not in modes:
+                continue
+            for key, apply in setters.items():
+                if key in m_cfg and (only_keys is None or key in only_keys):
+                    apply(m_cfg[key])
+
+    def update_ui_from_settings(self, only_keys=None):
+        """Put the loaded profile on the tabs.
+
+        ``only_keys`` is for a profile that was edited rather than switched
+        (Settings saved): only those measurement keys reach the tabs, so a
+        value typed on a tab that the edit did not touch stays as typed.
+        """
         if not self.user_settings:
             return
         m_cfg = self.user_settings['measurement']; d_cfg = self.user_settings['display']
-        self.tab_resistance.res_test_current.setValue(m_cfg['res_test_current'])
-        self.tab_resistance.res_voltage_compliance.setValue(m_cfg['res_voltage_compliance'])
-        self.tab_resistance.res_measurement_type.setCurrentText(m_cfg['res_measurement_type'])
-        self.tab_sweep.sweep_measurement_type.setCurrentText(m_cfg.get('sweep_measurement_type', '2-wire'))
-        self.tab_resistance.res_auto_range.setChecked(m_cfg['res_auto_range'])
-        self.tab_resistance.res_offset_comp.setChecked(m_cfg.get('res_offset_comp', False))
-        self.tab_resistance.sampling_rate.setValue(m_cfg['sampling_rate'])
-        self.tab_resistance.auto_zero.setCurrentText(str(m_cfg.get('auto_zero', 'once')))
+        self._apply_measurement_to_tabs(m_cfg, only_keys=only_keys)
         self.tab_resistance.canvas.set_plot_properties('Elapsed Time (s)', 'Resistance (Ohms)', 'Resistance Measurement', d_cfg['plot_color_r'])
-        self.tab_voltage_source.vsource_voltage.setValue(m_cfg['vsource_voltage'])
-        self.tab_voltage_source.vsource_current_compliance.setValue(m_cfg['vsource_current_compliance'])
-        self.tab_voltage_source.vsource_current_range_auto.setChecked(m_cfg['vsource_current_range_auto'])
-        dur_v = m_cfg.get('vsource_duration_hours', 0.0)
-        self.tab_voltage_source.vsource_duration.setValue(dur_v)
-        self.tab_voltage_source.vsource_run_continuous.setChecked(dur_v == 0.0)
-        self.tab_voltage_source.sampling_rate.setValue(m_cfg['sampling_rate'])
-        self.tab_voltage_source.auto_zero.setCurrentText(str(m_cfg.get('auto_zero', 'once')))
-        self.tab_voltage_source.v_plot_var.setCurrentText('current')
-        self.tab_voltage_source.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Current (A)', 'Voltage Source Output', d_cfg['plot_color_v'])
-        self.tab_current_source.isource_current.setValue(m_cfg['isource_current'])
-        self.tab_current_source.isource_voltage_compliance.setValue(m_cfg['isource_voltage_compliance'])
-        self.tab_current_source.isource_voltage_range_auto.setChecked(m_cfg['isource_voltage_range_auto'])
-        dur_i = m_cfg.get('isource_duration_hours', 0.0)
-        self.tab_current_source.isource_duration.setValue(dur_i)
-        self.tab_current_source.isource_run_continuous.setChecked(dur_i == 0.0)
-        self.tab_current_source.sampling_rate.setValue(m_cfg['sampling_rate'])
-        self.tab_current_source.auto_zero.setCurrentText(str(m_cfg.get('auto_zero', 'once')))
-        self.tab_current_source.i_plot_var.setCurrentText('voltage')
-        self.tab_current_source.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Voltage (V)', 'Current Source Output', d_cfg['plot_color_i'])
-        # Four-Point Probe
-        self.tab_four_point.fpp_current.setValue(m_cfg['fpp_current'])
-        self.tab_four_point.fpp_voltage_compliance.setValue(m_cfg['fpp_voltage_compliance'])
-        self.tab_four_point.fpp_voltage_range_auto.setChecked(m_cfg['fpp_voltage_range_auto'])
-        self.tab_four_point.fpp_spacing_cm.setValue(m_cfg['fpp_spacing_cm'])
-        # Support legacy cm setting if present
-        t_um = m_cfg.get('fpp_thickness_um', None)
-        if t_um is None:
-            t_um = float(m_cfg.get('fpp_thickness_cm', 0.0)) * 1e4
-        self.tab_four_point.fpp_thickness_um.setValue(t_um)
-        self.tab_four_point.fpp_alpha.setValue(m_cfg.get('fpp_alpha', 1.0))
-        self.tab_four_point.fpp_model.setCurrentText(m_cfg.get('fpp_model', 'thin_film'))
-        self.tab_four_point.fpp_k_factor.setValue(m_cfg.get('fpp_k_factor', 4.532))
-        self.tab_four_point.fpp_samples.setValue(int(m_cfg.get('fpp_samples', 20)))
-        # F84 correction-factor inputs (added 2026-05). Defaults preserve
-        # legacy behavior: D=0 (infinite), geometry=circle, no T correction.
-        self.tab_four_point.fpp_diameter_cm.setValue(float(m_cfg.get('fpp_diameter_cm', 0.0)))
-        self.tab_four_point.fpp_geometry.setCurrentText(m_cfg.get('fpp_geometry', 'circle'))
-        t_c = m_cfg.get('fpp_temperature_c', float('nan'))
-        if t_c is None or not (isinstance(t_c, (int, float)) and t_c == t_c):  # NaN check
-            self.tab_four_point.fpp_temperature_c.setValue(-50.0)  # "not measured"
+        if only_keys is None:
+            self.tab_voltage_source.v_plot_var.setCurrentText('current')
+            self.tab_voltage_source.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Current (A)', 'Voltage Source Output', d_cfg['plot_color_v'])
+            self.tab_current_source.i_plot_var.setCurrentText('voltage')
+            self.tab_current_source.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Voltage (V)', 'Current Source Output', d_cfg['plot_color_i'])
+            self.tab_four_point.fpp_plot_var.setCurrentText('sheet_Rs')
         else:
-            self.tab_four_point.fpp_temperature_c.setValue(float(t_c))
-        self.tab_four_point.fpp_dopant_type.setCurrentText(m_cfg.get('fpp_dopant_type', 'none'))
-        if hasattr(self.tab_four_point, 'fpp_power_warn_w'):
-            self.tab_four_point.fpp_power_warn_w.setValue(float(m_cfg.get('fpp_power_warn_w', 1.0e-2)))
-        if hasattr(self.tab_four_point, 'fpp_power_stop_w'):
-            self.tab_four_point.fpp_power_stop_w.setValue(float(m_cfg.get('fpp_power_stop_w', 1.0e-1)))
-        if hasattr(self.tab_four_point, 'fpp_stop_on_overpower'):
-            self.tab_four_point.fpp_stop_on_overpower.setChecked(bool(m_cfg.get('fpp_stop_on_overpower', True)))
-        self.tab_four_point.nplc.setValue(m_cfg['nplc'])
-        self.tab_four_point.sampling_rate.setValue(m_cfg['sampling_rate'])
-        self.tab_four_point.fpp_plot_var.setCurrentText('sheet_Rs')
+            # The plot variable stays where the operator put it; only the
+            # colour can have changed.
+            self.update_canvas_labels_for_mode('source_v')
+            self.update_canvas_labels_for_mode('source_i')
         # 4PP doesn't carry a time-series MplCanvas — its histogram lives in
         # the right panel and updates from update_active_plot directly.
-        # Van der Pauw
-        if hasattr(self, 'tab_vdp'):
-            self.tab_vdp.vdp_current.setValue(float(m_cfg.get('vdp_current', 1.0e-3)))
-            self.tab_vdp.vdp_voltage_compliance.setValue(float(m_cfg.get('vdp_voltage_compliance', 5.0)))
-            self.tab_vdp.vdp_voltage_range_auto.setChecked(bool(m_cfg.get('vdp_voltage_range_auto', True)))
-            self.tab_vdp.vdp_thickness_cm.setValue(float(m_cfg.get('vdp_thickness_cm', 0.0)))
-            self.tab_vdp.vdp_settling_s.setValue(float(m_cfg.get('vdp_settling_s', 0.2)))
-            self.tab_vdp.vdp_readings_per_polarity.setValue(int(m_cfg.get('vdp_readings_per_polarity', 1)))
-            self.tab_vdp.nplc.setValue(float(m_cfg.get('nplc', 1.0)))
-            self.tab_vdp.sampling_rate.setValue(float(m_cfg.get('sampling_rate', 10.0)))
+        self._refresh_cable_null_label()
         buffer_size = d_cfg.get('buffer_size')
         new_size = None if buffer_size is None or buffer_size <= 0 else buffer_size
         for mode, buffer in list(self.data_buffers.items()):
@@ -1925,8 +2044,7 @@ class ResistanceMeterApp(QMainWindow):
         dialog = SettingsDialog(self.config_manager, self.current_user, self)
         if dialog.exec():
             self.log_status(f"User settings for {self.current_user} updated.")
-            self.user_settings = self.config_manager.get_user_settings(self.current_user)
-            self.update_ui_from_settings()
+            self.update_ui_from_settings(only_keys=self._reload_user_settings())
             self._maybe_start_aux_preview()
 
     def open_global_settings(self):
@@ -1937,9 +2055,35 @@ class ResistanceMeterApp(QMainWindow):
         if dialog.exec():
             self.log_status("Global settings updated.")
             if self.current_user:
-                self.user_settings = self.config_manager.get_user_settings(self.current_user)
-                self.update_ui_from_settings()
+                self.update_ui_from_settings(only_keys=self._reload_user_settings())
             self._maybe_start_aux_preview()
+
+    def _reload_user_settings(self) -> set:
+        """Re-read the current user's profile after something was saved.
+
+        Returns the measurement keys whose value the save changed, which is
+        what may be put on the tabs: the tabs hold this session's working
+        values, and nothing stores them in the profile, so re-loading every
+        key would replace what the operator typed with whatever the profile
+        happens to hold (a thickness of 0, and with it another formula).
+
+        The cable null stays with the session as well. It is a reference
+        measured on this bench (``_null_cables``), never stored, and a save
+        of something else does not unplug the cables.
+        """
+        before = (self.user_settings or {}).get('measurement', {})
+        self.user_settings = self.config_manager.get_user_settings(self.current_user)
+        after = self.user_settings['measurement']
+        if 'res_cable_null' in before:
+            after['res_cable_null'] = before['res_cable_null']
+
+        def same(a, b):
+            both_nan = (isinstance(a, float) and isinstance(b, float)
+                        and math.isnan(a) and math.isnan(b))
+            return both_nan or a == b
+
+        return {key for key in after
+                if key not in before or not same(before[key], after[key])}
 
     def get_widget_for_mode(self, mode: str) -> Optional[QWidget]:
         if mode == 'resistance': return self.tab_resistance
@@ -2018,6 +2162,8 @@ class ResistanceMeterApp(QMainWindow):
                     m_cfg['fpp_power_stop_w'] = widget.fpp_power_stop_w.value()
                 if hasattr(widget, 'fpp_stop_on_overpower'):
                     m_cfg['fpp_stop_on_overpower'] = widget.fpp_stop_on_overpower.isChecked()
+                m_cfg['fpp_autoselect_current'] = widget.fpp_autoselect_current.isChecked()
+                m_cfg['fpp_autoselect_sigfigs'] = int(widget.fpp_autoselect_sigfigs.value())
             elif mode == 'sweep':
                 m_cfg['sweep_source'] = widget.sweep_source.currentText()
                 m_cfg['sweep_start'] = widget.sweep_start.value()
@@ -2216,6 +2362,8 @@ class ResistanceMeterApp(QMainWindow):
         self.measurement_worker = MeasurementWorker(mode=mode, sample_name=sample_name, username=self.current_user, settings=current_settings)
         self.measurement_worker.instrument_identified.connect(self._on_instrument_identified)
         self._last_fpp_derived = None
+        if mode == 'four_point':
+            self._fpp_run = {'measurement': dict(current_settings['measurement']), 'method': None}
         self.measurement_worker.data_point.connect(self.update_data)
         self.measurement_worker.sample_derived.connect(self._on_sample_derived)
         self.measurement_worker.status_update.connect(self.log_status_from_worker)
@@ -2223,6 +2371,8 @@ class ResistanceMeterApp(QMainWindow):
         self.measurement_worker.error_occurred.connect(self.on_error)
         self.measurement_worker.compliance_hit.connect(self.on_compliance_hit)
         self.measurement_worker.sweep_complete.connect(self.on_sweep_complete)
+        self.measurement_worker.autoselect_decision.connect(self.on_autoselect_decision)
+        self.measurement_worker.autoselect_current_chosen.connect(self.on_autoselect_current_chosen)
         self.measurement_worker.finished.connect(self.on_worker_finished)
         self.measurement_worker.start()
         # The stored default (200 ms / 5 fps) was tuned for matplotlib's
@@ -2480,6 +2630,8 @@ class ResistanceMeterApp(QMainWindow):
             # its numbers instead of a second, different calculation.
             derived = self._last_fpp_derived
             if derived is not None:
+                if self._fpp_run is not None and self._fpp_run['method'] is None:
+                    self._fpp_run['method'] = derived.get('method')
                 ts, _, _ = buffer.get_data_for_plot('voltage')
                 elapsed = (timestamp - ts[0]) if ts else 0.0
                 row = (
@@ -2723,12 +2875,16 @@ class ResistanceMeterApp(QMainWindow):
         from ..calculations import four_point_combined_uncertainty
         v_readings = [r[1] for r in valid_rows]
         i_readings = [r[2] for r in valid_rows]
+        # The range the run was pinned to with auto range off, as the
+        # file's footer statistics use it.
+        v_fixed_range = self._fpp_fixed_voltage_range()
 
         def fmt(stat_idx: int) -> str:
             values = [r[stat_idx] for r in valid_rows]
             u = four_point_combined_uncertainty(
                 values, v_readings, i_readings,
                 model=self._active_model_name, nplc=nplc_now,
+                v_fixed_range=v_fixed_range,
             )
             if u is None:
                 return "--"
@@ -2746,10 +2902,7 @@ class ResistanceMeterApp(QMainWindow):
         if hasattr(w, 'fpp_histogram') and (n <= 200 or n % 5 == 0):
             rs_values = [r[4] for r in valid_rows]
             if hasattr(w, '_fpp_spots') and len(w._fpp_spots) >= 2:
-                names = [s['name'] for s in w._fpp_spots]
-                means = [s['rs_mean'] for s in w._fpp_spots]
-                stds = [s['rs_std'] for s in w._fpp_spots]
-                w.fpp_histogram.update_bar_chart(names, means, stds)
+                w.fpp_histogram.update_bar_chart(*self._fpp_spot_bars())
             else:
                 w.fpp_histogram.update_histogram(rs_values, 'Rs (Ω/□)')
 
@@ -2858,6 +3011,54 @@ class ResistanceMeterApp(QMainWindow):
         # Non-blocking: show in status bar instead of modal popup
         self.statusBar().showMessage(f"⚠️ {compliance_type} COMPLIANCE — {mode} measurement", 10000)
 
+    def _ask_autoselect_proceed(self, title: str, text: str, informative: str) -> bool:
+        """Modal Proceed/Abort for the 4PP current finder; True = proceed.
+
+        Apart from on_autoselect_decision so that the routing can be tested
+        without a modal.
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(title)
+        box.setText(text)
+        box.setInformativeText(informative)
+        proceed_btn = box.addButton("Proceed", QMessageBox.AcceptRole)
+        abort_btn = box.addButton("Abort", QMessageBox.RejectRole)
+        box.setDefaultButton(abort_btn)
+        box.exec()
+        return box.clickedButton() is proceed_btn
+
+    def on_autoselect_current_chosen(self, current: float):
+        """Show the current the finder chose in the (greyed) Source Current field."""
+        w = getattr(self, 'tab_four_point', None)
+        if w is None:
+            return
+        w.fpp_current.blockSignals(True)
+        try:
+            w.fpp_current.setValue(current)
+        finally:
+            w.fpp_current.blockSignals(False)
+        if self._fpp_run is not None:
+            self._fpp_run['measurement']['fpp_current'] = current
+
+    def on_autoselect_decision(self, info: dict):
+        """The 4PP current finder is waiting on Proceed/Abort; the output is off."""
+        if not self.measurement_worker:
+            return
+        verdict = info.get('verdict', '')
+        current = float(info.get('current_a') or 0.0)
+        title = {
+            'marginal': "Target significant figures not reached",
+            'too_conductive': "Sample too conductive",
+            'too_resistive': "Sample too resistive",
+        }.get(verdict, "Auto-select current")
+        proceed = self._ask_autoselect_proceed(
+            title, info.get('message', ''), f"Run at {abs(current)*1e3:.4g} mA?")
+        self.log_status(
+            f"Auto-select ({verdict}): {'Proceed' if proceed else 'Abort'}.", color="orange")
+        if self.measurement_worker:
+            self.measurement_worker.autoselect_respond(proceed)
+
     def on_worker_finished(self):
         self.log_status(f"Measurement worker thread ({self.active_mode}) finished.", color="grey")
         self.reset_ui_after_measurement()
@@ -2942,61 +3143,105 @@ class ResistanceMeterApp(QMainWindow):
         # Idle aux preview follows the 4PP tab (which hosts the readout).
         self._maybe_start_aux_preview()
 
+    def _fpp_statistics(self, rows, run=None) -> Dict:
+        """The statistics of 4PP table rows, as a run's file footer has them.
+
+        ``session.spot_stats`` is what a four-point run computes at its end,
+        so a spot saved here and the file of the run that measured it agree:
+        rows in compliance are counted and left out (they record a bound, not
+        a measurement), and a quantity with no finite value is NaN, never 0.
+        """
+        from ..session.spot_stats import SpotSamples, spot_statistics
+        samples = SpotSamples()
+        for row in rows:
+            samples.add(row[1], row[2], {'rs': row[4], 'rho': row[5], 'sigma': row[6]},
+                        row[7] if len(row) >= 8 else 'OK')
+        measurement = (run or {}).get('measurement') or {}
+        try:
+            nplc = float(measurement.get('nplc'))
+        except (TypeError, ValueError):
+            nplc = float(self.tab_four_point.nplc.value())
+        return spot_statistics(samples, model=self._active_model_name, nplc=nplc,
+                               v_fixed_range=self._fpp_fixed_voltage_range(measurement))
+
+    def _fpp_fixed_voltage_range(self, measurement=None):
+        """The voltage range a 4PP run was pinned to; None in auto range.
+
+        From the run's settings when given, else from the tab's widgets
+        (which a run locks, so during one they are its settings).
+        """
+        if not measurement or 'fpp_voltage_range_auto' not in measurement:
+            w = self.tab_four_point
+            measurement = {
+                'fpp_voltage_range_auto': w.fpp_voltage_range_auto.isChecked(),
+                'fpp_voltage_compliance': w.fpp_voltage_compliance.value(),
+            }
+        return fixed_range_for(measurement, 'fpp_voltage_range_auto',
+                               'fpp_voltage_compliance')
+
+    def _fpp_spot_bars(self):
+        """Names, Rs means and SDs of the saved spots that have an Rs to draw."""
+        spots = [s for s in self.tab_four_point._fpp_spots if _is_finite(s.get('rs_mean'))]
+        return ([s['name'] for s in spots], [s['rs_mean'] for s in spots],
+                [s['rs_std'] if _is_finite(s.get('rs_std')) else 0.0 for s in spots])
+
+    @staticmethod
+    def _fpp_run_header(run) -> list:
+        """Summary rows for the settings a four-point run computed its rows with.
+
+        Only what the run's formula read: K, alpha and the model on the
+        legacy path, the specimen and temperature inputs on the F84 one.
+        """
+        measurement = (run or {}).get('measurement')
+        if not measurement:
+            return []
+        thickness_cm = float(measurement.get('fpp_thickness_um') or 0.0) * 1e-4
+        rows = [["Spacing s (cm)", measurement.get('fpp_spacing_cm')],
+                ["Thickness t (cm)", thickness_cm]]
+        if run.get('method') == 'f84':
+            temperature = measurement.get('fpp_temperature_c')
+            return [["Method", "ASTM F84"]] + rows + [
+                ["Diameter D (cm)", measurement.get('fpp_diameter_cm')],
+                ["Geometry", measurement.get('fpp_geometry')],
+                ["Temperature (°C)", temperature if _is_finite(temperature) else "N/A"],
+                ["Dopant", measurement.get('fpp_dopant_type')],
+            ]
+        return [["Model", measurement.get('fpp_model')]] + rows + [
+            ["K", measurement.get('fpp_k_factor')],
+            ["Alpha", measurement.get('fpp_alpha')],
+        ]
+
     def export_fpp_summary(self):
-        # Export summary for 4-point probe using current buffer and settings
-        buffer = self.data_buffers.get('four_point')
-        if not buffer:
-            QMessageBox.information(self, "Export Summary", "4-point probe buffer not available.")
-            return
-        t, vvals, _ = buffer.get_data_for_plot('voltage')
-        _, ivals, _ = buffer.get_data_for_plot('current')
-        if not t:
+        """Write the 4PP summary of what was measured, not of the tab as it is now.
+
+        Every number comes from the rows the run produced -- the worker's own
+        Rs, rho and sigma, F84 corrections included -- and the header from
+        the settings that run was started with: the tab can have been edited
+        since. The statistics are the run's own (``_fpp_statistics``).
+        """
+        fpp_widget = self.tab_four_point
+        spots = getattr(fpp_widget, '_fpp_spots', [])
+        unsaved = list(getattr(fpp_widget, '_fpp_rows', []))
+        if unsaved:
+            run = self._fpp_run
+            stats = self._fpp_statistics(unsaved, run)
+        elif spots:
+            # Nothing unsaved: the last run is the last saved spot.
+            run = spots[-1].get('run')
+            stats = self._fpp_statistics(spots[-1].get('rows', []), run)
+        else:
             QMessageBox.information(self, "Export Summary", "No data available for 4-point probe.")
             return
-        ratio = []
-        for v, i in zip(vvals, ivals):
-            if isinstance(i, (int, float)) and i != 0 and not np.isnan(i):
-                ratio.append(v / i)
-            else:
-                ratio.append(float('nan'))
-        s = self.tab_four_point.fpp_spacing_cm.value()
-        t_um = self.tab_four_point.fpp_thickness_um.value()
-        t_thick = t_um * 1e-4
-        alpha = self.tab_four_point.fpp_alpha.value()
-        model = self.tab_four_point.fpp_model.currentText()
-        k_factor = self.tab_four_point.fpp_k_factor.value() or 4.532
-        if model == 'thin_film' and alpha and alpha != 1.0:
-            Rs = np.array([k_factor * alpha * r if np.isfinite(r) else np.nan for r in ratio])
-        else:
-            Rs = np.array([k_factor * r if np.isfinite(r) else np.nan for r in ratio])
-        # The run's own formula, so a thickness of 0 (not entered) gives no
-        # resistivity here either rather than a mean of exactly 0.
-        from ..calculations import calculate_resistivity
-        rho = np.array([calculate_resistivity(r, s, t_thick, k_factor, alpha, model)
-                        for r in ratio])
-        # Calculate conductivity safely, avoiding divide by zero warnings
-        with np.errstate(divide='ignore', invalid='ignore'):
-            sigma = np.where(np.isfinite(rho) & (rho != 0), 1.0 / rho, np.nan)
-        
-        def safe_stat(a):
-            """Calculate mean and std with proper handling of empty arrays and warnings"""
-            valid_values = a[np.isfinite(a)]
-            if len(valid_values) == 0:
-                return float('nan'), float('nan')
-            elif len(valid_values) == 1:
-                return float(valid_values[0]), 0.0
-            else:
-                with np.errstate(invalid='ignore'):
-                    mean_val = float(np.nanmean(a))
-                    std_val = float(np.nanstd(a, ddof=1))
-                    return mean_val, std_val
-        
-        Rs_mean, Rs_std = safe_stat(Rs)
-        rho_mean, rho_std = safe_stat(rho)
-        sigma_mean, sigma_std = safe_stat(sigma)
         filename, _ = QFileDialog.getSaveFileName(self, "Save Summary", "fpp_summary.csv", "CSV Files (*.csv)")
         if not filename:
             return
+
+        def safe_format(val, spec=".6g"):
+            """Format value safely, handling NaN and infinite values"""
+            if not _is_finite(val):
+                return "N/A"
+            return f"{val:{spec}}"
+
         import csv
         try:
             with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
@@ -3004,52 +3249,47 @@ class ResistanceMeterApp(QMainWindow):
                 w.writerow(["4-Point Probe Summary"])
                 w.writerow(["Sample", self.sample_input.text()])
                 w.writerow(["User", self.current_user or "-"])
-                w.writerow(["Model", model])
-                w.writerow(["Spacing s (cm)", s])
-                w.writerow(["Thickness t (cm)", t_thick])
-                w.writerow(["Alpha", alpha])
+                w.writerows(self._fpp_run_header(run))
+                w.writerow(["Samples", stats['n']])
+                w.writerow(["Excluded (compliance)", stats['n_excluded']])
                 w.writerow([])
-                def safe_format(val):
-                    """Format value safely, handling NaN and infinite values"""
-                    if np.isnan(val) or np.isinf(val):
-                        return "N/A"
-                    return f"{val:.6g}"
-                
                 w.writerow(["Metric", "Mean", "StdDev"])
-                w.writerow(["Sheet Resistance (Ω/□)", safe_format(Rs_mean), safe_format(Rs_std)])
-                w.writerow(["Resistivity (Ω·cm)", safe_format(rho_mean), safe_format(rho_std)])
-                w.writerow(["Conductivity (S/cm)", safe_format(sigma_mean), safe_format(sigma_std)])
+                for label, name in (("Sheet Resistance (Ω/□)", 'rs'),
+                                    ("Resistivity (Ω·cm)", 'rho'),
+                                    ("Conductivity (S/cm)", 'sigma')):
+                    w.writerow([label, safe_format(stats[name]['mean']),
+                                safe_format(stats[name]['sd'])])
 
                 # Multi-spot section (if spots were saved)
-                fpp_widget = self.tab_four_point
-                spots = getattr(fpp_widget, '_fpp_spots', [])
                 if spots:
                     w.writerow([])
                     w.writerow(["Per-Spot Results"])
                     w.writerow(["Spot", "N", "Rs Mean (Ω/□)", "Rs Std", "Rs RSD%",
-                                "ρ Mean (Ω·cm)", "ρ Std", "σ Mean (S/cm)", "σ Std"])
+                                "ρ Mean (Ω·cm)", "ρ Std", "σ Mean (S/cm)", "σ Std",
+                                "Excluded (compliance)"])
                     for sp in spots:
-                        rs_rsd = (sp['rs_std'] / sp['rs_mean'] * 100) if sp['rs_mean'] != 0 else 0
                         w.writerow([sp['name'], sp['n'],
-                                    safe_format(sp['rs_mean']), safe_format(sp['rs_std']), f"{rs_rsd:.2f}",
+                                    safe_format(sp['rs_mean']), safe_format(sp['rs_std']),
+                                    safe_format(_rsd_pct(sp['rs_mean'], sp['rs_std']), ".2f"),
                                     safe_format(sp['rho_mean']), safe_format(sp['rho_std']),
-                                    safe_format(sp['sigma_mean']), safe_format(sp['sigma_std'])])
+                                    safe_format(sp['sigma_mean']), safe_format(sp['sigma_std']),
+                                    sp.get('n_excluded', 0)])
                     # Include unsaved current readings as "Current"
-                    if fpp_widget._fpp_rows:
-                        w.writerow(["(Current unsaved)", len(fpp_widget._fpp_rows),
-                                    safe_format(Rs_mean), safe_format(Rs_std), "", "", "", "", ""])
-                    # Inter-spot uniformity
-                    if len(spots) >= 2:
-                        spot_rs = [sp['rs_mean'] for sp in spots if sp['rs_mean'] != 0]
-                        if spot_rs:
-                            inter_mean = np.mean(spot_rs)
-                            inter_std = np.std(spot_rs, ddof=1)
-                            inter_rsd = (inter_std / inter_mean * 100) if inter_mean != 0 else 0
-                            w.writerow([])
-                            w.writerow(["Inter-spot Uniformity"])
-                            w.writerow(["Rs Mean-of-Means (Ω/□)", safe_format(inter_mean)])
-                            w.writerow(["Rs Std-of-Means (Ω/□)", safe_format(inter_std)])
-                            w.writerow(["Inter-spot RSD%", f"{inter_rsd:.2f}"])
+                    if unsaved:
+                        w.writerow(["(Current unsaved)", stats['n'],
+                                    safe_format(stats['rs']['mean']), safe_format(stats['rs']['sd']),
+                                    "", "", "", "", "", stats['n_excluded']])
+                    # Inter-spot uniformity, over the spots that have an Rs
+                    spot_rs = [sp['rs_mean'] for sp in spots if _is_finite(sp['rs_mean'])]
+                    if len(spot_rs) >= 2:
+                        inter_mean = float(np.mean(spot_rs))
+                        inter_std = float(np.std(spot_rs, ddof=1))
+                        w.writerow([])
+                        w.writerow(["Inter-spot Uniformity"])
+                        w.writerow(["Rs Mean-of-Means (Ω/□)", safe_format(inter_mean)])
+                        w.writerow(["Rs Std-of-Means (Ω/□)", safe_format(inter_std)])
+                        w.writerow(["Inter-spot RSD%",
+                                    safe_format(_rsd_pct(inter_mean, inter_std), ".2f")])
 
             self.log_status(f"Summary saved: {filename}")
         except Exception as e:
@@ -3294,7 +3534,7 @@ class ResistanceMeterApp(QMainWindow):
             # new address. Without this, the address only takes effect after
             # bouncing through Settings → Save.
             if self.current_user:
-                self.user_settings = self.config_manager.get_user_settings(self.current_user)
+                self._reload_user_settings()
             self.log_status(f"GPIB address set to: {addr}")
             QMessageBox.information(self, "GPIB Updated", f"GPIB address updated to {addr}. Start the measurement again.")
 
@@ -3343,40 +3583,37 @@ class ResistanceMeterApp(QMainWindow):
         if not hasattr(w, '_fpp_rows') or not w._fpp_rows:
             self.log_status("No readings to save as a spot.", color="orange")
             return
-        import math
         name = w.fpp_spot_name.text().strip() or f"Spot {w._fpp_spot_counter}"
         rows = list(w._fpp_rows)
-        n = len(rows)
-
-        def stat(idx):
-            arr = [r[idx] for r in rows if isinstance(r[idx], (int, float)) and not math.isnan(r[idx])]
-            if not arr:
-                return 0.0, 0.0
-            mean = float(np.mean(arr))
-            std = float(np.std(arr, ddof=1)) if len(arr) > 1 else 0.0
-            return mean, std
-
-        rs_mean, rs_std = stat(4)
-        rho_mean, rho_std = stat(5)
-        sigma_mean, sigma_std = stat(6)
+        # The run's own statistics: compliance rows left out, and NaN -- not
+        # 0 -- for a quantity the run could not give (no thickness, no rho).
+        stats = self._fpp_statistics(rows, self._fpp_run)
+        n = stats['n']
+        rs_mean, rs_std = stats['rs']['mean'], stats['rs']['sd']
 
         spot = {
-            'name': name, 'n': n, 'rows': rows,
+            'name': name, 'n': n, 'n_excluded': stats['n_excluded'], 'rows': rows,
             'rs_mean': rs_mean, 'rs_std': rs_std,
-            'rho_mean': rho_mean, 'rho_std': rho_std,
-            'sigma_mean': sigma_mean, 'sigma_std': sigma_std,
+            'rho_mean': stats['rho']['mean'], 'rho_std': stats['rho']['sd'],
+            'sigma_mean': stats['sigma']['mean'], 'sigma_std': stats['sigma']['sd'],
+            # What the rows were computed with, for Export Summary.
+            'run': self._fpp_run,
         }
         w._fpp_spots.append(spot)
+
+        def shown(val, spec):
+            return f"{val:{spec}}" if _is_finite(val) else "--"
 
         # Update spots summary table
         table = w.fpp_spots_table
         row_idx = table.rowCount()
         table.insertRow(row_idx)
-        rsd = (rs_std / rs_mean * 100) if rs_mean != 0 else 0
-        for col, val in enumerate([name, str(n), f"{rs_mean:.5g}", f"{rs_std:.3g}", f"{rsd:.2f}"]):
+        cells = [name, str(n), shown(rs_mean, ".5g"), shown(rs_std, ".3g"),
+                 shown(_rsd_pct(rs_mean, rs_std), ".2f")]
+        for col, val in enumerate(cells):
             table.setItem(row_idx, col, QTableWidgetItem(val))
 
-        self.log_status(f"Spot '{name}' saved: N={n}, Rs={rs_mean:.5g} ± {rs_std:.3g} Ω/□", color="darkGreen")
+        self.log_status(f"Spot '{name}' saved: N={n}, Rs={shown(rs_mean, '.5g')} ± {shown(rs_std, '.3g')} Ω/□", color="darkGreen")
 
         # Increment auto-name and clear current readings
         w._fpp_spot_counter += 1
@@ -3385,10 +3622,7 @@ class ResistanceMeterApp(QMainWindow):
 
         # Update histogram to bar chart if ≥2 spots
         if len(w._fpp_spots) >= 2:
-            names = [s['name'] for s in w._fpp_spots]
-            means = [s['rs_mean'] for s in w._fpp_spots]
-            stds = [s['rs_std'] for s in w._fpp_spots]
-            w.fpp_histogram.update_bar_chart(names, means, stds)
+            w.fpp_histogram.update_bar_chart(*self._fpp_spot_bars())
 
     def _clear_all_fpp_spots(self):
         """Clear all saved spots and current readings."""
@@ -3451,8 +3685,7 @@ class ResistanceMeterApp(QMainWindow):
             # Store in settings (software subtraction — 2400 series lacks :SENS:RES:REL)
             self.user_settings['measurement']['res_cable_null'] = ref
             ohm = '\u03a9'
-            self.tab_resistance.null_label.setText(f"Cable null: {format_engineering(ref, ohm)}")
-            self.tab_resistance.null_label.setStyleSheet("color: green; font-weight: bold;")
+            self._refresh_cable_null_label()
             self.log_status(f"Cable null set: {format_engineering(ref, ohm)} (software subtraction)", color="darkGreen")
         except InstrumentBusy as e:
             QMessageBox.warning(self, "Busy", str(e))
@@ -3463,9 +3696,27 @@ class ResistanceMeterApp(QMainWindow):
         """Remove cable null reference."""
         if self.user_settings:
             self.user_settings['measurement']['res_cable_null'] = 0.0
-        self.tab_resistance.null_label.setText("Cable null: OFF")
-        self.tab_resistance.null_label.setStyleSheet("color: grey;")
+        self._refresh_cable_null_label()
         self.log_status("Cable null cleared.")
+
+    def _refresh_cable_null_label(self):
+        """Show the cable null a resistance run would subtract.
+
+        The label is only ever written here, from the value the run reads
+        (``res_cable_null`` in the loaded settings), so the two cannot differ.
+        """
+        measurement = (self.user_settings or {}).get('measurement', {})
+        try:
+            ref = float(measurement.get('res_cable_null') or 0.0)
+        except (TypeError, ValueError):
+            ref = 0.0
+        label = self.tab_resistance.null_label
+        if ref != 0.0:
+            label.setText(f"Cable null: {format_engineering(ref, chr(0x3a9))}")
+            label.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            label.setText("Cable null: OFF")
+            label.setStyleSheet("color: grey;")
 
     def show_about(self):
         about_text = f"""

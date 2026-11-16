@@ -108,6 +108,10 @@ class TestLegacyAgainstF84:
         diameter = None if d_over_s is None else d_over_s * s
         f84 = calc.calculate_four_point_probe_f84(v, i, s, thickness_um, diameter, geometry)
         assert f84.f_w_s == 1.0
+        if math.isnan(f84.f2):
+            # The probe does not fit on a sample this small: no factor, no rho.
+            assert math.isnan(f84.rho_T)
+            return
         legacy = calc.calculate_four_point_probe(v, i, s, thickness_um, k_factor=f84.f2, model="finite_thin")
         assert f84.rho_T == pytest.approx(legacy.resistivity, rel=1e-12)
         if diameter is None:
@@ -134,7 +138,11 @@ class TestF84Decomposition:
         w = w_over_s * s
         d = None if d_over_s is None else d_over_s * s
         out = calc.calculate_resistivity_f84(r, s, w, d, f_sp, temp, dopant, geometry)
-        assert out.f2 == calc.f2_finite_diameter(s, d, geometry)
+        expected_f2 = calc.f2_finite_diameter(s, d, geometry)
+        if math.isnan(expected_f2):
+            assert math.isnan(out.f2) and math.isnan(out.rho_T)
+            return
+        assert out.f2 == expected_f2
         assert out.f_w_s == calc.f_thickness_correction(w, s)
         assert out.geometric_factor == pytest.approx(out.f2 * w * out.f_w_s * f_sp, rel=1e-12)
         assert out.rho_T == pytest.approx(r * out.geometric_factor, rel=1e-12)
@@ -176,7 +184,8 @@ class TestF84Decomposition:
 
 
 class TestTabulatedLateralFactor:
-    """``f2_finite_diameter``: what the interpolated tables promise."""
+    """``f2_finite_diameter``: Table 3 for a circle inside its range, the
+    closed forms everywhere else, and no factor where the probe does not fit."""
 
     @PROPERTY
     @given(positive, _magnitude(-1.0, 7.0), _magnitude(-1.0, 7.0), st.sampled_from(GEOMETRIES), _magnitude(-3.0, 3.0))
@@ -184,8 +193,27 @@ class TestTabulatedLateralFactor:
         small, large = sorted((a, b))
         f_small = calc.f2_finite_diameter(s, small * s, geometry)
         f_large = calc.f2_finite_diameter(s, large * s, geometry)
-        assert 0.9 < f_small <= f_large <= 4.5324
+        if math.isnan(f_small):
+            # Only a sample the probe (three spacings long) does not fit on.
+            assert small < 3.01
+            return
+        # Table 3 is printed to three decimals; where it hands over to the
+        # closed form the two differ by that rounding.
+        assert 0.9 < f_small <= f_large + 1e-3 and f_large <= 4.5324
         assert calc.f2_finite_diameter(s * unit, small * s * unit, geometry) == pytest.approx(f_small, rel=1e-9)
+
+    @pytest.mark.parametrize("d_over_s, expected", [(8.0, 3.9920), (5.0, 3.3625), (4.0, 2.9289)])
+    def test_small_disc_is_the_closed_form_not_the_last_table_row(self, d_over_s, expected):
+        """Past S/D = 0.10 Table 3 has no row. Its last one, 4.171, was
+        returned for every smaller disc: 25 % high at D/s = 4.9."""
+        assert calc.f2_finite_diameter(1.0, d_over_s, "circle") == pytest.approx(
+            geo.circle_factor(d_over_s, 1.0), rel=1e-12)
+        assert calc.f2_finite_diameter(1.0, d_over_s, "circle") == pytest.approx(expected, abs=5e-4)
+
+    @pytest.mark.parametrize("geometry, d_over_s", [
+        ("circle", 2.9), ("square", 2.9), ("rectangle_2", 1.4), ("rectangle_4", 0.7)])
+    def test_no_factor_when_the_probe_does_not_fit(self, geometry, d_over_s):
+        assert math.isnan(calc.f2_finite_diameter(1.0, d_over_s, geometry))
 
     @PROPERTY
     @given(st.floats(10.0, 2000.0))
@@ -198,22 +226,15 @@ class TestTabulatedLateralFactor:
     @given(st.floats(3.0, 40.0), st.sampled_from([("square", 1.0), ("rectangle_2", 2.0),
                                                   ("rectangle_3", 3.0), ("rectangle_4", 4.0)]))
     def test_rectangles_between_the_printed_rows(self, d_over_s, shape):
-        """Straight lines between sparse rows of a concave curve read low, by
-        up to 1.7 % (a square 3.4 spacings wide). Pinned so that it cannot
-        get worse unnoticed; the closed form is the way to make it better."""
+        """Straight lines between the sparse printed rows read low, by up to
+        1.7 % (a square 3.4 spacings wide). The closed form is used now."""
         geometry, ratio = shape
         if d_over_s * ratio <= 3.01:
             return
         table = calc.f2_finite_diameter(1.0, d_over_s, geometry)
         exact = geo.rectangle_factor(d_over_s, d_over_s * ratio, 1.0)
-        assert -0.017 < table / exact - 1.0 < 1e-3
+        assert table == pytest.approx(exact, rel=1e-12)
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "_SMITS_GEOMETRY_CF jumps from D/s = 40 to a 1e9 sentinel row, and "
-        "_linear_interp draws a straight line between them, so every square "
-        "or rectangle wider than 40 spacings gets the D/s = 40 value: 4.5120 "
-        "at D/s = 1000 where the series gives 4.5322 (0.45 % low), while "
-        "diameter=None gives 4.532. calculations.py, f2_finite_diameter."))
     @pytest.mark.parametrize("d_over_s", [60.0, 100.0, 1000.0])
     def test_wide_rectangles_approach_the_unbounded_sheet(self, d_over_s):
         table = calc.f2_finite_diameter(1.0, d_over_s, "square")
@@ -294,6 +315,9 @@ class TestUnusableInputsReturnNaN:
             assert f2 == 4.532              # "effectively infinite"
         elif not (math.isfinite(s) and s > 0) or not known:
             assert math.isnan(f2)
+        elif math.isnan(f2):
+            # Only a sample the probe (three spacings long) does not fit on.
+            assert d / s < 3.01
         else:
             assert 0.9 < f2 <= 4.5324
 
@@ -440,11 +464,12 @@ class TestVanDerPauw:
         out = vdp.calculate_van_der_pauw(volts, current, thickness)
         assert out.asymmetry_pct == pytest.approx(100 * abs(out.rho_a - out.rho_b) / out.rho_avg, rel=1e-12)
         assert out.homogeneous == (out.asymmetry_pct <= vdp.F76_HOMOGENEITY_TOLERANCE_PCT)
-        # Sense leads the wrong way round: every reading changes sign. The
-        # result is a negative resistivity that must not pass the gate.
+        # Sense leads the wrong way round: every reading changes sign. No
+        # negative resistivity is reported, and nothing passes the gate.
         backwards = vdp.calculate_van_der_pauw({k: -v for k, v in volts.items()}, current, thickness)
-        assert backwards.rho_avg == pytest.approx(-out.rho_avg, rel=1e-12)
+        assert math.isnan(backwards.rho_avg) and math.isnan(backwards.rho_a)
         assert math.isnan(backwards.sheet_resistance) and not backwards.homogeneous
+        assert not backwards.valid and backwards.invalid_reason
 
     @PROPERTY
     @given(st.dictionaries(st.sampled_from(vdp._REQUIRED_BASE_LABELS), any_reading, min_size=0, max_size=8),

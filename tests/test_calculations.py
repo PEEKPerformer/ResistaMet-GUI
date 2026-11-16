@@ -460,10 +460,23 @@ class TestF2FiniteDiameter:
         result = f2_finite_diameter(s, d)
         assert 4.524 < result < 4.528
 
-    def test_clamps_above_tabulated_range(self):
-        # F84 Table 3 stops at S/D = 0.10; clamp rather than extrapolate.
+    def test_closed_form_above_tabulated_range(self):
+        # F84 Table 3 stops at S/D = 0.10. Its last row (4.171) used to be
+        # returned for every smaller disc; the factor goes on falling.
+        from resistamet_gui.calculations_geometry import circle_factor
         s, d = 0.1, 0.1 / 0.15  # S/D = 0.15
-        assert f2_finite_diameter(s, d) == pytest.approx(4.171, abs=1e-3)
+        assert f2_finite_diameter(s, d) == pytest.approx(circle_factor(d, s), rel=1e-12)
+        assert f2_finite_diameter(s, d) == pytest.approx(3.7926, abs=5e-4)
+
+    def test_table_and_closed_form_meet_at_the_last_row(self):
+        s = 0.1
+        at_row = f2_finite_diameter(s, s / 0.100)
+        just_past = f2_finite_diameter(s, s / 0.1001)
+        assert at_row == pytest.approx(4.171, abs=1e-9)
+        assert just_past == pytest.approx(at_row, abs=1e-3)
+
+    def test_no_factor_for_a_disc_the_probe_does_not_fit_on(self):
+        assert math.isnan(f2_finite_diameter(0.1, 0.25))  # D < 3 S
 
 
 class TestGeometryCorrectionNonCircular:
@@ -471,20 +484,25 @@ class TestGeometryCorrectionNonCircular:
 
     F84 only tabulates circular wafers. Most non-Si materials labs measure
     on cut squares or rectangles, so the broader Smits table matters. These
-    tests pin values typed from Smits's printed table, and where the probe
-    fits on the sample (length > 3 s) check each against the closed-form
-    image series of calculations_geometry, which is derived independently
-    of any table.
+    tests hold the factor to the closed-form image series of
+    calculations_geometry wherever the probe fits on the sample (length >
+    3 s), and that series to the values typed from Smits's printed table,
+    which it was derived independently of.
     """
 
     @staticmethod
     def _check(geometry, aspect_ratio, d_over_s, expected):
         s = 0.1
         value = f2_finite_diameter(s, d_over_s * s, geometry=geometry)
-        assert value == pytest.approx(expected, abs=5e-4)
         if aspect_ratio * d_over_s > 3.0:
+            # Where the probe fits the value is the series itself, which the
+            # printed table matches to 6 parts in 10 000.
             series = rectangle_factor(d_over_s, aspect_ratio * d_over_s, 1.0)
-            assert value == pytest.approx(series, rel=6e-4)
+            assert value == pytest.approx(series, rel=1e-12)
+            assert value == pytest.approx(expected, rel=6e-4)
+        else:
+            # End tips on the edge: only the printed row exists.
+            assert value == pytest.approx(expected, abs=5e-4)
 
     @pytest.mark.parametrize("d_over_s,expected", [
         (3.0, 2.4575), (4.0, 3.1137), (5.0, 3.5098), (7.5, 4.0095),
@@ -515,13 +533,6 @@ class TestGeometryCorrectionNonCircular:
     def test_rectangle_4_against_table(self, d_over_s, expected):
         self._check('rectangle_4', 4.0, d_over_s, expected)
 
-    WIDE_TABLE_GAP = pytest.mark.xfail(strict=True, reason=(
-        "_SMITS_GEOMETRY_CF jumps from D/s = 40 to a 1e9 sentinel row and "
-        "_linear_interp draws a straight line between them, so a square or "
-        "rectangle 1e4 spacings wide gets the D/s = 40 value (4.5120 / "
-        "4.5129) instead of about 4.532. calculations.py, "
-        "f2_finite_diameter; also pinned in test_property_calculations.py."))
-
     @pytest.mark.parametrize("d_over_s", [
         1e4, 1e10,
     ])
@@ -533,8 +544,6 @@ class TestGeometryCorrectionNonCircular:
         # F84 Table 3 rounds this to 4.532; we accept either rounding. A
         # finite D goes through each geometry's own lookup (diameter=None
         # returns 4.532 before the geometry is looked at).
-        if geom != 'circle' and d_over_s == 1e4:
-            request.applymarker(self.WIDE_TABLE_GAP)
         assert f2_finite_diameter(0.1, 0.1 * d_over_s, geom) == \
                pytest.approx(4.5324, abs=5e-4)
 
@@ -547,11 +556,11 @@ class TestGeometryCorrectionNonCircular:
     def test_unknown_geometry_returns_nan(self):
         assert math.isnan(f2_finite_diameter(0.1, 1.0, geometry='hexagon'))
 
-    def test_square_below_lowest_clamps(self):
-        # Square table starts at D/s = 3. Below that, clamp not extrapolate.
+    def test_square_the_probe_does_not_fit_on_has_no_factor(self):
+        # The probe is three spacings long. A square two spacings wide used
+        # to be given the D/s = 3 value, 2.4575.
         s = 0.1
-        result = f2_finite_diameter(s, s * 2.0, geometry='square')
-        assert result == pytest.approx(2.4575, abs=5e-4)  # value at D/s=3
+        assert math.isnan(f2_finite_diameter(s, s * 2.0, geometry='square'))
 
     def test_geometry_matters_at_finite_size(self):
         # At D/s = 10 a square sample's CF (4.2209) should differ from
@@ -698,3 +707,179 @@ class TestResistivityF84:
     def test_returns_named_tuple(self):
         result = calculate_resistivity_f84(50.0, 0.1, 0.001)
         assert isinstance(result, F84ResistivityResult)
+
+
+class TestSelectFourPointCurrent:
+    """The planner of the 4PP pre-run current finder."""
+
+    FLOOR = 1e-6
+    TARGET_SNR = 1e4   # 4 significant figures
+
+    def _flat_floor(self, _v):
+        return self.FLOOR
+
+    def _select(self, resistance, **kwargs):
+        from resistamet_gui.calculations import select_four_point_current
+        kwargs.setdefault('target_snr', self.TARGET_SNR)
+        kwargs.setdefault('max_current', 0.02)
+        kwargs.setdefault('sigma_v', self._flat_floor)
+        kwargs.setdefault('compliance_v', 5.0)
+        return select_four_point_current(resistance, **kwargs)
+
+    def test_measurable_sample_reaches_the_target(self):
+        # 100 ohm, SNR 1e4 over 1 uV -> 10 mV -> 0.1 mA.
+        sel = self._select(100.0)
+        assert sel.verdict == 'ok'
+        assert sel.current == pytest.approx(1e-4, rel=1e-6)
+        assert sel.expected_voltage == pytest.approx(0.01, rel=1e-6)
+        assert sel.snr == pytest.approx(1e4, rel=1e-6)
+        assert sel.sig_figs == pytest.approx(4.0, abs=1e-6)
+
+    def test_the_smallest_sufficient_current_not_the_ceiling(self):
+        sel = self._select(100.0, max_current=1.0, compliance_v=50.0)
+        assert sel.current == pytest.approx(1e-4, rel=1e-6)
+
+    def test_sign_of_resistance_is_ignored(self):
+        assert self._select(-100.0) == self._select(100.0)
+
+    def test_noise_floor_drives_the_current(self):
+        small = self._select(100.0, max_current=1.0, sigma_v=lambda _v: 1e-6, compliance_v=50.0)
+        big = self._select(100.0, max_current=1.0, sigma_v=lambda _v: 1e-4, compliance_v=50.0)
+        assert big.verdict == 'ok'
+        assert big.current == pytest.approx(100 * small.current, rel=1e-9)
+
+    def test_more_significant_figures_need_more_current(self):
+        three = self._select(100.0, target_snr=1e3, max_current=1.0, compliance_v=50.0)
+        five = self._select(100.0, target_snr=1e5, max_current=1.0, compliance_v=50.0)
+        assert five.current == pytest.approx(100 * three.current, rel=1e-9)
+        assert (three.verdict, five.verdict) == ('ok', 'ok')
+
+    def test_the_minimum_current_is_a_floor(self):
+        # 1 Mohm needs only 10 nA for 10 mV; the 2400 sources no less than 1 uA.
+        sel = self._select(1e6)
+        assert sel.verdict == 'ok'
+        assert sel.current == 1e-6
+        assert sel.snr == pytest.approx(1e6)
+
+    def test_too_conductive_under_one_figure_at_the_ceiling(self):
+        sel = self._select(15e-6)     # 0.3 uV at 20 mA
+        assert sel.verdict == 'too_conductive'
+        assert sel.current == pytest.approx(0.02)
+        assert sel.snr == pytest.approx(0.3)
+
+    def test_zero_or_invalid_resistance_is_too_conductive(self):
+        assert self._select(0.0).verdict == 'too_conductive'
+        assert self._select(float('nan')).verdict == 'too_conductive'
+
+    def test_a_current_ceiling_short_of_the_target_is_marginal(self):
+        # 15 uohm at 1 A: 15 uV, SNR 15. Above one figure, far short of four.
+        sel = self._select(15e-6, max_current=1.0)
+        assert sel.verdict == 'marginal'
+        assert sel.current == pytest.approx(1.0)
+        assert sel.snr == pytest.approx(15.0)
+        assert "1.2 significant figures" in sel.reason
+        assert "current ceiling" in sel.reason
+
+    def test_a_target_out_of_reach_of_compliance_is_marginal_at_half_compliance(self):
+        """The release parked this run at 4.5 V of a 5 V limit and called it ok.
+
+        1 kohm, 1 mV scatter, four figures: 10 V wanted, 5 V allowed.
+        """
+        sel = self._select(1e3, max_current=1.0, sigma_v=lambda _v: 1e-3)
+        assert sel.verdict == 'marginal'
+        assert sel.expected_voltage == pytest.approx(2.5)
+        assert sel.current == pytest.approx(2.5e-3)
+        assert sel.snr == pytest.approx(2500.0)
+        assert "3.4 significant figures" in sel.reason
+        assert "50% of the 5 V compliance" in sel.reason
+
+    def test_the_default_headroom_leaves_room_for_v_over_i_to_double(self):
+        # Bench runs under the release sat at 52-58 V of a 60 V limit.
+        sel = self._select(1e5, target_snr=1e8, max_current=1.0, compliance_v=60.0)
+        assert sel.expected_voltage == pytest.approx(30.0)
+        # V/I may rise by this much before a row is flagged V_COMP at 99 %.
+        assert 0.99 * 60.0 / sel.expected_voltage == pytest.approx(1.98)
+
+    def test_an_explicit_headroom_is_respected(self):
+        sel = self._select(1e5, target_snr=1e8, max_current=1.0, compliance_headroom=0.9)
+        assert sel.expected_voltage == pytest.approx(4.5)
+        assert sel.verdict == 'marginal'
+
+    def test_exactly_reaching_the_target_at_the_ceiling_is_ok(self):
+        # 100 ohm, ceiling exactly the 0.1 mA the target needs.
+        assert self._select(100.0, max_current=1e-4).verdict == 'ok'
+
+    def test_too_resistive_when_the_minimum_current_exceeds_the_headroom(self):
+        sel = self._select(1e9)
+        assert sel.verdict == 'too_resistive'
+        assert sel.current == 1e-6
+        # 4 Mohm x 1 uA = 4 V: under compliance, over the headroom.
+        assert self._select(4e6).verdict == 'too_resistive'
+        assert self._select(2e6).verdict == 'ok'
+
+    def test_no_compliance_means_no_voltage_ceiling(self):
+        sel = self._select(1e5, target_snr=1e8, max_current=1.0, compliance_v=None)
+        assert sel.verdict == 'ok'
+        assert sel.expected_voltage == pytest.approx(100.0)
+
+
+class TestDeltaProbeStatistics:
+    def test_resistance_is_the_mean_over_the_programmed_current(self):
+        from resistamet_gui.calculations import delta_probe_statistics
+        r, sigma = delta_probe_statistics([0.099, 0.101, 0.100, 0.100], 1e-3)
+        assert r == pytest.approx(100.0)
+        assert sigma == pytest.approx(np.std([0.099, 0.101, 0.100, 0.100], ddof=1))
+
+    def test_the_sign_of_the_ratio_is_kept(self):
+        from resistamet_gui.calculations import delta_probe_statistics
+        r, _ = delta_probe_statistics([-0.1, -0.1], 1e-3)
+        assert r == pytest.approx(-100.0)
+
+    def test_one_pair_resolves_nothing(self):
+        from resistamet_gui.calculations import delta_probe_statistics
+        assert delta_probe_statistics([0.1], 1e-3) == (pytest.approx(100.0), pytest.approx(0.1))
+
+    def test_no_pairs_or_no_current_is_nan(self):
+        from resistamet_gui.calculations import delta_probe_statistics
+        assert all(math.isnan(x) for x in delta_probe_statistics([], 1e-3))
+        assert all(math.isnan(x) for x in delta_probe_statistics([0.1], 0.0))
+
+
+class TestFourPointCurrentCeiling:
+    def _ceiling(self, *args):
+        from resistamet_gui.calculations import four_point_current_ceiling
+        return four_point_current_ceiling(*args)
+
+    def test_the_power_stop_at_full_compliance(self):
+        assert self._ceiling(1.05, 0.1, 5.0, 1e-6) == pytest.approx(0.02)
+
+    def test_the_model_limit_when_it_is_smaller(self):
+        assert self._ceiling(1.05, 22.0, 5.0, 1e-6) == pytest.approx(1.05)
+
+    def test_never_below_the_minimum_current(self):
+        assert self._ceiling(1.05, 1e-4, 200.0, 1e-6) == 1e-6
+
+    def test_no_compliance_leaves_the_model_limit(self):
+        assert self._ceiling(1.05, 0.1, 0.0, 1e-6) == pytest.approx(1.05)
+
+
+class TestSelectedCurrentIsARoundNumber:
+    """The selection's arithmetic ended a few units in the last place off a
+    round value on some platforms, and 0.00010000000000000002 was sent to the
+    instrument and written to the file name and the header."""
+
+    @pytest.mark.parametrize("resistance", [100.0, 100.0 * (1 + 2e-16), 99.99999999999999,
+                                            1234.5678, 3.3e6])
+    def test_six_significant_figures(self, resistance):
+        from resistamet_gui.calculations import select_four_point_current
+        chosen = select_four_point_current(
+            resistance, 1e4, 1.0, lambda _v: 1e-6, compliance_v=60.0)
+        assert chosen.current == float(f"{chosen.current:.6g}")
+        assert len(repr(chosen.current)) <= 12
+
+    def test_rounding_does_not_turn_a_reached_target_into_a_question(self):
+        from resistamet_gui.calculations import select_four_point_current
+        for resistance in (100.0, 1234.5678, 777.777, 3.14159e4):
+            chosen = select_four_point_current(
+                resistance, 1e4, 1.0, lambda _v: 1e-6, compliance_v=60.0)
+            assert chosen.verdict == 'ok', (resistance, chosen)

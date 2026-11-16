@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ResistaMet",
-  "version": "2.0.0-1",
+  "version": "2.0.0-4",
   "identifier": "edu.uconn.adamson.resistamet",
   "build": {
     "beforeDevCommand": "npm run dev",

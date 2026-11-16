@@ -94,18 +94,21 @@ class TimingSettings:
     offset_comp: bool = False
 
     @classmethod
-    def from_dict(cls, m: dict) -> 'TimingSettings':
+    def from_dict(cls, m: dict, mode: Optional[str] = None) -> 'TimingSettings':
         # Offset-compensated ohms is a resistance-mode toggle (the SCPI
         # command :SENS:RES:OCOM only applies when SENS:FUNC='RES'). It
         # halves throughput because each reading is a paired I-on / I-off
-        # sample. Other modes ignore this flag.
+        # sample. A profile keeps the flag whatever mode runs, so a caller
+        # that knows the mode says so: counted for every mode, it halved the
+        # rate the preview promised a four-point run (0.9 Hz for 1.8).
+        offset_comp = bool(m.get('res_offset_comp', False)) and mode in (None, 'resistance')
         return cls(
             nplc=float(m.get('nplc', 1.0)),
             auto_zero=str(m.get('auto_zero', 'on')),
             filter_enabled=bool(m.get('filter_enabled', True)),
             filter_type=str(m.get('filter_type', 'repeat')),
             filter_count=int(m.get('filter_count', 10)),
-            offset_comp=bool(m.get('res_offset_comp', False)),
+            offset_comp=offset_comp,
         )
 
     def max_rate_hz(self, line_frequency_hz: float = 60.0) -> float:

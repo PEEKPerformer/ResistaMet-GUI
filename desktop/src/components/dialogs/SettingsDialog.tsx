@@ -12,17 +12,20 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useApi } from "../../app/AppContext";
 import { FIELD_META } from "../../generated/settings";
 import { agentAccessNote } from "../../lib/agentAccess";
+import { dataDirectoryHint } from "../../lib/dataFolder";
 import type { FieldSpec } from "../../lib/fields";
 import { patchIssues, type PatchIssue } from "../../lib/patchIssues";
 import { profilePatch, withMachineLocal } from "../../lib/profilePatch";
 import { timedSilenceEnd, UNSILENCED } from "../../lib/safetySilence";
 import type { InstrumentInfo, Issue, Profile, VisaBackend } from "../../lib/api";
 import { ApiError } from "../../lib/api";
+import { useDataFolder } from "../../state/dataFolder";
 import { setIdentifiedInstrument, useSession } from "../../state/session";
 import { setTheme, useUi } from "../../state/ui";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { FieldRow } from "../forms/SettingsForm";
 import { Button, Dialog, Field, Input, Notice, Select } from "../ui";
+import { DataFolderDialog } from "./DataFolderDialog";
 import styles from "./dialogs.module.css";
 
 type Section = "timing" | "instrument" | "aux" | "safety" | "agents" | "files" | "display";
@@ -100,6 +103,11 @@ export function SettingsDialog({ onClose }: Props) {
   /** Whether agent access is in force; null until GET /agents answers, or
    *  when it did not. */
   const [agentsEnabled, setAgentsEnabled] = useState<boolean | null>(null);
+  /** The shell's data folder; null in a plain browser. */
+  const dataFolder = useDataFolder();
+  const [changingFolder, setChangingFolder] = useState(false);
+  /** Where the stored data directory resolves, as the backend has it. */
+  const [dataRoot, setDataRoot] = useState<string | null>(null);
 
   const running = session.status !== null && session.status.state !== "idle";
 
@@ -113,6 +121,24 @@ export function SettingsDialog({ onClose }: Props) {
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   }, [api, ui.username]);
+
+  // After every load and Save: the stored directory, or the folder under it,
+  // may have changed.
+  useEffect(() => {
+    if (!ui.username || profile === null) return;
+    let stale = false;
+    api
+      .resultsDirectory(ui.username)
+      .then((reply) => {
+        if (!stale) setDataRoot(reply.root);
+      })
+      .catch(() => {
+        if (!stale) setDataRoot(null);
+      });
+    return () => {
+      stale = true;
+    };
+  }, [api, ui.username, profile, dataFolder]);
 
   const readAgentAccess = useCallback(() => {
     api
@@ -172,6 +198,9 @@ export function SettingsDialog({ onClose }: Props) {
 
   const measurement = draft.measurement ?? {};
   const meta = (model: string) => FIELD_META[model] ?? {};
+  // Under "Data directory": where its value actually lands.
+  const directoryOf = (p: Profile | null) => String(p?.file?.["data_directory"] ?? "");
+  const directoryHint = dataDirectoryHint(directoryOf(draft), directoryOf(profile), dataRoot, dataFolder?.folder ?? null);
   const agentNote = agentAccessNote(profile?.measurement?.[ALLOW_AGENTS.key], agentsEnabled);
 
   return (
@@ -291,10 +320,27 @@ export function SettingsDialog({ onClose }: Props) {
 
             {profile && section === "files" ? (
               <>
+                {dataFolder?.managed ? (
+                  <Field label="Data folder" stacked>
+                    <div className={styles.folderRow}>
+                      <span className="mono">{dataFolder.folder}</span>
+                      <Button
+                        disabled={running || dirtySections.length > 0}
+                        title={dirtySections.length > 0 ? "Save the edits first" : undefined}
+                        onClick={() => setChangingFolder(true)}
+                      >
+                        Change…
+                      </Button>
+                    </div>
+                  </Field>
+                ) : null}
+                {changingFolder && dataFolder ? (
+                  <DataFolderDialog state={dataFolder} onClose={() => setChangingFolder(false)} />
+                ) : null}
                 {FILES.map((spec) => (
                   <FieldRow
                     key={spec.key}
-                    spec={spec}
+                    spec={spec.key === "data_directory" && directoryHint !== null ? { ...spec, hint: directoryHint } : spec}
                     meta={meta("FileSettings")[spec.key] ?? {}}
                     value={(draft.file ?? {})[spec.key]}
                     onChange={(v) => set("file", spec.key, v)}

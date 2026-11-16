@@ -198,19 +198,29 @@ UNCERTAINTY_CONTINUOUS = (
     "as one standard deviation (k = 1, not expanded).")
 UNCERTAINTY_FOUR_POINT = (
     "Standard uncertainties, k = 1, none expanded. u_stat = sd / sqrt(n), over the "
-    "samples not in compliance. u_inst: the Keithley 1-year datasheet accuracy of V "
-    "and I, each taken as one standard deviation, combined in quadrature into V/I and "
-    "applied to the mean; it does not shrink with n. u_total = sqrt(u_stat^2 + "
-    "u_inst^2).")
+    "samples not in compliance. u_inst: the Keithley 1-year datasheet measurement "
+    "accuracy of V and source accuracy of I (the current is sourced, not measured), "
+    "each taken as one standard deviation, combined in quadrature into V/I and applied "
+    "to the mean; it does not shrink with n. V is taken on the range the run was "
+    "pinned to when auto range was off. u_total = sqrt(u_stat^2 + u_inst^2).")
 UNCERTAINTY_FOUR_POINT_ROWS = (
     "sd is the sample standard deviation of the samples not in compliance (n - 1). "
     "u_stat, u_inst and u_total are written to the file when the run ends.")
 UNCERTAINTY_VDP = (
-    "u is a combined standard uncertainty, k = 1, not expanded: the Keithley 1-year "
-    "datasheet voltage accuracy, taken as one standard deviation (the sourced current "
-    "as exact) and averaged over the four wirings, combined in quadrature with the "
-    "standard error of the four wirings' resistances, then carried to R_s and rho with "
-    "the F76 factor and the thickness taken as exact.")
+    "u is a combined standard uncertainty, k = 1, not expanded. Instrument part: the "
+    "Keithley 1-year datasheet voltage accuracy of each of the eight readings, taken as "
+    "one standard deviation (the sourced current as exact; on the range the run was "
+    "pinned to when auto range was off), carried to each wiring's resistance and "
+    "averaged over the four wirings, not reduced by sqrt(4). Statistical part: the "
+    "disagreement of the two reciprocal pairs of wirings (1 with 3, 2 with 4), each of "
+    "which measures one resistance twice: u_stat = (1/4) sqrt((R_1 - R_3)^2 + (R_2 - "
+    "R_4)^2), one degree of freedom per pair. It is not the standard deviation of the "
+    "four resistances, which differ by Q on a sample that is not square. The two parts "
+    "are combined in quadrature and carried to R_s and rho with the F76 factor and the "
+    "thickness taken as exact.")
+INVALID_VDP = (
+    "The result is invalid: its numbers are kept for diagnosis and are not a "
+    "measurement, and the homogeneity check does not apply to them.")
 UNCERTAINTY_SWEEP = (
     "standard_error is the standard uncertainty (k = 1) of the least-squares "
     "coefficient, from the scatter of the points about the line alone; the "
@@ -341,7 +351,10 @@ def _four_point_result(run: RunFile, whole_file: bool) -> Dict[str, Any]:
 
 def _vdp_result(run: RunFile) -> Dict[str, Any]:
     end = run.end_metadata or {}
-    if end.get('vdp_result.sheet_resistance') is None:
+    # A file from before results carried their validity has no such key.
+    invalid = end.get('vdp_result.valid') is False
+    # An invalid result's R_s can be NaN (signs that are not one sample's).
+    if end.get('vdp_result.sheet_resistance') is None and not invalid:
         return {'note': ("no result: a van der Pauw result is written at the end of a run "
                          "that measured all four wirings")}
     homogeneous = end.get('vdp_result.homogeneous')
@@ -364,13 +377,25 @@ def _vdp_result(run: RunFile) -> Dict[str, Any]:
         'threshold_pct': F76_HOMOGENEITY_TOLERANCE_PCT,
         'criterion': HOMOGENEITY_CRITERION,
     }
-    verdict = 'homogeneous' if homogeneous else 'NOT homogeneous'
-    relation = '<=' if homogeneous else '>'
     said = f"R_s = {_g(result['R_s']['value'])} ± {_g(result['R_s']['u'])} Ω/□"
     if result['rho'] is not None:
         said += f"; rho = {_g(result['rho']['value'])} ± {_g(result['rho']['u'])} Ω·cm"
-    result['headline'] = (f"{said}; {verdict} by ASTM F76 (asymmetry {_g(asymmetry)} % "
-                          f"{relation} {F76_HOMOGENEITY_TOLERANCE_PCT:g} %)")
+    result['valid'] = not invalid
+    if invalid:
+        reason = str(end.get('vdp_result.invalid_reason') or 'no reason recorded')
+        result['invalid_reason'] = reason
+        readings = end.get('vdp_result.compliance_readings')
+        result['compliance_readings'] = str(readings).split() if readings else []
+        # The file records false for an invalid result; it was not assessed.
+        result['homogeneity']['homogeneous'] = None
+        result['homogeneity']['note'] = "not assessed: the result is invalid"
+        result['headline'] = f"INVALID result: {reason}. For diagnosis only: {said}"
+        result['note'] = INVALID_VDP
+    else:
+        verdict = 'homogeneous' if homogeneous else 'NOT homogeneous'
+        relation = '<=' if homogeneous else '>'
+        result['headline'] = (f"{said}; {verdict} by ASTM F76 (asymmetry {_g(asymmetry)} % "
+                              f"{relation} {F76_HOMOGENEITY_TOLERANCE_PCT:g} %)")
     result['uncertainty'] = UNCERTAINTY_VDP
     return result
 

@@ -213,6 +213,107 @@
       "title": "FileOpenedPayload",
       "type": "object"
     },
+    "fpp_current_selected": {
+      "additionalProperties": false,
+      "description": "The 4PP current finder chose the run's source current.\n\n``resistance_ohm`` is a lower bound when ``bound`` is true: the source\nwas still in compliance at the smallest current, and nothing else was\nmeasured.",
+      "properties": {
+        "bound": {
+          "default": false,
+          "title": "Bound",
+          "type": "boolean"
+        },
+        "current_a": {
+          "title": "Current A",
+          "type": "number"
+        },
+        "expected_voltage_v": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Voltage V"
+        },
+        "noise_floor_v": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Noise Floor V"
+        },
+        "requested_current_a": {
+          "title": "Requested Current A",
+          "type": "number"
+        },
+        "resistance_ohm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resistance Ohm"
+        },
+        "sig_figs": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sig Figs"
+        },
+        "snr": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snr"
+        },
+        "target_sig_figs": {
+          "title": "Target Sig Figs",
+          "type": "number"
+        },
+        "verdict": {
+          "enum": [
+            "ok",
+            "marginal",
+            "too_conductive",
+            "too_resistive"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        }
+      },
+      "required": [
+        "current_a",
+        "requested_current_a",
+        "verdict",
+        "target_sig_figs"
+      ],
+      "title": "FppCurrentSelectedPayload",
+      "type": "object"
+    },
     "geometry_warning": {
       "$defs": {
         "SpotRequest": {
@@ -560,7 +661,8 @@
           "enum": [
             "vdp_geometry",
             "safety_voltage_ack",
-            "cable_null_shorted"
+            "cable_null_shorted",
+            "fpp_current_decision"
           ],
           "title": "Kind",
           "type": "string"
@@ -1184,8 +1286,15 @@
     },
     "vdp_geometry_complete": {
       "additionalProperties": false,
-      "description": "One F76 geometry measured: the +I and -I voltages at this wiring.",
+      "description": "One F76 geometry measured: the +I and -I voltages at this wiring.\n\n``compliance`` names the readings of this geometry taken in voltage\ncompliance (their F76 labels, ``label_pos`` and/or ``label_neg``); empty\nwhen neither was. Such a reading is the limit, not the sample.",
       "properties": {
+        "compliance": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Compliance",
+          "type": "array"
+        },
         "current_a": {
           "title": "Current A",
           "type": "number"
@@ -1234,11 +1343,21 @@
     },
     "vdp_result": {
       "additionalProperties": false,
-      "description": "The finished van der Pauw result, ASTM F76.\n\nField for field what the GUI result panel has always received, including\nthe f(Q) homogeneity check and the combined uncertainties, so the panel\nreads the same numbers the CSV metadata carries. The resistivities are\nnull when no thickness was given (``thickness_cm`` 0).",
+      "description": "The finished van der Pauw result, ASTM F76.\n\nField for field what the GUI result panel has always received, including\nthe f(Q) homogeneity check and the combined uncertainties, so the panel\nreads the same numbers the CSV metadata carries. The resistivities are\nnull when no thickness was given (``thickness_cm`` 0).\n\n``valid`` false: the numbers are kept for diagnosis and are not a\nmeasurement; ``invalid_reason`` says why (readings in compliance, or\nreadings whose signs cannot be one sample's). ``homogeneous`` is then\nfalse whatever the asymmetry. ``compliance_readings`` holds the F76\nlabels of the readings taken in compliance, space-separated as in the\nfile's footer (the labels themselves contain commas).",
       "properties": {
         "asymmetry_pct": {
           "title": "Asymmetry Pct",
           "type": "number"
+        },
+        "compliance": {
+          "default": false,
+          "title": "Compliance",
+          "type": "boolean"
+        },
+        "compliance_readings": {
+          "default": "",
+          "title": "Compliance Readings",
+          "type": "string"
         },
         "current_a": {
           "title": "Current A",
@@ -1255,6 +1374,11 @@
         "homogeneous": {
           "title": "Homogeneous",
           "type": "boolean"
+        },
+        "invalid_reason": {
+          "default": "",
+          "title": "Invalid Reason",
+          "type": "string"
         },
         "q_a": {
           "title": "Q A",
@@ -1328,6 +1452,11 @@
         "thickness_cm": {
           "title": "Thickness Cm",
           "type": "number"
+        },
+        "valid": {
+          "default": true,
+          "title": "Valid",
+          "type": "boolean"
         },
         "voltages": {
           "additionalProperties": {

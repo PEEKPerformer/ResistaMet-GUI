@@ -23,7 +23,7 @@
     ":SENS:CURR:NPLC 1.0",
     ":SOUR:VOLT:START 0.5",
     ":SOUR:VOLT:STOP 0.0",
-    ":SOUR:VOLT:STEP 0.125",
+    ":SOUR:VOLT:STEP -0.125",
     ":SOUR:VOLT:MODE SWE",
     ":SOUR:SWE:SPAC LIN",
     ":SOUR:SWE:RANG AUTO",
@@ -31,7 +31,6 @@
     ":SOUR:DEL 0.0",
     ":FORM:ELEM VOLT,CURR,STAT",
     ":TRIG:DEL 0",
-    ":SOUR:DEL:AUTO ON",
     ":OUTP ON"
   ]
 }

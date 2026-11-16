@@ -5,12 +5,13 @@
 
 mod backend;
 mod close;
+mod data_folder;
 mod logs;
 #[cfg(target_os = "macos")]
 mod menu;
 mod supervisor;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use backend::{Backend, BackendInfo, SpawnOptions};
@@ -18,6 +19,7 @@ use close::{CloseGate, Verdict};
 use serde::Serialize;
 use supervisor::{ExitHook, Supervisor};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
+use tauri_plugin_dialog::DialogExt;
 
 /// Sent to the webview when the window was asked to close and did not: the
 /// webview decides, with the operator if a run is active.
@@ -74,6 +76,145 @@ fn confirm_close(app: AppHandle, gate: State<'_, CloseGate>) {
     app.exit(0);
 }
 
+/// What the webview is told about the data folder. Paths are as the
+/// platform writes them.
+#[derive(Clone, Serialize)]
+struct DataFolderState {
+    /// False in a source checkout: the backend runs at the repository root
+    /// and there is nothing to choose.
+    managed: bool,
+    /// The directory the backend runs in; a profile's relative
+    /// `data_directory` resolves against it.
+    folder: String,
+    /// Whether `folder` is the operator's stored choice.
+    chosen: bool,
+    default_folder: String,
+    /// The default is the app data directory, Documents being unusable.
+    default_is_fallback: bool,
+    /// A stored choice that could not be used at launch.
+    unavailable: Option<String>,
+    /// `<app data>/measurement_data`, when earlier versions left files there
+    /// and it is not where files go now.
+    legacy: Option<String>,
+}
+
+fn shown(path: &Path) -> String {
+    path.display().to_string()
+}
+
+/// The folder a backend launched now would run in.
+fn resolve_data_folder(app: &AppHandle, app_data: &Path) -> data_folder::Decision {
+    let stored = data_folder::read_choice(app_data);
+    let documents = app.path().document_dir().ok();
+    data_folder::decide(stored.as_deref(), documents.as_deref(), app_data, |folder| {
+        data_folder::ensure_writable(folder).is_ok()
+    })
+}
+
+fn data_folder_snapshot(app: &AppHandle) -> Result<DataFolderState, String> {
+    if let Some(root) = backend::dev_repo_root() {
+        return Ok(DataFolderState {
+            managed: false,
+            folder: shown(&root),
+            chosen: false,
+            default_folder: shown(&root),
+            default_is_fallback: false,
+            unavailable: None,
+            legacy: None,
+        });
+    }
+    let (app_data, _) = packaged_dirs(app)?;
+    // What the running backend was started with; before the first launch has
+    // got that far, what it is about to be started with.
+    let decision = app
+        .state::<data_folder::InUse>()
+        .get()
+        .unwrap_or_else(|| resolve_data_folder(app, &app_data));
+    let legacy = if decision.folder == app_data { None } else { data_folder::legacy_location(&app_data) };
+    Ok(DataFolderState {
+        managed: true,
+        folder: shown(&decision.folder),
+        chosen: decision.chosen,
+        default_folder: shown(&decision.default_folder),
+        default_is_fallback: decision.default_is_fallback,
+        unavailable: decision.unavailable.as_deref().map(shown),
+        legacy: legacy.as_deref().map(shown),
+    })
+}
+
+/// Where data goes, and whether the operator chose it.
+#[tauri::command]
+async fn data_folder_state(app: AppHandle) -> Result<DataFolderState, String> {
+    tauri::async_runtime::spawn_blocking(move || data_folder_snapshot(&app))
+        .await
+        .map_err(|e| format!("the shell stopped looking for the data folder: {e}"))?
+}
+
+/// Open the native folder picker, starting in `start` when that is a
+/// directory. The picked path, or null when the picker was cancelled.
+#[tauri::command]
+async fn pick_data_folder(window: tauri::Window, start: Option<String>) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut picker = window.dialog().file().set_title("Data folder").set_parent(&window);
+        if let Some(start) = start.filter(|s| Path::new(s).is_dir()) {
+            picker = picker.set_directory(start);
+        }
+        match picker.blocking_pick_folder() {
+            Some(picked) => picked
+                .into_path()
+                .map(|path| Some(shown(&path)))
+                .map_err(|e| format!("the picked folder is not a path: {e}")),
+            None => Ok(None),
+        }
+    })
+    .await
+    .map_err(|e| format!("the shell stopped waiting for the folder picker: {e}"))?
+}
+
+/// Make `path` the data folder: create it, prove it can be written to, store
+/// the choice, and restart the backend in it when it is not already there.
+///
+/// The restart stops a run in progress (in order, as closing the window
+/// does). The shell cannot see the session, so the webview is the one that
+/// refuses this while the session is not idle.
+#[tauri::command]
+async fn set_data_folder(
+    app: AppHandle,
+    supervisor: State<'_, Arc<Supervisor>>,
+    path: String,
+) -> Result<DataFolderState, String> {
+    let supervisor = Arc::clone(&supervisor);
+    tauri::async_runtime::spawn_blocking(move || {
+        if backend::dev_repo_root().is_some() {
+            return Err("In a source checkout the data folder is the repository root.".to_string());
+        }
+        let folder = PathBuf::from(path.trim());
+        if !folder.is_absolute() {
+            return Err(format!("Not an absolute path: {}", folder.display()));
+        }
+        data_folder::ensure_writable(&folder)?;
+        let (app_data, _) = packaged_dirs(&app)?;
+        data_folder::write_choice(&app_data, &folder)?;
+
+        // A start under way would ignore the restart and stay in the old
+        // folder: let it finish, however it ends.
+        let _ = supervisor.wait_info();
+        let in_use = app.state::<data_folder::InUse>();
+        if in_use.get().is_some_and(|decision| decision.folder == folder) {
+            // Already there (the default, now chosen): nothing to restart.
+            in_use.set(resolve_data_folder(&app, &app_data));
+        } else {
+            supervisor.restart(starter(&app), exit_reporter(&app));
+            supervisor
+                .wait_info()
+                .map_err(|e| format!("The folder was saved, but the backend did not restart: {e}"))?;
+        }
+        data_folder_snapshot(&app)
+    })
+    .await
+    .map_err(|e| format!("the shell stopped changing the data folder: {e}"))?
+}
+
 /// How the supervisor starts a backend for this app.
 fn starter(app: &AppHandle) -> impl FnOnce(ExitHook) -> Result<Backend, String> + Send + 'static {
     let app = app.clone();
@@ -90,8 +231,8 @@ fn exit_reporter(app: &AppHandle) -> impl FnOnce(Option<i32>) + Send + 'static {
     }
 }
 
-/// Where the backend keeps config and data when there is no source checkout:
-/// the platform's per-user app data directory.
+/// The platform's per-user app data directory and the config file in it:
+/// where the backend's config lives when there is no source checkout.
 fn packaged_dirs(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
     let data = app
         .path()
@@ -117,10 +258,19 @@ fn spawn_options(app: &AppHandle, on_exit: ExitHook) -> Result<SpawnOptions, Str
     eprintln!("resistamet: backend via {launch:?}");
 
     // In a source checkout the backend works where the PySide6 app
-    // does, so both see the same config and measurement_data.
+    // does, so both see the same config and measurement_data. Installed, the
+    // config stays in the app data directory and the backend works in the
+    // data folder, which is where a relative data_directory then lands.
     let (cwd, config) = match &repo_root {
         Some(root) => (root.clone(), root.join("config.json")),
-        None => packaged_dirs(app)?,
+        None => {
+            let (app_data, config) = packaged_dirs(app)?;
+            let decision = resolve_data_folder(app, &app_data);
+            eprintln!("resistamet: data folder {}", decision.folder.display());
+            let cwd = decision.folder.clone();
+            app.state::<data_folder::InUse>().set(decision);
+            (cwd, config)
+        }
     };
     let simulate = overrides.simulate;
 
@@ -141,7 +291,10 @@ fn spawn_options(app: &AppHandle, on_exit: ExitHook) -> Result<SpawnOptions, Str
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // Before the backend starts: its launch records the folder here.
+            app.manage(data_folder::InUse::default());
             // Off the main thread, and never as an error from this hook:
             // the window opens at once and shows how the start went.
             let handle = app.handle();
@@ -179,7 +332,10 @@ pub fn run() {
             restart_backend,
             close_request_seen,
             cancel_close,
-            confirm_close
+            confirm_close,
+            data_folder_state,
+            pick_data_folder,
+            set_data_folder
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

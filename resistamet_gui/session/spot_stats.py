@@ -67,7 +67,8 @@ class SpotSamples:
 
 
 def relative_instrument_floor(v_readings: Sequence[float], i_readings: Sequence[float],
-                              model: str = "2400", nplc: float = 1.0) -> float:
+                              model: str = "2400", nplc: float = 1.0,
+                              v_fixed_range: Optional[float] = None) -> float:
     """The mean of sigma_R / R over the readings: the instrument's accuracy
     floor as a fraction of whatever is derived from V/I.
 
@@ -79,7 +80,8 @@ def relative_instrument_floor(v_readings: Sequence[float], i_readings: Sequence[
     """
     ones = [1.0] * len(v_readings)
     combined = four_point_combined_uncertainty(
-        ones, list(v_readings), list(i_readings), model=model, nplc=nplc)
+        ones, list(v_readings), list(i_readings), model=model, nplc=nplc,
+        v_fixed_range=v_fixed_range)
     return 0.0 if combined is None else combined.u_inst
 
 
@@ -137,7 +139,8 @@ def quantity_statistics(values: Sequence[float], v_readings: Sequence[float],
 
 
 def spot_statistics(samples: SpotSamples, model: str = "2400",
-                    nplc: float = 1.0) -> Dict[str, Any]:
+                    nplc: float = 1.0,
+                    v_fixed_range: Optional[float] = None) -> Dict[str, Any]:
     """The statistics block of one spot, as written to the file footer.
 
     ``n`` is the number of samples that entered the statistics and
@@ -148,7 +151,8 @@ def spot_statistics(samples: SpotSamples, model: str = "2400",
     stats: Dict[str, Any] = {'n': len(samples), 'n_excluded': samples.excluded}
     # Once for all three quantities: it walks every reading through the
     # accuracy tables, and a run with no sample target can hold a great many.
-    floor = relative_instrument_floor(samples.voltage, samples.current, model, nplc)
+    floor = relative_instrument_floor(samples.voltage, samples.current, model, nplc,
+                                      v_fixed_range=v_fixed_range)
     for name in QUANTITIES:
         stats[name] = quantity_statistics(
             getattr(samples, name), samples.voltage, samples.current,

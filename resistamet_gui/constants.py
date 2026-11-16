@@ -1,7 +1,7 @@
 import os
 
 # Script version and metadata
-__version__ = "1.13.1"
+__version__ = "2.0.0rc4"
 __original_version__ = "0.9.2"
 __author__ = "Brenden Ferland"
 
@@ -110,6 +110,13 @@ DEFAULT_SETTINGS = {
         "fpp_power_warn_w": 1.0e-2,           # warn (status flash) above this measured V*I, watts
         "fpp_power_stop_w": 1.0e-1,           # hard stop above this measured V*I, watts
         "fpp_stop_on_overpower": True,        # abort 4PP run if measured power exceeds fpp_power_stop_w
+        # Pre-run source-current finder. When on, the run delta-probes the
+        # sample at fpp_current, measures R and the scatter of the reversal
+        # pairs, and sources the smallest current that reaches
+        # fpp_autoselect_sigfigs significant figures; a sample that cannot
+        # reach them asks before it runs.
+        "fpp_autoselect_current": False,      # choose the source current from a pre-run probe
+        "fpp_autoselect_sigfigs": 4,          # target significant figures (SNR = 10**this)
         # Auxiliary-sensor co-logging (global, Keithley-centric). When enabled,
         # every continuous-mode point (resistance / source_v / source_i /
         # four_point) is stamped with the aux sensor's channel values (aux_*
@@ -230,9 +237,36 @@ MODE_DISPLAY_NAMES = {
 # Bit 3: Compliance -- the source is in real compliance.
 KEITHLEY_STAT_BIT_COMPLIANCE = 1 << 3
 
+# The 2400 series' largest trigger count, and so its longest sweep
+# (user's manual, :TRIGger:COUNt).
+MAX_SWEEP_POINTS = 2500
+
 # Keithley compliance heuristics
 KEITHLEY_COMPLIANCE_MAGIC_NUMBER = 9.9e37
 COMPLIANCE_THRESHOLD_FACTOR = 1.0
+
+# 4PP pre-run current finder.
+FPP_AUTOSELECT_MIN_SNR = 10.0        # below this (under ~1 significant figure): 'too_conductive'
+FPP_AUTOSELECT_MIN_CURRENT = 1.0e-6  # smallest current it selects, A (the 2400's lowest source range)
+# Reversal pairs kept for R and the scatter, and the pairs read first and
+# thrown away: the pair that follows :SOUR:CURR:RANG is read while the source
+# range is still settling.
+FPP_AUTOSELECT_PROBE_CYCLES = 8
+FPP_AUTOSELECT_PROBE_DISCARD_CYCLES = 1
+# The scatter of the pairs is the noise floor, but never less than this (V):
+# eight pairs can agree by chance to better than the voltmeter resolves.
+FPP_AUTOSELECT_RESOLUTION_FLOOR = 1.0e-6
+FPP_AUTOSELECT_MIN_SETTLE_S = 0.05   # shortest wait after each reversal in the probe
+# The selected current may put at most this fraction of the voltage compliance
+# across the sense probes. A row is flagged V_COMP at 99 % of compliance, so
+# at 0.5 V/I has to double during the run before rows turn into compliance
+# rows; the price is a factor of 2 in signal (0.3 significant figure) for a
+# sample that is limited by compliance.
+FPP_AUTOSELECT_COMPLIANCE_HEADROOM = 0.5
+# Readings taken and thrown away after the output comes back on at the
+# selected current, before the first logged row: the probe's last readings
+# were at another level and usually on another source range.
+FPP_AUTOSELECT_DISCARD_READINGS = 3
 
 # ASTM F76 §11.1 homogeneity criterion: |rho_A - rho_B| / rho_avg at most
 # this, in percent. Here rather than in calculations_vdp, which applies it,

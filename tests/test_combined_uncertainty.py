@@ -48,8 +48,13 @@ class TestFourPointCombinedUncertainty:
         )
         assert result is not None
         assert result.u_stat == 0.0
-        # u_inst should match resistance_uncertainty.
-        expected_sigma_r = resistance_uncertainty(v, i, model="2400", nplc=1.0)
+        # V is measured and I is sourced: the measure spec for V and the
+        # source spec for I, in quadrature. (It was the measure spec for
+        # both, which understates a sourced current's.)
+        from resistamet_gui.accuracy import current_source_uncertainty, voltage_uncertainty
+        expected_sigma_r = math.hypot(
+            voltage_uncertainty(v, "2400", 1.0),
+            (v / i) * current_source_uncertainty(i, "2400")) / i
         assert math.isclose(result.u_inst, expected_sigma_r, rel_tol=1e-9)
         assert math.isclose(result.u_total, expected_sigma_r, rel_tol=1e-9)
 

@@ -77,6 +77,26 @@ export interface FileOpenedPayload {
 }
 
 /**
+ * The 4PP current finder chose the run's source current.
+ *
+ * ``resistance_ohm`` is a lower bound when ``bound`` is true: the source
+ * was still in compliance at the smallest current, and nothing else was
+ * measured.
+ */
+export interface FppCurrentSelectedPayload {
+  bound?: boolean;
+  current_a: number;
+  expected_voltage_v?: number | null;
+  noise_floor_v?: number | null;
+  requested_current_a: number;
+  resistance_ohm?: number | null;
+  sig_figs?: number | null;
+  snr?: number | null;
+  target_sig_figs: number;
+  verdict: "ok" | "marginal" | "too_conductive" | "too_resistive";
+}
+
+/**
  * A four-point spot's position is a problem, said before the first sample.
  *
  * ``refused`` with ``off_sample``: a probe tip is on or beyond the edge and
@@ -178,7 +198,7 @@ export interface PromptPayload {
   detail?: {
     [k: string]: unknown | undefined;
   };
-  kind: "vdp_geometry" | "safety_voltage_ack" | "cable_null_shorted";
+  kind: "vdp_geometry" | "safety_voltage_ack" | "cable_null_shorted" | "fpp_current_decision";
   options?: string[];
   prompt_id: string;
   requires_human?: boolean;
@@ -324,8 +344,13 @@ export interface SweepSegmentPayload {
 
 /**
  * One F76 geometry measured: the +I and -I voltages at this wiring.
+ *
+ * ``compliance`` names the readings of this geometry taken in voltage
+ * compliance (their F76 labels, ``label_pos`` and/or ``label_neg``); empty
+ * when neither was. Such a reading is the limit, not the sample.
  */
 export interface VdpGeometryCompletePayload {
+  compliance?: string[];
   current_a: number;
   group: string;
   index: number;
@@ -343,13 +368,23 @@ export interface VdpGeometryCompletePayload {
  * the f(Q) homogeneity check and the combined uncertainties, so the panel
  * reads the same numbers the CSV metadata carries. The resistivities are
  * null when no thickness was given (``thickness_cm`` 0).
+ *
+ * ``valid`` false: the numbers are kept for diagnosis and are not a
+ * measurement; ``invalid_reason`` says why (readings in compliance, or
+ * readings whose signs cannot be one sample's). ``homogeneous`` is then
+ * false whatever the asymmetry. ``compliance_readings`` holds the F76
+ * labels of the readings taken in compliance, space-separated as in the
+ * file's footer (the labels themselves contain commas).
  */
 export interface VdpResultPayload {
   asymmetry_pct: number;
+  compliance?: boolean;
+  compliance_readings?: string;
   current_a: number;
   f_a: number;
   f_b: number;
   homogeneous: boolean;
+  invalid_reason?: string;
   q_a: number;
   q_b: number;
   rho_a: number | null;
@@ -359,6 +394,7 @@ export interface VdpResultPayload {
   sheet_resistance: number;
   sheet_resistance_uncertainty?: number | null;
   thickness_cm: number;
+  valid?: boolean;
   voltages?: {
     [k: string]: number | undefined;
   };
@@ -374,6 +410,7 @@ export interface EventPayloadMap {
   error: ErrorPayload;
   file_finalized: FileFinalizedPayload;
   file_opened: FileOpenedPayload;
+  fpp_current_selected: FppCurrentSelectedPayload;
   geometry_warning: GeometryWarningPayload;
   instrument_connected: InstrumentConnectedPayload;
   line_frequency: LineFrequencyPayload;
