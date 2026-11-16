@@ -30,6 +30,8 @@ OLD_CONFIG = {
 
 _PATH_VALUES = {'username': 'alice', 'map_id': 'wafer7'}
 _QUERY = {'user': 'alice', 'path': 'alice/nothing.csv', 'mode': 'resistance'}
+#: The routes whose target, given the values above, does not exist.
+_NOT_FOUND = {'/results/file', '/maps/{map_id}', '/maps/{map_id}/image'}
 
 
 @pytest.fixture
@@ -50,8 +52,11 @@ def _get_everything(app):
             for name, value in _PATH_VALUES.items():
                 path = path.replace('{%s}' % name, value)
             assert '{' not in path, f"no value for a parameter of {template}"
-            for query in ({}, _QUERY):
-                client.get(path, params=query)
+            # Without the query a route may want a parameter; with it, each
+            # answers as a working read would.
+            assert client.get(path).status_code in (200, 422), template
+            status = client.get(path, params=_QUERY).status_code
+            assert status == (404 if template in _NOT_FOUND else 200), template
             called.append(template)
     return called
 

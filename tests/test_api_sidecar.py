@@ -143,10 +143,10 @@ class TestEventsWebSocket:
     def test_a_bad_token_is_refused_not_ignored(self, tmp_path):
         process, handshake = _spawn(tmp_path)
         try:
-            status = _websocket_upgrade_status(handshake['url'], 'wrong')
-            # Accepted then closed with 4401, or refused outright: either is
-            # the server speaking WebSocket. 404 would mean it cannot.
-            assert status != 404
+            # The endpoint closes before accepting, which uvicorn answers with
+            # 403 rather than the upgrade: 101 would mean the token was
+            # ignored, 404 that the server cannot speak WebSocket at all.
+            assert _websocket_upgrade_status(handshake['url'], 'wrong') == 403
         finally:
             _stop(process)
 
@@ -157,8 +157,7 @@ class TestShutdown:
         process, _ = _spawn(tmp_path)
         try:
             process.stdin.close()
-            process.wait(timeout=20)
-            assert process.returncode is not None
+            assert process.wait(timeout=20) == 0
         finally:
             _stop(process)
 
@@ -168,8 +167,7 @@ class TestShutdown:
             httpx.post(f"{handshake['url']}/session/shutdown",
                         headers={'Authorization': f"Bearer {handshake['token']}"},
                         timeout=5.0)
-            process.wait(timeout=20)
-            assert process.returncode is not None
+            assert process.wait(timeout=20) == 0
         finally:
             _stop(process)
 

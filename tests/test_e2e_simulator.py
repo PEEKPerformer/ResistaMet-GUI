@@ -37,6 +37,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # Shared harness: the app / sim_window fixtures live in conftest.py; the
 # pump/CSV helpers in e2e_utils.py. Aliased to keep test bodies unchanged.
 from .e2e_utils import (  # noqa: E402
+    newest_csv,
     pump_for as _pump_for,
     read_csv_data as _read_csv_data,
     switch_to as _switch_to,
@@ -88,16 +89,33 @@ def _drive_timed_run(window, tab, label, seconds, app):
            list(window.data_buffers[mode_key].resistance)
 
 
+def _finite(values, n, what):
+    """Every one of the ``n`` recorded values, which must all be finite: a
+    NaN reading fails here rather than slipping past a tolerance check."""
+    finite = [x for x in values if x is not None and math.isfinite(x)]
+    assert len(finite) == n, (
+        f"{what}: {n - len(finite)} of {n} readings missing or not finite")
+    return finite
+
+
 def test_resistance_records_ohms_law(sim_window, app):
     ts, _, _, rs = _drive_timed_run(
         sim_window, sim_window.tab_resistance, "Resistance Measurement",
         seconds=3.0, app=app,
     )
     assert len(ts) >= 3, f"too few points: {len(ts)}"
-    finite_rs = [r for r in rs if r is not None and not math.isnan(r)]
-    assert finite_rs, "no resistance values recorded"
+    finite_rs = _finite(rs, len(ts), "R")
     bad = [r for r in finite_rs if abs(r - DUT_OHMS) > 0.01]
     assert not bad, f"resistance drift: {bad[:3]} (expected {DUT_OHMS})"
+
+    # The buffer keeps only R in this mode; V and I are in the CSV.
+    rows = _read_csv_data(newest_csv("measurement_data/**/*_R_*.csv"))
+    header, data = rows[0], rows[1:]
+    assert data, "no resistance rows written"
+    vi, ii = header.index("V_meas"), header.index("I_meas")
+    ratios = [float(r[vi]) / float(r[ii]) for r in data]
+    bad = [x for x in ratios if not (math.isfinite(x) and abs(x - DUT_OHMS) <= 0.01)]
+    assert not bad, f"V_meas/I_meas != {DUT_OHMS} Ω: {bad[:3]}"
 
 
 def test_voltage_source_records_correct_current(sim_window, app):
@@ -107,8 +125,8 @@ def test_voltage_source_records_correct_current(sim_window, app):
         seconds=3.0, app=app,
     )
     assert len(ts) >= 3, f"too few points: {len(ts)}"
-    bad_v = [v for v in vs if v is not None and abs(v - 1.0) > 1e-3]
-    bad_i = [i for i in is_ if i is not None and abs(i - 0.01) > 1e-5]
+    bad_v = [v for v in _finite(vs, len(ts), "V") if abs(v - 1.0) > 1e-3]
+    bad_i = [i for i in _finite(is_, len(ts), "I") if abs(i - 0.01) > 1e-5]
     assert not bad_v, f"V drift: {bad_v[:3]}"
     assert not bad_i, f"I drift (expected 10 mA): {bad_i[:3]}"
 
@@ -120,8 +138,8 @@ def test_current_source_records_correct_voltage(sim_window, app):
         seconds=3.0, app=app,
     )
     assert len(ts) >= 3, f"too few points: {len(ts)}"
-    bad_v = [v for v in vs if v is not None and abs(v - 0.1) > 1e-4]
-    bad_i = [i for i in is_ if i is not None and abs(i - 1e-3) > 1e-7]
+    bad_v = [v for v in _finite(vs, len(ts), "V") if abs(v - 0.1) > 1e-4]
+    bad_i = [i for i in _finite(is_, len(ts), "I") if abs(i - 1e-3) > 1e-7]
     assert not bad_v, f"V drift (expected 0.1 V): {bad_v[:3]}"
     assert not bad_i, f"I drift: {bad_i[:3]}"
 
@@ -140,8 +158,8 @@ def test_four_point_probe_records_v_i_at_source(sim_window, app):
     assert len(ts) >= 3, f"too few points: {len(ts)}"
     src_i = sim_window.tab_four_point.fpp_current.value()
     expected_v = src_i * DUT_OHMS
-    bad_v = [v for v in vs if v is not None and abs(v - expected_v) > 1e-4]
-    bad_i = [i for i in is_ if i is not None and abs(i - src_i) > 1e-7]
+    bad_v = [v for v in _finite(vs, len(ts), "V") if abs(v - expected_v) > 1e-4]
+    bad_i = [i for i in _finite(is_, len(ts), "I") if abs(i - src_i) > 1e-7]
     assert not bad_v, f"V drift (expected {expected_v}): {bad_v[:3]}"
     assert not bad_i, f"I drift (expected {src_i}): {bad_i[:3]}"
 
@@ -191,14 +209,88 @@ def test_iv_sweep_writes_linear_csv(sim_window, app, tmp_path):
 # CSV column / unit validation
 # --------------------------------------------------------------------------
 
-def test_csv_headers_match_documented_schema(sim_window, app):
-    """Each mode's saved CSV must use the column names declared in
-    ``data_export.get_column_config``. A unit-confusion regression (e.g.
-    swapping I_meas/V_meas, or renaming R_ohm to R_mohm without updating
-    the export) would slip past every other test in the suite.
-    """
-    from resistamet_gui.data_export import get_column_config
+#: The documented column header of each time-series mode, written out here
+#: rather than read from ``get_column_config``, which is what writes it.
+_DOCUMENTED_HEADERS = {
+    "resistance": ["elapsed_s", "V_meas", "I_meas", "R_ohm", "R_unc_ohm",
+                   "compliance", "event"],
+    "source_v": ["elapsed_s", "V_set", "I_meas", "R_calc", "I_unc_A",
+                 "R_calc_unc_ohm", "compliance", "event"],
+    "source_i": ["elapsed_s", "V_meas", "I_set", "R_calc", "V_unc_V",
+                 "R_calc_unc_ohm", "compliance", "event"],
+    "four_point": ["elapsed_s", "V", "I", "V_over_I", "Rs_ohm_sq", "rho_ohm_cm",
+                   "sigma_S_cm", "V_unc_V", "I_unc_A", "compliance", "event"],
+}
 
+
+def _csv_columns(path):
+    """The data rows of a CSV as {column name: [float, ...]}, with the
+    compliance column kept as text."""
+    rows = _read_csv_data(path)
+    header, data = rows[0], rows[1:]
+    assert data, f"{path}: no data rows"
+    cols = {}
+    for k, name in enumerate(header):
+        if name in ("compliance", "event"):
+            cols[name] = [r[k] for r in data]
+        else:
+            cols[name] = [float(r[k]) if r[k] not in ("",) else float("nan")
+                          for r in data]
+    return header, cols
+
+
+def _all_close(values, expected, rel, what):
+    bad = [v for v in values if not math.isfinite(v)
+           or abs(v - expected) > rel * abs(expected)]
+    assert not bad, f"{what}: expected {expected}, got {bad[:3]} of {len(values)}"
+
+
+def _all_positive(values, what):
+    bad = [v for v in values if not (math.isfinite(v) and v > 0)]
+    assert not bad, f"{what}: expected finite and > 0, got {bad[:3]}"
+
+
+def _check_csv_values(mode, cols, fpp_current):
+    """The values under each header are the simulated 100 Ω DUT's."""
+    assert set(cols["compliance"]) == {"OK"}, f"{mode}: {set(cols['compliance'])}"
+    elapsed = cols["elapsed_s"]
+    assert all(b > a for a, b in zip(elapsed, elapsed[1:])), (
+        f"{mode}: elapsed_s not increasing: {elapsed[:5]}")
+    if mode == "resistance":
+        # Default test current 1 mA into 100 Ω: V = 0.1 V.
+        _all_close(cols["V_meas"], 0.1, 1e-6, "resistance V_meas")
+        _all_close(cols["I_meas"], 1e-3, 1e-6, "resistance I_meas")
+        _all_close(cols["R_ohm"], DUT_OHMS, 1e-6, "resistance R_ohm")
+        _all_positive(cols["R_unc_ohm"], "resistance R_unc_ohm")
+    elif mode == "source_v":
+        # Default 1 V into 100 Ω: I = 10 mA.
+        _all_close(cols["V_set"], 1.0, 1e-6, "source_v V_set")
+        _all_close(cols["I_meas"], 0.01, 1e-6, "source_v I_meas")
+        _all_close(cols["R_calc"], DUT_OHMS, 1e-6, "source_v R_calc")
+        _all_positive(cols["I_unc_A"], "source_v I_unc_A")
+        _all_positive(cols["R_calc_unc_ohm"], "source_v R_calc_unc_ohm")
+    elif mode == "source_i":
+        # Default 1 mA into 100 Ω: V = 0.1 V.
+        _all_close(cols["V_meas"], 0.1, 1e-6, "source_i V_meas")
+        _all_close(cols["I_set"], 1e-3, 1e-6, "source_i I_set")
+        _all_close(cols["R_calc"], DUT_OHMS, 1e-6, "source_i R_calc")
+        _all_positive(cols["V_unc_V"], "source_i V_unc_V")
+        _all_positive(cols["R_calc_unc_ohm"], "source_i R_calc_unc_ohm")
+    else:  # four_point, legacy thin-film path with the default K = 4.532
+        _all_close(cols["I"], fpp_current, 1e-6, "4PP I")
+        _all_close(cols["V"], fpp_current * DUT_OHMS, 1e-6, "4PP V")
+        _all_close(cols["V_over_I"], DUT_OHMS, 1e-6, "4PP V_over_I")
+        _all_close(cols["Rs_ohm_sq"], 4.532 * DUT_OHMS, 1e-6, "4PP Rs_ohm_sq")
+        _all_positive(cols["V_unc_V"], "4PP V_unc_V")
+        _all_positive(cols["I_unc_A"], "4PP I_unc_A")
+
+
+def test_csv_headers_match_documented_schema(sim_window, app):
+    """Each mode's saved CSV carries the documented column names, and the
+    values under them are the simulated DUT's: V under the V column, I
+    under the I column, R in ohms. A unit-confusion regression (swapping
+    I_meas/V_meas, or renaming R_ohm to R_mohm) fails here.
+    """
     # Drive a brief run in each per-tab mode that writes a CSV, then read
     # the CSV header and compare to the documented columns.
     cases = [
@@ -213,8 +305,8 @@ def test_csv_headers_match_documented_schema(sim_window, app):
         app.processEvents()
         assert sim_window.measurement_running, f"{label}: worker didn't start"
         _pump_for(1.0, app)
-        assert _wait_until(lambda: _points(sim_window, mode) >= 1, timeout=15.0, app=app), (
-            f"{label}: no point within 15 s")
+        assert _wait_until(lambda: _points(sim_window, mode) >= 2, timeout=15.0, app=app), (
+            f"{label}: fewer than 2 points within 15 s")
         sim_window.stop_current_measurement()
         assert _wait_until(
             lambda: not sim_window.measurement_running, timeout=3.0, app=app
@@ -231,17 +323,18 @@ def test_csv_headers_match_documented_schema(sim_window, app):
     tag_to_mode = {"_R_": "resistance", "_VSRC_": "source_v",
                    "_ISRC_": "source_i", "_4PP_": "four_point",
                    "_sweep_": "sweep"}
+    fpp_current = sim_window.tab_four_point.fpp_current.value()
     found_modes = set()
     for path in files:
         mode = next((m for tag, m in tag_to_mode.items() if tag in path), None)
         if mode is None:
             continue
-        expected_cols, _units = get_column_config(mode)
-        rows = _read_csv_data(path)
-        header = rows[0] if rows else []
+        expected_cols = _DOCUMENTED_HEADERS[mode]
+        header, cols = _csv_columns(path)
         assert header == expected_cols, (
             f"{path}: header {header} != expected {expected_cols} for {mode}"
         )
+        _check_csv_values(mode, cols, fpp_current)
         found_modes.add(mode)
     # All four time-series modes should have been covered.
     assert {"resistance", "source_v", "source_i", "four_point"} <= found_modes, (
@@ -254,10 +347,10 @@ def test_csv_headers_match_documented_schema(sim_window, app):
 # --------------------------------------------------------------------------
 
 def test_voltage_compliance_clamps_and_flags(sim_window, app):
-    """When V_compliance is set below what the sourced current × DUT would
-    produce, the instrument clamps voltage and sets STAT bit 3. The worker
-    parses that into ``compliance_status='V_COMP'`` and the buffer records
-    it on every clamped point.
+    """When the current compliance is set below what the sourced voltage
+    into the DUT would draw, the instrument clamps the current and sets
+    STAT bit 3. The worker records ``compliance_status='I_COMP'`` on every
+    clamped point.
     """
     # 10kΩ DUT + 1 mA sourced → V would naturally be 10 V; clamp to 1 V.
     _reset_simulator(ohms=10_000.0)
@@ -279,16 +372,55 @@ def test_voltage_compliance_clamps_and_flags(sim_window, app):
     buf = sim_window.data_buffers["source_v"]
     statuses = list(buf.compliance_status)
     assert statuses, "no compliance status recorded"
-    # The fake sets the compliance bit when output × R exceeds the compliance
-    # limit; at least one point should flag I_COMP (we capped current).
-    flagged = [s for s in statuses if s != "OK"]
-    assert flagged, (
-        f"expected compliance-flagged points; got all OK ({len(statuses)} pts)"
+    # Every point is clamped from the first, and source-V compliance is a
+    # current limit: each one is I_COMP, no other label.
+    assert set(statuses) == {"I_COMP"}, (
+        f"expected I_COMP on all {len(statuses)} points; got {set(statuses)}"
     )
     # And the recorded current shouldn't exceed compliance by more than rounding.
     currents = [i for i in list(buf.current) if i is not None]
     assert all(abs(i) <= 1.1e-4 for i in currents), (
         f"current exceeded compliance: max={max(map(abs, currents))}"
+    )
+
+
+def test_source_v_compliance_is_read_from_the_status_bit(sim_window, app, monkeypatch):
+    """The instrument's compliance bit alone flags a point I_COMP.
+
+    The fake here sets STAT bit 3 while the measured current stays at
+    10 mA, a tenth of the 100 mA limit, so the worker's software check on
+    the current (>= 0.99 x limit) cannot fire: only the parsed bit can.
+    """
+    from resistamet_gui._simulator import FakeKeithley
+
+    real = FakeKeithley._compute_one_point
+
+    def always_in_compliance(self, source_value):
+        v, i, r, _ = real(self, source_value)
+        return v, i, r, True
+
+    monkeypatch.setattr(FakeKeithley, "_compute_one_point", always_in_compliance)
+
+    _switch_to(sim_window, "Voltage Source", app)
+    w = sim_window.tab_voltage_source
+    w.vsource_voltage.setValue(1.0)               # 1 V into 100 Ω → 10 mA
+    w.vsource_current_compliance.setValue(0.1)    # limit 100 mA
+    w.start_button.click()
+    app.processEvents()
+    assert _wait_until(
+        lambda: _points(sim_window, "source_v") >= 2, timeout=15.0, app=app,
+    ), "no source_v points landed"
+    sim_window.stop_current_measurement()
+    assert _wait_until(
+        lambda: not sim_window.measurement_running, timeout=3.0, app=app
+    )
+
+    buf = sim_window.data_buffers["source_v"]
+    currents = _finite(buf.current, len(buf.timestamps), "I")
+    assert all(abs(i - 0.01) < 1e-5 for i in currents), currents[:3]
+    statuses = list(buf.compliance_status)
+    assert set(statuses) == {"I_COMP"}, (
+        f"STAT bit 3 set on every point, but statuses were {set(statuses)}"
     )
 
 
@@ -495,21 +627,25 @@ def test_iv_sweep_all_directions(sim_window, app, direction):
     v_values = [float(r[1]) for r in data]
     n = len(v_values)
     # 21 single-direction points at 0.1V step from -1 to +1 inclusive.
+    def near(a, b):
+        return abs(a - b) < 1e-9
+
     if direction == "up_down":
-        assert n >= 40, f"up_down should produce ~42 points; got {n}"
-        # Forward leg ends near +1, reverse leg ends near -1.
-        # Pick a robust signal: the v-value differences should change sign somewhere.
-        diffs = [v_values[i + 1] - v_values[i] for i in range(len(v_values) - 1)]
-        assert any(d > 0 for d in diffs) and any(d < 0 for d in diffs), (
-            "up_down sweep should have both ascending and descending segments"
+        # Forward leg -1 → +1, then the reverse leg +1 → -1, 21 points each.
+        assert n == 42, f"up_down should produce 2 x 21 points; got {n}"
+        ends = (v_values[0], v_values[20], v_values[21], v_values[-1])
+        assert all(near(a, b) for a, b in zip(ends, (-1.0, 1.0, 1.0, -1.0))), (
+            f"up_down legs should run -1 → +1 → -1; ends were {ends}"
         )
     elif direction == "up":
-        assert v_values[0] < v_values[-1], (
-            f"up sweep should go low→high, got {v_values[0]} → {v_values[-1]}"
+        assert n == 21, f"up sweep should produce 21 points; got {n}"
+        assert near(v_values[0], -1.0) and near(v_values[-1], 1.0), (
+            f"up sweep should go -1 → +1, got {v_values[0]} → {v_values[-1]}"
         )
     else:  # down
-        assert v_values[0] > v_values[-1], (
-            f"down sweep should go high→low, got {v_values[0]} → {v_values[-1]}"
+        assert n == 21, f"down sweep should produce 21 points; got {n}"
+        assert near(v_values[0], 1.0) and near(v_values[-1], -1.0), (
+            f"down sweep should go +1 → -1, got {v_values[0]} → {v_values[-1]}"
         )
 
 

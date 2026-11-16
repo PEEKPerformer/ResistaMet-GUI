@@ -6,10 +6,12 @@ collected on the lab Keithley 2400 (firmware C30, 60 Hz line) wired in
 ``docs/keithley_2400_timing_bench.json`` — re-capture with the standalone
 script in this repo's history when the model is touched.
 
-The estimator is allowed to under-predict (be conservative) by up to 25%
-in any single point; over-prediction must stay within 10%. The former
-floor exists because the low-NPLC / high-filter corner is the worst-fit
-region and the manual doesn't give per-conversion overhead numbers.
+On the checked-in bench the estimator under-predicts (is conservative) by
+up to 14.4 % and over-predicts by up to 5.7 %; the test holds it to 15 %
+and 6 %. The worst under-prediction is the low-NPLC / high-filter corner,
+where the manual gives no per-conversion overhead numbers. The estimate
+does over-promise on 8 of the 27 points, so timing.py's "never
+over-promises" is not what this data shows.
 """
 import json
 import math
@@ -50,10 +52,10 @@ def test_estimator_matches_measured_bench_within_tolerance():
             worst_under = err
         if err > worst_over:
             worst_over = err
-    # Conservative side: allow up to 25% under-prediction (low-NPLC corner)
-    assert worst_under > -0.25, f"estimator under-predicts by {worst_under*100:.1f}% somewhere"
-    # Over-promise side: never more than 10%
-    assert worst_over < 0.10, f"estimator over-promises by {worst_over*100:.1f}% somewhere"
+    # Conservative side: -14.4 % at worst on this bench (low-NPLC corner)
+    assert worst_under > -0.15, f"estimator under-predicts by {worst_under*100:.1f}% somewhere"
+    # Over-promise side: +5.7 % at worst on this bench
+    assert worst_over < 0.06, f"estimator over-promises by {worst_over*100:.1f}% somewhere"
 
 
 @pytest.mark.parametrize("nplc,az,fc,expected_hz", [

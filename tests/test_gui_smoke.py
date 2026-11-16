@@ -174,7 +174,7 @@ class TestSettingsDialog:
         from resistamet_gui.ui.dialogs import SettingsDialog
         dialog = SettingsDialog(main_window.config_manager, "test_user", main_window)
         # All widgets should be alive and readable
-        assert dialog.gpib_address.text() is not None
+        assert dialog.gpib_address.text() == "GPIB0::24::INSTR"
         assert dialog.sampling_rate.value() > 0
         assert dialog.nplc.value() > 0
         assert dialog.settling_time.value() >= 0
@@ -200,7 +200,7 @@ class TestSettingsDialog:
     def test_global_settings_dialog_opens(self, main_window):
         from resistamet_gui.ui.dialogs import SettingsDialog
         dialog = SettingsDialog(main_window.config_manager, parent=main_window)
-        assert dialog.gpib_address.text() is not None
+        assert dialog.gpib_address.text() == "GPIB0::24::INSTR"
         dialog.close()
 
     def test_display_tab_widgets(self, main_window):
@@ -249,7 +249,7 @@ class TestSettingsDialog:
         model_item = dialog.output_format.model().item(1)
         if not model_item.isEnabled():
             dialog.close()
-            return
+            pytest.skip("h5py not installed: HDF5 output is not selectable")
         dialog.output_format.setCurrentIndex(1)
         assert not dialog.output_compression.isEnabled()
         assert not dialog.output_compression_threshold.isEnabled()
@@ -277,10 +277,28 @@ class TestGatherSettings:
         assert 'nplc' in m
 
     def test_source_v_continuous_duration(self, main_window):
-        """When run_continuous is checked, duration should be 0."""
-        main_window.tab_voltage_source.vsource_run_continuous.setChecked(True)
+        """When run_continuous is checked, duration should be 0; unchecked,
+        the duration entered."""
+        w = main_window.tab_voltage_source
+        w.vsource_duration.setValue(2.0)
+        w.vsource_run_continuous.setChecked(True)
         s = main_window.gather_settings_for_mode('source_v')
         assert s['measurement']['vsource_duration_hours'] == 0.0
+        w.vsource_run_continuous.setChecked(False)
+        s = main_window.gather_settings_for_mode('source_v')
+        assert s['measurement']['vsource_duration_hours'] == 2.0
+
+    def test_source_i_continuous_duration(self, main_window):
+        """When run_continuous is checked, duration should be 0; unchecked,
+        the duration entered."""
+        w = main_window.tab_current_source
+        w.isource_duration.setValue(2.0)
+        w.isource_run_continuous.setChecked(True)
+        s = main_window.gather_settings_for_mode('source_i')
+        assert s['measurement']['isource_duration_hours'] == 0.0
+        w.isource_run_continuous.setChecked(False)
+        s = main_window.gather_settings_for_mode('source_i')
+        assert s['measurement']['isource_duration_hours'] == 2.0
 
     def test_source_i_settings(self, main_window):
         s = main_window.gather_settings_for_mode('source_i')
@@ -327,6 +345,7 @@ class TestUIInteractions:
         """All tabs should be switchable."""
         for i in range(main_window.main_tabs.count()):
             main_window.main_tabs.setCurrentIndex(i)
+            assert main_window.main_tabs.currentIndex() == i
 
     def test_update_ui_from_settings(self, main_window):
         """Should not crash."""
@@ -401,22 +420,32 @@ class TestHistogramCanvas:
     def test_histogram_update(self, main_window):
         w = main_window.tab_four_point
         w.fpp_histogram.update_histogram([1.0, 2.0, 3.0, 2.5, 2.1], 'Rs (Ω/□)')
+        w.fpp_histogram.draw()
+        assert sum(p.get_height() for p in w.fpp_histogram.axes.patches) == 5
 
     def test_histogram_empty(self, main_window):
         w = main_window.tab_four_point
         w.fpp_histogram.update_histogram([], 'Rs (Ω/□)')
+        w.fpp_histogram.draw()
+        assert 'No data' in [t.get_text() for t in w.fpp_histogram.axes.texts]
 
     def test_histogram_nan_values(self, main_window):
         w = main_window.tab_four_point
         w.fpp_histogram.update_histogram([1.0, float('nan'), 2.0, float('nan')], 'Rs')
+        w.fpp_histogram.draw()
+        assert sum(p.get_height() for p in w.fpp_histogram.axes.patches) == 2
 
     def test_bar_chart(self, main_window):
         w = main_window.tab_four_point
         w.fpp_histogram.update_bar_chart(['Spot 1', 'Spot 2'], [10.0, 12.0], [0.5, 0.8])
+        w.fpp_histogram.draw()
+        assert [p.get_height() for p in w.fpp_histogram.axes.patches] == [10.0, 12.0]
 
     def test_clear(self, main_window):
         w = main_window.tab_four_point
         w.fpp_histogram.clear_histogram()
+        w.fpp_histogram.draw()
+        assert [t.get_text() for t in w.fpp_histogram.axes.texts] == ['Waiting for data...']
 
 
 class TestSpotManagement:
@@ -439,6 +468,7 @@ class TestSpotManagement:
         w = main_window.tab_four_point
         w._fpp_spots = [{'name': 'test', 'n': 1, 'rs_mean': 1, 'rs_std': 0,
                           'rho_mean': 0, 'rho_std': 0, 'sigma_mean': 0, 'sigma_std': 0, 'rows': []}]
+        w._fpp_spot_counter = 5
         main_window._clear_all_fpp_spots()
         assert len(w._fpp_spots) == 0
         assert w._fpp_spot_counter == 1

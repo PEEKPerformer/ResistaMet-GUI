@@ -32,7 +32,7 @@ import pytest
 from resistamet_gui.gpib_usb import protocol as p
 from resistamet_gui.gpib_usb import tables as t
 from resistamet_gui.gpib_usb.controller import RAW_READ_MIN_BYTES, RAW_WRITE_MIN_BYTES, Controller
-from tests.fakes.gpib_usb import AnsweringAdapter
+from tests.fakes.gpib_usb import AnsweringAdapter, FakeInstrument, SimulatedAdapter
 
 CAPTURES = Path(__file__).resolve().parents[1] / 'docs' / 'design' / 'captures' / 'ni_usb_gpib_2026-09-19'
 #: The fourth batch (§10.10): same PC, adapter, instrument and NI stack.
@@ -177,8 +177,8 @@ def _eos_params(m: int, e: int) -> Dict[str, object]:
     return {'eos': e, 'eos_8bit': bool(m & p.EOS_MODE_BIN), 'termchar': e}
 
 
-def rebuild(block: bytes) -> bytes:
-    """Our encoder's bytes for the parameters decoded from NI's ``block``."""
+def rebuild(block: bytes) -> Optional[bytes]:
+    """Our encoder's bytes for the parameters decoded from NI's ``block``; None for one it does not build."""
     opcode = block[0]
     if opcode == p.OP_STATUS_SNAPSHOT:
         return p.status_snapshot_block()
@@ -216,10 +216,15 @@ def rebuild(block: bytes) -> bytes:
     if opcode == p.OP_TAKE_CONTROL:
         return p.take_control_message(bool(block[1]))[:4]
     if opcode == p.OP_GO_TO_STANDBY:
-        # NI's byte 3 is 0x0a (§10.7.1), meaning not established; ours is 0x00.
-        return block
+        # NI's byte 3 is 0x0a (§10.7.1), meaning not established; ours is 0x00. The rest is ours,
+        # but for byte 1 = 1, NI's handshake variant, which this driver does not build (§5.4).
+        if block[1]:
+            return None
+        built = p.go_to_standby_message()[:4]
+        assert built[3] == 0x00 and block[3] == 0x0A, block.hex(' ')
+        return built[:3] + block[3:]
     if opcode == p.OP_PRESENCE_PROBE:
-        return block  # not built by this driver
+        return None  # not built by this driver
     raise AssertionError('no builder for 0x%02x' % opcode)
 
 
@@ -239,7 +244,11 @@ class TestEncoderReproducesNi:
             if transfer.endpoint != EP_OUT or transfer.completion or not transfer.payload:
                 continue
             for block in split_host_blocks(transfer.payload):
-                assert rebuild(block) == block, '%s: 0x%02x block %s' % (name, block[0], block.hex(' '))
+                built = rebuild(block)
+                if built is None:
+                    assert block[0] == p.OP_PRESENCE_PROBE or block[:2] == b'\x06\x01', block.hex(' ')
+                    continue
+                assert built == block, '%s: 0x%02x block %s' % (name, block[0], block.hex(' '))
                 seen[block[0]] = seen.get(block[0], 0) + 1
         assert seen, name
 
@@ -503,6 +512,28 @@ def chosen_opcode(operation) -> int:
     return adapter.opcodes[-1]
 
 
+def ni_session_message(opcode: int) -> Tuple[int, ...]:
+    """The block ids of every instrument-session message NI sent ``opcode`` in (the INTFC
+    session's bare blocks of board_io.pcap left out)."""
+    shapes = {tuple(b[0] for b in e.blocks) for name in ALL_PCAPS for e in exchanges(name)
+              if e.block(opcode) is not None and len(e.blocks) > 1}
+    assert len(shapes) == 1, shapes
+    return shapes.pop()
+
+
+def addressed_messages(operation, data_opcodes: Tuple[int, int]) -> List[Tuple[int, ...]]:
+    """The block ids of each message of an addressed read or write to PAD 24 that carries one of
+    ``data_opcodes``: the operation as NI's instrument session does it."""
+    instrument = FakeInstrument('FAKE,0,0,0')
+    adapter = SimulatedAdapter({24: instrument})
+    controller = Controller(adapter, t.PID_HS, ni_instructions=True, sleep=lambda s: None)
+    controller.attach()
+    sent = len(adapter.messages)
+    operation(controller, instrument)
+    shapes = [tuple(b[0] for b in split_host_blocks(m)) for m in adapter.messages[sent:]]
+    return [shape for shape in shapes if set(shape) & set(data_opcodes)]
+
+
 class TestControllerChoosesNisInstruction:
     def test_reads(self):
         sizes = captured_sizes((p.OP_READ, p.OP_READ_RAW))
@@ -510,20 +541,40 @@ class TestControllerChoosesNisInstruction:
         # Both sides of the boundary, and the counts the second batch added around it.
         assert {1024, 1025, 2047, 2048, 2049, 4095, 4096, 20480} <= set(counts)
         assert len(set(counts)) == len(counts), 'NI sent one count both ways'
+        raw_message = ni_session_message(p.OP_READ_RAW)
         for ni_opcode, count in sizes:
             ours = chosen_opcode(lambda c: c.read_raw(count, timeout_s=3.0))
             assert ours == ni_opcode, 'read of %d: NI 0x%02x, ours 0x%02x' % (count, ni_opcode, ours)
             assert (count >= RAW_READ_MIN_BYTES) == (ni_opcode == p.OP_READ_RAW)
+
+            def addressed(c, instrument):
+                instrument.pending = bytes(count)
+                assert c.read(24, max_bytes=count, timeout_s=3.0) == (bytes(count), True)
+            messages = addressed_messages(addressed, (p.OP_READ, p.OP_READ_RAW))
+            assert messages and all(ni_opcode in m for m in messages), (count, messages)
+            if ni_opcode == p.OP_READ_RAW:
+                # NI's message, which addresses the instrument itself (§10.1.2).
+                assert messages == [raw_message] * len(messages), (count, messages)
 
     def test_writes(self):
         sizes = captured_sizes((p.OP_WRITE, p.OP_WRITE_RAW))
         lengths = [length for _, length in sizes]
         assert {17, 18, 512, 1024, 1025, 2048, 2049, 2050, 2502} <= set(lengths)
         assert len(set(lengths)) == len(lengths), 'NI sent one length both ways'
+        raw_message = ni_session_message(p.OP_WRITE_RAW)
         for ni_opcode, length in sizes:
             ours = chosen_opcode(lambda c: c.write_raw(bytes(length), timeout_s=3.0))
             assert ours == ni_opcode, 'write of %d: NI 0x%02x, ours 0x%02x' % (length, ni_opcode, ours)
             assert (length >= RAW_WRITE_MIN_BYTES) == (ni_opcode == p.OP_WRITE_RAW)
+
+            def addressed(c, instrument):
+                assert c.write(24, bytes(length), timeout_s=3.0) == length
+                assert b''.join(instrument.received) == bytes(length)
+            messages = addressed_messages(addressed, (p.OP_WRITE, p.OP_WRITE_RAW))
+            assert messages and all(ni_opcode in m for m in messages), (length, messages)
+            if ni_opcode == p.OP_WRITE_RAW:
+                # NI's message, which addresses the instrument itself (§10.5.2).
+                assert messages == [raw_message] * len(messages), (length, messages)
 
     def test_a_framed_write_of_any_length_is_the_plain_layout(self):
         # §10.5.2: header, the data inline, zero padding to 4; nothing else changes with length.

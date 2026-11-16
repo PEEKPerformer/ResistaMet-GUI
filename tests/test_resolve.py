@@ -257,7 +257,7 @@ class TestDerived:
 
     def test_max_rate_is_reported_not_enforced(self, profile):
         resolved = resolve_run_settings(profile, 'resistance', {'sampling_rate': 100.0})
-        assert resolved.derived['max_rate_hz'] > 0
+        assert 0 < resolved.derived['max_rate_hz'] < 100.0
         assert resolved.settings['measurement']['sampling_rate'] == 100.0
 
 

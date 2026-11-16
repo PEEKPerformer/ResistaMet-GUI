@@ -132,3 +132,28 @@ class TestLifecycleEvents:
         emitter.emit('resumed', {'reason': 'user'})
         emitter.emit('stopping', {'reason': 'user_stop'})
         assert sink.types() == ['paused', 'resumed', 'stopping']
+
+    @pytest.mark.parametrize("event_type, payload", [
+        # A required field missing.
+        ('run_started', {'mode': 'resistance', 'sample_name': 'wafer1',
+                         'username': 'alice', 'settings': {}}),
+        ('aux_connected', {'driver': 'arduino_thermocouple', 'channels': []}),
+        ('file_opened', {'columns': ['t'], 'units': ['s']}),
+        ('file_finalized', {'end_metadata': {}}),
+        # A key the model does not have.
+        ('paused', {'reason': 'user', 'by': 'alice'}),
+        ('resumed', {'reason': 'user', 'by': 'alice'}),
+        ('stopping', {'reason': 'user_stop', 'by': 'alice'}),
+    ])
+    def test_malformed_payload_is_refused_at_the_emit_site(self, emitter, sink,
+                                                           event_type, payload):
+        with pytest.raises(ValidationError):
+            emitter.emit(event_type, payload)
+        assert sink.events == []
+
+    def test_defaults_are_filled_in(self, emitter, sink):
+        """Only a validated payload gains the model's defaults."""
+        emitter.emit('file_opened', {'path': '/tmp/run.csv'})
+        emitter.emit('stopping', {})
+        assert sink.events[0].payload == {'path': '/tmp/run.csv', 'columns': [], 'units': []}
+        assert sink.events[1].payload == {'reason': None}

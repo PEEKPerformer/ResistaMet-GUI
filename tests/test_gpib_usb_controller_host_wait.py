@@ -161,7 +161,7 @@ class TestHostWait:
         assert t.timeout_expiry_s(code) == pytest.approx(expiry, rel=1e-12)
         assert p.host_wait_s(code, 600.0) == pytest.approx(expiry + 2.0, rel=1e-12)
 
-    def test_the_untimed_code_rule_undershoots_neither_unit_on_any_timed_code(self):
+    def test_the_untimed_code_rule_undershoots_neither_unit_on_any_timed_code(self, monkeypatch):
         # Why that rule (§7.3): the second unit's round figure is the nominal limit up to 0xfc
         # and the first unit's power of two for 0xfd and 0xfe. The bare power of two, the rule
         # before, gives 16.78 s for 0xfd against a measured 20.0; 1.25 x nominal gives 12.5.
@@ -169,9 +169,14 @@ class TestHostWait:
         longest = {}
         for code, seconds in self.MEASURED + self.BENCH:
             longest[code] = max(longest.get(code, 0.0), seconds)
+        # With neither unit's figure entered, timeout_expiry_s falls back on the rule alone.
+        monkeypatch.setattr(t, 'TIMEOUT_EXPIRY_MEASURED_S', {})
+        monkeypatch.setattr(t, 'TIMEOUT_EXPIRY_BENCH_S', {})
         for code, exponent in self.INFERRED_FOR_TIMED:
             power_of_two = 2 ** exponent / 1e6
-            assert 1.25 * max(nominal[code], power_of_two) >= longest[code], hex(code)
+            rule = 1.25 * max(nominal[code], power_of_two)
+            assert rule >= longest[code], hex(code)
+            assert t.timeout_expiry_s(code) == pytest.approx(rule, rel=1e-12), hex(code)
         assert 2 ** 24 / 1e6 < longest[0xFD] and 1.25 * nominal[0xFD] < longest[0xFD]
 
     @pytest.mark.parametrize('code, exponent', ONE_UNIT)
