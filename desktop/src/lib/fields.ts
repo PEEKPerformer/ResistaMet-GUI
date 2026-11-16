@@ -205,6 +205,10 @@ export const SWEEP_FIELDS: FieldGroup<Keys<SweepSettings>>[] = [
       { key: "sweep_delay", label: "Source delay", unit: "s" },
     ],
   },
+  {
+    title: "Measure",
+    fields: [{ key: "sweep_measurement_type", label: "Wiring" }],
+  },
 ];
 
 export const VDP_FIELDS: FieldGroup<Keys<VdpSettings>>[] = [
@@ -218,7 +222,7 @@ export const VDP_FIELDS: FieldGroup<Keys<VdpSettings>>[] = [
   },
   {
     title: "Sample",
-    fields: [{ key: "vdp_thickness_cm", label: "Thickness", unit: "cm" }],
+    fields: [{ key: "vdp_thickness_cm", label: "Thickness", unit: "cm", hint: "0 = unknown; sheet resistance only." }],
   },
   {
     title: "Readings",

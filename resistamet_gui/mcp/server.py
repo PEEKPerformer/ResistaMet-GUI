@@ -25,7 +25,8 @@ of it with the agent role.
 - A run you start is held to the profile's agent limits (by default 30 V; current \
 and power left to the instrument). Only a person can change them.
 - Prompts with requires_human (touch safety, van der Pauw rewiring) are answered \
-by a person at the ResistaMet window, never by you. Tell the user what is asked.
+by a person at the ResistaMet window, never by you. Tell the user what is asked, \
+then wait_for('prompt_answered') with the prompt's id as ignore_prompt_id.
 - Follow a run with wait_for, not repeated get_status. Read results with \
 get_run_summary; samples are summarised, never streamed into the conversation.
 - Stopping is always allowed: stop_run ends any run, whoever started it.

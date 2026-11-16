@@ -159,18 +159,21 @@
       "properties": {
         "aux_address": {
           "default": "ASRL6::INSTR",
+          "description": "VISA resource of the sensor, e.g. ASRL6::INSTR (serial port COM6 on Windows). Read when aux_log_enabled.",
           "minLength": 1,
           "title": "Aux Address",
           "type": "string"
         },
         "aux_driver": {
           "default": "arduino_thermocouple",
+          "description": "Sensor driver: arduino_thermocouple (a K-type thermocouple board streaming DATA lines) or stream_sensor (a device that names its channels in an HDR line). Read when aux_log_enabled.",
           "minLength": 1,
           "title": "Aux Driver",
           "type": "string"
         },
         "aux_log_enabled": {
           "default": false,
+          "description": "Log an auxiliary sensor's channels beside each reading, as aux_<key> columns and aux_fault; resistance, source_v, source_i and four_point only.",
           "title": "Aux Log Enabled",
           "type": "boolean"
         }
@@ -191,6 +194,7 @@
         },
         "isource_duration_hours": {
           "default": 0.0,
+          "description": "0 = until stopped.",
           "maximum": 168.0,
           "minimum": 0.0,
           "title": "Isource Duration Hours",
@@ -198,6 +202,7 @@
         },
         "isource_voltage_compliance": {
           "default": 5.0,
+          "description": "Voltage limit while sourcing isource_current; readings at it are flagged V_COMP.",
           "maximum": 200.0,
           "minimum": 0.1,
           "title": "Isource Voltage Compliance",
@@ -205,6 +210,7 @@
         },
         "isource_voltage_range_auto": {
           "default": true,
+          "description": "true: the voltage measurement autoranges; false: it stays on the range that holds isource_voltage_compliance.",
           "title": "Isource Voltage Range Auto",
           "type": "boolean"
         }
@@ -294,6 +300,7 @@
       "properties": {
         "fpp_alpha": {
           "default": 1.0,
+          "description": "Finite-size correction multiplying K (fpp_model thin_film).",
           "maximum": 10.0,
           "minimum": 0.0,
           "title": "Fpp Alpha",
@@ -301,6 +308,7 @@
         },
         "fpp_array_angle_deg": {
           "default": 0.0,
+          "description": "Direction of the probe array, anticlockwise from +x (a rectangle's length); a spot's own angle_deg wins. Position check only.",
           "maximum": 360.0,
           "minimum": -360.0,
           "title": "Fpp Array Angle Deg",
@@ -315,11 +323,13 @@
         },
         "fpp_delta_mode": {
           "default": false,
+          "description": "Current reversal: each reading combines +I and -I, cancelling thermal offsets.",
           "title": "Fpp Delta Mode",
           "type": "boolean"
         },
         "fpp_delta_settling": {
           "default": 0.1,
+          "description": "Wait after each reversal, in s.",
           "maximum": 5.0,
           "minimum": 0.01,
           "title": "Fpp Delta Settling",
@@ -327,6 +337,7 @@
         },
         "fpp_diameter_cm": {
           "default": 0.0,
+          "description": "Sample diameter (or width) for the ASTM F84 F2 correction; 0 = infinite. Above 0 the F84 corrections apply.",
           "maximum": 100.0,
           "minimum": 0.0,
           "title": "Fpp Diameter Cm",
@@ -334,6 +345,7 @@
         },
         "fpp_dopant_type": {
           "default": "none",
+          "description": "Silicon dopant type for the F84 temperature correction.",
           "enum": [
             "none",
             "n",
@@ -344,6 +356,7 @@
         },
         "fpp_edge_warn_pct": {
           "default": 1.0,
+          "description": "A spot with a position warns, before its first reading, when the geometry factor there differs by more than this from the one the rows use (from the factor at the sample's centre when they have none).",
           "maximum": 100.0,
           "minimum": 0.0,
           "title": "Fpp Edge Warn Pct",
@@ -351,6 +364,7 @@
         },
         "fpp_geometry": {
           "default": "circle",
+          "description": "Sample shape for the F2 correction (rectangle_N: length = N x width). Anything but circle applies the F84 corrections.",
           "enum": [
             "circle",
             "square",
@@ -363,6 +377,7 @@
         },
         "fpp_k_factor": {
           "default": 4.532,
+          "description": "Geometric factor K: Rs = K x V/I; 4.532 for an infinite thin sheet.",
           "maximum": 50.0,
           "minimum": 0.1,
           "title": "Fpp K Factor",
@@ -370,6 +385,7 @@
         },
         "fpp_model": {
           "default": "thin_film",
+          "description": "By default (thin_film, fpp_k_factor 4.532, fpp_alpha 1, no F84 input) Rs = 4.532 x V/I and rho = Rs x t, with no corrections. thin_film: Rs = K x alpha x V/I; finite_thin: Rs = K x V/I; both rho = Rs x t. semi_infinite: rho = 2 pi s x V/I (bulk, t >> s); finite_alpha: rho = alpha x 2 pi s x V/I; both Rs = K x V/I. Not used when an ASTM F84 input is set (fpp_diameter_cm > 0, fpp_geometry not circle, or fpp_temperature_c with fpp_dopant_type n or p): the F84 corrections apply instead.",
           "enum": [
             "thin_film",
             "semi_infinite",
@@ -382,11 +398,13 @@
         "fpp_position_correction": {
           "const": "warn",
           "default": "warn",
+          "description": "warn: a spot's position effect (the geometry factor where the probe is, against the one the rows use) is reported, and never applied to Rs or rho. The only choice: whether a position correction may be applied is undecided, so every number in a file is the uncorrected K or F84 one.",
           "title": "Fpp Position Correction",
           "type": "string"
         },
         "fpp_power_stop_w": {
           "default": 0.1,
+          "description": "The run refuses to start when |fpp_current| x fpp_voltage_compliance is above this, and with fpp_stop_on_overpower stops when a measured V x I is.",
           "maximum": 22.0,
           "minimum": 0.0001,
           "title": "Fpp Power Stop W",
@@ -394,6 +412,7 @@
         },
         "fpp_power_warn_w": {
           "default": 0.01,
+          "description": "The run warns when |fpp_current| x fpp_voltage_compliance is above this.",
           "maximum": 10.0,
           "minimum": 0.0001,
           "title": "Fpp Power Warn W",
@@ -401,6 +420,7 @@
         },
         "fpp_sample_diameter_mm": {
           "default": 0.0,
+          "description": "Diameter of a circle outline; 0 = not entered. Read only when fpp_sample_shape is circle.",
           "maximum": 1000.0,
           "minimum": 0.0,
           "title": "Fpp Sample Diameter Mm",
@@ -408,6 +428,7 @@
         },
         "fpp_sample_length_mm": {
           "default": 0.0,
+          "description": "Side of a rectangle outline along x, the direction of a 0 deg probe array; 0 = not entered. Read only when fpp_sample_shape is rectangle.",
           "maximum": 1000.0,
           "minimum": 0.0,
           "title": "Fpp Sample Length Mm",
@@ -415,6 +436,7 @@
         },
         "fpp_sample_shape": {
           "default": "unbounded",
+          "description": "Sample outline for a spot's position check only; unbounded: fpp_geometry and fpp_diameter_cm describe it. circle needs fpp_sample_diameter_mm, rectangle fpp_sample_width_mm and fpp_sample_length_mm.",
           "enum": [
             "unbounded",
             "circle",
@@ -425,6 +447,7 @@
         },
         "fpp_sample_width_mm": {
           "default": 0.0,
+          "description": "Side of a rectangle outline along y, across a 0 deg probe array; 0 = not entered. Read only when fpp_sample_shape is rectangle.",
           "maximum": 1000.0,
           "minimum": 0.0,
           "title": "Fpp Sample Width Mm",
@@ -432,6 +455,7 @@
         },
         "fpp_samples": {
           "default": 20,
+          "description": "Readings to take, then stop; 0 = until stopped.",
           "maximum": 1000000,
           "minimum": 0,
           "title": "Fpp Samples",
@@ -439,6 +463,7 @@
         },
         "fpp_spacing_cm": {
           "default": 0.1016,
+          "description": "Probe tip spacing s (0.1016 cm = 40 mil). Read by semi_infinite and finite_alpha (rho = 2 pi s x V/I), the ASTM F84 corrections and a spot's position check; thin_film and finite_thin do not use it.",
           "maximum": 5.0,
           "minimum": 0.001,
           "title": "Fpp Spacing Cm",
@@ -446,6 +471,7 @@
         },
         "fpp_stop_on_overpower": {
           "default": true,
+          "description": "true: a reading whose measured |V x I| is above fpp_power_stop_w turns the output off and ends the run (reason overpower). false: such a reading only warns, as one above fpp_power_warn_w does.",
           "title": "Fpp Stop On Overpower",
           "type": "boolean"
         },
@@ -461,10 +487,12 @@
             }
           ],
           "default": null,
+          "description": "Silicon sample temperature for the F84 correction to 23 C, with fpp_dopant_type; null = not measured.",
           "title": "Fpp Temperature C"
         },
         "fpp_thickness_um": {
           "default": 0.0,
+          "description": "0 = not given: sheet resistance only, no resistivity or conductivity (fpp_model semi_infinite does not use it). With the ASTM F84 corrections no sheet resistance either: their thickness factor needs it.",
           "maximum": 5000.0,
           "minimum": 0.0,
           "title": "Fpp Thickness Um",
@@ -472,6 +500,7 @@
         },
         "fpp_voltage_compliance": {
           "default": 5.0,
+          "description": "Voltage limit while sourcing fpp_current. Readings at it are flagged V_COMP and their Rs and rho are lower bounds. |fpp_current| x this is the worst-case probe power, judged against fpp_power_warn_w and fpp_power_stop_w.",
           "maximum": 200.0,
           "minimum": 0.1,
           "title": "Fpp Voltage Compliance",
@@ -479,6 +508,7 @@
         },
         "fpp_voltage_range_auto": {
           "default": true,
+          "description": "true: the voltage measurement autoranges; false: it stays on the range that holds fpp_voltage_compliance.",
           "title": "Fpp Voltage Range Auto",
           "type": "boolean"
         }
@@ -498,6 +528,7 @@
         },
         "auto_zero": {
           "default": "once",
+          "description": "on: re-zero with every reading (slower, no drift); once: zero at the start of the run; off: never.",
           "enum": [
             "on",
             "once",
@@ -520,6 +551,7 @@
         },
         "filter_type": {
           "default": "repeat",
+          "description": "repeat: each reading averages filter_count new conversions; moving: a running average.",
           "enum": [
             "repeat",
             "moving"
@@ -541,6 +573,7 @@
         },
         "nplc": {
           "default": 1,
+          "description": "Integration time per reading, in power-line cycles.",
           "maximum": 10.0,
           "minimum": 0.01,
           "title": "Nplc",
@@ -548,6 +581,7 @@
         },
         "sampling_rate": {
           "default": 10.0,
+          "description": "Readings per second asked for; the timing settings may allow fewer.",
           "maximum": 100.0,
           "minimum": 0.1,
           "title": "Sampling Rate",
@@ -562,6 +596,7 @@
         },
         "stop_on_compliance": {
           "default": false,
+          "description": "End the run when the output reaches its compliance limit.",
           "title": "Stop On Compliance",
           "type": "boolean"
         },
@@ -614,17 +649,20 @@
       "properties": {
         "res_auto_range": {
           "default": true,
+          "description": "Auto-ohms: the instrument chooses its own test current and voltage limit.",
           "title": "Res Auto Range",
           "type": "boolean"
         },
         "res_cable_null": {
           "default": 0.0,
+          "description": "Lead resistance subtracted from every reading, in ohms; set by the cable-null procedure.",
           "minimum": 0.0,
           "title": "Res Cable Null",
           "type": "number"
         },
         "res_measurement_type": {
           "default": "2-wire",
+          "description": "4-wire senses the voltage at the sample on separate leads (remote sense); 2-wire includes the leads' resistance.",
           "enum": [
             "2-wire",
             "4-wire"
@@ -634,11 +672,13 @@
         },
         "res_offset_comp": {
           "default": true,
+          "description": "Offset-compensated ohms: cancels thermal EMFs, halves the reading rate.",
           "title": "Res Offset Comp",
           "type": "boolean"
         },
         "res_test_current": {
           "default": 0.001,
+          "description": "Current sourced, with res_auto_range off. With it on, auto-ohms chooses the current per range (100 mA seen for a 1 mA request) and the Current column records it; the file name (\u2026_R_1.00mA) and params.test_current_A still give this value.",
           "maximum": 3.0,
           "minimum": 1e-07,
           "title": "Res Test Current",
@@ -911,6 +951,29 @@
       "title": "SampleGeometry",
       "type": "object"
     },
+    "SettingsWarning": {
+      "additionalProperties": false,
+      "description": "Something the run will warn about once it is going, said beforehand.\n\nNot an :class:`Issue`: nothing is wrong with the settings, and a start\nis never refused for one. The run itself would say it, in a log line\nor not at all (a rate it cannot reach is simply not reached); a\npreview that stayed silent left a client to find out from the run, or\nto work it out for itself and disagree. ``keys`` are the settings the\njudgement reads, the one to change first.",
+      "properties": {
+        "keys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Keys",
+          "type": "array"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "keys",
+        "message"
+      ],
+      "title": "SettingsWarning",
+      "type": "object"
+    },
     "SpotRequest": {
       "additionalProperties": false,
       "description": "One placement of the probe, as the client describes it.\n\nThe position is optional -- a spot can be a label and nothing more -- but\n``x_mm`` and ``y_mm`` only mean something together. ``angle_deg`` is the\ndirection of the probe array, anticlockwise from +x; absent, the run uses\nthe ``fpp_array_angle_deg`` setting.",
@@ -986,6 +1049,7 @@
       "properties": {
         "sweep_compliance": {
           "default": 0.1,
+          "description": "Limit on the measured quantity: a current, at most 3.15 A, when sweep_source is voltage; a voltage, at most 210 V, when it is current.",
           "maximum": 210.0,
           "minimum": 1e-07,
           "title": "Sweep Compliance",
@@ -993,6 +1057,7 @@
         },
         "sweep_delay": {
           "default": 0.01,
+          "description": "Delay between sourcing and measuring at each point, in s.",
           "maximum": 10.0,
           "minimum": 0.0,
           "title": "Sweep Delay",
@@ -1008,6 +1073,16 @@
           "title": "Sweep Direction",
           "type": "string"
         },
+        "sweep_measurement_type": {
+          "default": "2-wire",
+          "description": "4-wire senses the voltage at the sample on separate leads (remote sense); 2-wire includes the leads' resistance.",
+          "enum": [
+            "2-wire",
+            "4-wire"
+          ],
+          "title": "Sweep Measurement Type",
+          "type": "string"
+        },
         "sweep_source": {
           "default": "voltage",
           "enum": [
@@ -1019,6 +1094,7 @@
         },
         "sweep_start": {
           "default": 0.0,
+          "description": "In the source's unit: V, within +/-200, when sweep_source is voltage; A, within +/-3, when it is current.",
           "maximum": 200.0,
           "minimum": -200.0,
           "title": "Sweep Start",
@@ -1026,6 +1102,7 @@
         },
         "sweep_step": {
           "default": 0.05,
+          "description": "In the source's unit: V, within +/-200, when sweep_source is voltage; A, within +/-3, when it is current.",
           "exclusiveMinimum": 0.0,
           "maximum": 200.0,
           "title": "Sweep Step",
@@ -1033,6 +1110,7 @@
         },
         "sweep_stop": {
           "default": 1.0,
+          "description": "In the source's unit: V, within +/-200, when sweep_source is voltage; A, within +/-3, when it is current.",
           "maximum": 200.0,
           "minimum": -200.0,
           "title": "Sweep Stop",
@@ -1044,7 +1122,7 @@
     },
     "VdpSettings": {
       "additionalProperties": true,
-      "description": "van der Pauw, ASTM F76 Method A.\n\nThickness stays >= 0 here because a stored profile legitimately holds 0 for\n\"never entered\"; a run request needs > 0, which the resolver enforces in\nstrict mode (the UI prompts for it on Start).",
+      "description": "van der Pauw, ASTM F76 Method A.\n\nA thickness of 0 is \"not given\", as for the four-point probe: the run\nreports the sheet resistance and the homogeneity check, which need no\nthickness, and no resistivity. It used to be refused, although nothing\nbut the resistivity reads it.",
       "properties": {
         "vdp_current": {
           "default": 0.001,
@@ -1055,6 +1133,7 @@
         },
         "vdp_readings_per_polarity": {
           "default": 5,
+          "description": "Readings averaged at each current direction of each wiring.",
           "maximum": 100,
           "minimum": 1,
           "title": "Vdp Readings Per Polarity",
@@ -1062,6 +1141,7 @@
         },
         "vdp_settling_s": {
           "default": 0.2,
+          "description": "Wait after each change of current, in s.",
           "maximum": 10.0,
           "minimum": 0.0,
           "title": "Vdp Settling S",
@@ -1069,6 +1149,7 @@
         },
         "vdp_thickness_cm": {
           "default": 0.0,
+          "description": "0 = not given: sheet resistance and the homogeneity check only, no resistivity.",
           "maximum": 10.0,
           "minimum": 0.0,
           "title": "Vdp Thickness Cm",
@@ -1076,6 +1157,7 @@
         },
         "vdp_voltage_compliance": {
           "default": 5.0,
+          "description": "Voltage limit while sourcing vdp_current at each wiring. The touch-safety check and an agent's voltage limit judge the run by it.",
           "exclusiveMinimum": 0.0,
           "maximum": 200.0,
           "title": "Vdp Voltage Compliance",
@@ -1083,6 +1165,7 @@
         },
         "vdp_voltage_range_auto": {
           "default": true,
+          "description": "true: the voltage measurement autoranges; false: it stays on the range that holds vdp_voltage_compliance.",
           "title": "Vdp Voltage Range Auto",
           "type": "boolean"
         }
@@ -1096,6 +1179,7 @@
       "properties": {
         "vsource_current_compliance": {
           "default": 0.1,
+          "description": "Current limit while sourcing vsource_voltage; readings at it are flagged I_COMP.",
           "maximum": 3.0,
           "minimum": 1e-07,
           "title": "Vsource Current Compliance",
@@ -1103,11 +1187,13 @@
         },
         "vsource_current_range_auto": {
           "default": true,
+          "description": "true: the current measurement autoranges; false: it stays on the range that holds vsource_current_compliance.",
           "title": "Vsource Current Range Auto",
           "type": "boolean"
         },
         "vsource_duration_hours": {
           "default": 0.0,
+          "description": "0 = until stopped.",
           "maximum": 168.0,
           "minimum": 0.0,
           "title": "Vsource Duration Hours",

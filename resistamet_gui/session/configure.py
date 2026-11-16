@@ -13,7 +13,8 @@ from typing import Optional
 
 import pyvisa
 
-from ..formatting import format_power
+from ..calculations import four_point_power_level, four_point_worst_case_power_w
+from ..formatting import format_power, four_point_power_warning
 
 
 @dataclass(frozen=True)
@@ -277,9 +278,11 @@ def configure_four_point(keithley, events, measurement_settings, nplc):
 
     # Pre-flight power envelope check: worst case is the user
     # asking for the full source current at the full compliance
-    # voltage, i.e. probe sees I_source * V_compliance.
-    worst_case_power = abs(source_current) * abs(voltage_compliance)
-    if worst_case_power > state.power_stop_w:
+    # voltage, i.e. probe sees I_source * V_compliance. The settings
+    # preview judges it with the same two functions.
+    worst_case_power = four_point_worst_case_power_w(source_current, voltage_compliance)
+    level = four_point_power_level(worst_case_power, state.power_warn_w, state.power_stop_w)
+    if level == 'stop':
         events.error('power_envelope', 'run',
             f"Configured 4PP power ({format_power(worst_case_power)} = "
             f"{abs(source_current)*1e3:.3g} mA × {abs(voltage_compliance):.3g} V) "
@@ -289,12 +292,10 @@ def configure_four_point(keithley, events, measurement_settings, nplc):
             f"in settings if you've reviewed the probe spec."
         )
         return
-    if worst_case_power > state.power_warn_w:
-        events.warn('power_envelope',
-            f"Warning: 4PP power envelope: up to {format_power(worst_case_power)} "
-            f"(I × V_comp). Above warning threshold "
-            f"{format_power(state.power_warn_w)} — proceed with care."
-        )
+    if level == 'warn':
+        events.warn('power_envelope', "Warning: 4PP power envelope: " +
+                    four_point_power_warning(worst_case_power, state.power_warn_w,
+                                             source_current))
 
     metadata = {
         'Mode': 'Four-Point Probe',
@@ -326,7 +327,13 @@ def configure_sweep(keithley, events, measurement_settings, nplc):
     sweep_compliance = float(measurement_settings.get('sweep_compliance', 0.1))
     sweep_delay = float(measurement_settings.get('sweep_delay', 0.01))
     sweep_direction = measurement_settings.get('sweep_direction', 'up')
+    measurement_type = measurement_settings.get('sweep_measurement_type', '2-wire')
 
+    # Written either way, as configure_resistance does, before the source
+    # and sense functions: the sweep must not inherit the wiring of
+    # whatever ran before it. The connect step's *RST leaves it off, so
+    # 2-wire is what every sweep had before this was a setting.
+    keithley.write(":SYST:RSEN ON" if measurement_type == "4-wire" else ":SYST:RSEN OFF")
     src_func = 'VOLT' if sweep_source == 'voltage' else 'CURR'
     # For down direction, swap start/stop
     if sweep_direction == 'down':
@@ -356,6 +363,7 @@ def configure_sweep(keithley, events, measurement_settings, nplc):
         'Delay (s)': sweep_delay,
         'Direction': sweep_direction,
         'Points': state.points,
+        'Measurement Type': measurement_type,
     }
     csv_headers = ['Point', 'Voltage (V)', 'Current (A)', 'Compliance Status']
     source_value_str = f"sweep_{sweep_start}to{sweep_stop}"

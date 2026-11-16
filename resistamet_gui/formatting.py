@@ -36,3 +36,26 @@ def format_power(watts: float) -> str:
         # Kilowatts are beyond any SourceMeter; plain digits, no exponent.
         return f"{scaled:.0f} {unit}"
     return f"{scaled:.3g} {unit}"
+
+
+def four_point_power_warning(worst_case_w: float, warn_w: float, source_current: float) -> str:
+    """The four-point power warning, with what lowers the power.
+
+    Said the same before the run (``schema/resolve.py``) and in its log
+    (``session/configure.py``). The power is |I| x V_compliance, so the
+    remedy is a lower compliance or a lower current; the warning used to
+    name neither, and an agent told only "above the warning threshold"
+    had to work out which setting it came from. The compliance comes
+    first: it is the one that can usually drop without changing the
+    measurement, since the probe needs only the voltage the sample gives.
+    """
+    current = abs(float(source_current))
+    if current > 0:
+        # Warned above the threshold, not at it.
+        lower = (f"lower fpp_voltage_compliance (to {warn_w / current:.3g} V or less at "
+                 f"this current) or fpp_current")
+    else:
+        lower = "lower fpp_voltage_compliance or fpp_current"
+    return (f"Worst-case power {format_power(worst_case_w)} (source current × voltage "
+            f"compliance) is above the {format_power(warn_w)} warning threshold; {lower} "
+            f"to bring it under.")

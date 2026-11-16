@@ -71,15 +71,15 @@ Each tool maps onto one or two API routes. Values are SI (V, A, Ω, s, Hz). Resu
 | `get_status` | State, current or last run (with `started_by` and its data file), instrument and its limits, pending prompt | `GET /session`, `GET /health` |
 | `list_instruments` | VISA resources this PC sees (idle only) | `GET /instruments/resources` |
 | `identify_instrument(address)` | Model and its limits from `*IDN?` (idle only) | `POST /instruments/identify` |
-| `list_users`, `get_profile(user)` | Operators; one profile's stored settings, including its agent limits | `GET /users`, `GET /profiles/{user}` |
-| `describe_mode(mode, user?)` | The keys a mode takes, and the value each would have for a user | `GET /schema/settings`, `POST /settings/resolve` |
-| `check_settings(user, mode, overrides?)` | Dry run: resolved values, issues, derived values, the touch-safety check and the agent-limit verdict (`agent_may_start`) | `POST /settings/resolve` |
+| `list_users`, `get_profile(user)` | Operators; one profile's stored settings, including its agent limits, without the machine's `allow_agents` switch (a connected agent has access whatever it says) | `GET /users`, `GET /profiles/{user}` |
+| `describe_mode(mode, user?)` | One line per key a mode takes: the value a user's run would have, in its unit, and whether it comes from the profile or is fixed by the mode; the default; the choices or bounds; what it means. For `vdp`, the prompts a person must answer, the four wirings they will ask for (Force HI/LO, Sense HI/LO and the prompt's message), and the prompt timeout | `GET /schema/settings`, `POST /settings/resolve`, `GET /profiles/{user}` |
+| `check_settings(user, mode, overrides?)` | Dry run: resolved values, issues, warnings (what the run will warn about: a sampling rate the timing cannot reach, four-point power above its warning threshold, with the compliance or current that would bring it under), derived values, the touch-safety check and the agent-limit verdict, and `notes` on what is easy to miss (a touch-safety prompt ahead; in a resistance run with `res_auto_range` on, that the instrument chooses the test current and voltage limit, not `res_test_current` and `res_voltage_compliance`). First comes `can_start`: whether `start_run` would accept the settings from the agent (valid and within its limits); `ok` says only that the settings are valid | `POST /settings/resolve` |
 | `start_run(user, mode, sample_name, overrides?, spot?, prompt_timeout_s?)` | Start a run; returns the run id at once | `POST /session/start` |
 | `stop_run`, `abort_run`, `pause_run`, `resume_run` | As the routes; stopping is always allowed | `POST /session/…` |
 | `mark_event(label)` | A label in the next data row's event column | `POST /session/mark` |
-| `wait_for(until, timeout_s ≤ 120)` | Wait for `run_ended`, `prompt`, `samples:N` or `state:<state>`; also returns early at a prompt or when no run is in progress, saying which | polls `GET /session` |
+| `wait_for(until, timeout_s ≤ 120, then_stop?, ignore_prompt_id?)` | Wait for `run_ended`, `prompt`, `prompt_answered`, `samples:N` or `state:<state>`; also returns early at a prompt the agent has not been shown or when no run is in progress, saying which. `prompt_answered` and `ignore_prompt_id` wait for a person without anything remembered between calls ([waiting for a person](#waiting-for-a-person)). With `then_stop`, stops the run as soon as the condition holds and returns once it has ended | polls `GET /session`; `POST /session/stop` |
 | `get_run_events(since_seq?, run_id?, types?, include_samples?, max_samples ≤ 200)` | What happened in a run; samples and progress logs left out unless asked for, samples thinned to at most 200 | `GET /session/events` |
-| `get_run_summary(run_id?, path?)` | Per numeric column: unit, count, mean, SD, min, max, last; compliance rows; marks; header and end block. From the data file, during or after the run | `GET /results/file` |
+| `get_run_summary(run_id?, path?, first_rows?)` | Per numeric column: unit, count, mean, SD, min, max, last; compliance rows; marks; header and end block; and `result`, the run's headline ([results](#results)). From the data file, during or after the run. `first_rows=N`: over the first N data rows only | `GET /results/file` |
 | `list_results(user?, sample?)`, `read_result(path, offset?, rows ≤ 500)` | Data files; one file's header and a slice of its rows | `GET /results`, `GET /results/file` |
 | `list_maps(user)`, `get_map(map_id, user)` | Four-point maps | `GET /maps`, `GET /maps/{map_id}` |
 
@@ -87,12 +87,44 @@ There is deliberately no tool to answer a prompt (every prompt today needs a per
 
 Summaries read plain `.csv` files only: a compressed `.csv.gz` or an HDF5 file is reported as such.
 
+### Results
+
+`get_run_summary` gives a `result` block beside the column statistics: the number the run was for, with a unit on every number, a `headline` that says it in one line, and `uncertainty`, a line saying what the uncertainties are. Rows in compliance are left out of it and counted (`excluded_in_compliance`); a reading in compliance is the limit, not the sample.
+
+| Mode | `result` |
+|---|---|
+| `resistance` | `R`: mean, SD and n of `R_ohm` (Ω), and `u_inst_per_reading`, the mean of `R_unc_ohm` |
+| `source_v`, `source_i` | The measured quantity (`I` in A, or `V` in V) and `R` (Ω), each as above |
+| `four_point` | `Rs` (Ω/□), and `rho` (Ω·cm) and `sigma` (S/cm) when a thickness was given: mean, SD, `u_stat`, `u_inst`, `u_total` and n, from the file's `spot_stats`. While the run is going, or with `first_rows`, mean and SD from the rows instead, and a `note` saying so |
+| `vdp` | `R_s` (Ω/□) and `rho` (Ω·cm, null without a thickness), each a value with `u`; `homogeneity`: the verdict, `asymmetry_pct`, `threshold_pct` (10) and the `criterion`, \|ρ_A − ρ_B\| / ρ_avg ≤ 10 % (ASTM F76 §11.1) |
+| `sweep` | A least-squares fit of the measured quantity on the sourced one (I on V for a voltage sweep, V on I for a current sweep): `R` (Ω) with its `standard_error`, the `intercept` (A or V, with its standard error), n and `r2`, over every point not in compliance, both legs of an up-down sweep together. Either header form is read |
+
+The uncertainties are standard uncertainties, k = 1; none is expanded. The instrument parts take the Keithley 1-year datasheet accuracy as one standard deviation, as `accuracy.py` does; `u_stat` is the standard error of the mean. A sweep's `standard_error` comes from the scatter about the line alone. An SD in a resistance or source result is the readings' spread, not an uncertainty of the mean.
+
+### A fixed number of readings
+
+Four-point runs stop by themselves after `fpp_samples`; resistance, source V and source I run until they are stopped. To take N readings in those, start the run and call `wait_for("samples:N", then_stop=true)`. The stop goes out in the same call, as soon as the backend has N samples, and the call returns once the run has ended, with `stopped: true` and `run_ended` (its `samples` is the final count). While it waits to stop a run, `wait_for` looks every 0.1 s, so the file holds N rows or a few more: those read in that tenth of a second and the one in flight when the stop arrives. `get_run_summary(first_rows=N)` then summarises exactly N. Waiting and stopping in two calls leaves the agent's round trip between them; in a trial, a run asked for 20 readings wrote 57. A prompt or a timeout does not stop the run.
+
+### Waiting for a person
+
+A prompt that `requires_human` holds the run until a person answers it at the window. The agent tells the user what it asks, then calls `wait_for("prompt_answered", ignore_prompt_id="<its prompt_id>")`; the prompt's `who_answers` gives that call with the id filled in. It returns with `fired`:
+
+- `prompt_answered`: the prompt is no longer pending. It was answered, released by a stop, or the run ended (then `run_ended` says how). The status says what came next: the state, and the next prompt if it is already up;
+- `prompt`: a different prompt was already pending when the wait began (the person answered before the agent began to wait). Tell the user about this one;
+- `timeout`: no answer yet; call again.
+
+`prompt_at_start` names the prompt waited on and says whether it is `still_pending`. Without `ignore_prompt_id`, `prompt_answered` waits on whatever prompt is pending when the call begins, and holds at once when none is.
+
+`ignore_prompt_id` also lets `run_ended`, `state:<state>` and `samples:N` wait through that one prompt, and makes `prompt` wait for the next one. Any other prompt ends the wait at once, so a prompt raised just after `start_run` is never waited through unheard. `wait_for("prompt")` with no id returns at once while any prompt is pending.
+
+Both forms carry what the wait needs in the call itself. The MCP server also remembers the last prompt it showed the agent and waits through that one in `run_ended`, `state:` and `samples:` waits, but only for as long as the server process lives: a client that starts a new server for every call, or reconnects, has nothing remembered, and there `wait_for("run_ended")` at a prompt returns at once with it.
+
 ## What needs a person
 
 The backend applies these to the agent's token whatever the MCP server does ([API → Token and roles](api.md#token-and-roles)):
 
 - **Agent limits.** A run an agent starts must stay within the profile's [`agent_limits`](settings.md#agent-limits): 30 V by default, with current and power left to the instrument, and the connected model's own limits once the backend knows the model. Beyond them `start_run` is refused with each violation (the limit, the settings that give the value, the value, the limit's value); `check_settings` gives the same verdict first. Only the window can change the limits.
-- **Prompts.** A run at or above the profile's touch-safety threshold asks for acknowledgement at the window, even on a profile that silenced the warning, and a van der Pauw run asks before each of its four wirings. Both are `requires_human`: `wait_for` and `get_status` report them with "a person must answer this at the ResistaMet window", and the run waits for that person, or until `prompt_timeout_s` (900 s by default) and then ends.
+- **Prompts.** A run at or above the profile's touch-safety threshold asks for acknowledgement at the window, even on a profile that silenced the warning, and a van der Pauw run asks before each of its four wirings, with the output off, so a person must be at the bench for the whole of it (`describe_mode("vdp")` says so). Both are `requires_human`: `wait_for` and `get_status` report them with "a person must answer this at the ResistaMet window", and the run waits for that person, or until `prompt_timeout_s` (900 s by default) and then ends.
 - **Protected settings.** The touch-safety keys, the agent limits, `allow_agents` and a VISA library path can be changed by the window only.
 - **Provenance.** Every run an agent starts has `started_by: agent` in its data file header, set by the backend from the token, and `client.name: resistamet-mcp`. The desktop app marks such a run.
 

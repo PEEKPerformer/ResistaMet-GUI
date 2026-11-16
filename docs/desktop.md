@@ -82,7 +82,7 @@ Configure, run once, look at the curve: one trace per direction, the point count
 
 ### van der Pauw
 
-A four-step wizard for ASTM F76 Method A. At each geometry the backend stops at a prompt with the output off; the view shows which contact each of Force HI, Force LO, Sense HI and Sense LO goes to on a diagram of the sample, and waits for **Measure**. Both current polarities are taken automatically. Readings fill a table as they arrive, and the result panel gives sheet resistance and resistivity with combined uncertainties and the f(Q) homogeneity verdict.
+A four-step wizard for ASTM F76 Method A. At each geometry the backend stops at a prompt with the output off; the view shows which contact each of Force HI, Force LO, Sense HI and Sense LO goes to on a diagram of the sample, and waits for **Measure**. If another view is open when a geometry prompt arrives (a run an AI agent started, say), a dialog gives the wiring in words and opens the van der Pauw view. Both current polarities are taken automatically. Readings fill a table as they arrive, and the result panel gives sheet resistance and resistivity with combined uncertainties and the f(Q) homogeneity verdict.
 
 ### Results
 

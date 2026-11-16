@@ -295,6 +295,7 @@ def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] 
             ['elapsed_s', 'V', 'I', 'V_over_I', 'Rs_ohm_sq', 'rho_ohm_cm', 'sigma_S_cm', 'V_unc_V', 'I_unc_A', 'compliance', 'event'],
             ['s', 'V', 'A', 'Ω', 'Ω/□', 'Ω·cm', 'S/cm', 'V', 'A', '', '']
         ),
+        # A voltage sweep's; a current sweep's are V_meas, I_source (below).
         'sweep': (
             ['point', 'V_source', 'I_meas', 'compliance'],
             ['', 'V', 'A', '']
@@ -312,6 +313,15 @@ def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] 
         ),
     }
     cols, units = configs.get(mode, (['elapsed_s', 'value'], ['s', '']))
+
+    # A sweep row is (point, V, I, compliance) whichever is sourced: the
+    # sweep engine returns VOLT,CURR,STAT in that fixed order. The names say
+    # which of the two was sourced. A current-sourced sweep used to be
+    # written under V_source,I_meas, the voltage sweep's names, when its V
+    # was measured and its I sourced.
+    if mode == 'sweep' and measurement_settings is not None and \
+            measurement_settings.get('sweep_source') == 'current':
+        cols = ['point', 'V_meas', 'I_source', 'compliance']
 
     # In 4PP delta mode, splice per-polarity columns before compliance/event.
     if mode == 'four_point' and measurement_settings is not None:
@@ -465,6 +475,8 @@ def build_metadata(
             'compliance': measurement_settings.get('sweep_compliance'),
             'delay_s': measurement_settings.get('sweep_delay'),
             'direction': measurement_settings.get('sweep_direction'),
+            # configure_sweep's default, so the header says what was sent.
+            'measurement_type': measurement_settings.get('sweep_measurement_type', '2-wire'),
         }
 
     # Auxiliary-sensor provenance (any continuous mode) — only recorded when

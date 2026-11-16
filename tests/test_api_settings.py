@@ -251,6 +251,38 @@ class TestSchema:
         assert 'gpib_address' not in keys
         assert 'settling_time' not in keys
 
+    def test_each_key_says_what_it_accepts_and_the_mode_says_what_it_fixes(self, client):
+        modes = client.get('/schema/settings').json()['modes']
+        resistance = modes['resistance']
+        assert set(resistance['keys']) == set(resistance['override_keys'])
+        assert {key: value for key, value in resistance['keys']['res_test_current'].items()
+                if key != 'description'} == {
+            'type': 'number', 'minimum': 1e-7, 'maximum': 3.0, 'default': 0.001, 'unit': 'A'}
+        assert resistance['keys']['res_measurement_type']['enum'] == ['2-wire', '4-wire']
+        assert resistance['fixed'] == {}
+        assert modes['four_point']['fixed'] == {'auto_zero': 'on', 'filter_count': 10}
+
+    def test_van_der_pauw_says_its_wirings_before_the_run(self, client):
+        schema = client.get('/schema/settings').json()
+        wiring = schema['modes']['vdp']['wiring']
+        assert [(w['force_hi'], w['force_lo'], w['sense_hi'], w['sense_lo'])
+                for w in wiring] == [('C2', 'C1', 'C3', 'C4'), ('C3', 'C2', 'C4', 'C1'),
+                                     ('C4', 'C3', 'C1', 'C2'), ('C1', 'C4', 'C2', 'C3')]
+        assert wiring[0]['message'] == ("Geometry 1 of 4: connect Force HI→C2, Force LO→C1, "
+                                        "Sense HI→C3, Sense LO→C4, then press Measure.")
+        assert not any('wiring' in entry for mode, entry in schema['modes'].items()
+                       if mode != 'vdp')
+        assert schema['prompt_timeout_s'] == {'default': 900.0, 'maximum': 86400.0}
+
+    def test_a_run_until_stopped_flag_is_offered_to_its_own_mode_only(self, client):
+        modes = client.get('/schema/settings').json()['modes']
+        offered = {mode: sorted(key for key in entry['override_keys']
+                                if key.endswith('_run_continuous'))
+                   for mode, entry in modes.items()}
+        assert offered == {'resistance': [], 'source_v': ['vsource_run_continuous'],
+                           'source_i': ['isource_run_continuous'], 'four_point': [],
+                           'sweep': [], 'vdp': []}
+
 
 class TestResolve:
     def test_preview_returns_the_settings_a_run_would_use(self, client):
@@ -265,7 +297,7 @@ class TestResolve:
 
     def test_issues_are_reported_without_starting_anything(self, client, session):
         response = client.post('/settings/resolve', json={
-            'mode': 'vdp', 'username': 'alice', 'overrides': {'vdp_thickness_cm': 0.0},
+            'mode': 'vdp', 'username': 'alice', 'overrides': {'vdp_thickness_cm': -0.1},
         })
         body = response.json()
         assert body['ok'] is False
@@ -279,6 +311,27 @@ class TestResolve:
         }).json()
         assert body['hazard']['hazardous'] is True
         assert body['hazard']['voltage_v'] == 60.0
+
+    def test_what_the_run_will_warn_about_is_said_and_does_not_block(self, client):
+        # NPLC 1, auto-zero once, no filter, no offset compensation:
+        # (1/60 s + 3 ms) + 6 ms = 25.7 ms a reading, 38.96 Hz; asked for 50.
+        body = client.post('/settings/resolve', json={
+            'mode': 'resistance', 'username': 'alice', 'overrides': {
+                'nplc': 1.0, 'auto_zero': 'once', 'filter_enabled': False,
+                'res_offset_comp': False, 'sampling_rate': 50.0}}).json()
+        assert body['ok'] is True and body['issues'] == []
+        assert body['warnings'] == [{
+            'keys': ['sampling_rate', 'nplc', 'auto_zero', 'filter_enabled', 'filter_type',
+                     'filter_count', 'res_offset_comp'],
+            'message': "50 Hz is more than these timing settings can deliver (about "
+                       "39.0 Hz); the run will sample as fast as it can."}]
+
+    def test_no_warning_is_an_empty_list(self, client):
+        body = client.post('/settings/resolve', json={
+            'mode': 'resistance', 'username': 'alice', 'overrides': {
+                'nplc': 1.0, 'auto_zero': 'once', 'filter_enabled': False,
+                'res_offset_comp': False, 'sampling_rate': 10.0}}).json()
+        assert body['warnings'] == []
 
     def test_unknown_mode_is_unprocessable(self, client):
         assert client.post('/settings/resolve',

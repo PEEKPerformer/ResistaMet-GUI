@@ -136,6 +136,7 @@ COMBO_BOXES = {
     (FourPointSettings, 'fpp_dopant_type'): [('tab_four_point', 'fpp_dopant_type')],
     (SweepSettings, 'sweep_source'): [('tab_sweep', 'sweep_source')],
     (SweepSettings, 'sweep_direction'): [('tab_sweep', 'sweep_direction')],
+    (SweepSettings, 'sweep_measurement_type'): [('tab_sweep', 'sweep_measurement_type')],
 }
 
 # Literal field -> why no PySide6 combo box writes it

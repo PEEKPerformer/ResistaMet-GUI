@@ -21,6 +21,8 @@ from resistamet_gui.calculations import (
     calculate_four_point_probe,
     calculate_four_point_probe_bound,
     estimate_current_floor,
+    four_point_power_level,
+    four_point_worst_case_power_w,
     f2_finite_diameter,
     f_thickness_correction,
     f_temperature_correction,
@@ -179,6 +181,20 @@ class TestCalculateResistivity:
             ratio=float('nan'), spacing_cm=0.1, thickness_cm=0.001
         )
         assert math.isnan(result)
+
+    @pytest.mark.parametrize('model', ['thin_film', 'finite_thin'])
+    @pytest.mark.parametrize('thickness_cm', [0.0, -0.001, float('nan')])
+    def test_a_thin_film_with_no_thickness_has_no_resistivity(self, model, thickness_cm):
+        """0 is "not entered": rho = K*t*(V/I) would be exactly 0, a wrong number."""
+        result = calculate_resistivity(ratio=100.0, spacing_cm=0.1,
+                                       thickness_cm=thickness_cm, model=model)
+        assert math.isnan(result)
+
+    def test_semi_infinite_needs_no_thickness(self):
+        """rho = 2*pi*s*(V/I) does not read t: 2*pi*0.1*100 = 62.83 Ohm cm."""
+        result = calculate_resistivity(ratio=100.0, spacing_cm=0.1, thickness_cm=0.0,
+                                       model='semi_infinite')
+        assert result == pytest.approx(62.83185, rel=1e-6)
 
 
 class TestCalculateConductivity:
@@ -371,6 +387,42 @@ class TestCalculateFourPointProbeBound:
             source_current=1e-3, spacing_cm=0.1, thickness_um=100,
         )
         assert isinstance(result, FourPointProbeResult)
+
+    def test_a_bound_with_no_thickness_bounds_rs_only(self):
+        # 5 V / 1 uA floor = 5e6 Ohm; Rs >= 4.532 * 5e6 = 2.266e7 Ohm/sq.
+        result = calculate_four_point_probe_bound(
+            v_compliance=5.0, measured_current=0.0,
+            source_current=1e-3, spacing_cm=0.1, thickness_um=0.0, model='thin_film',
+        )
+        assert result.sheet_resistance == pytest.approx(2.266e7)
+        assert math.isnan(result.resistivity)
+        assert math.isnan(result.conductivity)
+
+
+class TestFourPointPowerEnvelope:
+    """The run's pre-flight and the settings preview judge with these."""
+
+    def test_worst_case_is_current_times_compliance(self):
+        assert four_point_worst_case_power_w(-5e-3, 5.0) == pytest.approx(0.025)
+
+    @pytest.mark.parametrize('worst,level', [(0.25, 'stop'), (0.025, 'warn'),
+                                             (0.01, None), (0.1, 'warn')])
+    def test_levels_are_strictly_above_each_threshold(self, worst, level):
+        assert four_point_power_level(worst, warn_w=0.01, stop_w=0.1) == level
+
+
+class TestFourPointProbeWithoutThickness:
+    """A thickness of 0 means none was entered: Rs, but no rho or sigma."""
+
+    def test_rs_is_given_and_rho_and_sigma_are_not(self):
+        # 1 mV / 1 mA = 1 Ohm; Rs = 4.532 Ohm/sq.
+        result = calculate_four_point_probe(voltage=0.001, current=0.001,
+                                            spacing_cm=0.1016, thickness_um=0.0,
+                                            model='thin_film')
+        assert result.ratio == pytest.approx(1.0)
+        assert result.sheet_resistance == pytest.approx(4.532)
+        assert math.isnan(result.resistivity)
+        assert math.isnan(result.conductivity)
 
 
 # ============================================================================

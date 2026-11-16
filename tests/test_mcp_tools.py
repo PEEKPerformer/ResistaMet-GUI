@@ -20,6 +20,7 @@ from mcp.types import Implementation  # noqa: E402
 from resistamet_gui.mcp.audit import AuditLog  # noqa: E402
 from resistamet_gui.mcp.client import NOT_RUNNING, Backend  # noqa: E402
 from resistamet_gui.mcp.server import build_server  # noqa: E402
+from resistamet_gui.mcp.tools import NOTE_HAZARD, VDP_PROMPTS  # noqa: E402
 
 PENDING = {'prompt_id': 'run-2:vdp_geometry-1', 'kind': 'vdp_geometry',
            'options': ['proceed', 'abort'], 'requires_human': True, 'detail': {'index': 1}}
@@ -27,7 +28,15 @@ PENDING = {'prompt_id': 'run-2:vdp_geometry-1', 'kind': 'vdp_geometry',
 SCHEMA = {'modes': {'resistance': {
     'model': 'ResistanceSettings',
     'fields': ['res_test_current', 'res_voltage_compliance'],
-    'override_keys': ['res_test_current', 'res_voltage_compliance', 'sampling_rate']}}}
+    'override_keys': ['res_test_current', 'res_voltage_compliance', 'sampling_rate'],
+    'keys': {
+        'res_test_current': {'type': 'number', 'minimum': 1e-7, 'maximum': 3.0,
+                             'default': 0.001, 'unit': 'A'},
+        'res_voltage_compliance': {'type': 'number', 'minimum': 0.1, 'maximum': 200.0,
+                                   'default': 5.0, 'unit': 'V'},
+        'sampling_rate': {'type': 'number', 'minimum': 0.1, 'maximum': 100.0,
+                          'default': 10.0, 'unit': 'Hz'}},
+    'fixed': {}}}}
 
 
 class ScriptedBackend:
@@ -70,21 +79,36 @@ def connection_file(tmp_path):
 
 
 @pytest.fixture
-def call(scripted, connection_file, tmp_path):
-    """Call one tool through a fresh in-memory MCP session; (is_error, payload)."""
-    def run(name, arguments=None):
+def calls(scripted, connection_file, tmp_path):
+    """Call tools in turn through one fresh in-memory MCP session.
+
+    Takes ``(name, arguments)`` pairs; returns ``(is_error, payload)`` for each.
+    """
+    def run(*steps):
         async def go():
             backend = Backend(str(connection_file), transport=httpx2.MockTransport(scripted))
             server = build_server(backend, AuditLog(str(tmp_path / 'audit')))
+            replies = []
             try:
                 async with Client(server, mode='legacy',
                                   client_info=Implementation(name='test', version='1')) as client:
-                    reply = await client.call_tool(name, arguments or {})
+                    for name, arguments in steps:
+                        reply = await client.call_tool(name, arguments or {})
+                        text = reply.content[0].text
+                        replies.append((reply.is_error,
+                                        text if reply.is_error else json.loads(text)))
             finally:
                 await backend.aclose()
-            text = reply.content[0].text
-            return reply.is_error, (text if reply.is_error else json.loads(text))
+            return replies
         return asyncio.run(go())
+    return run
+
+
+@pytest.fixture
+def call(calls):
+    """Call one tool through a fresh in-memory MCP session; (is_error, payload)."""
+    def run(name, arguments=None):
+        return calls((name, arguments))[0]
     return run
 
 
@@ -130,6 +154,23 @@ class TestReads:
         assert status['pending_prompt']['kind'] == 'vdp_geometry'
         assert 'person must answer' in status['pending_prompt']['who_answers']
 
+    def test_get_profile_leaves_out_the_machine_s_agent_switch(self, call, scripted):
+        """Stored false while --allow-agents let this agent in: it read as a refusal."""
+        scripted.replies[('GET', '/profiles/alice')] = (200, {
+            'measurement': {'gpib_address': 'GPIB0::24::INSTR', 'allow_agents': False,
+                            'res_test_current': 0.001},
+            'agent_limits': {'max_voltage_v': 30.0}})
+        failed, profile = call('get_profile', {'user': 'alice'})
+        assert not failed
+        assert profile == {'measurement': {'gpib_address': 'GPIB0::24::INSTR',
+                                           'res_test_current': 0.001},
+                           'agent_limits': {'max_voltage_v': 30.0}}
+
+    def test_list_instruments_says_where_a_run_s_address_comes_from(self, connection_file):
+        description = _list_tools(connection_file)['list_instruments'].description
+        assert "profile's gpib_address" in description
+        assert "overrides cannot name an address" in description
+
     def test_a_user_name_is_one_path_segment(self, call, scripted):
         call('get_profile', {'user': 'a/b c'})
         assert scripted.requests[-1][4] == '/profiles/a%2Fb%20c'
@@ -140,23 +181,71 @@ class TestReads:
         assert (failed, reply) == (False, {'model': '2420'})
         assert scripted.requests[-1][3] == {'address': 'GPIB0::24::INSTR'}
 
-    def test_describe_mode_gives_the_keys_and_the_user_s_values(self, call, scripted):
+    def test_describe_mode_gives_a_line_per_key_with_the_user_s_values(self, call, scripted):
         scripted.replies[('POST', '/settings/resolve')] = (200, {
             'ok': True, 'issues': [],
-            'settings': {'measurement': {'res_test_current': 0.001,
+            'settings': {'measurement': {'res_test_current': 0.002,
                                          'res_voltage_compliance': 5.0,
                                          'sampling_rate': 10.0, 'vsource_voltage': 1.0}}})
         failed, described = call('describe_mode', {'mode': 'resistance'})
         assert not failed
-        assert described == {
-            'mode': 'resistance',
-            'mode_keys': ['res_test_current', 'res_voltage_compliance'],
-            'override_keys': ['res_test_current', 'res_voltage_compliance', 'sampling_rate'],
-            'user': 'alice',
-            'values': {'res_test_current': 0.001, 'res_voltage_compliance': 5.0,
-                       'sampling_rate': 10.0},
-            'issues': [],
+        assert described['mode_keys'] == {
+            'res_test_current': '0.002 A, from the profile; default 0.001; 1e-07 <= x <= 3',
+            'res_voltage_compliance': '5.0 V, from the profile (the default); '
+                                      '0.1 <= x <= 200',
         }
+        assert described['shared_keys'] == {
+            'sampling_rate': '10.0 Hz, from the profile (the default); 0.1 <= x <= 100'}
+        assert (described['user'], described['issues']) == ('alice', [])
+        assert 'fixed by the mode' in described['how_to_read']
+        # Nothing is fixed in this mode, so the stored profile is not asked for.
+        assert not [r for r in scripted.requests if r[1].startswith('/profiles/')]
+
+    def test_describe_mode_says_which_values_the_mode_fixes(self, call, scripted):
+        scripted.replies[('GET', '/schema/settings')] = (200, {'modes': {'vdp': {
+            'model': 'VdpSettings', 'fields': ['vdp_current'],
+            'override_keys': ['auto_zero', 'vdp_current'], 'fixed': {'auto_zero': 'on'},
+            'keys': {'auto_zero': {'type': 'string', 'enum': ['on', 'once', 'off'],
+                                   'default': 'once'},
+                     'vdp_current': {'type': 'number', 'default': 0.001, 'unit': 'A'}}}}})
+        scripted.replies[('POST', '/settings/resolve')] = (200, {
+            'ok': True, 'issues': [],
+            'settings': {'measurement': {'auto_zero': 'on', 'vdp_current': 0.001}}})
+        scripted.replies[('GET', '/profiles/alice')] = (200, {
+            'measurement': {'auto_zero': 'once', 'vdp_current': 0.001}})
+        failed, described = call('describe_mode', {'mode': 'vdp'})
+        assert not failed
+        assert described['shared_keys'] == {
+            'auto_zero': '"on", fixed by the mode (the profile\'s "once" is not used)'}
+        assert described['prompts'] == VDP_PROMPTS
+        # An older backend's schema has no wiring: nothing is made up.
+        assert 'wiring' not in described and 'prompt_timeout_s' not in described
+
+    def test_describe_mode_passes_on_the_van_der_pauw_wiring(self, call, scripted):
+        wiring = [{'index': 0, 'name': 'Geometry 1 of 4', 'force_hi': 'C2',
+                   'force_lo': 'C1', 'sense_hi': 'C3', 'sense_lo': 'C4',
+                   'message': 'Geometry 1 of 4: connect ...'}]
+        timeout = {'default': 900.0, 'maximum': 86400.0}
+        scripted.replies[('GET', '/schema/settings')] = (200, {'modes': {'vdp': {
+            'model': 'VdpSettings', 'fields': [], 'override_keys': [], 'fixed': {},
+            'keys': {}, 'wiring': wiring}}, 'prompt_timeout_s': timeout})
+        scripted.replies[('POST', '/settings/resolve')] = (200, {
+            'ok': True, 'issues': [], 'settings': {'measurement': {}}})
+        failed, described = call('describe_mode', {'mode': 'vdp'})
+        assert not failed
+        assert (described['wiring'], described['prompt_timeout_s']) == (wiring, timeout)
+
+    def test_the_vdp_prompts_are_the_run_s(self, connection_file):
+        """Four rewiring prompts, as many as the F76 geometries the run walks."""
+        from resistamet_gui.calculations_vdp import f76_geometries
+        assert len(f76_geometries()) == 4
+        assert VDP_PROMPTS.startswith('A van der Pauw run stops at four prompts')
+        assert 'the output is off while it waits' in VDP_PROMPTS
+        assert 'touch-safety prompt (safety_voltage_ack) comes first' in VDP_PROMPTS
+        assert 'A person must be at the bench for the whole run' in VDP_PROMPTS
+        description = _list_tools(connection_file)['start_run'].description
+        assert 'four more, one before each of its four wirings' in description
+        assert 'someone must be at the bench for the whole run' in description
 
     def test_an_unknown_mode_names_the_modes(self, call):
         failed, text = call('describe_mode', {'mode': 'hall'})
@@ -179,7 +268,8 @@ class TestCheckSettings:
         failed, checked = call('check_settings', {'user': 'alice', 'mode': 'resistance',
                                                   'overrides': {'res_test_current': 0.002}})
         assert not failed
-        assert checked['agent_may_start'] is True
+        assert checked['can_start'] is True
+        assert next(iter(checked)) == 'can_start'
         assert checked['settings'] == {'res_test_current': 0.002,
                                        'res_voltage_compliance': 5.0, 'sampling_rate': 10.0}
         assert scripted.requests[-1][3] == {'mode': 'resistance', 'username': 'alice',
@@ -194,16 +284,48 @@ class TestCheckSettings:
                               'reason': 'Source V'})
         failed, checked = call('check_settings', {'user': 'alice', 'mode': 'resistance'})
         assert not failed
-        assert checked['agent_may_start'] is False
+        # Valid settings an agent may not start: ok alone would read as leave.
+        assert (checked['can_start'], checked['ok']) == (False, True)
         assert checked['agent_limits']['violations'] == [violation]
-        assert 'person at the' in checked['note']
+        assert checked['notes'] == [NOTE_HAZARD]
+
+    def test_auto_range_resistance_says_the_instrument_chooses_the_current(self, call,
+                                                                          scripted):
+        # The trial: 1 mA asked for, 100 mA used, 1 mA in the file name.
+        self._resolve(scripted, settings={'measurement': {
+            'res_test_current': 0.001, 'res_voltage_compliance': 5.0, 'res_auto_range': True}})
+        failed, checked = call('check_settings', {'user': 'alice', 'mode': 'resistance'})
+        assert not failed
+        [note] = checked['notes']
+        assert 'res_auto_range false' in note and 'I_meas' in note
+        # A note, not a warning: the API is unchanged.
+        assert checked['warnings'] == []
+
+    def test_manual_range_or_another_mode_has_no_such_note(self, call, scripted):
+        self._resolve(scripted, settings={'measurement': {'res_auto_range': False}})
+        assert 'notes' not in call('check_settings', {'user': 'alice',
+                                                      'mode': 'resistance'})[1]
+        # Every profile keeps res_auto_range; only a resistance run uses it.
+        self._resolve(scripted, settings={'measurement': {'res_auto_range': True}})
+        assert 'notes' not in call('check_settings', {'user': 'alice',
+                                                      'mode': 'four_point'})[1]
+
+    def test_what_the_run_will_warn_about_reaches_the_agent(self, call, scripted):
+        warning = {'keys': ['sampling_rate', 'nplc'],
+                   'message': '10 Hz is more than these timing settings can deliver '
+                              '(about 4.8 Hz); the run will sample as fast as it can.'}
+        self._resolve(scripted, warnings=[warning])
+        failed, checked = call('check_settings', {'user': 'alice', 'mode': 'resistance'})
+        assert not failed
+        assert checked['warnings'] == [warning]
+        assert checked['can_start'] is True
 
     def test_settings_with_errors_cannot_be_started(self, call, scripted):
         self._resolve(scripted, ok=False, agent_limits=None,
                       issues=[{'key': 'res_test_current', 'message': 'too large',
                                'severity': 'error'}])
         failed, checked = call('check_settings', {'user': 'alice', 'mode': 'resistance'})
-        assert checked['agent_may_start'] is False
+        assert checked['can_start'] is False
         assert checked['issues'][0]['key'] == 'res_test_current'
 
 
@@ -235,8 +357,11 @@ class TestRunTools:
             annotations = tools[name].annotations
             assert annotations.read_only_hint is False, name
             assert annotations.destructive_hint is False, name
-        for name in ('wait_for', 'get_run_events'):
-            assert tools[name].annotations.read_only_hint is True, name
+        assert tools['get_run_events'].annotations.read_only_hint is True
+        # wait_for may stop the run (then_stop), so it does not claim to only read.
+        assert tools['wait_for'].annotations.read_only_hint is False
+        assert tools['wait_for'].annotations.destructive_hint is False
+        assert 'then_stop' in tools['wait_for'].description
 
     def test_start_sends_the_request_and_names_this_server_as_the_client(
             self, call, scripted, tmp_path):
@@ -287,7 +412,7 @@ class TestRunTools:
 
     def test_wait_for_refuses_a_condition_it_does_not_know(self, call):
         failed, text = call('wait_for', {'until': 'done'})
-        assert failed and 'run_ended, prompt, samples:N or state:<state>' in text
+        assert failed and 'run_ended, prompt, prompt_answered, samples:N' in text
 
     def test_wait_for_reports_a_prompt_and_who_answers_it(self, call, scripted):
         scripted.replies[('GET', '/session')] = (200, {'state': 'awaiting_prompt',
@@ -299,6 +424,87 @@ class TestRunTools:
         assert not failed
         assert waited['fired'] == 'prompt'
         assert 'person must answer' in waited['status']['pending_prompt']['who_answers']
+
+    def test_wait_for_waits_through_a_prompt_the_agent_was_shown(self, calls, scripted):
+        prompted = {'state': 'awaiting_prompt', 'run_id': 'run-2', 'last_seq': 3,
+                    'pending_prompt': PENDING}
+        scripted.replies[('GET', '/session')] = (200, prompted)
+        (_, status), (failed, waited) = calls(
+            ('get_status', None), ('wait_for', {'until': 'run_ended', 'timeout_s': 0.6}))
+        assert status['pending_prompt']['prompt_id'] == PENDING['prompt_id']
+        assert not failed
+        assert waited['fired'] == 'timeout'
+        assert waited['prompt_at_start'] == {'prompt_id': PENDING['prompt_id'],
+                                             'still_pending': True}
+
+    def test_who_answers_says_how_to_wait_for_the_person(self, call, scripted):
+        scripted.replies[('GET', '/session')] = (200, {'state': 'awaiting_prompt',
+                                                       'run_id': 'run-2',
+                                                       'pending_prompt': PENDING})
+        who = call('get_status')[1]['pending_prompt']['who_answers']
+        # The stateless form, with this prompt's id filled in: it works from
+        # a server process that never showed the prompt.
+        assert ("wait_for('prompt_answered', ignore_prompt_id='run-2:vdp_geometry-1')"
+                in who)
+
+    def test_wait_for_passes_ignore_prompt_id_through(self, call, scripted):
+        # A fresh server remembers nothing; the id it is given is enough.
+        prompted = {'state': 'awaiting_prompt', 'run_id': 'run-2', 'last_seq': 3,
+                    'pending_prompt': PENDING}
+        scripted.replies[('GET', '/session')] = (200, prompted)
+        failed, waited = call('wait_for', {'until': 'run_ended', 'timeout_s': 0.6,
+                                           'ignore_prompt_id': PENDING['prompt_id']})
+        assert not failed
+        assert waited['fired'] == 'timeout'
+        assert waited['prompt_at_start'] == {'prompt_id': PENDING['prompt_id'],
+                                             'still_pending': True}
+
+    def test_wait_for_prompt_answered_returns_what_came_next(self, call, scripted):
+        prompted = {'state': 'awaiting_prompt', 'run_id': 'run-2', 'last_seq': 3,
+                    'pending_prompt': PENDING}
+        running = {'state': 'running', 'run_id': 'run-2', 'last_seq': 4,
+                   'pending_prompt': None}
+        statuses = [prompted, prompted, running]
+        scripted.replies[('GET', '/session')] = (
+            200, lambda body: statuses.pop(0) if len(statuses) > 1 else statuses[0])
+        failed, waited = call('wait_for', {'until': 'prompt_answered', 'timeout_s': 5})
+        assert not failed
+        assert waited['fired'] == 'prompt_answered'
+        assert waited['status']['state'] == 'running'
+        assert waited['prompt_at_start'] == {'prompt_id': PENDING['prompt_id'],
+                                             'still_pending': False}
+
+    def test_wait_for_then_stop_stops_the_run_and_follows_it_to_its_end(self, call, scripted):
+        statuses = [{'state': 'running', 'run_id': 'run-4', 'last_seq': 3,
+                     'pending_prompt': None},
+                    {'state': 'idle', 'run_id': 'run-4', 'last_seq': 4,
+                     'pending_prompt': None}]
+        stops = []
+        scripted.replies[('GET', '/session')] = (
+            200, lambda body: statuses[0] if not stops else statuses[1])
+        scripted.replies[('POST', '/session/stop')] = (
+            200, lambda body: stops.append(1) or {**statuses[0], 'state': 'stopping'})
+        ended = {'reason': 'user_stop', 'ok': True, 'samples': 7, 'path': 'alice/r.csv'}
+        scripted.replies[('GET', '/session/events')] = (200, {
+            'gap': False, 'cursor': 4, 'last_seq': 4, 'events': [
+                {'type': 'run_ended', 'run_id': 'run-4', 'seq': 4, 'cursor': 4,
+                 'payload': ended}]})
+        failed, waited = call('wait_for', {'until': 'state:running', 'then_stop': True,
+                                           'timeout_s': 5})
+        assert not failed
+        assert stops == [1]
+        assert (waited['fired'], waited['stopped']) == ('state:running', True)
+        assert waited['run_ended'] == ended
+        assert waited['status']['state'] == 'idle'
+
+    def test_get_run_summary_of_the_first_rows(self, call, scripted):
+        scripted.replies[('GET', '/results')] = (200, LISTING)
+        scripted.replies[('GET', '/results/file')] = (200, RUN_FILE)
+        failed, summarised = call('get_run_summary', {'path': 'alice/1_s1_R.csv',
+                                                      'first_rows': 1})
+        assert not failed
+        assert summarised['columns']['R_ohm']['count'] == 1
+        assert (summarised['rows'], summarised['rows_total']) == (1, 2)
 
     def test_events_with_no_run_yet_are_none(self, call):
         assert call('get_run_events') == (False, {'run_id': None, 'events': [],

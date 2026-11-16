@@ -44,6 +44,84 @@ class TestProfileOwnedKeys:
         assert 'settling_time' not in allowed_override_keys('resistance')
         assert 'gpib_address' not in allowed_override_keys('resistance')
 
+    @pytest.mark.parametrize("key,value", [
+        ('visa_library', '/tmp/evil.dylib'),
+        ('visa_library', '@py'),
+        ('gpib_interface', 'PRLGX-ASRL::/dev/cu.usbserial-1::INTFC'),
+    ])
+    def test_a_request_cannot_choose_the_bus(self, profile, key, value):
+        """A library path is loaded into the backend as code; the bus is the machine's."""
+        profile['measurement'].update({'visa_library': '@ivi', 'gpib_interface': ''})
+        resolved = resolve_run_settings(profile, 'resistance', {key: value}, strict=True)
+        assert [(i.key, i.message) for i in resolved.issues] == [
+            (key, f"'{key}' comes from the profile and cannot be overridden")]
+        assert resolved.settings['measurement']['visa_library'] == '@ivi'
+        assert resolved.settings['measurement']['gpib_interface'] == ''
+        assert key not in allowed_override_keys('resistance')
+
+    @pytest.mark.parametrize('mode', sorted(MODE_MODELS))
+    @pytest.mark.parametrize('strict', [False, True])
+    def test_the_machine_s_agent_switch_is_not_a_setting_of_the_run(self, profile, mode,
+                                                                    strict):
+        """It decides who may drive the instrument; it would read as a property
+        of the run, and ``false`` in the run of a connected agent."""
+        profile['measurement']['allow_agents'] = True
+        resolved = resolve_run_settings(profile, mode, {}, strict=strict)
+        assert 'allow_agents' not in resolved.settings['measurement']
+        assert profile['measurement']['allow_agents'] is True
+
+    def test_a_request_that_sends_it_is_refused_and_it_stays_out(self, profile):
+        profile['measurement']['allow_agents'] = False
+        resolved = resolve_run_settings(profile, 'resistance', {'allow_agents': True},
+                                        strict=True)
+        assert _keys(resolved) == ['allow_agents']
+        assert 'allow_agents' not in resolved.settings['measurement']
+
+
+#: What every mode may override: the instrument group (less the
+#: profile-owned keys) and the aux sensor group.
+SHARED_OVERRIDE_KEYS = {
+    'nplc', 'sampling_rate', 'auto_zero', 'filter_enabled', 'filter_type', 'filter_count',
+    'stop_on_compliance', 'aux_log_enabled', 'aux_driver', 'aux_address',
+}
+
+
+class TestOverrideKeysPerMode:
+    """A mode is offered its own keys and the shared ones, nothing else."""
+
+    @pytest.mark.parametrize("mode,own", [
+        ('resistance', {'res_test_current', 'res_voltage_compliance', 'res_measurement_type',
+                        'res_auto_range', 'res_offset_comp', 'res_cable_null'}),
+        ('source_v', {'vsource_voltage', 'vsource_current_compliance',
+                      'vsource_current_range_auto', 'vsource_duration_hours',
+                      'vsource_run_continuous'}),
+        ('source_i', {'isource_current', 'isource_voltage_compliance',
+                      'isource_voltage_range_auto', 'isource_duration_hours',
+                      'isource_run_continuous'}),
+        ('sweep', {'sweep_source', 'sweep_start', 'sweep_stop', 'sweep_step',
+                   'sweep_compliance', 'sweep_delay', 'sweep_direction',
+                   'sweep_measurement_type'}),
+        ('vdp', {'vdp_current', 'vdp_voltage_compliance', 'vdp_voltage_range_auto',
+                 'vdp_thickness_cm', 'vdp_settling_s', 'vdp_readings_per_polarity'}),
+        ('four_point', {
+            'fpp_current', 'fpp_voltage_compliance', 'fpp_voltage_range_auto',
+            'fpp_spacing_cm', 'fpp_thickness_um', 'fpp_alpha', 'fpp_k_factor', 'fpp_samples',
+            'fpp_model', 'fpp_diameter_cm', 'fpp_geometry', 'fpp_sample_shape',
+            'fpp_sample_diameter_mm', 'fpp_sample_width_mm', 'fpp_sample_length_mm',
+            'fpp_position_correction', 'fpp_edge_warn_pct', 'fpp_array_angle_deg',
+            'fpp_temperature_c', 'fpp_dopant_type', 'fpp_delta_mode', 'fpp_delta_settling',
+            'fpp_power_warn_w', 'fpp_power_stop_w', 'fpp_stop_on_overpower'}),
+    ])
+    def test_exactly_the_mode_s_keys_and_the_shared_ones(self, mode, own):
+        assert allowed_override_keys(mode) == own | SHARED_OVERRIDE_KEYS
+
+    @pytest.mark.parametrize("mode", ['resistance', 'four_point', 'sweep', 'vdp', 'source_i'])
+    def test_another_mode_s_run_until_stopped_flag_is_refused(self, profile, mode):
+        resolved = resolve_run_settings(profile, mode, {'vsource_run_continuous': True},
+                                         strict=True)
+        assert [i.message for i in resolved.issues if i.key == 'vsource_run_continuous'] == [
+            f"'vsource_run_continuous' is not a setting of mode '{mode}'"]
+
 
 class TestStrictKeyChecking:
     def test_unknown_key_rejected(self, profile):
@@ -193,10 +271,12 @@ class TestStrictTyping:
 
 
 class TestStartTimeChecks:
-    def test_vdp_requires_a_thickness(self, profile):
+    def test_vdp_runs_without_a_thickness(self, profile):
+        """0 is "not given": R_s needs no thickness, as on the four-point probe."""
         resolved = resolve_run_settings(profile, 'vdp',
                                          {'vdp_thickness_cm': 0.0}, strict=True)
-        assert _keys(resolved) == ['vdp_thickness_cm']
+        assert resolved.issues == []
+        assert resolved.ok
 
     def test_vdp_thickness_accepted_when_set(self, profile):
         resolved = resolve_run_settings(profile, 'vdp',
@@ -224,7 +304,8 @@ class TestStartTimeChecks:
         assert _keys(resolved) == ['aux_log_enabled']
 
     def test_start_time_checks_are_strict_only(self, profile):
-        resolved = resolve_run_settings(profile, 'vdp', {'vdp_thickness_cm': 0.0})
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_current': 1e-3, 'fpp_voltage_compliance': 100.0, 'fpp_power_stop_w': 0.05})
         assert resolved.issues == []
 
 
@@ -262,6 +343,70 @@ class TestDerived:
         assert resolved.settings['measurement']['sampling_rate'] == 100.0
 
 
+#: NPLC 1, auto-zero once, a repeat filter of 5 and offset-compensated ohms:
+#: ((1/60 s + 3 ms) * 5 + 6 ms) * 2 = 208.7 ms a reading, 4.79 Hz.
+RESISTANCE_TIMING = {'nplc': 1.0, 'auto_zero': 'once', 'filter_enabled': True,
+                     'filter_type': 'repeat', 'filter_count': 5, 'res_offset_comp': True}
+
+
+class TestWarnings:
+    """What the run will warn about, said before it starts, never an issue."""
+
+    def test_a_rate_the_timing_cannot_deliver(self, profile):
+        resolved = resolve_run_settings(profile, 'resistance',
+                                         {**RESISTANCE_TIMING, 'sampling_rate': 10.0},
+                                         strict=True)
+        assert resolved.derived['max_rate_hz'] == pytest.approx(4.7923, rel=1e-4)
+        assert [w.model_dump() for w in resolved.warnings] == [{
+            'keys': ['sampling_rate', 'nplc', 'auto_zero', 'filter_enabled', 'filter_type',
+                     'filter_count', 'res_offset_comp'],
+            'message': "10 Hz is more than these timing settings can deliver (about "
+                       "4.8 Hz); the run will sample as fast as it can."}]
+        assert resolved.ok and resolved.issues == []
+
+    def test_a_rate_within_reach_says_nothing(self, profile):
+        resolved = resolve_run_settings(profile, 'resistance',
+                                         {**RESISTANCE_TIMING, 'sampling_rate': 4.0},
+                                         strict=True)
+        assert resolved.warnings == []
+
+    @pytest.mark.parametrize('mode', ['sweep', 'vdp'])
+    def test_modes_that_do_not_read_on_a_timer_have_no_rate_to_miss(self, profile, mode):
+        profile['measurement']['vdp_thickness_cm'] = 0.05
+        resolved = resolve_run_settings(profile, mode, {'sampling_rate': 100.0}, strict=True)
+        assert resolved.warnings == []
+
+    def test_four_point_power_above_its_warning_threshold(self, profile):
+        # 5 mA x 5 V = 25 mW: above the 10 mW warning, below the 100 mW stop.
+        # 0.5 Hz is within four-point's forced timing (0.88 Hz at NPLC 1).
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_current': 5e-3, 'fpp_voltage_compliance': 5.0, 'fpp_power_warn_w': 0.01,
+            'fpp_power_stop_w': 0.1, 'sampling_rate': 0.5, 'nplc': 1.0}, strict=True)
+        assert [w.model_dump() for w in resolved.warnings] == [{
+            'keys': ['fpp_voltage_compliance', 'fpp_current', 'fpp_power_warn_w'],
+            'message': "Worst-case power 25 mW (source current × voltage compliance) is "
+                       "above the 10 mW warning threshold; lower fpp_voltage_compliance "
+                       "(to 2 V or less at this current) or fpp_current to bring it "
+                       "under. The run will warn and go on."}]
+        assert resolved.ok
+
+    def test_four_point_power_at_the_threshold_says_nothing(self, profile):
+        # 2 mA x 5 V = 10 mW: the run warns only above the threshold.
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_current': 2e-3, 'fpp_voltage_compliance': 5.0, 'fpp_power_warn_w': 0.01,
+            'sampling_rate': 0.5, 'nplc': 1.0}, strict=True)
+        assert resolved.warnings == []
+
+    def test_power_above_the_stop_is_an_issue_not_a_warning(self, profile):
+        resolved = resolve_run_settings(profile, 'four_point', {
+            'fpp_current': 0.05, 'fpp_voltage_compliance': 5.0, 'fpp_power_warn_w': 0.01,
+            'fpp_power_stop_w': 0.1, 'sampling_rate': 0.5, 'nplc': 1.0}, strict=True)
+        assert resolved.warnings == []
+        assert [(i.key, i.message) for i in resolved.issues] == [
+            ('fpp_power_stop_w', "worst-case power 250 mW exceeds the probe-safety hard "
+                                 "stop 100 mW")]
+
+
 class TestInvalidInputIsReportedNotRaised:
     """Every one of these used to raise out of the resolver -- a 500 from the
     API, and in the GUI a Start that did nothing."""
@@ -276,7 +421,7 @@ class TestInvalidInputIsReportedNotRaised:
         ('four_point', {'fpp_current': None}),     # the power check
         ('four_point', {'fpp_voltage_compliance': 'high'}),
         ('four_point', {'fpp_power_stop_w': None}),
-        ('vdp', {'vdp_thickness_cm': None}),       # the thickness check
+        ('vdp', {'vdp_thickness_cm': None}),
         ('vdp', {'vdp_thickness_cm': 'thin'}),
         ('source_v', {'vsource_voltage': 'abc'}),
     ]

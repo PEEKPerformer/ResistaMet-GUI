@@ -88,14 +88,25 @@ class InstrumentSettings(SettingsModel):
             "Machine-local; only the 'ui' role may change it."
         ),
     )
-    nplc: float = Field(default=_M['nplc'], ge=0.01, le=10.0)
-    sampling_rate: float = Field(default=_M['sampling_rate'], ge=0.1, le=100.0)
+    nplc: float = Field(default=_M['nplc'], ge=0.01, le=10.0,
+                        description="Integration time per reading, in power-line cycles.")
+    sampling_rate: float = Field(
+        default=_M['sampling_rate'], ge=0.1, le=100.0,
+        description="Readings per second asked for; the timing settings may allow fewer.")
     settling_time: float = Field(default=_M['settling_time'], ge=0.0, le=10.0)
-    auto_zero: Literal['on', 'once', 'off'] = _M['auto_zero']
+    auto_zero: Literal['on', 'once', 'off'] = Field(
+        default=_M['auto_zero'],
+        description="on: re-zero with every reading (slower, no drift); once: zero at the "
+                    "start of the run; off: never.")
     filter_enabled: bool = _M['filter_enabled']
-    filter_type: Literal['repeat', 'moving'] = _M['filter_type']
+    filter_type: Literal['repeat', 'moving'] = Field(
+        default=_M['filter_type'],
+        description="repeat: each reading averages filter_count new conversions; moving: "
+                    "a running average.")
     filter_count: int = Field(default=_M['filter_count'], ge=1, le=100)
-    stop_on_compliance: bool = _M['stop_on_compliance']
+    stop_on_compliance: bool = Field(default=_M['stop_on_compliance'],
+                                     description="End the run when the output reaches "
+                                                 "its compliance limit.")
 
     @field_validator('gpib_interface')
     @classmethod
@@ -116,9 +127,20 @@ class AuxSensorSettings(SettingsModel):
     request asks for it on a sweep or vdP run.
     """
 
-    aux_log_enabled: bool = _M['aux_log_enabled']
-    aux_driver: str = Field(default=_M['aux_driver'], min_length=1)
-    aux_address: str = Field(default=_M['aux_address'], min_length=1)
+    aux_log_enabled: bool = Field(
+        default=_M['aux_log_enabled'],
+        description="Log an auxiliary sensor's channels beside each reading, as aux_<key> "
+                    "columns and aux_fault; resistance, source_v, source_i and four_point "
+                    "only.")
+    aux_driver: str = Field(
+        default=_M['aux_driver'], min_length=1,
+        description="Sensor driver: arduino_thermocouple (a K-type thermocouple board "
+                    "streaming DATA lines) or stream_sensor (a device that names its "
+                    "channels in an HDR line). Read when aux_log_enabled.")
+    aux_address: str = Field(
+        default=_M['aux_address'], min_length=1,
+        description="VISA resource of the sensor, e.g. ASRL6::INSTR (serial port COM6 on "
+                    "Windows). Read when aux_log_enabled.")
 
 
 class SafetySettings(SettingsModel):

@@ -340,9 +340,9 @@ def valid_requests(draw):
 
 
 #: The checks across fields a request inside every bound can still fail:
-#: the ones the GUI makes at Start, a rectangle without its sides, and a
+#: the one the GUI makes at Start, a rectangle without its sides, and a
 #: sweep step so fine that its points cannot be counted.
-_CROSS_FIELD_KEYS = {"vdp_thickness_cm", "fpp_power_stop_w", "fpp_sample_shape", "sweep_step"}
+_CROSS_FIELD_KEYS = {"fpp_power_stop_w", "fpp_sample_shape", "sweep_step"}
 
 
 class TestResolver:

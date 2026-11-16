@@ -175,6 +175,17 @@ class TestTheAgentIsRefusedWhereAPersonIsRequired:
         assert response.status_code == 403
         assert config.get_visa_library() == ''
 
+    @pytest.mark.parametrize('key,value', [('visa_library', '/tmp/libvisa.so'),
+                                           ('gpib_interface', 'PRLGX-ASRL::5::INTFC')])
+    def test_naming_the_bus_for_one_run(self, agent, session, key, value):
+        """Not through the profile, and not through a run's overrides either."""
+        response = agent.post('/session/start', json={
+            'mode': 'resistance', 'username': 'alice', 'sample_name': 's1',
+            'overrides': {key: value}})
+        assert response.status_code == 422
+        assert f"'{key}' comes from the profile" in response.text
+        assert session.state == 'idle'
+
     @pytest.mark.parametrize('value', [True, False])
     def test_changing_allow_agents(self, agent, config, value):
         config.set_machine_local('allow_agents', not value)
@@ -220,7 +231,7 @@ class TestAllowAgentsSetting:
             'mode': 'resistance', 'username': 'alice', 'overrides': {'allow_agents': True}})
         assert response.json()['ok'] is False
         assert [issue['key'] for issue in response.json()['issues']] == ['allow_agents']
-        assert response.json()['settings']['measurement']['allow_agents'] is False
+        assert 'allow_agents' not in response.json()['settings']['measurement']
 
 
 # --- turning access on and off, and the connection file ----------------------

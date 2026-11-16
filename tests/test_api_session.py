@@ -122,7 +122,7 @@ class TestStart:
         client.post('/session/stop')
 
     def test_unresolvable_request_is_unprocessable(self, client, fake_rm):
-        response = _start(client, mode='vdp', overrides={'vdp_thickness_cm': 0.0})
+        response = _start(client, mode='vdp', overrides={'vdp_thickness_cm': -0.1})
         assert response.status_code == 422
         assert 'vdp_thickness_cm' in response.json()['detail']
 

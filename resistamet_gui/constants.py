@@ -137,6 +137,7 @@ DEFAULT_SETTINGS = {
         "sweep_compliance": 0.1,             # compliance limit (A or V)
         "sweep_delay": 0.01,                 # source delay per step (s)
         "sweep_direction": "up",             # "up", "down", or "up_down"
+        "sweep_measurement_type": "2-wire",  # "2-wire" or "4-wire" (remote sense)
         # Human-touch-safety voltage warning. See resistamet_gui/safety.py
         # for the rationale (IEC 61010-1 SELV at 30 V DC). Set to 0 to
         # disable; the silenced flag flips when a user clicks "don't show
@@ -232,6 +233,12 @@ KEITHLEY_STAT_BIT_COMPLIANCE = 1 << 3
 # Keithley compliance heuristics
 KEITHLEY_COMPLIANCE_MAGIC_NUMBER = 9.9e37
 COMPLIANCE_THRESHOLD_FACTOR = 1.0
+
+# ASTM F76 §11.1 homogeneity criterion: |rho_A - rho_B| / rho_avg at most
+# this, in percent. Here rather than in calculations_vdp, which applies it,
+# so that a reader that may not import the calculations (the MCP server)
+# states the same threshold.
+F76_HOMOGENEITY_TOLERANCE_PCT = 10.0
 
 # Auxiliary-sensor co-logging timing. The sensor driver runs a background
 # reader thread that caches the newest parsed line; read_latest() is a
