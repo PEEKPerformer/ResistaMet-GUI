@@ -1214,3 +1214,43 @@ class TestInvalidReadingMessage:
         messages = [e.payload['message'] for e in sink.of_type('log')]
         assert any('nan,nan,nan,0' in m for m in messages)
         assert status == 'OK'
+
+
+class TestStopDuringSettle:
+    """A stop that lands in a settling wait is a stop, not a fault."""
+
+    def test_no_error_is_reported(self, qapp, fake_rm, tmp_path):
+        settings = _source_v_settings(tmp_path)
+        settings["measurement"]["settling_time"] = 5.0
+        worker = MeasurementWorker("source_v", "wafer1", "alice", settings)
+        spies = _Spies(worker)
+        worker.start()
+        deadline = time.time() + 5.0
+        while time.time() < deadline and not any("settling" in m.lower() for m in spies.status_update):
+            qapp.processEvents()
+            time.sleep(0.02)
+        began = time.time()
+        worker.stop_measurement()
+        assert worker.wait(5000), "worker did not stop"
+        qapp.processEvents()
+
+        assert spies.error_occurred == [], spies.error_occurred
+        assert time.time() - began < 3.0, "stop waited out the settle"
+
+    def test_stop_during_delta_settle_is_not_a_read_error(self, qapp, fake_rm, tmp_path):
+        settings = _four_point_settings(tmp_path, samples=0, delta_mode=True)
+        settings["measurement"]["fpp_delta_settling"] = 2.0
+        worker = MeasurementWorker("four_point", "wafer1", "alice", settings)
+        spies = _Spies(worker)
+        worker.start()
+        deadline = time.time() + 5.0
+        while time.time() < deadline and not any("Starting measurement" in m for m in spies.status_update):
+            qapp.processEvents()
+            time.sleep(0.02)
+        time.sleep(0.3)  # into the first polarity settle
+        worker.stop_measurement()
+        assert worker.wait(5000), "worker did not stop"
+        qapp.processEvents()
+
+        assert spies.error_occurred == [], spies.error_occurred
+        assert not any("Delta read error" in m for m in spies.status_update), spies.status_update

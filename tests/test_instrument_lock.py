@@ -7,6 +7,7 @@ depending on the platform, and that is not what this protects against.
 import subprocess
 import sys
 import textwrap
+import time
 
 import pytest
 
@@ -49,10 +50,30 @@ def test_second_process_is_refused(tmp_path):
     try:
         assert holder.stdout.readline().strip() == 'held'
         with pytest.raises(InstrumentBusy):
-            with hold_instrument('GPIB0::24::INSTR', str(tmp_path)):
+            with hold_instrument('GPIB0::24::INSTR', str(tmp_path), wait_s=0.2):
                 pass
     finally:
         holder.kill()
+        holder.wait(timeout=5)
+
+
+def test_a_holder_on_its_way_out_is_waited_for(tmp_path):
+    """Start right after Stop: the previous run may still be in cleanup.
+
+    The GUI clears its running flag before the worker's cleanup releases the
+    lock, so the next run can arrive a few hundred milliseconds early. That is
+    not another process on the bus and must not be refused as one.
+    """
+    script = HOLDER.format(address='GPIB0::24::INSTR', lock_dir=str(tmp_path))
+    holder = subprocess.Popen([sys.executable, '-c', textwrap.dedent(script), '0.5'],
+                               stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == 'held'
+        began = time.monotonic()
+        with hold_instrument('GPIB0::24::INSTR', str(tmp_path), wait_s=3.0):
+            waited = time.monotonic() - began
+        assert 0.2 < waited < 2.5, f"waited {waited:.2f}s"
+    finally:
         holder.wait(timeout=5)
 
 

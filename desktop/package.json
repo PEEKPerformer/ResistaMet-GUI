@@ -1,7 +1,7 @@
 {
   "name": "resistamet-desktop",
   "private": true,
-  "version": "2.0.0-dev",
+  "version": "2.0.0-1",
   "description": "ResistaMet desktop shell: Tauri + React over the Python measurement backend.",
   "type": "module",
   "scripts": {
