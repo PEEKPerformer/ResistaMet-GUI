@@ -39,6 +39,16 @@ LEGACY_FORMAT_VERSION = "1.0"
 
 _CSV_END_MARKER = "# --- run completed ---"
 
+
+def _format_value(value: float) -> str:
+    """A float as a CSV cell: ten significant digits, as the HDF5 writer has.
+
+    It was six. The instrument returns seven, so the last one was dropped
+    from every reading, and an elapsed time past 100 000 s (28 h) was written
+    to the whole second, several rows to a timestamp.
+    """
+    return f"{value:.10g}"
+
 # Continuous polling modes that support auxiliary-sensor co-logging. Sweep
 # (atomic :READ?) and vdP (manual geometry protocol) are excluded. Public:
 # workers.py imports this so the sensor-open gate and the column splice can
@@ -286,11 +296,14 @@ def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] 
             ['elapsed_s', 'V_meas', 'I_set', 'R_calc', 'V_unc_V', 'R_calc_unc_ohm', 'compliance', 'event'],
             ['s', 'V', 'A', 'Ω', 'V', 'Ω', '', '']
         ),
-        # V_unc and I_unc are 1-year measurement accuracies on the raw V
-        # and I (accuracy.voltage_uncertainty / current_uncertainty). Each
-        # row's Rs/ρ/σ uncertainty is recoverable downstream as σ_X/X =
-        # √((V_unc/V)² + (I_unc/I)²); matches the per-spot u_inst term
-        # shown in the live results panel.
+        # I is the programmed source level, not an instrument element.
+        # V_unc is the 1-year measurement accuracy on V
+        # (accuracy.voltage_uncertainty, on the fixed range when auto range
+        # is off); I_unc is the 1-year source accuracy on I
+        # (accuracy.current_source_uncertainty): the current is sourced, not
+        # measured. Each row's Rs/ρ/σ uncertainty is recoverable downstream
+        # as σ_X/X = √((V_unc/V)² + (I_unc/I)²); matches the per-spot u_inst
+        # term shown in the live results panel.
         'four_point': (
             ['elapsed_s', 'V', 'I', 'V_over_I', 'Rs_ohm_sq', 'rho_ohm_cm', 'sigma_S_cm', 'V_unc_V', 'I_unc_A', 'compliance', 'event'],
             ['s', 'V', 'A', 'Ω', 'Ω/□', 'Ω·cm', 'S/cm', 'V', 'A', '', '']
@@ -350,6 +363,23 @@ def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] 
     return (cols, units)
 
 
+def effective_filter_type(mode: str, measurement_settings: Dict[str, Any]) -> str:
+    """The averaging filter type a run sends: ``'repeat'`` or ``'moving'``.
+
+    A moving filter averages the last N conversions whatever the source was
+    doing during them. A four-point delta reading and a van der Pauw reading
+    are each the difference of two polarities read one after the other, so a
+    moving stack would average the two polarities together and return a
+    voltage near zero. Those runs use a repeat filter, which starts afresh on
+    every reading, whatever the profile says.
+    """
+    requested = str(measurement_settings.get('filter_type', 'repeat')).lower()
+    kind = 'moving' if requested.startswith('mov') else 'repeat'
+    reverses = mode == 'vdp' or (
+        mode == 'four_point' and bool(measurement_settings.get('fpp_delta_mode', False)))
+    return 'repeat' if reverses else kind
+
+
 def build_metadata(
     user: str,
     sample_name: str,
@@ -387,6 +417,7 @@ def build_metadata(
     ``started_by``. ``client`` is what the program says it is; this is who the
     server let in. The window's runs have neither, and no such line.
     """
+    from .calculations import four_point_method
     from .constants import __version__
 
     start_time = start_time or datetime.now()
@@ -400,10 +431,22 @@ def build_metadata(
         'software_version': __version__,
         'instrument': instrument_idn,
         'gpib_address': measurement_settings.get('gpib_address', ''),
-        'sampling_rate_hz': measurement_settings.get('sampling_rate', 10.0),
         'nplc': measurement_settings.get('nplc', 1.0),
-        'settling_time_s': measurement_settings.get('settling_time', 0.2),
     }
+    # Only where the run uses them. A sweep is one bulk read with its own
+    # step delay and a van der Pauw run has its own settling, so neither has
+    # a sampling rate, and their headers used to state one all the same.
+    if mode not in ('sweep', 'vdp'):
+        meta['sampling_rate_hz'] = measurement_settings.get('sampling_rate', 10.0)
+        meta['settling_time_s'] = measurement_settings.get('settling_time', 0.2)
+    # The hardware averaging filter, as sent (:SENS:AVER). Each row is the
+    # mean of filter_count conversions when it is on, so two files cannot be
+    # compared without it. Type and count mean nothing when it is off.
+    filter_on = bool(measurement_settings.get('filter_enabled', False))
+    meta['filter'] = {'enabled': filter_on}
+    if filter_on:
+        meta['filter']['type'] = effective_filter_type(mode, measurement_settings)
+        meta['filter']['count'] = int(measurement_settings.get('filter_count', 10))
 
     # Range / auto-range modes are recorded here so downstream analysis can
     # recover which accuracy-spec row the inference used. accuracy.py picks
@@ -425,6 +468,9 @@ def build_metadata(
             'auto_range': measurement_settings.get('res_auto_range'),
             'auto_zero': measurement_settings.get('auto_zero'),
             'offset_compensated_ohms': bool(measurement_settings.get('res_offset_comp', False)),
+            # Subtracted from every R_ohm in the file; V_meas and I_meas are
+            # as read, so R_ohm + cable_null_ohm is the instrument's reading.
+            'cable_null_ohm': float(measurement_settings.get('res_cable_null', 0.0) or 0.0),
         }
     elif mode == 'source_v':
         meta['params'] = {
@@ -454,7 +500,17 @@ def build_metadata(
             'model': measurement_settings.get('fpp_model'),
             'target_samples': measurement_settings.get('fpp_samples'),
             'auto_zero': measurement_settings.get('auto_zero'),
+            # Which calculation built the rows, and the inputs that choose
+            # it. On 'f84' k_factor, alpha and model above played no part.
+            'method': four_point_method(measurement_settings),
+            'diameter_cm': measurement_settings.get('fpp_diameter_cm'),
+            'geometry': measurement_settings.get('fpp_geometry'),
+            'temperature_c': measurement_settings.get('fpp_temperature_c'),
+            'dopant_type': measurement_settings.get('fpp_dopant_type'),
+            'delta_mode': bool(measurement_settings.get('fpp_delta_mode', False)),
         }
+        if meta['params']['delta_mode']:
+            meta['params']['delta_settling_s'] = measurement_settings.get('fpp_delta_settling')
     elif mode == 'vdp':
         meta['params'] = {
             'source_current_A': measurement_settings.get('vdp_current'),
@@ -686,7 +742,7 @@ class CsvExporter(_BaseExporter):
             raise RuntimeError("Cannot write to finalized exporter")
         if self._csv_writer:
             formatted = [
-                f"{v:.6g}" if isinstance(v, float) else str(v)
+                _format_value(v) if isinstance(v, float) else str(v)
                 for v in row
             ]
             self._csv_writer.writerow(formatted)
@@ -962,7 +1018,7 @@ class LegacyDualExporter(_BaseExporter):
         self._data_rows.append(row)
         if self._csv_writer:
             formatted = [
-                f"{v:.6g}" if isinstance(v, float) else str(v)
+                _format_value(v) if isinstance(v, float) else str(v)
                 for v in row
             ]
             self._csv_writer.writerow(formatted)
