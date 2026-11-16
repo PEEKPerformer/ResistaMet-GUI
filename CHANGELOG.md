@@ -93,6 +93,13 @@ Development branch `phase0/reviewable-baseline`. The measuring code is separated
   - The finder gates on the measured delta noise floor rather than the datasheet accuracy spec, because the datasheet offset is systematic and cancels in delta mode — so it will not wrongly reject low-resistance samples that delta + averaging can actually resolve.
   - Handles the full conductivity range. If the seed current hits voltage compliance the finder re-probes at the lowest current: a high-but-measurable resistance is measured there (rather than mis-reported from the clamped voltage), and a genuine insulator — still in compliance at the lowest current — is reported as a **conductivity upper bound** (*"σ < X S/m"*, or an R/Rs lower bound without thickness). The bound is set by the instrument's own current-measurement floor (`estimate_current_floor`), so it reflects what a 2400 can actually resolve (~10⁻⁵–10⁻⁷ S/m; lower needs an electrometer).
 
+- **A downward sweep stepped by the wrong amount on the instrument.** Its step was sent as a positive number, which a 2420 refuses (`-222`), keeping the step of its reset point count of 2500: a 0.5 V to 0 V sweep in five points stepped by 0.2 mV. The step is sent with the sign that leads from start to stop. (Bench, output off, 2026-11-16.)
+- **A sweep's step delay was replaced by auto delay.** `:SOUR:DEL:AUTO ON` was sent after the delay and resets it to 1 ms, while the header recorded the delay asked for. A sweep no longer sends it.
+- **A setting the instrument refused did not stop the run.** A 2420 asked for 100 V refuses the range and the level and stays at 0 V; the run went on under a header that recorded 100 V. The error queue is read after configuration in every mode, and a run whose queue is not empty ends as `configure_failed` with the instrument's messages, before the output comes on.
+- **The rate preview was halved outside resistance mode.** Offset-compensated ohms was counted for every mode in `POST /settings/resolve`, the desktop's max-rate line and the run's read timeout.
+- **Four-point power checks.** The current finder refuses a choice above `fpp_power_stop_w`, as the pre-flight check refuses a request; an overflow reading is no longer multiplied into a power; the runtime warning is logged once a run.
+- **A 1 µA four-point run was named `..._4PP_0.00mA.csv`.** Below 5 µA the name gives microamps (`1.00uA`).
+
 ## [1.12.3] - 2026-05-26
 
 Paper-only patch. No software changes from v1.12.2.

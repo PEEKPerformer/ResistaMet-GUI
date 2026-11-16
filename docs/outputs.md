@@ -13,7 +13,7 @@ Every run writes one file (a pair in legacy mode) into `<data_directory>/<saniti
 - `source_value_str` is the source level: `1.00mA`, `0.500V`, `1.00mA_delta` (four-point delta mode), `sweep_0.0to1.0`.
 - Username and sample name are sanitized before they touch the filesystem: path separators and `..` are removed, and every character that is not alphanumeric, `-` or `_` becomes `_`.
 
-Examples: `1789858503_api-demo_R_1.00mA.csv`, `1789858524_wafer-07_4PP_1.00mA.csv`, `1789860000_diode_DATA_sweep_0.0to1.0.csv`.
+Examples: `1789858503_api-demo_R_1.00mA.csv`, `1794850152_wafer-07_4PP_1.00mA.csv`, `1789860000_diode_DATA_sweep_0.0to1.0.csv`.
 
 Two properties a parser can rely on:
 
@@ -43,13 +43,16 @@ A four-point run on a simulated instrument, started through a headless session w
 # user: alice
 # sample: wafer-07
 # mode: four_point
-# started_at: 2026-09-19T18:55:24.642028
+# started_at: 2026-11-16T12:29:12.724862
 # software_version: 1.12.3
 # instrument: KEITHLEY INSTRUMENTS INC.,MODEL 2420,9999999,C30   Mar 17 2006 09:29:29/A02  /SIM
 # gpib_address: GPIB0::24::INSTR
+# nplc: 1.0
 # sampling_rate_hz: 10.0
-# nplc: 1
 # settling_time_s: 0.2
+# filter.enabled: true
+# filter.type: repeat
+# filter.count: 10
 # params.source_current_A: 0.001
 # params.voltage_compliance_V: 5.0
 # params.voltage_auto_range: true
@@ -60,6 +63,13 @@ A four-point run on a simulated instrument, started through a headless session w
 # params.model: thin_film
 # params.target_samples: 10
 # params.auto_zero: on
+# params.method: f84
+# params.diameter_cm: 5.08
+# params.geometry: circle
+# params.temperature_c: NaN
+# params.dopant_type: none
+# params.delta_mode: false
+# params.autoselect_current: false
 # spot.map_id: wafer-07-map
 # spot.index: 2
 # spot.label: east edge
@@ -72,24 +82,25 @@ A four-point run on a simulated instrument, started through a headless session w
 # spot.sample.length_mm: 
 # spot.position_correction: warn
 # spot.edge_warn_pct: 1.0
-# spot.factor_here: 4.469398933831199
+# spot.factor_here: 4.469398933831203
 # spot.factor_centre: 4.516721131494501
-# spot.relative_error: 0.010588045140722535
+# spot.relative_error: 0.010588045140721869
 # spot.factor_rows: 4.517
-# spot.relative_error_rows: 0.01065044022105166
+# spot.relative_error_rows: 0.010650440221050994
 # spot.edge_clearance_s: 5.783464566929132
 # client.name: docs-example
 # client.version: 1.0
 # units: s,V,A,Ω,Ω/□,Ω·cm,S/cm,V,A,,
 elapsed_s,V,I,V_over_I,Rs_ohm_sq,rho_ohm_cm,sigma_S_cm,V_unc_V,I_unc_A,compliance,event
-0.216768,0.0125335,0.001,12.5335,56.4343,2.9628,0.337518,0.000301504,3.3e-07,OK,
-0.322602,0.0124911,0.001,12.491,56.2429,2.95275,0.338667,0.000301499,3.3e-07,OK,
-0.425026,0.0125367,0.001,12.5367,56.4486,2.96355,0.337433,0.000301504,3.3e-07,OK,
+0.2069821358,0.01253355,0.001,12.53355,56.43430233,2.962800872,0.3375184641,0.000301504026,5.4e-07,OK,
+0.3074221611,0.01249105,0.001,12.49105,56.24293932,2.952754314,0.3386668492,0.000301498926,5.4e-07,OK,
+0.4175102711,0.01253672,0.001,12.53672,56.44857576,2.963550227,0.3374331202,0.0003015044064,5.4e-07,OK,
 ...
 # --- run completed ---
-# ended_at: 2026-09-19T18:55:25.809913
+# ended_at: 2026-11-16T12:29:13.889294
 # total_samples: 10
-# duration_s: 1.1678998470306396
+# duration_s: 1.1644561290740967
+# end_reason: target_samples
 # spot_stats.n: 10
 # spot_stats.n_excluded: 0
 # spot_stats.rs.n: 10
@@ -97,26 +108,26 @@ elapsed_s,V,I,V_over_I,Rs_ohm_sq,rho_ohm_cm,sigma_S_cm,V_unc_V,I_unc_A,complianc
 # spot_stats.rs.sd: 0.11656252096144196
 # spot_stats.rs.rsd_pct: 0.20700015978132152
 # spot_stats.rs.u_stat: 0.03686030560492763
-# spot_stats.rs.u_inst: 1.3576873414941693
-# spot_stats.rs.u_total: 1.358187615678627
+# spot_stats.rs.u_inst: 1.3579006719314826
+# spot_stats.rs.u_total: 1.3584008675502457
 # spot_stats.rho.n: 10
 # spot_stats.rho.mean: 2.95629353955112
 # spot_stats.rho.sd: 0.006119532350475712
 # spot_stats.rho.rsd_pct: 0.20700015978132183
 # spot_stats.rho.u_stat: 0.0019351660442587038
-# spot_stats.rho.u_inst: 0.0712785854284439
-# spot_stats.rho.u_total: 0.07130484982312792
+# spot_stats.rho.u_inst: 0.07128978527640285
+# spot_stats.rho.u_total: 0.07131604554638792
 # spot_stats.sigma.n: 10
 # spot_stats.sigma.mean: 0.3382627077192411
 # spot_stats.sigma.sd: 0.0007003999472757331
 # spot_stats.sigma.rsd_pct: 0.20705798519683902
 # spot_stats.sigma.u_stat: 0.00022148591064531615
-# spot_stats.sigma.u_inst: 0.008155782565855637
-# spot_stats.sigma.u_total: 0.008158789448817094
+# spot_stats.sigma.u_inst: 0.008157064066101114
+# spot_stats.sigma.u_total: 0.008160070476845922
 # spot_stats.end_reason: target_samples
 ```
 
-How this file was made: the in-package simulator as a 2420 with a 12.5 Ω DUT and 0.2 % Gaussian noise, a 50.8 mm circular sample 525 µm thick, a spot 18 mm from the center. It shows the format, not a measurement. It was written before the changes listed under Unreleased in the changelog: a file written now also has the `filter.*` header keys, the four-point `params.method`, `params.diameter_cm`, `params.geometry`, `params.temperature_c`, `params.dopant_type` and `params.delta_mode`, an `end_reason` in the footer, and ten significant figures in its rows; the tables below are current.
+How this file was made (2026-11-16, development branch): the in-package simulator as a 2420 with a 12.5 Ω DUT and 0.2 % Gaussian noise, 1 mA, ten samples at 10 Hz, a 50.8 mm circular sample 525 µm thick (`fpp_diameter_cm` 5.08, which puts the rows on the F84 path, and the same circle as the `fpp_sample_*` outline), a spot 18 mm from the center. It shows the format, not a measurement: the simulator answers a read at once, so the row spacing is the sampling interval alone.
 
 Two metadata blocks: one at the top (everything known when the file is opened) and one at the bottom (written at finalize), delimited by `# --- run completed ---`. Nested values are flattened with dots. Comments use the `# ` prefix; the column header row is the first non-comment line. The `units:` line is parallel-indexed to the column header.
 
@@ -237,7 +248,7 @@ Then one group per derived quantity, `spot_stats.rs.*` (Ω/□), `spot_stats.rho
 | `sd` | Sample standard deviation (n − 1). `NaN` for a single value. |
 | `rsd_pct` | `sd / |mean| × 100` |
 | `u_stat` | Standard uncertainty of the mean, `sd / √n`; 0 for a single value. Falls as samples are added. |
-| `u_inst` | Instrument floor: `|mean|` times the mean over the rows of σ_R/R, where σ_R is `accuracy.resistance_uncertainty(V, I)` for the detected model and the run's NPLC (RSS of the per-range voltage- and current-measurement specs). The same relative floor serves all three quantities. Does not fall with more samples. |
+| `u_inst` | Instrument floor: `|mean|` times the mean over the rows of σ_R/R, where σ_R/R is the RSS of the row's σ_V/V and σ_I/I: the voltage-measurement accuracy at the run's NPLC (of the pinned range when auto range was off) and the current-**source** accuracy, for the detected model. These are the two the rows' `V_unc_V` and `I_unc_A` columns carry. The same relative floor serves all three quantities. Does not fall with more samples. |
 | `u_total` | `√(u_stat² + u_inst²)`, GUM §5.1.2 |
 
 `u_stat`, `u_inst` and `u_total` are the values `calculations.four_point_combined_uncertainty` returns, the function the PySide6 result panel has always used, evaluated over the rows that are not in compliance. All are in the unit of their quantity. With no finite value every field but `n` is `NaN`.
@@ -251,12 +262,13 @@ A map is the set of four-point runs in one user directory whose headers carry th
 ```json
 {
   "map_id": "wafer-07-map",
+  "image": null,
   "spots": [
     {
       "index": 1, "label": "centre", "x_mm": 0.0, "y_mm": 0.0, "angle_deg": 0.0,
       "relative_error": 0.0, "relative_error_rows": 0.0000617, "edge_clearance_s": 23.5,
-      "sample": "wafer-07", "started_at": "2026-09-19T18:55:21.742032",
-      "file": "1789858521_wafer-07_4PP_1.00mA.csv", "superseded": [],
+      "sample": "wafer-07", "started_at": "2026-11-16T12:29:09.881199",
+      "file": "1794850149_wafer-07_4PP_1.00mA.csv", "superseded": [],
       "stats": { "n": 10, "n_excluded": 0, "end_reason": "target_samples",
                  "rs": {"n": 10, "mean": 56.31, "sd": 0.1166, "rsd_pct": 0.207,
                         "u_stat": 0.0369, "u_inst": 1.358, "u_total": 1.358},
@@ -275,6 +287,7 @@ A map is the set of four-point runs in one user directory whose headers carry th
 
 | Field | Meaning |
 |---|---|
+| `image` | `null` when no photograph of the sample is stored for the map; otherwise its file name, SHA-256, size in bytes and, once a client has stored one, its registration onto the sample. |
 | `spots[]` | One entry per spot index, in index order: the header's `spot.*` values, `sample`, `started_at`, the run's `file` name and its `spot_stats` block as `stats`. |
 | `spots[].superseded` | Older runs with the same index, newest first. They stay on disk and are not used. "Newest" is decided by the Unix stamp in the file name, then `started_at`, then the `-N` suffix. |
 | `rs`, `rho`, `sigma` | Spread between spots: `n`, `mean`, sample `sd` and `rsd_pct` over the spots' means, each spot counting once. `sd` needs two spots. |
@@ -374,7 +387,7 @@ Per-reading uncertainty on Rs / ρ / σ is recoverable downstream: `σ_X/X = √
 
 Per the F84 §11.2.2.2 forward/reverse diagnostic — `R_f / R_r` should approach 1; large deviation flags thermoelectric or rectification effects.
 
-Metadata `params`: `source_current_A`, `voltage_compliance_V`, `voltage_auto_range`, `probe_spacing_cm`, `thickness_um`, `k_factor`, `alpha`, `model`, `target_samples`, `auto_zero`; then which calculation built the rows and its inputs: `method` (`f84` or `legacy`; on `f84`, `k_factor`, `alpha` and `model` played no part), `diameter_cm`, `geometry`, `temperature_c`, `dopant_type`, `delta_mode`, and `delta_settling_s` when delta mode is on. Delta mode also shows in the file name (`_delta`) and in the extra columns.
+Metadata `params`: `source_current_A`, `voltage_compliance_V`, `voltage_auto_range`, `probe_spacing_cm`, `thickness_um`, `k_factor`, `alpha`, `model`, `target_samples`, `auto_zero`; then which calculation built the rows and its inputs: `method` (`f84` or `legacy`; on `f84`, `k_factor`, `alpha` and `model` played no part), `diameter_cm`, `geometry`, `temperature_c` (`NaN` when not measured), `dopant_type`, `delta_mode`, and `delta_settling_s` when delta mode is on; last, `autoselect_current` (whether the [pre-run current finder](settings.md#four-point-current-finder) chose the current) and, when it is `true`, `autoselect_requested_current_A` (the `fpp_current` that was asked for and probed at; `source_current_A` is then the current the run used) and `autoselect_target_sig_figs`. Delta mode also shows in the file name (`_delta`) and in the extra columns.
 
 **The F₂ factor on the F84 path.** For a circle, ASTM F84 Table 3 (linear interpolation) up to S/D = 0.10, the end of the table, and the closed-form image solution the table was computed from beyond it. For a square or an L/W = 2, 3, 4 rectangle, the closed-form image series at every D/s; Smits's printed table agrees with it to 6 parts in 10 000. A sample the probe does not fit on has no factor: `Rs_ohm_sq` is NaN (the one exception is a row Smits prints with the end tips exactly on the edge, L/W = 3 at D/s = 1, returned as printed). A run with a spot adds the [`spot.*`](#spot-four-point-runs-that-carry-a-spot) block, and every four-point run ends with [`spot_stats.*`](#spot_stats-every-four-point-run).
 
@@ -436,7 +449,7 @@ A small example to load a v2.0 CSV with metadata into pandas:
 import pandas as pd
 from resistamet_gui.data_export import parse_metadata
 
-path = "measurement_data/alice/1789858524_wafer-07_4PP_1.00mA.csv"
+path = "measurement_data/alice/1794850152_wafer-07_4PP_1.00mA.csv"
 
 # Metadata as a flat dict
 meta = parse_metadata(path)
