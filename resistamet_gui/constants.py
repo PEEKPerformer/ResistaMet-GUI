@@ -40,6 +40,11 @@ DEFAULT_SETTINGS = {
         # (vendor library if installed, else pyvisa-py), "@ivi", "@py", or a
         # library path. Machine-local like gpib_address (visa_backend.py).
         "visa_library": "",
+        # A Prologix-style GPIB adapter's interface resource, which pyvisa-py
+        # must hold open before GPIB<n>::<addr>::INSTR resolves, e.g.
+        # "PRLGX-ASRL::/dev/cu.usbserial-XXXX::INTFC". "" = none. Machine-local
+        # like gpib_address (visa_backend.py).
+        "gpib_interface": "",
         "stop_on_compliance": False,
         # auto_zero=once cuts each reading from 3 integrations to 1 (a 3×
         # speedup) by caching the zero/reference at run start. Acceptable

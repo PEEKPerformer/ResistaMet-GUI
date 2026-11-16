@@ -115,6 +115,9 @@ class VdpRun:
         check = is_potentially_hazardous(self.settings, self.MODE)
         if not check.hazardous:
             return False
+        if self._control.stopped():
+            # Stop is already in: there is nobody to ask and nothing to start.
+            return True
 
         prompt = self._control.raise_prompt(
             'safety_voltage_ack', ['acknowledge', 'cancel'], detail={
@@ -154,39 +157,40 @@ class VdpRun:
 
     def execute(self) -> None:
         self.running = True
-        # First event of the run, before the lock and the safety prompt, as
-        # in ContinuousRun: a client learns the mode and the settings from
-        # it, and a run refused at either step is still a run that began.
-        self._events.emit('run_started', {
-            'mode': self.MODE,
-            'sample_name': self.sample_name,
-            'username': self.username,
-            'settings': self.settings,
-            'started_at': time.time(),
-        })
-        address = self.settings.get('measurement', {}).get('gpib_address', '')
+        # True when the run is turned away before it reaches the instrument:
+        # reported as not ok whatever the reason, a stop included.
+        refused = False
+        # Everything from run_started on is inside this try, so a fault in
+        # any step still ends in the finally below: the lock released and a
+        # run_ended sent.
         try:
-            if self._instrument_lock is None:
-                self._instrument_lock = HeldInstrument(address)
-        except InstrumentBusy as exc:
-            self._control.finish('instrument_busy')
-            self._events.error('instrument_busy', 'smu', str(exc))
-            self._events.emit('run_ended', {
-                'reason': 'instrument_busy', 'ok': False, 'samples': 0,
-                'duration_s': 0.0, 'path': None,
+            # First event of the run, before the lock and the safety prompt,
+            # as in ContinuousRun: a client learns the mode and the settings
+            # from it, and a run refused at either step is still a run that
+            # began.
+            self._events.emit('run_started', {
+                'mode': self.MODE,
+                'sample_name': self.sample_name,
+                'username': self.username,
+                'settings': self.settings,
+                'started_at': time.time(),
             })
-            return
+            address = self.settings.get('measurement', {}).get('gpib_address', '')
+            try:
+                if self._instrument_lock is None:
+                    self._instrument_lock = HeldInstrument(address)
+            except InstrumentBusy as exc:
+                refused = True
+                self._control.finish('instrument_busy')
+                self._events.error('instrument_busy', 'smu', str(exc))
+                return
 
-        if self._safety_prompt_declined():
-            self._control.finish('cancelled')
-            self._release_instrument_lock()
-            self._events.emit('run_ended', {
+            if self._safety_prompt_declined():
+                refused = True
                 # finish() keeps the first reason, so a timeout reports as one.
-                'reason': self._control.finish_reason, 'ok': False, 'samples': 0,
-                'duration_s': 0.0, 'path': None,
-            })
-            return
-        try:
+                self._control.finish('cancelled')
+                return
+
             self._connect_and_configure()
             self._run_geometries()
             self._compute_and_emit_result()
@@ -207,7 +211,7 @@ class VdpRun:
             reason = self._control.finish_reason or 'completed'
             self._events.emit('run_ended', {
                 'reason': reason,
-                'ok': reason in ('completed', 'user_stop'),
+                'ok': not refused and reason in ('completed', 'user_stop'),
                 'samples': samples,
                 'duration_s': time.time() - self._start_time if self._start_time else 0.0,
                 'path': self.filename or None,
@@ -220,9 +224,11 @@ class VdpRun:
         measurement = self.settings['measurement']
         gpib = measurement['gpib_address']
         visa_library = measurement.get('visa_library', '')
+        gpib_interface = measurement.get('gpib_interface', '')
         self._events.log('connecting', f"Connecting to instrument at {gpib}...")
         try:
-            self.keithley = Keithley2400(gpib, visa_library=visa_library).connect()
+            self.keithley = Keithley2400(gpib, visa_library=visa_library,
+                                         gpib_interface=gpib_interface).connect()
         except Exception as e:
             # Re-raise so the run() catch still fires, but with a message
             # the user can actually act on.
@@ -367,7 +373,9 @@ class VdpRun:
                 self._events.warn('prompt_timeout',
                                    "No answer at this geometry; abandoning the run.")
                 raise _VdpAborted()
-            if not self.running or choice == 'abort':
+            if not self.running or choice != 'proceed':
+                # Only an explicit 'proceed' says the leads are where this
+                # geometry needs them. Anything else leaves the output off.
                 raise _VdpAborted()
 
             self.keithley.write(":OUTP ON")
@@ -494,22 +502,24 @@ class VdpRun:
                 logger.warning("failed to release the instrument lock", exc_info=True)
 
     def _cleanup(self) -> None:
-        self._sleep_inhibitor.uninhibit()
-        # Released last, after the instrument is closed.
-        self._release_instrument_lock()
-        if self.keithley:
-            try:
-                self.keithley.write(":OUTP OFF")
-                self.keithley.close()
-                self._events.log('cleanup', "Instrument disconnected.")
-            except Exception as e:
-                self._events.warn('cleanup', f"Warning: cleanup error: {e}")
-            finally:
-                self.keithley = None
-        if self.exporter:
-            try:
-                # finalize() is idempotent on already-finalized exporters.
-                self.exporter.finalize()
-            except Exception:
-                pass
-            self.exporter = None
+        try:
+            self._sleep_inhibitor.uninhibit()
+            if self.keithley:
+                try:
+                    self.keithley.write(":OUTP OFF")
+                    self.keithley.close()
+                    self._events.log('cleanup', "Instrument disconnected.")
+                except Exception as e:
+                    self._events.warn('cleanup', f"Warning: cleanup error: {e}")
+                finally:
+                    self.keithley = None
+            if self.exporter:
+                try:
+                    # finalize() is idempotent on already-finalized exporters.
+                    self.exporter.finalize()
+                except Exception:
+                    pass
+                self.exporter = None
+        finally:
+            # Released last, after the instrument is closed; see ContinuousRun.
+            self._release_instrument_lock()

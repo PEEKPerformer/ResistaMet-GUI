@@ -18,14 +18,20 @@ class ResistanceState:
     """What the resistance configure step decided, read back by the loop.
 
     ``voltage_compliance_v`` is the limit the instrument reports after
-    configuration, not the one requested: with auto-range on, auto-ohms
-    sets its own. The loop detects compliance against this value, because
-    the ohms function never sets the compliance bit in the status word
-    (Keithley 2400 and 2420, bench 2026-09-18).
+    configuration, not the one requested. In manual range that is the limit
+    in force for the whole run, and the loop detects compliance against it,
+    because the ohms function never sets the compliance bit in the status
+    word (Keithley 2400 and 2420, bench 2026-09-18).
+
+    With ``auto_range`` on it is only the limit at configure time. Auto-ohms
+    sets its own, and moves it with the ohms range: 2.1 V was read back on
+    the reset range, while the top ranges measure up to 20 V (user's manual,
+    Table 4-1). The loop must not compare samples against it.
     """
 
     cable_null: float = 0.0
     voltage_compliance_v: float = float('inf')
+    auto_range: bool = False
 
 
 def _read_back_float(keithley, query: str, fallback: float) -> float:
@@ -87,15 +93,17 @@ def configure_resistance(keithley, events, measurement_settings, nplc):
     # Offset-compensated ohms: cancels thermoelectric EMF
     if measurement_settings.get('res_offset_comp', False):
         keithley.write(":SENS:RES:OCOM ON")
-    # The limit that will actually apply. Auto-ohms overrides the requested
+    # The limit the instrument has now. Auto-ohms overrides the requested
     # compliance (2.1 V seen on a 2420 that was asked for 0.5 V), and the
-    # status word does not report compliance in the ohms function, so the
-    # loop compares readings against this number.
+    # status word does not report compliance in the ohms function, so in
+    # manual range the loop compares readings against this number. In auto
+    # range it is recorded and not compared: see ResistanceState.
     effective_compliance = _read_back_float(keithley, ":SENS:VOLT:PROT?", voltage_compliance)
     # Cable null: software subtraction (2400 series lacks :SENS:RES:REL)
     state = ResistanceState(
         cable_null=float(measurement_settings.get('res_cable_null', 0.0)),
-        voltage_compliance_v=effective_compliance)
+        voltage_compliance_v=effective_compliance,
+        auto_range=bool(auto_range))
     # Pull raw V and I alongside R so accuracy.py can propagate
     # the per-range V and I uncertainties into σ_R. The 2400's
     # ohms function senses V and I internally regardless of

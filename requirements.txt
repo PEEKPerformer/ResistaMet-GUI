@@ -49,3 +49,4 @@ pyusb>=1.2
 # Testing (development)
 pytest>=7.0.0
 pytest-cov>=4.0.0
+hypothesis>=6.80

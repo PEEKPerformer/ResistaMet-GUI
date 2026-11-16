@@ -63,24 +63,57 @@ class CurrentSourceSettings(SettingsModel):
 SWEEP_MAX_CURRENT_COMPLIANCE_A = 3.15
 SWEEP_MAX_VOLTAGE_COMPLIANCE_V = 210.0
 
+#: Start, stop and step are what is *sourced*, in the source's unit, and are
+#: held to what the fixed-level modes may source: ``vsource_voltage`` (200 V)
+#: and ``isource_current`` (3 A). A sweep is not allowed further than a
+#: constant output is.
+SWEEP_MAX_SOURCE_VOLTAGE_V = 200.0
+SWEEP_MAX_SOURCE_CURRENT_A = 3.0
+
 
 class SweepSettings(SettingsModel):
     """Bulk linear sweep, run by the instrument's own sweep engine.
 
-    Start/stop keep the +/-200 V bounds for both source types, as the widgets
-    do today; source-aware bounds for them are a follow-up.
+    Start, stop, step and compliance change unit with ``sweep_source``. Their
+    ``ge``/``le`` are the wider of the two units' limits -- the PySide6 spin
+    boxes', which do not follow the source -- and the validators below apply
+    the limit of the unit the value is actually in. For a headless client
+    the model is the only gate: without them a current-sourced sweep "to
+    200" validated, and 200 there is amperes.
     """
 
     sweep_source: Literal['voltage', 'current'] = _M['sweep_source']
-    sweep_start: float = Field(default=_M['sweep_start'], ge=-200.0, le=200.0)
-    sweep_stop: float = Field(default=_M['sweep_stop'], ge=-200.0, le=200.0)
-    sweep_step: float = Field(default=_M['sweep_step'], gt=0.0, le=200.0)
+    sweep_start: float = Field(default=_M['sweep_start'], ge=-SWEEP_MAX_SOURCE_VOLTAGE_V,
+                               le=SWEEP_MAX_SOURCE_VOLTAGE_V)
+    sweep_stop: float = Field(default=_M['sweep_stop'], ge=-SWEEP_MAX_SOURCE_VOLTAGE_V,
+                              le=SWEEP_MAX_SOURCE_VOLTAGE_V)
+    sweep_step: float = Field(default=_M['sweep_step'], gt=0.0, le=SWEEP_MAX_SOURCE_VOLTAGE_V)
     # ``le`` is the larger of the two per-source limits; the validator below
     # applies the one that goes with ``sweep_source``.
     sweep_compliance: float = Field(default=_M['sweep_compliance'], ge=1e-7,
                                     le=SWEEP_MAX_VOLTAGE_COMPLIANCE_V)
     sweep_delay: float = Field(default=_M['sweep_delay'], ge=0.0, le=10.0)
     sweep_direction: Literal['up', 'down', 'up_down'] = _M['sweep_direction']
+
+    @field_validator('sweep_start', 'sweep_stop', 'sweep_step')
+    @classmethod
+    def _source_value_fits_its_unit(cls, value, info):
+        """Bound a sourced value in the unit it is in.
+
+        The mirror of the compliance validator below: on a voltage-sourced
+        sweep the value is a voltage and ``ge``/``le`` have already held it;
+        on a current-sourced one it is a current. A field validator so the
+        issue is keyed to the field; ``sweep_source`` is declared first and
+        is in ``info.data`` unless it was itself invalid, where the tighter
+        current limit applies.
+        """
+        if info.data.get('sweep_source') == 'voltage':
+            return value
+        if abs(value) > SWEEP_MAX_SOURCE_CURRENT_A:
+            raise ValueError(
+                f"a current-sourced sweep's {info.field_name.split('_')[1]} is a current: "
+                f"within +/-{SWEEP_MAX_SOURCE_CURRENT_A:g} A")
+        return value
 
     @field_validator('sweep_compliance')
     @classmethod

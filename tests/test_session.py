@@ -95,6 +95,20 @@ class TestStateMachine:
         assert 'KEITHLEY' in info['idn'].upper()
         assert info['model']
 
+    def test_identify_opens_the_interface_it_is_given(self, session, monkeypatch):
+        from resistamet_gui import visa_backend
+        calls = []
+
+        def refuse(visa_library='', gpib_interface=''):
+            calls.append((visa_library, gpib_interface))
+            raise OSError("no bus in this test")
+
+        monkeypatch.setattr(visa_backend, 'resource_manager', refuse)
+        with pytest.raises(OSError):
+            session.identify('GPIB0::24::INSTR', '@py', 'PRLGX-ASRL::5::INTFC')
+        assert calls == [('@py', 'PRLGX-ASRL::5::INTFC')]
+        assert session.state == 'idle'
+
 
 class TestCommands:
     def test_stop_ends_the_run(self, session, sink, fake_rm, profile):
@@ -523,6 +537,37 @@ class TestSafetyPrompt:
         assert _wait_for(lambda: sink.of_type('sample'))
         assert sink.of_type('prompt') == []
         session.stop()
+
+    @pytest.mark.parametrize("override", [
+        {'safety_voltage_warn_silenced': True},
+        {'safety_voltage_warn_v': 200.0},
+    ])
+    def test_a_request_cannot_talk_its_way_past_the_question(self, session, sink, fake_rm,
+                                                             profile, override):
+        """Sent with the request, either key used to start a 60 V run unasked.
+
+        Refused at resolve rather than started and asked: the request named a
+        setting it may not change, and a client told so can fix the request,
+        where one silently asked anyway would not know its override was
+        dropped.
+        """
+        with pytest.raises(ValueError) as excinfo:
+            session.start(self._hazardous(profile), 'source_v', 'wafer1', 'alice',
+                           overrides={'vsource_voltage': 60.0, **override})
+        assert next(iter(override)) in str(excinfo.value)
+        assert session.state == 'idle'
+        assert fake_rm.opened == []
+        assert sink.events == []
+
+    def test_without_the_override_the_same_run_is_still_asked(self, session, sink, fake_rm,
+                                                              profile):
+        session.start(self._hazardous(profile), 'source_v', 'wafer1', 'alice',
+                       overrides={'vsource_voltage': 60.0})
+        assert _wait_for(lambda: self._pending(session) is not None)
+        assert self._pending(session)['kind'] == 'safety_voltage_ack'
+        assert fake_rm.opened == []
+        assert sink.of_type('sample') == []
+        session.abort()
 
     def test_silence_request_is_recorded(self, session, sink, fake_rm, profile):
         session.start(self._hazardous(profile), 'source_v', 'wafer1', 'alice')

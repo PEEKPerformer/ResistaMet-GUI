@@ -126,6 +126,21 @@ class TestStart:
         assert response.status_code == 422
         assert 'vdp_thickness_cm' in response.json()['detail']
 
+    @pytest.mark.parametrize("mode, override", [
+        ('sweep', {'sweep_step': 'abc'}),
+        ('sweep', {'sweep_step': None}),  # was a TypeError, so a 500
+        ('resistance', {'nplc': 'fast'}),
+        ('four_point', {'fpp_current': None}),
+        ('vdp', {'vdp_thickness_cm': None}),
+    ])
+    def test_a_value_that_cannot_be_read_is_unprocessable_by_key(self, client, fake_rm, sink,
+                                                                 mode, override):
+        response = _start(client, mode=mode, overrides=override)
+        assert response.status_code == 422
+        assert next(iter(override)) in response.json()['detail']
+        assert client.get('/session').json()['state'] == 'idle'
+        assert fake_rm.opened == []
+
     def test_unknown_mode_is_unprocessable(self, client, fake_rm):
         assert _start(client, mode='hall').status_code == 422
 
@@ -200,6 +215,26 @@ class TestPromptAuthorization:
                                           'choice': 'acknowledge'})
             assert response.status_code == 403
             client.post('/session/abort')
+
+    @pytest.mark.parametrize("override", [
+        {'safety_voltage_warn_silenced': True},
+        {'safety_voltage_warn_v': 200.0},
+    ])
+    def test_non_ui_role_cannot_avoid_the_question_either(self, session, profile, fake_rm,
+                                                          sink, override):
+        """D4 from the other side: the answer it may not give, it may not
+        make unnecessary by moving the threshold or the silenced flag."""
+        self._hazardous(profile)
+        app = create_app(session, token=TOKEN, role='mcp',
+                          profile_provider=lambda username: profile)
+        with TestClient(app) as client:
+            client.headers.update({'Authorization': f'Bearer {TOKEN}'})
+            response = _start(client, mode='source_v', overrides=override)
+            assert response.status_code == 422
+            assert next(iter(override)) in str(response.json()['detail'])
+            assert client.get('/session').json()['state'] == 'idle'
+        assert fake_rm.opened == []
+        assert sink.of_type('sample') == []
 
     def test_stale_prompt_id_is_a_conflict(self, client, fake_rm, sink, profile):
         self._hazardous(profile)

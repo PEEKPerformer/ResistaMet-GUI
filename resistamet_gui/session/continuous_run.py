@@ -181,11 +181,21 @@ class ContinuousRun:
         return True
 
     def _effective_settings(self):
-        """What the instrument reported after configuration, for the file header."""
+        """What the instrument reported after configuration, for the file header.
+
+        ``effective.voltage_compliance_V`` is the voltage limit in force for
+        the run: resistance mode, manual range. In Auto range the same
+        read-back is written as ``effective.voltage_compliance_V_at_configure``
+        instead, because that is all it is. Auto-ohms changes the limit with
+        the ohms range, so the number says what the instrument had before the
+        output came on, not what any row was measured under.
+        """
         state = self._mode_state
         limit = getattr(state, 'voltage_compliance_v', None)
         if limit is None or not math.isfinite(limit):
             return None
+        if getattr(state, 'auto_range', False):
+            return {'voltage_compliance_V_at_configure': limit}
         return {'voltage_compliance_V': limit}
 
     def _open_output_file(self, measurement_settings, source_value_str):
@@ -358,6 +368,9 @@ class ContinuousRun:
         check = is_potentially_hazardous(self.settings, self.mode)
         if not check.hazardous:
             return False
+        if self._control.stopped():
+            # Stop is already in: there is nobody to ask and nothing to start.
+            return True
 
         prompt = self._control.raise_prompt(
             'safety_voltage_ack', ['acknowledge', 'cancel'], detail={
@@ -398,12 +411,11 @@ class ContinuousRun:
     def _spot_refused(self) -> bool:
         """Resolve this run's spot against the sample. True = do not start.
 
-        This runs after run_started and outside execute()'s main try, with the
-        instrument lock held. Whatever goes wrong in it -- a settings value of
-        the wrong type, arithmetic that overflows, a payload the event model
-        rejects -- must come out as a refusal, because the caller's refusal
-        path is what releases the lock and emits the run_ended every run is
-        promised. A spot that cannot be checked is a spot that cannot be
+        This runs after run_started with the instrument lock held. Whatever
+        goes wrong in it -- a settings value of the wrong type, arithmetic
+        that overflows, a payload the event model rejects -- comes out as a
+        refusal with the spot's own error code rather than as an unexpected
+        worker error. A spot that cannot be checked is a spot that cannot be
         recorded.
         """
         try:
@@ -468,47 +480,44 @@ class ContinuousRun:
     def execute(self):
         self.running = True
         self.paused = False
-        self._events.emit('run_started', {
-            'mode': self.mode,
-            'sample_name': self.sample_name,
-            'username': self.username,
-            'settings': self.settings,
-            'started_at': time.time(),
-        })
-        address = self.settings.get('measurement', {}).get('gpib_address', '')
-        try:
-            self._instrument_lock = self._enter_instrument_lock(address)
-        except InstrumentBusy as exc:
-            self._control.finish('instrument_busy')
-            self._events.error('instrument_busy', 'smu', str(exc))
-            self._events.emit('run_ended', {
-                'reason': 'instrument_busy', 'ok': False, 'samples': 0,
-                'duration_s': 0.0, 'path': None,
-            })
-            return
-
-        if self._spot_refused():
-            self._control.finish('spot_refused')
-            self._release_instrument_lock()
-            self._events.emit('run_ended', {
-                'reason': 'spot_refused', 'ok': False, 'samples': 0,
-                'duration_s': 0.0, 'path': None,
-            })
-            return
-
-        if self._safety_prompt_declined():
-            self._control.finish('cancelled')
-            self._release_instrument_lock()
-            self._events.emit('run_ended', {
-                # finish() keeps the first reason, so a timeout reports as one.
-                'reason': self._control.finish_reason, 'ok': False, 'samples': 0,
-                'duration_s': 0.0, 'path': None,
-            })
-            return
         instrument_ready = False
         file_ready = False
+        # True when the run is turned away before it reaches the instrument:
+        # reported as not ok whatever the reason, a stop included.
+        refused = False
 
+        # Everything from run_started on is inside this try. The steps before
+        # the connect used to sit above it, and a fault in one of them left
+        # the run without a run_ended and the instrument lock held for the
+        # life of the process.
         try:
+            self._events.emit('run_started', {
+                'mode': self.mode,
+                'sample_name': self.sample_name,
+                'username': self.username,
+                'settings': self.settings,
+                'started_at': time.time(),
+            })
+            address = self.settings.get('measurement', {}).get('gpib_address', '')
+            try:
+                self._instrument_lock = self._enter_instrument_lock(address)
+            except InstrumentBusy as exc:
+                refused = True
+                self._control.finish('instrument_busy')
+                self._events.error('instrument_busy', 'smu', str(exc))
+                return
+
+            if self._spot_refused():
+                refused = True
+                self._control.finish('spot_refused')
+                return
+
+            if self._safety_prompt_declined():
+                refused = True
+                # finish() keeps the first reason, so a timeout reports as one.
+                self._control.finish('cancelled')
+                return
+
             measurement_settings = self.settings['measurement']
             file_settings = self.settings['file']
 
@@ -517,6 +526,7 @@ class ContinuousRun:
             settling_time = measurement_settings['settling_time']
             gpib_address = measurement_settings['gpib_address']
             visa_library = measurement_settings.get('visa_library', '')
+            gpib_interface = measurement_settings.get('gpib_interface', '')
             auto_save_interval = file_settings['auto_save_interval']
 
             sample_interval = 1.0 / sampling_rate if sampling_rate > 0 else 0.1
@@ -524,7 +534,8 @@ class ContinuousRun:
             # Connect instrument
             try:
                 self._events.log('connecting', f"Connecting to instrument at {gpib_address}...")
-                self.keithley = Keithley2400(gpib_address, visa_library=visa_library).connect()
+                self.keithley = Keithley2400(gpib_address, visa_library=visa_library,
+                                             gpib_interface=gpib_interface).connect()
                 self._instrument_idn = self.keithley.query("*IDN?").strip()
                 self._events.log('connected', f"Connected to: {self._instrument_idn}")
                 # Identify model and surface its limits — informational only;
@@ -1017,7 +1028,8 @@ class ContinuousRun:
             reason = self._control.finish_reason or 'completed'
             self._events.emit('run_ended', {
                 'reason': reason,
-                'ok': reason in ('completed', 'target_samples', 'duration', 'user_stop'),
+                'ok': (not refused and
+                       reason in ('completed', 'target_samples', 'duration', 'user_stop')),
                 'samples': samples,
                 'duration_s': time.time() - self.start_time if self.start_time else 0.0,
                 'path': self.filename or None,
@@ -1225,35 +1237,40 @@ class ContinuousRun:
                 logger.warning("failed to release the instrument lock", exc_info=True)
 
     def _cleanup(self) -> None:
-        # Re-enable system sleep
-        self._sleep_inhibitor.uninhibit()
-        # Released last, after the instrument and aux ports are closed.
-        self._release_instrument_lock()
+        try:
+            # Re-enable system sleep
+            self._sleep_inhibitor.uninhibit()
 
-        if self.keithley:
-            try:
-                self.keithley.write(":OUTP OFF")
-                self.keithley.close()
-                self._events.log('cleanup', "Instrument disconnected.")
-            except Exception as e:
-                self._events.warn('cleanup', f"Warning: Error during instrument cleanup: {str(e)}")
-            finally:
-                self.keithley = None
-        if self._aux_sensor is not None:
-            try:
-                self._aux_sensor.close()
-            except Exception as e:
-                self._events.warn('cleanup', f"Warning: Error during aux-sensor cleanup: {str(e)}")
-            finally:
-                self._aux_sensor = None
-        if self.exporter:
-            try:
-                # Ensure exporter is finalized if not already
-                self.exporter.finalize()
-            except Exception as e:
-                logger.warning(f"Error finalizing exporter during cleanup: {e}")
-            finally:
-                self.exporter = None
+            if self.keithley:
+                try:
+                    self.keithley.write(":OUTP OFF")
+                    self.keithley.close()
+                    self._events.log('cleanup', "Instrument disconnected.")
+                except Exception as e:
+                    self._events.warn('cleanup', f"Warning: Error during instrument cleanup: {str(e)}")
+                finally:
+                    self.keithley = None
+            if self._aux_sensor is not None:
+                try:
+                    self._aux_sensor.close()
+                except Exception as e:
+                    self._events.warn('cleanup', f"Warning: Error during aux-sensor cleanup: {str(e)}")
+                finally:
+                    self._aux_sensor = None
+            if self.exporter:
+                try:
+                    # Ensure exporter is finalized if not already
+                    self.exporter.finalize()
+                except Exception as e:
+                    logger.warning(f"Error finalizing exporter during cleanup: {e}")
+                finally:
+                    self.exporter = None
+        finally:
+            # Released last, after the instrument and aux ports are closed:
+            # on a failure exit the :OUTP OFF above is the only one, and a
+            # process that got the address before it landed could have its
+            # own output turned off under it, or on before ours was off.
+            self._release_instrument_lock()
 
     def _check_instrument_errors(self) -> Optional[str]:
         """Check instrument error queue and return any errors.

@@ -85,9 +85,10 @@ export interface FourPointSettings {
 /**
  * Knobs that apply to every mode, wherever the value comes from.
  *
- * ``gpib_address`` and ``visa_library`` are machine-local — ``ConfigManager``
- * keeps them under ``machines[hostname]`` and injects them into the profile
- * on read, so they are never stored per user (``config.py``).
+ * ``gpib_address``, ``visa_library`` and ``gpib_interface`` are machine-local
+ * — ``ConfigManager`` keeps them under ``machines[hostname]`` and injects
+ * them into the profile on read, so they are never stored per user
+ * (``config.py``).
  */
 export interface InstrumentSettings {
   auto_zero?: "on" | "once" | "off";
@@ -95,6 +96,10 @@ export interface InstrumentSettings {
   filter_enabled?: boolean;
   filter_type?: "repeat" | "moving";
   gpib_address?: string;
+  /**
+   * Interface resource of a Prologix-style GPIB adapter (Prologix GPIB-USB / GPIB-ETHERNET, AR488), opened before the instrument so that GPIB<board>::<addr>::INSTR resolves; pyvisa-py only. Empty = none. Serial: PRLGX-ASRL[board]::<device>::INTFC, where <device> is the port path on macOS and Linux (PRLGX-ASRL::/dev/cu.usbserial-PX12345::INTFC, PRLGX-ASRL::/dev/ttyUSB0::INTFC) and the COM port number alone on Windows (PRLGX-ASRL::5::INTFC for COM5). Ethernet: PRLGX-TCPIP[board]::<host>[::port]::INTFC, port 1234 by default. [board] defaults to 0 and is the <board> of the instrument address.
+   */
+  gpib_interface?: string;
   nplc?: number;
   sampling_rate?: number;
   settling_time?: number;
@@ -174,6 +179,11 @@ export interface SpotRequest {
  *
  * ``safety_voltage_warn_silenced`` is the sticky per-profile flag behind the
  * warning dialog's "don't show again" checkbox.
+ *
+ * The threshold runs to 1100 V, the 2410's range and the Settings dialog's
+ * maximum: a threshold the dialog can save must not make the profile
+ * unrunnable here. 0 disables the warning. Both keys belong to the profile;
+ * a strict run request may not send either (``resolve.SAFETY_KEYS``).
  */
 export interface SafetySettings {
   safety_voltage_warn_silenced?: boolean;
@@ -549,6 +559,10 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
       "type": "string",
       "default": "GPIB0::24::INSTR"
     },
+    "gpib_interface": {
+      "type": "string",
+      "default": ""
+    },
     "nplc": {
       "type": "number",
       "min": 0.01,
@@ -682,7 +696,7 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
     "safety_voltage_warn_v": {
       "type": "number",
       "min": 0,
-      "max": 200,
+      "max": 1100,
       "default": 30
     }
   },

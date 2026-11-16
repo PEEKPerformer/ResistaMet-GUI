@@ -155,15 +155,16 @@ def known_models() -> tuple[str, ...]:
 
 class VisaInstrument:
     def __init__(self, resource: str, timeout_ms: int = 5000,
-                 visa_library: str = visa_backend.AUTO):
+                 visa_library: str = visa_backend.AUTO, gpib_interface: str = ''):
         self.resource_str = resource
         self.timeout = timeout_ms
         self.visa_library = visa_library
+        self.gpib_interface = gpib_interface
         self.rm: Optional[pyvisa.ResourceManager] = None
         self.dev = None
 
     def connect(self):
-        self.rm = visa_backend.resource_manager(self.visa_library)
+        self.rm = visa_backend.resource_manager(self.visa_library, self.gpib_interface)
         resources = self.rm.list_resources()
         if self.resource_str not in resources:
             raise RuntimeError(f"Instrument at '{self.resource_str}' not found. Available: {', '.join(resources)}")

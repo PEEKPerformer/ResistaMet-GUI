@@ -202,6 +202,9 @@ resistamet-gui_old.py
 # Runtime artifacts: per-user config and bench-measurement output
 # directories created by the app. Per-user data, not portable.
 config.json
+# Beside it: the save lock, and a copy kept of a config that could not be read
+config.json.lock
+config.json.corrupt-*
 measurement_data/
 
 # Per-user Claude Code overrides — the project-level .claude/settings.json

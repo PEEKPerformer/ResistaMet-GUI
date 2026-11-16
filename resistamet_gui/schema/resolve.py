@@ -15,10 +15,16 @@ Two validation modes:
 * **lenient** (a stored profile being opened): out-of-range values are
   reported as issues and passed through unchanged. A lab profile that drifted
   out of range must still open.
-* **strict** (an API run request): the same issues, plus the checks the GUI
-  makes at Start — vdP needs a real thickness, 4PP must not ask for more power
+* **strict** (an API run request): values must have the type they claim --
+  a JSON ``"false"`` is not a bool and ``true`` is not a current -- and the
+  *validated* values are what the run receives, so nothing reaches a worker
+  in a form the models never saw. Then the same issues, plus the checks the
+  GUI makes at Start — vdP needs a real thickness, 4PP must not ask for more power
   than its own hard stop, aux co-logging only exists for the continuous modes —
-  and unknown or profile-owned override keys are rejected.
+  and unknown or profile-owned override keys are rejected. The profile's
+  ``file``, ``output`` and ``display`` sections are validated too. The touch-safety
+  keys are profile-owned here: whoever may not answer the hazardous-voltage
+  prompt may not move its threshold or silence it for one run either.
 """
 import logging
 import math
@@ -27,7 +33,14 @@ from typing import Any, Dict, List, Optional
 
 from ..constants import MODE_TIMING_OVERRIDES
 from ..formatting import format_power
-from .settings_common import AuxSensorSettings, InstrumentSettings, SafetySettings
+from .settings_common import (
+    AuxSensorSettings,
+    DisplaySettings,
+    FileSettings,
+    InstrumentSettings,
+    OutputSettings,
+    SafetySettings,
+)
 from .settings_modes import MODE_MODELS
 
 logger = logging.getLogger(__name__)
@@ -35,8 +48,27 @@ logger = logging.getLogger(__name__)
 #: Keys the profile always wins on, whatever a client sends (MW gather).
 PROFILE_OWNED_KEYS = ('settling_time', 'gpib_address')
 
+#: The touch-safety group. A strict request may not send any of these: the
+#: hazardous-voltage prompt can only be answered by a person at the bench
+#: (design note D4), and a request that raised the threshold or set the
+#: silenced flag would never be asked. They change where the profile is
+#: edited -- the Settings dialog, or the profile route -- and nowhere else.
+#: The PySide6 gather path never sends them; it is left as it was.
+SAFETY_KEYS = tuple(SafetySettings.model_fields)
+
 #: Override keys that are not settings: they select a value rather than be one.
 CONTROL_KEYS = ('vsource_run_continuous', 'isource_run_continuous')
+
+#: The sections beside ``measurement``, the model of each, and how bad an
+#: invalid value is for a strict request. ``file`` and ``output`` decide where
+#: and how the rows are written, so an error there must stop the run before
+#: it opens anything. Nothing in a run reads ``display``; a bad value is
+#: worth telling the client about and not worth refusing a measurement for.
+SECTION_MODELS = (
+    ('file', FileSettings, 'error'),
+    ('output', OutputSettings, 'error'),
+    ('display', DisplaySettings, 'warning'),
+)
 
 #: Modes whose runs can co-log an auxiliary sensor (data_export.AUX_LOG_MODES).
 AUX_LOG_MODES = ('resistance', 'source_v', 'source_i', 'four_point')
@@ -72,16 +104,16 @@ class ResolvedRun:
 def allowed_override_keys(mode: str) -> set:
     """Keys a strict request may send for ``mode``.
 
-    The mode's own fields plus the shared groups, minus the keys the profile
-    owns. Clients discover this through the schema endpoint rather than by
-    trial and error.
+    The mode's own fields plus the instrument and aux groups, minus the keys
+    the profile owns -- the touch-safety group among them (``SAFETY_KEYS``).
+    Clients discover this through the schema endpoint rather than by trial
+    and error.
     """
     keys = set(MODE_MODELS[mode].model_fields)
     keys |= set(InstrumentSettings.model_fields)
     keys |= set(AuxSensorSettings.model_fields)
-    keys |= set(SafetySettings.model_fields)
     keys |= set(CONTROL_KEYS)
-    return keys - set(PROFILE_OWNED_KEYS)
+    return keys - set(PROFILE_OWNED_KEYS) - set(SAFETY_KEYS)
 
 
 def resolve_run_settings(profile: Dict[str, Any], mode: str,
@@ -108,8 +140,19 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
         for key in sorted(overrides):
             if key in PROFILE_OWNED_KEYS:
                 issues.append(Issue(key, f"'{key}' comes from the profile and cannot be overridden"))
+            elif key in SAFETY_KEYS:
+                issues.append(Issue(key, f"'{key}' is a touch-safety setting of the profile; "
+                                         "a run request cannot change it"))
             elif key not in permitted:
                 issues.append(Issue(key, f"'{key}' is not a setting of mode '{mode}'"))
+
+        # The control keys choose a value, so no model sees them. Truthiness
+        # is not good enough here: the string 'false' is truthy, and would
+        # turn a bounded source-on run into an unbounded one.
+        for key in CONTROL_KEYS:
+            if key in overrides and not isinstance(overrides[key], bool):
+                issues.append(Issue(key, f"'{key}' must be true or false, "
+                                         f"not {overrides[key]!r}"))
 
     # 3. Apply the client's values (the GUI's widget reads).
     for key, value in overrides.items():
@@ -128,14 +171,27 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
         m_cfg['auto_zero'] = profile['measurement'].get('auto_zero', 'once')
 
     # 6. "Run until stopped" checkboxes mean a duration of zero.
-    if mode == 'source_v' and overrides.get('vsource_run_continuous'):
+    #    A strict request's flag counts only when it is a real ``true``.
+    def asked_to_run_until_stopped(key: str) -> bool:
+        return overrides.get(key) is True if strict else bool(overrides.get(key))
+
+    if mode == 'source_v' and asked_to_run_until_stopped('vsource_run_continuous'):
         m_cfg['vsource_duration_hours'] = 0.0
-    if mode == 'source_i' and overrides.get('isource_run_continuous'):
+    if mode == 'source_i' and asked_to_run_until_stopped('isource_run_continuous'):
         m_cfg['isource_duration_hours'] = 0.0
 
     # 7. Profile-owned keys.
     m_cfg['settling_time'] = profile['measurement']['settling_time']
     m_cfg['gpib_address'] = profile['measurement']['gpib_address']
+    if strict:
+        # The request is already refused above; this makes the settings, the
+        # hazard below and the run's own gate read the stored profile even if
+        # a caller goes on to use a resolution that is not ``ok``.
+        for key in SAFETY_KEYS:
+            if key in profile['measurement']:
+                m_cfg[key] = profile['measurement'][key]
+            else:
+                m_cfg.pop(key, None)
 
     # 8. Accuracy-critical modes force the slow, low-noise timing knobs last,
     #    exactly as gather does before the worker reads the config.
@@ -144,50 +200,73 @@ def resolve_run_settings(profile: Dict[str, Any], mode: str,
 
     # 9. Validate against the models; strict adds the GUI's Start-time checks.
     issues.extend(_validate(m_cfg, mode, strict=strict))
+    if strict:
+        issues.extend(_section_issues(settings))
 
+    # 10-11. Arithmetic only on values that validated. A key with an error
+    #     has already been reported by name; reading it again would raise
+    #     where the caller was promised issues -- and the GUI runs this on
+    #     every gather, where a raise is a Start button that does nothing.
+    failed = {issue.key for issue in issues if issue.severity == 'error'}
     return ResolvedRun(
         settings=settings,
         issues=issues,
-        derived=_derive(m_cfg, mode),
-        hazard=_hazard(settings, mode),
+        derived=_derive(m_cfg, mode, failed, issues),
+        hazard=_hazard(settings, mode, failed, issues),
     )
 
 
-def _model_issues(model, values: Dict[str, Any]) -> List[Issue]:
-    """Validate one group, reporting rather than raising."""
+def _model_issues(model, values: Dict[str, Any], *, strict: bool = False) -> List[Issue]:
+    """Validate one group, reporting rather than raising.
+
+    Lenient validation coerces a copy and leaves ``values`` alone: a stored
+    profile passes through as it is. Strict validation refuses a value of the
+    wrong JSON type (an int is still a fine float) and, when the group is
+    valid, writes the validated values back, so ``1`` reaches the run as
+    ``1.0`` and nothing reaches it that the model did not accept.
+    """
     from pydantic import ValidationError
 
     subset = {name: values[name] for name in model.model_fields if name in values}
     # 'not measured' reaches the models as None; NaN stays in the settings dict
     # because that is what the worker and the F84 code read.
-    if 'fpp_temperature_c' in subset and _is_nan(subset['fpp_temperature_c']):
+    unmeasured = 'fpp_temperature_c' in subset and _is_nan(subset['fpp_temperature_c'])
+    if unmeasured:
         subset['fpp_temperature_c'] = None
     try:
-        model(**subset)
+        validated = model.model_validate(subset, strict=strict)
     except ValidationError as exc:
         return [
             Issue(str(error['loc'][0]) if error['loc'] else model.__name__, error['msg'])
             for error in exc.errors()
         ]
+    if strict:
+        for name in subset:
+            if name == 'fpp_temperature_c' and unmeasured:
+                continue  # stays NaN, as the profile wrote it
+            values[name] = getattr(validated, name)
     return []
 
 
 def _validate(m_cfg: Dict[str, Any], mode: str, *, strict: bool) -> List[Issue]:
     issues: List[Issue] = []
     for model in (MODE_MODELS[mode], InstrumentSettings, AuxSensorSettings, SafetySettings):
-        issues.extend(_model_issues(model, m_cfg))
+        issues.extend(_model_issues(model, m_cfg, strict=strict))
     if mode == 'four_point':
         issues.extend(_sample_geometry_issues(m_cfg))
     if not strict:
         return issues
 
-    # The checks the GUI makes when Start is pressed.
-    if mode == 'vdp' and not float(m_cfg.get('vdp_thickness_cm', 0.0)) > 0:
+    # The checks the GUI makes when Start is pressed. Each reads only values
+    # the models accepted: strict typing has made those real numbers, and a
+    # key that failed is already an issue.
+    failed = {issue.key for issue in issues}
+    if (mode == 'vdp' and 'vdp_thickness_cm' not in failed
+            and not float(m_cfg.get('vdp_thickness_cm', 0.0)) > 0):
         issues.append(Issue('vdp_thickness_cm',
                              'van der Pauw needs a sample thickness greater than 0 cm'))
-    if mode == 'four_point':
-        worst_case = abs(float(m_cfg.get('fpp_current', 0.0))) * abs(
-            float(m_cfg.get('fpp_voltage_compliance', 0.0)))
+    if mode == 'four_point' and not failed.intersection(_POWER_KEYS):
+        worst_case = _worst_case_power_w(m_cfg)
         stop_w = float(m_cfg.get('fpp_power_stop_w', 0.0))
         if stop_w and worst_case > stop_w:
             issues.append(Issue('fpp_power_stop_w',
@@ -196,6 +275,22 @@ def _validate(m_cfg: Dict[str, Any], mode: str, *, strict: bool) -> List[Issue]:
     if m_cfg.get('aux_log_enabled') and mode not in AUX_LOG_MODES:
         issues.append(Issue('aux_log_enabled',
                              f"auxiliary co-logging is not available for mode '{mode}'"))
+    return issues
+
+
+def _section_issues(settings: Dict[str, Any]) -> List[Issue]:
+    """Strict only: the ``file``, ``output`` and ``display`` sections.
+
+    A request cannot override these, so what is judged is the stored profile
+    -- an unknown output format, an empty data directory -- before a run is
+    started on it rather than when the exporter first trips over it. Keys
+    are qualified (``output.format``) because these names are not unique to
+    their section the way measurement keys are.
+    """
+    issues: List[Issue] = []
+    for section, model, severity in SECTION_MODELS:
+        for issue in _model_issues(model, settings[section], strict=True):
+            issues.append(Issue(f"{section}.{issue.key}", issue.message, severity))
     return issues
 
 
@@ -235,32 +330,84 @@ def _describe(outline) -> str:
     return 'unbounded'
 
 
-def _derive(m_cfg: Dict[str, Any], mode: str) -> Dict[str, Any]:
-    """Values a client would otherwise recompute: rate ceiling, points, power."""
+#: What each derived value reads. One that names a key with an error is left
+#: out of ``derived`` rather than computed from a value nobody accepted.
+_TIMING_KEYS = ('nplc', 'auto_zero', 'filter_enabled', 'filter_type', 'filter_count',
+                'res_offset_comp')
+_SWEEP_POINT_KEYS = ('sweep_step', 'sweep_start', 'sweep_stop', 'sweep_direction')
+_POWER_KEYS = ('fpp_current', 'fpp_voltage_compliance', 'fpp_power_stop_w')
+_SWEEP_HAZARD_KEYS = ('sweep_source', 'sweep_start', 'sweep_stop')
+
+#: What arithmetic on a settings value can raise.
+_ARITHMETIC_ERRORS = (TypeError, ValueError, ArithmeticError)
+
+
+def _max_rate_hz(m_cfg: Dict[str, Any]) -> float:
     from ..timing import TimingSettings
 
-    derived: Dict[str, Any] = {
-        'max_rate_hz': TimingSettings.from_dict(m_cfg).max_rate_hz(),
-    }
+    return TimingSettings.from_dict(m_cfg).max_rate_hz()
+
+
+def _sweep_points(m_cfg: Dict[str, Any]) -> Optional[int]:
+    step = abs(float(m_cfg.get('sweep_step', 0.0)))
+    if not step > 0:
+        return None
+    span = abs(float(m_cfg.get('sweep_stop', 0.0)) - float(m_cfg.get('sweep_start', 0.0)))
+    points = round(span / step) + 1
+    return points * 2 if m_cfg.get('sweep_direction') == 'up_down' else points
+
+
+def _worst_case_power_w(m_cfg: Dict[str, Any]) -> float:
+    return abs(float(m_cfg.get('fpp_current', 0.0))) * abs(
+        float(m_cfg.get('fpp_voltage_compliance', 0.0)))
+
+
+def _derive(m_cfg: Dict[str, Any], mode: str, failed: set,
+            issues: List[Issue]) -> Dict[str, Any]:
+    """Values a client would otherwise recompute: rate ceiling, points, power.
+
+    Never raises. The model issues already cover every key read here, so the
+    ``except`` is for a value that validates and still cannot be computed
+    with; it is reported under the first key the computation reads.
+    """
+    wanted = [('max_rate_hz', _TIMING_KEYS, _max_rate_hz)]
     if mode == 'sweep':
-        step = abs(float(m_cfg.get('sweep_step', 0.0)))
-        if step > 0:
-            span = abs(float(m_cfg.get('sweep_stop', 0.0)) - float(m_cfg.get('sweep_start', 0.0)))
-            points = round(span / step) + 1
-            if m_cfg.get('sweep_direction') == 'up_down':
-                points *= 2
-            derived['sweep_points'] = points
+        wanted.append(('sweep_points', _SWEEP_POINT_KEYS, _sweep_points))
     if mode == 'four_point':
-        derived['worst_case_power_w'] = abs(float(m_cfg.get('fpp_current', 0.0))) * abs(
-            float(m_cfg.get('fpp_voltage_compliance', 0.0)))
+        wanted.append(('worst_case_power_w', _POWER_KEYS[:2], _worst_case_power_w))
+
+    derived: Dict[str, Any] = {}
+    for name, keys, compute in wanted:
+        if failed.intersection(keys):
+            continue
+        try:
+            value = compute(m_cfg)
+        except _ARITHMETIC_ERRORS as exc:
+            issues.append(Issue(keys[0], f"{name} cannot be computed: {exc}"))
+            continue
+        if value is not None:
+            derived[name] = value
     return derived
 
 
-def _hazard(settings: Dict[str, Any], mode: str):
-    """Touch-safety check on the *resolved* values, not the stored profile."""
-    from ..safety import is_potentially_hazardous
+def _hazard(settings: Dict[str, Any], mode: str, failed: set, issues: List[Issue]):
+    """Touch-safety check on the *resolved* values, not the stored profile.
 
-    return is_potentially_hazardous(settings, mode)
+    (A strict request cannot move the threshold or the silenced flag; see
+    ``SAFETY_KEYS``.) ``None`` when the voltage it would judge has an error:
+    in strict mode that run is refused anyway, and no answer is better than
+    one computed from a value that is not a voltage. Never raises.
+    """
+    from ..safety import _MODE_VOLTAGE_KEYS, is_potentially_hazardous
+
+    keys = (_MODE_VOLTAGE_KEYS[mode][0],) + (_SWEEP_HAZARD_KEYS if mode == 'sweep' else ())
+    if failed.intersection(keys):
+        return None
+    try:
+        return is_potentially_hazardous(settings, mode)
+    except _ARITHMETIC_ERRORS as exc:
+        issues.append(Issue(keys[0], f"the touch-safety check cannot read it: {exc}"))
+        return None
 
 
 def _is_nan(value: Any) -> bool:
