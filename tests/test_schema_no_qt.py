@@ -8,7 +8,7 @@ subprocess with a clean interpreter and fails if Qt (or pyvisa) came along.
 import subprocess
 import sys
 
-PACKAGES = ['resistamet_gui.schema']
+PACKAGES = ['resistamet_gui.schema', 'resistamet_gui.schema.map_session']
 
 CHECK = """
 import sys

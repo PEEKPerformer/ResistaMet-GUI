@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..schema.spots import SpotRequest
+
 #: Bumped when the envelope or an existing payload changes shape.
 EVENT_SCHEMA_VERSION = 1
 
@@ -141,6 +143,88 @@ class SweepSegmentPayload(EventModel):
     voltages: List[float] = Field(default_factory=list)
     currents: List[float] = Field(default_factory=list)
     compliance: List[str] = Field(default_factory=list)
+
+
+class GeometryWarningPayload(EventModel):
+    """A four-point spot's position is a problem, said before the first sample.
+
+    ``refused`` with ``off_sample``: a probe tip is on or beyond the edge and
+    the run ends without touching the instrument. ``near_edge``: the position
+    costs more than ``edge_warn_pct`` here; the run goes on and the values are
+    recorded as measured, without a position correction.
+
+    Two errors, both fractions and not percentages. ``relative_error_rows`` is
+    ``factor_rows / factor_here - 1``, against the lateral factor the run's
+    rows really apply (the table look-up, or K*alpha); it is the error in the
+    file's Rs. ``relative_error`` is ``factor_centre / factor_here - 1``,
+    against the closed-form centre of the sample outline. ``compared_with``
+    says which one was held against the threshold: ``rows`` whenever the rows
+    have a factor, else ``centre``. The factors are absent off the sample,
+    where they diverge.
+    """
+
+    refused: bool
+    reason: Literal['off_sample', 'near_edge']
+    message: str
+    spot: SpotRequest
+    edge_clearance_s: float
+    edge_warn_pct: float
+    factor_here: Optional[float] = None
+    factor_centre: Optional[float] = None
+    relative_error: Optional[float] = None
+    factor_rows: Optional[float] = None
+    relative_error_rows: Optional[float] = None
+    compared_with: Literal['rows', 'centre'] = 'centre'
+
+
+class QuantityStats(EventModel):
+    """One derived quantity over a spot's samples (``session.spot_stats``).
+
+    ``n`` counts the finite values. Every other field is null on the wire when
+    it does not exist: all of them with no finite value, ``sd`` and
+    ``rsd_pct`` with fewer than two.
+    """
+
+    n: int
+    mean: Optional[float] = None
+    sd: Optional[float] = None
+    rsd_pct: Optional[float] = None
+    u_stat: Optional[float] = None
+    u_inst: Optional[float] = None
+    u_total: Optional[float] = None
+
+
+class SpotStats(EventModel):
+    """The statistics block of a four-point run, as its file footer has it.
+
+    ``n`` samples entered the statistics; ``n_excluded`` were in compliance
+    and left out, because they record a bound rather than a measurement.
+    """
+
+    n: int
+    n_excluded: int = 0
+    #: Why the run ended, as ``run_ended.reason`` has it: 'target_samples'
+    #: for a spot that ran its course, 'user_stop', 'overpower', ... Recorded
+    #: so a reader of the archive can tell a short spot from a whole one.
+    #: Absent in files written before it existed.
+    end_reason: Optional[str] = None
+    rs: QuantityStats
+    rho: QuantityStats
+    sigma: QuantityStats
+
+
+class SpotCompletePayload(EventModel):
+    """A four-point run's file is closed; these are the numbers in its footer.
+
+    Emitted for every four-point run whose file was finalized, so a client
+    shows the backend's statistics instead of computing its own. ``spot`` is
+    null for a run that was not given one. How the run ended is in the
+    ``run_ended`` event that follows.
+    """
+
+    spot: Optional[SpotRequest] = None
+    path: Optional[str] = None
+    stats: SpotStats
 
 
 class AcquisitionFinishedPayload(EventModel):
@@ -275,6 +359,8 @@ PAYLOAD_MODELS = {
     'compliance': CompliancePayload,
     'overpower_trip': OverpowerPayload,
     'sweep_segment': SweepSegmentPayload,
+    'geometry_warning': GeometryWarningPayload,
+    'spot_complete': SpotCompletePayload,
     'acquisition_finished': AcquisitionFinishedPayload,
     'vdp_geometry_complete': VdpGeometryCompletePayload,
     'vdp_result': VdpResultPayload,

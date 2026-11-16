@@ -79,6 +79,18 @@ DEFAULT_SETTINGS = {
         "fpp_geometry": "circle",             # one of: circle, square, rectangle_2, rectangle_3, rectangle_4
         "fpp_temperature_c": float('nan'),    # measurement temperature, °C. NaN = no temperature correction
         "fpp_dopant_type": "none",            # 'n', 'p', or 'none' (none = skip F_T even if temperature is set)
+        # Sample outline and probe placement (docs/design/four_point_probe_spots.md).
+        # Used for the position check of a spot: edge clearance and what assuming
+        # a centred probe costs there. The per-sample correction above still reads
+        # fpp_geometry / fpp_diameter_cm, which are mapped onto an outline while
+        # fpp_sample_shape is 'unbounded', so existing profiles behave as before.
+        "fpp_sample_shape": "unbounded",      # one of: unbounded, circle, rectangle
+        "fpp_sample_diameter_mm": 0.0,        # circle: diameter, mm. 0 = not entered
+        "fpp_sample_width_mm": 0.0,           # rectangle: side across the array at 0 deg (y), mm. 0 = not entered
+        "fpp_sample_length_mm": 0.0,          # rectangle: side along the array at 0 deg (x), mm. 0 = not entered
+        "fpp_position_correction": "warn",    # 'warn': report the position effect, never apply it
+        "fpp_edge_warn_pct": 1.0,             # warn when assuming a centred probe costs more than this, %
+        "fpp_array_angle_deg": 0.0,           # probe-array direction on the sample, degrees anticlockwise from +x
         "fpp_delta_mode": False,              # current reversal (delta) mode — alternates +I/-I to cancel thermoelectric EMF
         "fpp_delta_settling": 0.1,            # settling time (s) between polarity flips in delta mode
         # 4PP probe safety. Defaults sized for the Signatone SP4 series:
@@ -177,6 +189,18 @@ DEFAULT_SETTINGS = {
 MODE_TIMING_OVERRIDES = {
     'four_point': {'auto_zero': 'on', 'filter_count': 10},
     'vdp':        {'auto_zero': 'on', 'filter_count': 10},
+}
+
+# What each mode is called in front of an operator: the words on the PySide6
+# tabs and the desktop rail. Log messages use these; settings, events, log
+# codes and file metadata keep the internal keys on the left.
+MODE_DISPLAY_NAMES = {
+    'resistance': 'Resistance',
+    'source_v': 'Voltage source',
+    'source_i': 'Current source',
+    'four_point': 'Four-point probe',
+    'sweep': 'I-V sweep',
+    'vdp': 'Van der Pauw',
 }
 
 # Keithley compliance heuristics

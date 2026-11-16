@@ -29,7 +29,7 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -120,15 +120,20 @@ def _write_metadata_block(f, meta: Dict[str, Any], units: Optional[List[str]] = 
         f.write(f"# units: {','.join(units)}\n")
 
 
-def parse_metadata(path: Union[str, Path]) -> Dict[str, Any]:
+def parse_metadata(path: Union[str, Path], text_keys: Iterable[str] = ()) -> Dict[str, Any]:
     """Parse the ``#`` metadata header (and trailing end block, if present) from a CSV.
 
     Supports plain ``.csv`` and ``.csv.gz``. Returns a flat dict of key/value
     pairs with values coerced back to native Python types. The ``units`` line
     is exposed as a list. End-metadata fields (``ended_at``, ``total_samples``,
     ``duration_s``) merge into the same dict with no special prefix.
+
+    ``text_keys`` names values to return exactly as written. Coercion cannot
+    tell a label from a literal -- an id of ``12_3`` would come back as the
+    integer 123 -- so a caller that compares identifiers asks for the text.
     """
     path = Path(path)
+    text_keys = frozenset(text_keys)
     is_gz = path.suffix == '.gz'
     opener = gzip.open if is_gz else open
     meta: Dict[str, Any] = {}
@@ -144,6 +149,8 @@ def parse_metadata(path: Union[str, Path]) -> Dict[str, Any]:
         value = value.strip()
         if key == 'units':
             meta['units'] = value.split(',')
+        elif key in text_keys:
+            meta.setdefault(key, value)
         else:
             meta.setdefault(key, _parse_scalar(value))
 
@@ -291,6 +298,7 @@ def build_metadata(
     start_time: Optional[datetime] = None,
     aux_columns: Optional[List[str]] = None,
     effective: Optional[Dict[str, Any]] = None,
+    spot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build metadata dictionary for export. Shared schema across all backends.
 
@@ -301,6 +309,16 @@ def build_metadata(
     that differs from what was asked — the voltage limit auto-ohms imposes,
     for one. ``params`` stays the request; a reader comparing the two sees
     exactly what the instrument overrode.
+
+    ``spot`` is the block a four-point run writes when it is one placement of
+    a map (``session.spot_record.SpotRecord.header``). Absent, the header has
+    no ``spot`` keys at all.
+
+    ``settings['client']`` (``{'name', 'version'}``) is the program that asked
+    for the run through the API; the session puts it there. It is written as
+    ``client.name`` / ``client.version``; ``software_version`` stays the
+    backend's own. A run started any other way has no such key and its header
+    is unchanged.
     """
     from .constants import __version__
 
@@ -404,7 +422,49 @@ def build_metadata(
     if effective:
         meta['effective'] = dict(effective)
 
+    if spot:
+        meta['spot'] = dict(spot)
+
+    client = settings.get('client')
+    if client:
+        meta['client'] = {'name': client.get('name'), 'version': client.get('version')}
+
     return meta
+
+
+# --------------------------------- File names --------------------------------
+
+
+def _with_extension(base_path: Path, extension: str) -> Path:
+    """``base_path`` with ``extension`` added to the end of its name.
+
+    Not ``Path.with_suffix``. A run's base name ends in its source value
+    (``..._4PP_0.10mA``, ``..._VSRC_0.500V``, ``..._sweep_0.0to1.0``), and
+    ``with_suffix`` takes everything after the last dot for a suffix to
+    replace: the file came out as ``..._4PP_0.csv`` and the value was lost
+    from the name.
+    """
+    return base_path.with_name(base_path.name + extension)
+
+
+def _unused_base_path(base_path: Path, extensions: Tuple[str, ...]) -> Path:
+    """``base_path``, or the first of ``base_path-2``, ``-3``, ... that is free.
+
+    Free means none of the files the exporter will write (``extensions``)
+    exists yet. The stamp in a run's name has one-second resolution, so two
+    runs of one sample inside the same second ask for the same path; the
+    second used to be opened with ``'w'`` and replaced the first run's data.
+
+    The exporters then create their files in exclusive mode, so a name taken
+    between this check and the open (another process, same second) is an
+    error for the second run and never an overwrite of the first.
+    """
+    candidate = base_path
+    number = 1
+    while any(_with_extension(candidate, ext).exists() for ext in extensions):
+        number += 1
+        candidate = base_path.with_name(f"{base_path.name}-{number}")
+    return candidate
 
 
 # --------------------------------- Backends ---------------------------------
@@ -481,8 +541,10 @@ class CsvExporter(_BaseExporter):
         on_large_file: Optional[Callable[[Path, float], None]] = None,
         large_file_notify_mb: float = LARGE_FILE_NOTIFY_MB,
     ):
-        self.base_path = Path(base_path)
-        self.csv_path = self.base_path.with_suffix('.csv')
+        # '.csv.gz' too: finalize may compress, and must not land on another
+        # run's compressed file.
+        self.base_path = _unused_base_path(Path(base_path), ('.csv', '.csv.gz'))
+        self.csv_path = _with_extension(self.base_path, '.csv')
         self.metadata = metadata
         self.columns = list(columns)
         self.units = list(units or [])
@@ -503,7 +565,8 @@ class CsvExporter(_BaseExporter):
     def _init_csv(self) -> None:
         try:
             self.csv_path.parent.mkdir(parents=True, exist_ok=True)
-            self._csv_file = open(self.csv_path, 'w', newline='', encoding='utf-8')
+            # 'x': never open an existing file for writing (_unused_base_path).
+            self._csv_file = open(self.csv_path, 'x', newline='', encoding='utf-8')
             _write_metadata_block(self._csv_file, self.metadata, self.units)
             self._csv_writer = csv.writer(self._csv_file)
             self._csv_writer.writerow(self.columns)
@@ -578,9 +641,9 @@ class CsvExporter(_BaseExporter):
             return self.csv_path
         if self.compression == "auto" and size_mb < self.threshold_mb:
             return self.csv_path
-        gz_path = self.csv_path.with_suffix('.csv.gz')
+        gz_path = _with_extension(self.csv_path, '.gz')
         try:
-            with open(self.csv_path, 'rb') as src, gzip.open(gz_path, 'wb', compresslevel=6) as dst:
+            with open(self.csv_path, 'rb') as src, gzip.open(gz_path, 'xb', compresslevel=6) as dst:
                 shutil.copyfileobj(src, dst)
             self.csv_path.unlink()
             gz_size_mb = gz_path.stat().st_size / (1024 * 1024)
@@ -631,8 +694,8 @@ class Hdf5Exporter(_BaseExporter):
             ) from e
         self._h5py = h5py
 
-        self.base_path = Path(base_path)
-        self.h5_path = self.base_path.with_suffix('.h5')
+        self.base_path = _unused_base_path(Path(base_path), ('.h5',))
+        self.h5_path = _with_extension(self.base_path, '.h5')
         self.metadata = metadata
         self.columns = list(columns)
         self.units = list(units or [])
@@ -644,7 +707,8 @@ class Hdf5Exporter(_BaseExporter):
 
     def _init_h5(self) -> None:
         self.h5_path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = self._h5py.File(self.h5_path, 'w')
+        # 'x': create, fail if it exists (_unused_base_path).
+        self._file = self._h5py.File(self.h5_path, 'x')
         vlen_str = self._h5py.string_dtype(encoding='utf-8')
         dtype = [(c, vlen_str) for c in self.columns]
         self._dataset = self._file.create_dataset(
@@ -732,9 +796,9 @@ class LegacyDualExporter(_BaseExporter):
         columns: List[str],
         units: Optional[List[str]] = None,
     ):
-        self.base_path = Path(base_path)
-        self.json_path = self.base_path.with_suffix('.json')
-        self.csv_path = self.base_path.with_suffix('.csv')
+        self.base_path = _unused_base_path(Path(base_path), ('.csv', '.json', '.json.tmp'))
+        self.json_path = _with_extension(self.base_path, '.json')
+        self.csv_path = _with_extension(self.base_path, '.csv')
         self.metadata = metadata
         self.columns = columns
         self.units = units or []
@@ -748,7 +812,8 @@ class LegacyDualExporter(_BaseExporter):
     def _init_csv(self) -> None:
         try:
             self.csv_path.parent.mkdir(parents=True, exist_ok=True)
-            self._csv_file = open(self.csv_path, 'w', newline='', encoding='utf-8')
+            # 'x': never open an existing file for writing (_unused_base_path).
+            self._csv_file = open(self.csv_path, 'x', newline='', encoding='utf-8')
             self._csv_writer = csv.writer(self._csv_file)
             self._csv_writer.writerow(self.columns)
             self._csv_file.flush()
@@ -778,7 +843,7 @@ class LegacyDualExporter(_BaseExporter):
             self._write_checkpoint()
 
     def _write_checkpoint(self) -> None:
-        checkpoint_path = self.base_path.with_suffix('.json.tmp')
+        checkpoint_path = _with_extension(self.base_path, '.json.tmp')
         try:
             checkpoint_data = {
                 "format_version": self.FORMAT_VERSION,
@@ -792,7 +857,7 @@ class LegacyDualExporter(_BaseExporter):
                 "row_count": len(self._data_rows),
                 "data": self._data_rows
             }
-            temp_path = self.base_path.with_suffix('.json.tmp.writing')
+            temp_path = _with_extension(self.base_path, '.json.tmp.writing')
             with open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
             temp_path.replace(checkpoint_path)
@@ -824,9 +889,9 @@ class LegacyDualExporter(_BaseExporter):
             "data": self._data_rows
         }
         try:
-            with open(self.json_path, 'w', encoding='utf-8') as f:
+            with open(self.json_path, 'x', encoding='utf-8') as f:
                 json.dump(json_data, f, indent=2, ensure_ascii=False)
-            checkpoint_path = self.base_path.with_suffix('.json.tmp')
+            checkpoint_path = _with_extension(self.base_path, '.json.tmp')
             if checkpoint_path.exists():
                 try:
                     checkpoint_path.unlink()

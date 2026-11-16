@@ -5,9 +5,11 @@ tested is process behaviour — the parent reads one line from stdout, talks
 HTTP, and gets its child back when it closes stdin.
 """
 import json
+import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -16,13 +18,28 @@ pytest.importorskip("uvicorn")
 httpx = pytest.importorskip("httpx")
 
 
+_REPO = Path(__file__).resolve().parents[1]
+
+
+def _sidecar_env(tmp_path):
+    """The sidecar is a separate process: give it a home and a working
+    directory of its own, so its instrument locks, its logs and the data it
+    writes land under ``tmp_path`` and not in the developer's home or in the
+    checkout. PYTHONPATH keeps it importing this checkout from there."""
+    home = tmp_path / 'home'
+    home.mkdir(exist_ok=True)
+    env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
+    env['PYTHONPATH'] = os.pathsep.join(filter(None, [str(_REPO), env.get('PYTHONPATH')]))
+    return env
+
+
 def _spawn(tmp_path, *extra):
     """Start the sidecar and return (process, handshake)."""
     process = subprocess.Popen(
         [sys.executable, '-m', 'resistamet_gui.api', '--port', '0', '--simulate',
          '--config', str(tmp_path / 'config.json'), *extra],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True,
+        text=True, cwd=str(tmp_path), env=_sidecar_env(tmp_path),
     )
     line = process.stdout.readline()
     assert line, f"no handshake: {process.stderr.read()[:400]}"
@@ -182,7 +199,8 @@ class TestShutdown:
             httpx.post(f"{handshake['url']}/session/shutdown", headers=headers, timeout=5.0)
             process.wait(timeout=30)
 
-            with open(status['path']) as handle:
+            # The path is relative to the sidecar's working directory.
+            with open(tmp_path / status['path']) as handle:
                 text = handle.read()
             assert '# --- run completed ---' in text or 'ended_at' in text
         finally:
@@ -197,6 +215,7 @@ class TestCheckVisa:
             [sys.executable, '-m', 'resistamet_gui.api', '--check-visa',
              '--config', str(tmp_path / 'config.json'), *extra],
             capture_output=True, text=True, timeout=120,
+            cwd=str(tmp_path), env=_sidecar_env(tmp_path),
         )
         return result, json.loads(result.stdout)
 
@@ -237,6 +256,7 @@ class TestCheckVisa:
             [sys.executable, '-m', 'resistamet_gui.api', '--check-visa', 'bus',
              '--visa-library', '@py', '--config', str(tmp_path / 'config.json')],
             capture_output=True, text=True, timeout=120,
+            cwd=str(tmp_path), env=_sidecar_env(tmp_path),
         )
         report = json.loads(result.stdout)
         assert result.returncode == 0
