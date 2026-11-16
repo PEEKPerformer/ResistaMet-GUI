@@ -95,7 +95,7 @@ class TestRunEnded:
         control.raise_prompt('vdp_geometry', ['proceed', 'abort'])
         control.finish('user_stop')
         assert control.proceed_event.is_set()
-        assert control.wait_for_prompt() is None
+        assert control.wait_for_prompt() == (None, {})
 
 
 class TestRunEndedWithInstrument:

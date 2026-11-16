@@ -57,14 +57,14 @@ assert control.pending_prompt.prompt_id == prompt.prompt_id
 assert control.answer_prompt('stale-id', 'proceed') is False
 assert control.answer_prompt(prompt.prompt_id, 'proceed') is True
 assert control.answer_prompt(prompt.prompt_id, 'abort') is False, 'first answer wins'
-assert control.wait_for_prompt() == 'proceed'
+assert control.wait_for_prompt() == ('proceed', {})
 assert control.pending_prompt is None
 
 # a stop releases the wait with no answer
 second = control.raise_prompt('vdp_geometry', ['proceed', 'abort'])
 released = []
 def waiter():
-    released.append(control.wait_for_prompt())
+    released.append(control.wait_for_prompt()[0])
 t = threading.Thread(target=waiter)
 t.start()
 control.running = False

@@ -14,6 +14,8 @@ from typing import Dict
 from ..data_export import build_metadata, get_column_config, make_exporter
 from ..instrument import Keithley2400, humanize_connection_error
 from ..system_utils import SleepInhibitor
+from .control import RunStopped
+from .instrument_lock import InstrumentBusy, hold_instrument
 from .run_files import create_base_path
 
 logger = logging.getLogger(__name__)
@@ -38,11 +40,16 @@ class VdpRun:
 
     MODE = 'vdp'
 
-    def __init__(self, sample_name, username, settings, control, events):
+    def __init__(self, sample_name, username, settings, control, events,
+                  safety_ack='skip', prompt_timeout_s=None):
         self.sample_name = sample_name
         self.username = username
         self.settings = settings
         self._events = events
+        self._safety_ack = safety_ack
+        #: None = wait forever (the GUI has an operator at the bench).
+        self._prompt_timeout_s = prompt_timeout_s
+        self._instrument_lock = None
         self._control = control
         self._voltages: Dict[str, float] = {}
         self.keithley = None
@@ -88,12 +95,84 @@ class VdpRun:
             f"Compression is off — enable in Settings -> Output to gzip future runs."
         )
 
+
+    def _safety_prompt_declined(self) -> bool:
+        """Ask before a hazardous voltage reaches the leads. True = cancel.
+
+        The GUI asks in its own modal before starting, so it constructs runs
+        with safety_ack='skip'; a headless client has no dialog, so the run
+        itself must raise the question rather than silently energise leads at
+        60 V.
+        """
+        if self._safety_ack != 'prompt':
+            return False
+        from ..safety import is_potentially_hazardous, warning_message
+
+        measurement = self.settings.get('measurement', {})
+        if bool(measurement.get('safety_voltage_warn_silenced', False)):
+            return False
+        check = is_potentially_hazardous(self.settings, self.MODE)
+        if not check.hazardous:
+            return False
+
+        prompt = self._control.raise_prompt(
+            'safety_voltage_ack', ['acknowledge', 'cancel'], detail={
+                'voltage_v': check.voltage_v,
+                'threshold_v': check.threshold_v,
+                'reason': check.reason,
+                'message': warning_message(check),
+            })
+        self._events.emit('prompt', {
+            'prompt_id': prompt.prompt_id, 'kind': prompt.kind,
+            'options': prompt.options, 'requires_human': prompt.requires_human,
+            'detail': prompt.detail,
+        })
+        choice, fields = self._control.wait_for_prompt(self._prompt_timeout_s)
+        self._events.emit('prompt_resolved', {
+            'prompt_id': prompt.prompt_id, 'choice': choice})
+        if choice is None and not self._control.stopped():
+            self._control.finish('prompt_timeout')
+            self._events.warn('prompt_timeout',
+                               "No answer to the touch-safety warning; abandoning the run.")
+            return True
+        if fields.get('silence_for_profile'):
+            # Recorded on the event stream; persisting it belongs to whoever
+            # owns the profile file, not to a run.
+            self._events.log('safety_silenced',
+                              "Touch-safety warning silenced for this profile.")
+        return choice != 'acknowledge'
+
     def execute(self) -> None:
         self.running = True
+        address = self.settings.get('measurement', {}).get('gpib_address', '')
+        try:
+            self._instrument_lock = hold_instrument(address)
+            self._instrument_lock.__enter__()
+        except InstrumentBusy as exc:
+            self._control.finish('instrument_busy')
+            self._events.error('instrument_busy', 'smu', str(exc))
+            self._events.emit('run_ended', {
+                'reason': 'instrument_busy', 'ok': False, 'samples': 0,
+                'duration_s': 0.0, 'path': None,
+            })
+            return
+
+        if self._safety_prompt_declined():
+            self._control.finish('cancelled')
+            self._release_instrument_lock()
+            self._events.emit('run_ended', {
+                # finish() keeps the first reason, so a timeout reports as one.
+                'reason': self._control.finish_reason, 'ok': False, 'samples': 0,
+                'duration_s': 0.0, 'path': None,
+            })
+            return
         try:
             self._connect_and_configure()
             self._run_geometries()
             self._compute_and_emit_result()
+        except RunStopped:
+            self._control.finish('user_stop')
+            self._events.log('aborted', "vdP measurement aborted by user")
         except _VdpAborted:
             self._control.finish('user_stop')
             self._events.log('aborted', "vdP measurement aborted by user")
@@ -259,19 +338,24 @@ class VdpRun:
                 f"Sense HI->C{geom.sense_high}, "
                 f"Sense LO->C{geom.sense_low}; press Measure."
             )
-            choice = self._control.wait_for_prompt()
+            choice, _fields = self._control.wait_for_prompt(self._prompt_timeout_s)
             self._events.emit('prompt_resolved', {
                 'prompt_id': prompt.prompt_id, 'choice': choice})
+            if choice is None and not self._control.stopped():
+                self._control.finish('prompt_timeout')
+                self._events.warn('prompt_timeout',
+                                   "No answer at this geometry; abandoning the run.")
+                raise _VdpAborted()
             if not self.running or choice == 'abort':
                 raise _VdpAborted()
 
             self.keithley.write(":OUTP ON")
             self.keithley.write(f":SOUR:CURR {self._i_mag}")
-            time.sleep(settling)
+            self._control.sleep(settling)
             v_pos, stat_pos = self._read_averaged(n_avg)
 
             self.keithley.write(f":SOUR:CURR {-self._i_mag}")
-            time.sleep(settling)
+            self._control.sleep(settling)
             v_neg, stat_neg = self._read_averaged(n_avg)
 
             # Return polarity to +I and disable output so the user can
@@ -379,8 +463,19 @@ class VdpRun:
         except Exception:
             logger.warning("vdP: finalize with result failed", exc_info=True)
 
+    def _release_instrument_lock(self) -> None:
+        manager = getattr(self, '_instrument_lock', None)
+        if manager is not None:
+            self._instrument_lock = None
+            try:
+                manager.__exit__(None, None, None)
+            except Exception:
+                logger.warning("failed to release the instrument lock", exc_info=True)
+
     def _cleanup(self) -> None:
         self._sleep_inhibitor.uninhibit()
+        # Released last, after the instrument is closed.
+        self._release_instrument_lock()
         if self.keithley:
             try:
                 self.keithley.write(":OUTP OFF")

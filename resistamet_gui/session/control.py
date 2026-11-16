@@ -11,7 +11,7 @@ slow instrument read can never block whoever is trying to stop the run.
 """
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,16 @@ class PendingPrompt:
     detail: Dict[str, Any] = field(default_factory=dict)
 
 
+class RunStopped(Exception):
+    """Raised inside a run when a stop lands during a wait.
+
+    Settling delays are the longest thing a run does between stop checks, so
+    interrupting them is what makes a stop feel immediate. Unwinding by
+    exception also means the read and the row that would have followed an
+    unsettled wait are skipped rather than recorded.
+    """
+
+
 class RunControl:
     """Start/stop/pause state plus the operator's proceed gate."""
 
@@ -41,9 +51,12 @@ class RunControl:
         #: Set when the operator has answered a prompt, and by stop, so a
         #: waiting run always wakes.
         self.proceed_event = threading.Event()
+        #: Set by finish(); what the interruptible sleep waits on.
+        self.stop_event = threading.Event()
         self._finish_reason: Optional[str] = None
         self._prompt: Optional[PendingPrompt] = None
         self._answer: Optional[str] = None
+        self._answer_fields: Dict[str, Any] = {}
         self._prompt_count = 0
 
     @property
@@ -84,7 +97,21 @@ class RunControl:
             if self._finish_reason is None:
                 self._finish_reason = reason
             self._running = False
+        self.stop_event.set()
         self.proceed_event.set()
+
+    def stopped(self) -> bool:
+        return self.stop_event.is_set()
+
+    def sleep(self, seconds: float) -> None:
+        """Wait, unless the run is stopped first.
+
+        Raises :class:`RunStopped` instead of returning when a stop lands, so
+        the caller unwinds rather than carrying on with a wait it did not
+        finish.
+        """
+        if self.stop_event.wait(max(0.0, seconds)):
+            raise RunStopped()
 
     # --- operator prompts -------------------------------------------------
 
@@ -109,28 +136,38 @@ class RunControl:
         self.proceed_event.clear()
         return prompt
 
-    def answer_prompt(self, prompt_id: str, choice: str) -> bool:
-        """Answer the pending prompt. First valid answer wins; stale ids lose."""
+    def answer_prompt(self, prompt_id: str, choice: str,
+                       fields: Optional[Dict[str, Any]] = None) -> bool:
+        """Answer the pending prompt. First valid answer wins; stale ids lose.
+
+        ``fields`` carries anything the answer needs beyond the choice — the
+        safety dialog's "don't show again", for instance.
+        """
         with self._lock:
             prompt = self._prompt
             if prompt is None or prompt.prompt_id != prompt_id or self._answer is not None:
                 return False
             self._answer = choice
+            self._answer_fields = dict(fields or {})
         self.proceed_event.set()
         return True
 
-    def wait_for_prompt(self) -> Optional[str]:
-        """Block until the prompt is answered or the run is stopped.
+    def wait_for_prompt(self, timeout: Optional[float] = None
+                         ) -> Tuple[Optional[str], Dict[str, Any]]:
+        """Block until the prompt is answered, the run stops, or time runs out.
 
-        Returns the choice, or None when stop woke the wait instead — the
-        caller decides what abandoning the run means for it.
+        Returns ``(choice, fields)``; the choice is None when stop or the
+        timeout woke the wait instead — the caller decides what abandoning the
+        run means for it, and can tell the two apart with ``stopped()``.
         """
-        self.proceed_event.wait()
+        self.proceed_event.wait(timeout)
         with self._lock:
             answer = self._answer
+            fields = self._answer_fields
             self._prompt = None
             self._answer = None
-        return answer
+            self._answer_fields = {}
+        return answer, fields
 
     @property
     def event_marker(self) -> str:
