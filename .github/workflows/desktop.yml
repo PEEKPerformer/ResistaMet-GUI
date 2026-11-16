@@ -259,6 +259,27 @@ jobs:
         working-directory: desktop
         run: npm run tauri build -- --bundles ${{ matrix.bundles }}
 
+      - name: Shell unit tests
+        # The shell's decisions (which backend to launch, where data goes,
+        # when the window may close) are pure functions with tests; nothing
+        # ran them.
+        working-directory: desktop/src-tauri
+        run: cargo test
+
+      - name: Cargo.lock is current
+        # A build with a stale lock file re-resolves the dependency tree and
+        # quietly builds with other versions than the ones committed. The
+        # lock file cargo wrote is uploaded when this fails, to commit.
+        shell: bash
+        run: git diff --exit-code -- desktop/src-tauri/Cargo.lock
+
+      - name: Upload the lock file cargo wrote
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-lock-${{ matrix.os }}
+          path: desktop/src-tauri/Cargo.lock
+
       - name: Upload bundles
         uses: actions/upload-artifact@v4
         with:
