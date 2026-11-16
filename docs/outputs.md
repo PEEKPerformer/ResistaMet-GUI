@@ -44,7 +44,7 @@ A four-point run on a simulated instrument, started through a headless session w
 # sample: wafer-07
 # mode: four_point
 # started_at: 2026-11-16T12:29:12.724862
-# software_version: 1.12.3
+# software_version: 2.0.0rc4
 # instrument: KEITHLEY INSTRUMENTS INC.,MODEL 2420,9999999,C30   Mar 17 2006 09:29:29/A02  /SIM
 # gpib_address: GPIB0::24::INSTR
 # nplc: 1.0
