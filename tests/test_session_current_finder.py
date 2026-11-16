@@ -409,3 +409,29 @@ class TestOff:
         assert header['params.autoselect_current'] is False
         assert 'params.autoselect_requested_current_A' not in header
         assert 'params.autoselect_target_sig_figs' not in header
+
+
+class TestTheFindersChoiceAgainstThePowerStop:
+    """The smallest current the finder may choose, at the compliance, can be
+    more than the power stop when the probe current is below it: 1 uA at
+    200 V against 0.1 mW. The configure step refuses such a request; the
+    finder's own choice ran, and tripped on its first row."""
+
+    def test_proceeding_past_the_power_stop_is_refused(self, session, sink, fake_rm, profile):
+        from resistamet_gui._simulator import _idn_for_model
+        fake_rm._idn = _idn_for_model('2410')
+        fake_rm._dut_r = 1e12
+        profile['measurement'].update({
+            'fpp_current': 4e-7, 'fpp_voltage_compliance': 200.0,
+            'fpp_power_warn_w': 1e-4, 'fpp_power_stop_w': 1e-4,
+            'safety_voltage_warn_silenced': True})
+        prompt = _run_to_prompt(session, profile)
+        assert prompt['kind'] == 'fpp_current_decision'
+        session.answer_prompt(prompt['prompt_id'], 'proceed')
+        assert _wait_for(lambda: session.state == 'idle')
+
+        assert _ended(sink)['reason'] == 'power_envelope'
+        assert _ended(sink)['path'] is None
+        assert sink.of_type('sample') == [] and sink.of_type('overpower_trip') == []
+        assert _output_is_on(fake_rm) is False
+        assert any("hard stop" in e.payload['message'] for e in sink.of_type('error'))

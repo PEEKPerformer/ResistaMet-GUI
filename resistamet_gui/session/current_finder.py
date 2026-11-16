@@ -36,7 +36,7 @@ from ..constants import (
     KEITHLEY_STAT_BIT_COMPLIANCE,
 )
 from ..data_export import effective_filter_type
-from ..formatting import four_point_power_warning
+from ..formatting import format_power, four_point_power_warning
 
 PROMPT_KIND = 'fpp_current_decision'
 
@@ -252,11 +252,23 @@ def find_current(keithley, control, events, measurement_settings, state,
         return None
     chosen = detail['current_a']
     compliance_v = abs(float(measurement_settings.get('fpp_voltage_compliance') or 0.0))
+    worst_case = four_point_worst_case_power_w(chosen, compliance_v)
+    if four_point_power_level(worst_case, state.power_warn_w, state.power_stop_w) == 'stop':
+        # The smallest current the finder may choose can still exceed the
+        # power stop at a high compliance (1 uA at 200 V against 0.1 mW). The
+        # configure step refuses such a request; the finder's own choice went
+        # ahead and the run tripped on its first row.
+        events.error('power_envelope', 'run',
+            f"Selected 4PP power ({format_power(worst_case)} = "
+            f"{abs(chosen)*1e6:.3g} µA × {compliance_v:.3g} V) exceeds the "
+            f"probe-safety hard stop ({format_power(state.power_stop_w)}). "
+            f"Lower the voltage compliance or raise fpp_power_stop_w.")
+        control.finish('power_envelope')
+        return None
     keithley.write(f":SOUR:CURR:RANG {abs(chosen)}")
     keithley.write(f":SOUR:CURR {chosen}")
     if moving_filter:
         keithley.write(":SENS:AVER ON")
-    worst_case = four_point_worst_case_power_w(chosen, compliance_v)
     if four_point_power_level(worst_case, state.power_warn_w, state.power_stop_w) == 'warn':
         events.warn('power_envelope', "Warning: 4PP power envelope: " +
                     four_point_power_warning(worst_case, state.power_warn_w, chosen))
