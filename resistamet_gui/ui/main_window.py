@@ -3,7 +3,7 @@ import math
 import time
 from collections import deque
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -1793,41 +1793,13 @@ class ResistanceMeterApp(QMainWindow):
             import json
             with open(filename, 'r') as f:
                 prof = json.load(f)
-            # Apply known fields to current tab UI
-            w = mode_widget
-            if mode == 'resistance':
-                if 'res_test_current' in prof: w.res_test_current.setValue(float(prof['res_test_current']))
-                if 'res_voltage_compliance' in prof: w.res_voltage_compliance.setValue(float(prof['res_voltage_compliance']))
-                if 'res_measurement_type' in prof: w.res_measurement_type.setCurrentText(str(prof['res_measurement_type']))
-                if 'res_auto_range' in prof: w.res_auto_range.setChecked(bool(prof['res_auto_range']))
-            elif mode == 'source_v':
-                if 'vsource_voltage' in prof: w.vsource_voltage.setValue(float(prof['vsource_voltage']))
-                if 'vsource_current_compliance' in prof: w.vsource_current_compliance.setValue(float(prof['vsource_current_compliance']))
-                if 'vsource_current_range_auto' in prof: w.vsource_current_range_auto.setChecked(bool(prof['vsource_current_range_auto']))
-                if 'vsource_duration_hours' in prof: w.vsource_duration.setValue(float(prof['vsource_duration_hours']))
-            elif mode == 'source_i':
-                if 'isource_current' in prof: w.isource_current.setValue(float(prof['isource_current']))
-                if 'isource_voltage_compliance' in prof: w.isource_voltage_compliance.setValue(float(prof['isource_voltage_compliance']))
-                if 'isource_voltage_range_auto' in prof: w.isource_voltage_range_auto.setChecked(bool(prof['isource_voltage_range_auto']))
-                if 'isource_duration_hours' in prof: w.isource_duration.setValue(float(prof['isource_duration_hours']))
-            elif mode == 'four_point':
-                if 'fpp_current' in prof: w.fpp_current.setValue(float(prof['fpp_current']))
-                if 'fpp_voltage_compliance' in prof: w.fpp_voltage_compliance.setValue(float(prof['fpp_voltage_compliance']))
-                if 'fpp_voltage_range_auto' in prof: w.fpp_voltage_range_auto.setChecked(bool(prof['fpp_voltage_range_auto']))
-                if 'fpp_spacing_cm' in prof: w.fpp_spacing_cm.setValue(float(prof['fpp_spacing_cm']))
-                # Accept either µm or legacy cm
-                if 'fpp_thickness_um' in prof:
-                    w.fpp_thickness_um.setValue(float(prof['fpp_thickness_um']))
-                elif 'fpp_thickness_cm' in prof:
-                    w.fpp_thickness_um.setValue(float(prof['fpp_thickness_cm']) * 1e4)
-                if 'fpp_alpha' in prof: w.fpp_alpha.setValue(float(prof['fpp_alpha']))
-                if 'fpp_k_factor' in prof: w.fpp_k_factor.setValue(float(prof['fpp_k_factor']))
-                if 'fpp_model' in prof: w.fpp_model.setCurrentText(str(prof['fpp_model']))
-            # Load NPLC and sampling rate if present (applies to all modes)
-            if 'nplc' in prof and hasattr(w, 'nplc'):
-                w.nplc.setValue(float(prof['nplc']))
-            if 'sampling_rate' in prof and hasattr(w, 'sampling_rate'):
-                w.sampling_rate.setValue(float(prof['sampling_rate']))
+            if not isinstance(prof, dict):
+                raise ValueError("not a profile: expected a JSON object of settings")
+            # Everything Save Profile wrote that this tab holds. The file also
+            # carries the keys a tab has no widget for (instrument address,
+            # filter, touch-safety); those belong to the user's settings and
+            # this machine, and a file does not change them.
+            self._apply_measurement_to_tabs(prof, modes=(mode,))
             self.log_status(f"Profile loaded: {filename}")
         except Exception as e:
             QMessageBox.critical(self, "Load Profile", f"Failed to load profile: {e}")
@@ -1857,84 +1829,161 @@ class ResistanceMeterApp(QMainWindow):
                 self.log_status("No user selected. Please select or create a user.")
                 self.set_all_controls_enabled(False)
 
-    def update_ui_from_settings(self):
+    def _tab_setters(self) -> Dict[str, Dict[str, Any]]:
+        """For each mode, how a measurement key is put on that mode's tab.
+
+        The mirror of ``_overrides_from_widgets``: every key that method reads
+        from a widget has a setter here (tests/test_gui_tab_settings.py holds
+        the two together), so loading a profile -- a user's, or a file from
+        Load Profile -- leaves no widget showing what the last one set.
+        Order matters within a mode: a setter may rely on an earlier one.
+        """
+        res, vsrc, isrc = self.tab_resistance, self.tab_voltage_source, self.tab_current_source
+        fpp, sweep, vdp = self.tab_four_point, self.tab_sweep, self.tab_vdp
+
+        def text(combo):
+            return lambda value: combo.setCurrentText(str(value))
+
+        def number(box, kind=float):
+            return lambda value: box.setValue(kind(value))
+
+        def flag(box):
+            return lambda value: box.setChecked(bool(value))
+
+        def duration(box, run_until_stopped):
+            # A duration of 0 is "run until stopped", which the tab shows as
+            # its own checkbox.
+            def apply(value):
+                box.setValue(float(value))
+                run_until_stopped.setChecked(float(value) == 0.0)
+            return apply
+
+        def temperature(value):
+            # NaN / None is "not measured": the spinbox's minimum, shown as
+            # its special text and read back as NaN.
+            measured = isinstance(value, (int, float)) and value == value
+            fpp.fpp_temperature_c.setValue(float(value) if measured else -50.0)
+
+        return {
+            'resistance': {
+                'res_test_current': number(res.res_test_current),
+                'res_voltage_compliance': number(res.res_voltage_compliance),
+                'res_measurement_type': text(res.res_measurement_type),
+                'res_auto_range': flag(res.res_auto_range),
+                'res_offset_comp': flag(res.res_offset_comp),
+                'sampling_rate': number(res.sampling_rate),
+                'auto_zero': text(res.auto_zero),
+            },
+            'source_v': {
+                'vsource_voltage': number(vsrc.vsource_voltage),
+                'vsource_current_compliance': number(vsrc.vsource_current_compliance),
+                'vsource_current_range_auto': flag(vsrc.vsource_current_range_auto),
+                'vsource_duration_hours': duration(vsrc.vsource_duration,
+                                                   vsrc.vsource_run_continuous),
+                'sampling_rate': number(vsrc.sampling_rate),
+                'auto_zero': text(vsrc.auto_zero),
+            },
+            'source_i': {
+                'isource_current': number(isrc.isource_current),
+                'isource_voltage_compliance': number(isrc.isource_voltage_compliance),
+                'isource_voltage_range_auto': flag(isrc.isource_voltage_range_auto),
+                'isource_duration_hours': duration(isrc.isource_duration,
+                                                   isrc.isource_run_continuous),
+                'sampling_rate': number(isrc.sampling_rate),
+                'auto_zero': text(isrc.auto_zero),
+            },
+            'four_point': {
+                'fpp_current': number(fpp.fpp_current),
+                'fpp_voltage_compliance': number(fpp.fpp_voltage_compliance),
+                'fpp_voltage_range_auto': flag(fpp.fpp_voltage_range_auto),
+                'fpp_spacing_cm': number(fpp.fpp_spacing_cm),
+                'fpp_thickness_um': number(fpp.fpp_thickness_um),
+                'fpp_alpha': number(fpp.fpp_alpha),
+                'fpp_model': text(fpp.fpp_model),
+                'fpp_k_factor': number(fpp.fpp_k_factor),
+                'fpp_samples': number(fpp.fpp_samples, int),
+                # F84 correction-factor inputs. The defaults (D=0, circle, no
+                # temperature) keep the run on the legacy K formula.
+                'fpp_diameter_cm': number(fpp.fpp_diameter_cm),
+                'fpp_geometry': text(fpp.fpp_geometry),
+                'fpp_temperature_c': temperature,
+                'fpp_dopant_type': text(fpp.fpp_dopant_type),
+                'fpp_delta_mode': flag(fpp.fpp_delta_mode),
+                'fpp_delta_settling': number(fpp.fpp_delta_settling),
+                'fpp_power_warn_w': number(fpp.fpp_power_warn_w),
+                'fpp_power_stop_w': number(fpp.fpp_power_stop_w),
+                'fpp_stop_on_overpower': flag(fpp.fpp_stop_on_overpower),
+                'nplc': number(fpp.nplc),
+                'sampling_rate': number(fpp.sampling_rate),
+            },
+            'sweep': {
+                # Source first: it sets the units the other boxes display in.
+                'sweep_source': text(sweep.sweep_source),
+                'sweep_start': number(sweep.sweep_start),
+                'sweep_stop': number(sweep.sweep_stop),
+                'sweep_step': number(sweep.sweep_step),
+                'sweep_compliance': number(sweep.sweep_compliance),
+                'sweep_delay': number(sweep.sweep_delay),
+                'sweep_direction': text(sweep.sweep_direction),
+                'sweep_measurement_type': text(sweep.sweep_measurement_type),
+                'nplc': number(sweep.sweep_nplc),
+            },
+            'vdp': {
+                'vdp_current': number(vdp.vdp_current),
+                'vdp_voltage_compliance': number(vdp.vdp_voltage_compliance),
+                'vdp_voltage_range_auto': flag(vdp.vdp_voltage_range_auto),
+                'vdp_thickness_cm': number(vdp.vdp_thickness_cm),
+                'vdp_settling_s': number(vdp.vdp_settling_s),
+                'vdp_readings_per_polarity': number(vdp.vdp_readings_per_polarity, int),
+                'nplc': number(vdp.nplc),
+                'sampling_rate': number(vdp.sampling_rate),
+            },
+        }
+
+    def _apply_measurement_to_tabs(self, m_cfg: Dict, modes=None, only_keys=None) -> None:
+        """Set the tab widgets from flat measurement keys.
+
+        ``modes`` limits it to those tabs and ``only_keys`` to those keys;
+        left out, every tab and every key ``m_cfg`` holds. A key ``m_cfg``
+        does not hold leaves its widget alone.
+        """
+        m_cfg = dict(m_cfg)
+        if m_cfg.get('fpp_thickness_um') is None and m_cfg.get('fpp_thickness_cm') is not None:
+            # Profiles from before the thickness was kept in micrometres.
+            m_cfg['fpp_thickness_um'] = float(m_cfg['fpp_thickness_cm']) * 1e4
+        for mode, setters in self._tab_setters().items():
+            if modes is not None and mode not in modes:
+                continue
+            for key, apply in setters.items():
+                if key in m_cfg and (only_keys is None or key in only_keys):
+                    apply(m_cfg[key])
+
+    def update_ui_from_settings(self, only_keys=None):
+        """Put the loaded profile on the tabs.
+
+        ``only_keys`` is for a profile that was edited rather than switched
+        (Settings saved): only those measurement keys reach the tabs, so a
+        value typed on a tab that the edit did not touch stays as typed.
+        """
         if not self.user_settings:
             return
         m_cfg = self.user_settings['measurement']; d_cfg = self.user_settings['display']
-        self.tab_resistance.res_test_current.setValue(m_cfg['res_test_current'])
-        self.tab_resistance.res_voltage_compliance.setValue(m_cfg['res_voltage_compliance'])
-        self.tab_resistance.res_measurement_type.setCurrentText(m_cfg['res_measurement_type'])
-        self.tab_sweep.sweep_measurement_type.setCurrentText(m_cfg.get('sweep_measurement_type', '2-wire'))
-        self.tab_resistance.res_auto_range.setChecked(m_cfg['res_auto_range'])
-        self.tab_resistance.res_offset_comp.setChecked(m_cfg.get('res_offset_comp', False))
-        self.tab_resistance.sampling_rate.setValue(m_cfg['sampling_rate'])
-        self.tab_resistance.auto_zero.setCurrentText(str(m_cfg.get('auto_zero', 'once')))
+        self._apply_measurement_to_tabs(m_cfg, only_keys=only_keys)
         self.tab_resistance.canvas.set_plot_properties('Elapsed Time (s)', 'Resistance (Ohms)', 'Resistance Measurement', d_cfg['plot_color_r'])
-        self.tab_voltage_source.vsource_voltage.setValue(m_cfg['vsource_voltage'])
-        self.tab_voltage_source.vsource_current_compliance.setValue(m_cfg['vsource_current_compliance'])
-        self.tab_voltage_source.vsource_current_range_auto.setChecked(m_cfg['vsource_current_range_auto'])
-        dur_v = m_cfg.get('vsource_duration_hours', 0.0)
-        self.tab_voltage_source.vsource_duration.setValue(dur_v)
-        self.tab_voltage_source.vsource_run_continuous.setChecked(dur_v == 0.0)
-        self.tab_voltage_source.sampling_rate.setValue(m_cfg['sampling_rate'])
-        self.tab_voltage_source.auto_zero.setCurrentText(str(m_cfg.get('auto_zero', 'once')))
-        self.tab_voltage_source.v_plot_var.setCurrentText('current')
-        self.tab_voltage_source.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Current (A)', 'Voltage Source Output', d_cfg['plot_color_v'])
-        self.tab_current_source.isource_current.setValue(m_cfg['isource_current'])
-        self.tab_current_source.isource_voltage_compliance.setValue(m_cfg['isource_voltage_compliance'])
-        self.tab_current_source.isource_voltage_range_auto.setChecked(m_cfg['isource_voltage_range_auto'])
-        dur_i = m_cfg.get('isource_duration_hours', 0.0)
-        self.tab_current_source.isource_duration.setValue(dur_i)
-        self.tab_current_source.isource_run_continuous.setChecked(dur_i == 0.0)
-        self.tab_current_source.sampling_rate.setValue(m_cfg['sampling_rate'])
-        self.tab_current_source.auto_zero.setCurrentText(str(m_cfg.get('auto_zero', 'once')))
-        self.tab_current_source.i_plot_var.setCurrentText('voltage')
-        self.tab_current_source.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Voltage (V)', 'Current Source Output', d_cfg['plot_color_i'])
-        # Four-Point Probe
-        self.tab_four_point.fpp_current.setValue(m_cfg['fpp_current'])
-        self.tab_four_point.fpp_voltage_compliance.setValue(m_cfg['fpp_voltage_compliance'])
-        self.tab_four_point.fpp_voltage_range_auto.setChecked(m_cfg['fpp_voltage_range_auto'])
-        self.tab_four_point.fpp_spacing_cm.setValue(m_cfg['fpp_spacing_cm'])
-        # Support legacy cm setting if present
-        t_um = m_cfg.get('fpp_thickness_um', None)
-        if t_um is None:
-            t_um = float(m_cfg.get('fpp_thickness_cm', 0.0)) * 1e4
-        self.tab_four_point.fpp_thickness_um.setValue(t_um)
-        self.tab_four_point.fpp_alpha.setValue(m_cfg.get('fpp_alpha', 1.0))
-        self.tab_four_point.fpp_model.setCurrentText(m_cfg.get('fpp_model', 'thin_film'))
-        self.tab_four_point.fpp_k_factor.setValue(m_cfg.get('fpp_k_factor', 4.532))
-        self.tab_four_point.fpp_samples.setValue(int(m_cfg.get('fpp_samples', 20)))
-        # F84 correction-factor inputs (added 2026-05). Defaults preserve
-        # legacy behavior: D=0 (infinite), geometry=circle, no T correction.
-        self.tab_four_point.fpp_diameter_cm.setValue(float(m_cfg.get('fpp_diameter_cm', 0.0)))
-        self.tab_four_point.fpp_geometry.setCurrentText(m_cfg.get('fpp_geometry', 'circle'))
-        t_c = m_cfg.get('fpp_temperature_c', float('nan'))
-        if t_c is None or not (isinstance(t_c, (int, float)) and t_c == t_c):  # NaN check
-            self.tab_four_point.fpp_temperature_c.setValue(-50.0)  # "not measured"
+        if only_keys is None:
+            self.tab_voltage_source.v_plot_var.setCurrentText('current')
+            self.tab_voltage_source.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Current (A)', 'Voltage Source Output', d_cfg['plot_color_v'])
+            self.tab_current_source.i_plot_var.setCurrentText('voltage')
+            self.tab_current_source.canvas.set_plot_properties('Elapsed Time (s)', 'Measured Voltage (V)', 'Current Source Output', d_cfg['plot_color_i'])
+            self.tab_four_point.fpp_plot_var.setCurrentText('sheet_Rs')
         else:
-            self.tab_four_point.fpp_temperature_c.setValue(float(t_c))
-        self.tab_four_point.fpp_dopant_type.setCurrentText(m_cfg.get('fpp_dopant_type', 'none'))
-        if hasattr(self.tab_four_point, 'fpp_power_warn_w'):
-            self.tab_four_point.fpp_power_warn_w.setValue(float(m_cfg.get('fpp_power_warn_w', 1.0e-2)))
-        if hasattr(self.tab_four_point, 'fpp_power_stop_w'):
-            self.tab_four_point.fpp_power_stop_w.setValue(float(m_cfg.get('fpp_power_stop_w', 1.0e-1)))
-        if hasattr(self.tab_four_point, 'fpp_stop_on_overpower'):
-            self.tab_four_point.fpp_stop_on_overpower.setChecked(bool(m_cfg.get('fpp_stop_on_overpower', True)))
-        self.tab_four_point.nplc.setValue(m_cfg['nplc'])
-        self.tab_four_point.sampling_rate.setValue(m_cfg['sampling_rate'])
-        self.tab_four_point.fpp_plot_var.setCurrentText('sheet_Rs')
+            # The plot variable stays where the operator put it; only the
+            # colour can have changed.
+            self.update_canvas_labels_for_mode('source_v')
+            self.update_canvas_labels_for_mode('source_i')
         # 4PP doesn't carry a time-series MplCanvas — its histogram lives in
         # the right panel and updates from update_active_plot directly.
-        # Van der Pauw
-        if hasattr(self, 'tab_vdp'):
-            self.tab_vdp.vdp_current.setValue(float(m_cfg.get('vdp_current', 1.0e-3)))
-            self.tab_vdp.vdp_voltage_compliance.setValue(float(m_cfg.get('vdp_voltage_compliance', 5.0)))
-            self.tab_vdp.vdp_voltage_range_auto.setChecked(bool(m_cfg.get('vdp_voltage_range_auto', True)))
-            self.tab_vdp.vdp_thickness_cm.setValue(float(m_cfg.get('vdp_thickness_cm', 0.0)))
-            self.tab_vdp.vdp_settling_s.setValue(float(m_cfg.get('vdp_settling_s', 0.2)))
-            self.tab_vdp.vdp_readings_per_polarity.setValue(int(m_cfg.get('vdp_readings_per_polarity', 1)))
-            self.tab_vdp.nplc.setValue(float(m_cfg.get('nplc', 1.0)))
-            self.tab_vdp.sampling_rate.setValue(float(m_cfg.get('sampling_rate', 10.0)))
+        self._refresh_cable_null_label()
         buffer_size = d_cfg.get('buffer_size')
         new_size = None if buffer_size is None or buffer_size <= 0 else buffer_size
         for mode, buffer in list(self.data_buffers.items()):
@@ -1956,8 +2005,7 @@ class ResistanceMeterApp(QMainWindow):
         dialog = SettingsDialog(self.config_manager, self.current_user, self)
         if dialog.exec():
             self.log_status(f"User settings for {self.current_user} updated.")
-            self.user_settings = self.config_manager.get_user_settings(self.current_user)
-            self.update_ui_from_settings()
+            self.update_ui_from_settings(only_keys=self._reload_user_settings())
             self._maybe_start_aux_preview()
 
     def open_global_settings(self):
@@ -1968,9 +2016,35 @@ class ResistanceMeterApp(QMainWindow):
         if dialog.exec():
             self.log_status("Global settings updated.")
             if self.current_user:
-                self.user_settings = self.config_manager.get_user_settings(self.current_user)
-                self.update_ui_from_settings()
+                self.update_ui_from_settings(only_keys=self._reload_user_settings())
             self._maybe_start_aux_preview()
+
+    def _reload_user_settings(self) -> set:
+        """Re-read the current user's profile after something was saved.
+
+        Returns the measurement keys whose value the save changed, which is
+        what may be put on the tabs: the tabs hold this session's working
+        values, and nothing stores them in the profile, so re-loading every
+        key would replace what the operator typed with whatever the profile
+        happens to hold (a thickness of 0, and with it another formula).
+
+        The cable null stays with the session as well. It is a reference
+        measured on this bench (``_null_cables``), never stored, and a save
+        of something else does not unplug the cables.
+        """
+        before = (self.user_settings or {}).get('measurement', {})
+        self.user_settings = self.config_manager.get_user_settings(self.current_user)
+        after = self.user_settings['measurement']
+        if 'res_cable_null' in before:
+            after['res_cable_null'] = before['res_cable_null']
+
+        def same(a, b):
+            both_nan = (isinstance(a, float) and isinstance(b, float)
+                        and math.isnan(a) and math.isnan(b))
+            return both_nan or a == b
+
+        return {key for key in after
+                if key not in before or not same(before[key], after[key])}
 
     def get_widget_for_mode(self, mode: str) -> Optional[QWidget]:
         if mode == 'resistance': return self.tab_resistance
@@ -3325,7 +3399,7 @@ class ResistanceMeterApp(QMainWindow):
             # new address. Without this, the address only takes effect after
             # bouncing through Settings → Save.
             if self.current_user:
-                self.user_settings = self.config_manager.get_user_settings(self.current_user)
+                self._reload_user_settings()
             self.log_status(f"GPIB address set to: {addr}")
             QMessageBox.information(self, "GPIB Updated", f"GPIB address updated to {addr}. Start the measurement again.")
 
@@ -3482,8 +3556,7 @@ class ResistanceMeterApp(QMainWindow):
             # Store in settings (software subtraction — 2400 series lacks :SENS:RES:REL)
             self.user_settings['measurement']['res_cable_null'] = ref
             ohm = '\u03a9'
-            self.tab_resistance.null_label.setText(f"Cable null: {format_engineering(ref, ohm)}")
-            self.tab_resistance.null_label.setStyleSheet("color: green; font-weight: bold;")
+            self._refresh_cable_null_label()
             self.log_status(f"Cable null set: {format_engineering(ref, ohm)} (software subtraction)", color="darkGreen")
         except InstrumentBusy as e:
             QMessageBox.warning(self, "Busy", str(e))
@@ -3494,9 +3567,27 @@ class ResistanceMeterApp(QMainWindow):
         """Remove cable null reference."""
         if self.user_settings:
             self.user_settings['measurement']['res_cable_null'] = 0.0
-        self.tab_resistance.null_label.setText("Cable null: OFF")
-        self.tab_resistance.null_label.setStyleSheet("color: grey;")
+        self._refresh_cable_null_label()
         self.log_status("Cable null cleared.")
+
+    def _refresh_cable_null_label(self):
+        """Show the cable null a resistance run would subtract.
+
+        The label is only ever written here, from the value the run reads
+        (``res_cable_null`` in the loaded settings), so the two cannot differ.
+        """
+        measurement = (self.user_settings or {}).get('measurement', {})
+        try:
+            ref = float(measurement.get('res_cable_null') or 0.0)
+        except (TypeError, ValueError):
+            ref = 0.0
+        label = self.tab_resistance.null_label
+        if ref != 0.0:
+            label.setText(f"Cable null: {format_engineering(ref, chr(0x3a9))}")
+            label.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            label.setText("Cable null: OFF")
+            label.setStyleSheet("color: grey;")
 
     def show_about(self):
         about_text = f"""
