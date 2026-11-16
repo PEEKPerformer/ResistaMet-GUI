@@ -116,11 +116,11 @@ elapsed_s,V,I,V_over_I,Rs_ohm_sq,rho_ohm_cm,sigma_S_cm,V_unc_V,I_unc_A,complianc
 # spot_stats.end_reason: target_samples
 ```
 
-How this file was made: the in-package simulator as a 2420 with a 12.5 Ω DUT and 0.2 % Gaussian noise, a 50.8 mm circular sample 525 µm thick, a spot 18 mm from the center. It shows the format, not a measurement.
+How this file was made: the in-package simulator as a 2420 with a 12.5 Ω DUT and 0.2 % Gaussian noise, a 50.8 mm circular sample 525 µm thick, a spot 18 mm from the center. It shows the format, not a measurement. It was written before the changes listed under Unreleased in the changelog: a file written now also has the `filter.*` header keys, the four-point `params.method`, `params.diameter_cm`, `params.geometry`, `params.temperature_c`, `params.dopant_type` and `params.delta_mode`, an `end_reason` in the footer, and ten significant figures in its rows; the tables below are current.
 
 Two metadata blocks: one at the top (everything known when the file is opened) and one at the bottom (written at finalize), delimited by `# --- run completed ---`. Nested values are flattened with dots. Comments use the `# ` prefix; the column header row is the first non-comment line. The `units:` line is parallel-indexed to the column header.
 
-Value encoding in both blocks: booleans are `true` / `false`, a missing value is an empty string (`spot.sample.width_mm` above: a circle has no width), non-finite floats are `NaN`, `Infinity`, `-Infinity`. Floats in data rows are written with six significant figures in CSV.
+Value encoding in both blocks: booleans are `true` / `false`, a missing value is an empty string (`spot.sample.width_mm` above: a circle has no width), non-finite floats are `NaN`, `Infinity`, `-Infinity`. Floats in data rows are written with ten significant figures (`%.10g`), in CSV as in HDF5. Up to 1.12.3 the CSV had six, which dropped the last digit of the seven the instrument returns and wrote an elapsed time past 100 000 s to the whole second.
 
 **Crash safety.** Rows are written as they arrive and the file is flushed and `fsync`'d every `auto_save_interval` seconds (Settings → File, default 60 s) and at finalize. After a crash or a power cut the partial CSV is the recovery artifact, without its trailing block and possibly without the rows since the last flush. The legacy backend additionally writes a `.json.tmp` checkpoint at each flush. A file with no trailing block is a run that did not reach finalize.
 
@@ -139,7 +139,10 @@ Value encoding in both blocks: booleans are `true` / `false`, a missing value is
 | `software_version` | Version of the ResistaMet backend that wrote the file |
 | `instrument` | The `*IDN?` reply |
 | `gpib_address` | VISA resource the run opened |
-| `sampling_rate_hz`, `nplc`, `settling_time_s` | The timing the run used, after the per-mode overrides (four-point and van der Pauw force their own) |
+| `nplc` | Integration time, in power-line cycles |
+| `sampling_rate_hz`, `settling_time_s` | The timing the run used. Resistance, source and four-point files only: a sweep is one bulk read with its own step delay (`params.delay_s`) and a van der Pauw run has its own settling (`params.settling_s`), so neither header has these two keys |
+| `filter.enabled` | Whether the instrument's averaging filter (`:SENS:AVER`) was on. When it is, every row is the mean of `filter.count` conversions |
+| `filter.type`, `filter.count` | `repeat` or `moving`, and the number of conversions, as sent. Present only when `filter.enabled` is `true`. A van der Pauw run always sends `repeat` (a moving filter would average the two polarities together) |
 | `params.*` | The requested per-mode settings; listed per mode below |
 
 `params.aux_sensor_driver`, `params.aux_sensor_address` and `params.aux_channels` are added when auxiliary-sensor co-logging is on.
@@ -195,7 +198,7 @@ Six more keys are written only when the spot has a position **and** the outline 
 | `spot.factor_here` | | Closed-form lateral geometry factor `Rs / (V/I)` of a thin sheet with insulating edges, for the probe at this position and angle. |
 | `spot.factor_centre` | | The same closed form at the center of the same outline. |
 | `spot.relative_error` | fraction | `factor_centre / factor_here − 1`. What the position costs if the centered factor of this outline is used. |
-| `spot.factor_rows` | | The lateral factor the data rows actually applied: the F84 / Smits table look-up driven by `fpp_geometry` and `fpp_diameter_cm`, or `K·α` on the legacy path, with the thickness term F(w/S) divided out. Empty when the rows have no finite Rs. |
+| `spot.factor_rows` | | The lateral factor the data rows actually applied: the [F₂ factor](#four-point-probe) driven by `fpp_geometry` and `fpp_diameter_cm`, or `K·α` on the legacy path, with the thickness term F(w/S) divided out. Empty when the rows have no finite Rs. |
 | `spot.relative_error_rows` | fraction | `factor_rows / factor_here − 1`: the error in this file's own `Rs_ohm_sq` due to position. Positive means the file's Rs is too high. |
 
 Both errors are fractions, not percent. They agree to the tables' printed digits when the `fpp_sample_*` outline and the legacy `fpp_geometry` / `fpp_diameter_cm` keys describe the same sample (above: 0.01059 and 0.01065). They differ widely when they do not, for example a 20 mm square outline with the rows still assuming an infinite sheet. The near-edge warning is judged on `relative_error_rows` when it exists and on `relative_error` otherwise.
@@ -211,8 +214,9 @@ The closed forms are in `resistamet_gui/calculations_geometry.py`. At the center
 | `ended_at` | | Local time, ISO 8601 |
 | `total_samples` | | Data rows written |
 | `duration_s` | s | From file open to finalize |
+| `end_reason` | | Why the run ended, as in the `run_ended` event: `completed`, `target_samples`, `user_stop`, `duration`, `compliance_stop`, `overpower`, `read_error`, `write_error`, `worker_error`, … |
 
-A van der Pauw file has `vdp_result.*` instead; see [Van der Pauw](#van-der-pauw).
+A van der Pauw file that measured all four geometries also has `vdp_result.*`; see [Van der Pauw](#van-der-pauw).
 
 ### `spot_stats.*` — every four-point run
 
@@ -289,7 +293,7 @@ The two backends receive the same metadata dict, the same columns and the same r
 | | CSV | HDF5 |
 |---|---|---|
 | Metadata values | Text, re-typed by `parse_metadata` | Typed attributes (bool, int, float, str, list); `None` is stored as an empty string |
-| Floats in data rows | 6 significant figures | 10 significant figures, stored as strings |
+| Floats in data rows | 10 significant figures | 10 significant figures, stored as strings |
 | Header / footer separation | Two `#` blocks | One flat `attrs` namespace; a run that did not finish lacks `ended_at` |
 | Compression | Optional gzip of the whole file at finalize | Always, internal |
 | Map assembly | Read | Read, if `h5py` is installed on the machine doing the reading; otherwise the run is listed under `skipped` |
@@ -301,7 +305,7 @@ The two backends receive the same metadata dict, the same columns and the same r
 
 | Column | Unit | What it is |
 |---|---|---|
-| `elapsed_s` | s | Time since Start |
+| `elapsed_s` | s | Time since Start, at the midpoint of the read that produced the row (the instrument integrates over the whole read) |
 | `V_meas` | V | Voltage measured at the DUT (across the probes if 4-wire) |
 | `I_meas` | A | Current sourced (instrument-reported, matches the test-current setpoint) |
 | `R_ohm` | Ω | Instrument-reported R — preserves Enhanced R / offset-comp / source-readback features (NOT `V_meas/I_meas` recomputed here). When **Cable Null** is active the `res_cable_null` offset is subtracted from this column only; `V_meas` and `I_meas` are written as the instrument measured them. |
@@ -309,7 +313,7 @@ The two backends receive the same metadata dict, the same columns and the same r
 | `compliance` | | `OK` on a normal reading, `V_COMP` when the voltage side hit compliance (see below) |
 | `event` | | Empty, or the labels of the event marks made since the previous row, joined with `; ` |
 
-Metadata `params`: `test_current_A`, `voltage_compliance_V`, `measurement_type`, `auto_range`, `auto_zero`, `offset_compensated_ohms`; plus one [`effective.*`](#effective-what-the-instrument-reported-back) key.
+Metadata `params`: `test_current_A`, `voltage_compliance_V`, `measurement_type`, `auto_range`, `auto_zero`, `offset_compensated_ohms`, `cable_null_ohm` (the offset subtracted from every `R_ohm` in the file, 0 when none; `R_ohm + cable_null_ohm` is the instrument's reading); plus one [`effective.*`](#effective-what-the-instrument-reported-back) key.
 
 **How compliance is flagged in resistance mode.** It depends on the range mode, because the voltage limit does.
 
@@ -324,8 +328,8 @@ The simulator does not model auto-ohms; the Auto range behavior rests on the ben
 
 | Column | Unit | What it is |
 |---|---|---|
-| `elapsed_s` | s | Time since Start |
-| `V_set` | V | Sourced voltage (the setpoint — actual output is `V_set ± σ_V_source`) |
+| `elapsed_s` | s | Time since Start, at the midpoint of the read |
+| `V_set` | V | The programmed source level, not an element the instrument returned (actual output is `V_set ± σ_V_source`) |
 | `I_meas` | A | Measured current |
 | `R_calc` | Ω | `V_set / I_meas` |
 | `I_unc_A` | A | σ_I from the per-range current-measurement spec |
@@ -337,7 +341,7 @@ Metadata `params`: `source_voltage_V`, `current_compliance_A`, `current_auto_ran
 
 ### Current Source
 
-Mirror of Voltage Source: `V_meas`/`I_set` instead of `V_set`/`I_meas`, `V_unc_V` instead of `I_unc_A`.
+Mirror of Voltage Source: `V_meas`/`I_set` instead of `V_set`/`I_meas`, `V_unc_V` instead of `I_unc_A`. `I_set` is the programmed source level, not an element the instrument returned.
 
 Metadata `params`: `source_current_A`, `voltage_compliance_V`, `voltage_auto_range`, `duration_hours`, `auto_zero`.
 
@@ -345,15 +349,15 @@ Metadata `params`: `source_current_A`, `voltage_compliance_V`, `voltage_auto_ran
 
 | Column | Unit | What it is |
 |---|---|---|
-| `elapsed_s` | s | Time since Start |
+| `elapsed_s` | s | Time since Start, at the midpoint of the read |
 | `V` | V | Voltage measured between inner two probes |
-| `I` | A | Current sourced through outer two probes |
+| `I` | A | Current sourced through outer two probes: the programmed level, not an element the instrument returned |
 | `V_over_I` | Ω | `V/I` — the raw ratio before geometric corrections |
 | `Rs_ohm_sq` | Ω/□ | Sheet resistance = `K · α · V/I` (K modified by ASTM F84 corrections when applicable) |
 | `rho_ohm_cm` | Ω·cm | Resistivity = `Rs · thickness`; NaN when no thickness was entered (thin-film models) |
 | `sigma_S_cm` | S/cm | Conductivity = `1 / rho` |
-| `V_unc_V` | V | σ_V from per-range voltage-measurement spec |
-| `I_unc_A` | A | σ_I from per-range current-measurement spec |
+| `V_unc_V` | V | σ_V from per-range voltage-measurement spec; with auto range off, of the range the run was pinned to |
+| `I_unc_A` | A | σ_I from the per-range current-**source** accuracy spec: the current is sourced, not measured |
 | `compliance` | | `OK` on a normal reading, `V_COMP` when the voltage side hit compliance |
 | `event` | | Event-marker label written by the `M` keyboard shortcut |
 
@@ -370,7 +374,9 @@ Per-reading uncertainty on Rs / ρ / σ is recoverable downstream: `σ_X/X = √
 
 Per the F84 §11.2.2.2 forward/reverse diagnostic — `R_f / R_r` should approach 1; large deviation flags thermoelectric or rectification effects.
 
-Metadata `params`: `source_current_A`, `voltage_compliance_V`, `voltage_auto_range`, `probe_spacing_cm`, `thickness_um`, `k_factor`, `alpha`, `model`, `target_samples`, `auto_zero`. The F84 inputs (`fpp_diameter_cm`, `fpp_geometry`, `fpp_temperature_c`, `fpp_dopant_type`) and the delta-mode settings are **not** written to the header; delta mode shows in the file name (`_delta`) and in the extra columns. A run with a spot adds the [`spot.*`](#spot-four-point-runs-that-carry-a-spot) block, and every four-point run ends with [`spot_stats.*`](#spot_stats-every-four-point-run).
+Metadata `params`: `source_current_A`, `voltage_compliance_V`, `voltage_auto_range`, `probe_spacing_cm`, `thickness_um`, `k_factor`, `alpha`, `model`, `target_samples`, `auto_zero`; then which calculation built the rows and its inputs: `method` (`f84` or `legacy`; on `f84`, `k_factor`, `alpha` and `model` played no part), `diameter_cm`, `geometry`, `temperature_c`, `dopant_type`, `delta_mode`, and `delta_settling_s` when delta mode is on. Delta mode also shows in the file name (`_delta`) and in the extra columns.
+
+**The F₂ factor on the F84 path.** For a circle, ASTM F84 Table 3 (linear interpolation) up to S/D = 0.10, the end of the table, and the closed-form image solution the table was computed from beyond it. For a square or an L/W = 2, 3, 4 rectangle, the closed-form image series at every D/s; Smits's printed table agrees with it to 6 parts in 10 000. A sample the probe does not fit on has no factor: `Rs_ohm_sq` is NaN (the one exception is a row Smits prints with the end tips exactly on the edge, L/W = 3 at D/s = 1, returned as printed). A run with a spot adds the [`spot.*`](#spot-four-point-runs-that-carry-a-spot) block, and every four-point run ends with [`spot_stats.*`](#spot_stats-every-four-point-run).
 
 ### Van der Pauw
 
@@ -387,6 +393,7 @@ One row per geometry (4 rows total per spot), both polarities captured in the sa
 | `label_neg` | | Operator-facing label for the negative-polarity measurement |
 | `V_neg` | V | Voltage at `−I` |
 | `current_A` | A | Sourced current magnitude (same `|I|` at both polarities) |
+| `compliance` | | `OK`, or `V_COMP` when either polarity of the row was read in voltage compliance (`vdp_result.compliance_readings` says which) |
 
 The final sheet resistance, resistivity, f-factors, Q ratios, and the §11.1 homogeneity result land in the **metadata** at finalize, not as data rows. They appear in the trailing `# --- run completed ---` block with dotted keys:
 
@@ -399,6 +406,12 @@ The final sheet resistance, resistivity, f-factors, Q ratios, and the §11.1 hom
 - `vdp_result.asymmetry_pct` (the |ρ_A − ρ_B|/ρ_avg × 100 number)
 - `vdp_result.current_a`, `vdp_result.thickness_cm`
 - `vdp_result.voltages.<label>` — every raw V measurement, keyed by F76 geometry label
+- `vdp_result.valid` (boolean) and `vdp_result.invalid_reason` — `false`, with the reason, when the numbers are not a measurement: a reading was taken in voltage compliance (it is the limit, not the sample), or the V(+I) − V(−I) differences do not all have the sign the F76 wiring gives (swapped sense leads, for one). The numbers are kept for diagnosis; with inconsistent signs the sheet resistance and resistivities are `NaN` and `asymmetry_pct` is `Infinity`. `vdp_result.homogeneous` is `false` for every invalid result.
+- `vdp_result.compliance` (boolean) and `vdp_result.compliance_readings` — whether any reading was in compliance, and the F76 labels of those that were, space-separated (the labels contain commas)
+
+The uncertainties are combined standard uncertainties (k = 1). The instrument part is the voltage accuracy of the eight readings (on the fixed range when `voltage_auto_range` is `false`), averaged over the four geometries. The statistical part comes from the disagreement of the two reciprocal pairs of geometries (1 with 3, 2 with 4), each of which measures one resistance twice: `(1/4)·√((R₁ − R₃)² + (R₂ − R₄)²)`. It is not the standard deviation of the four resistances, which differ by Q on any sample that is not square.
+
+A run in which a raw reading overflowed, or whose file refused a row, ends without a `vdp_result`.
 
 Metadata `params`: `source_current_A`, `voltage_compliance_V`, `voltage_auto_range`, `thickness_cm`, `settling_s`, `readings_per_polarity`, `auto_zero`, `standard: ASTM F76-08 Method A`.
 

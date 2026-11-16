@@ -68,7 +68,7 @@ ASTM F76-08 Method A for sheet resistance and resistivity on arbitrary-shape, ho
 1. Number your four periphery contacts **1–4 counter-clockwise** and connect leads.
 2. Enter the **sample thickness** for resistivity. Leave it at 0 if it is not known: the run then reports sheet resistance and the homogeneity check, and no resistivity.
 3. Click **Start**. The tab shows a filmstrip of the four geometries. For each one: rewire your leads as shown in the sample diagram, then click **Measure**.
-4. After all four geometries, the result panel reports sheet resistance, resistivity, F76 asymmetry, and a homogeneity pass/fail per F76 §11.1.
+4. After all four geometries, the result panel reports sheet resistance, resistivity, F76 asymmetry, and a homogeneity pass/fail per F76 §11.1. A run with a reading in voltage compliance, or with readings whose signs cannot be one sample's, is shown as INVALID with the reason.
 
 Output is disabled between geometries so you can safely reconnect leads.
 
