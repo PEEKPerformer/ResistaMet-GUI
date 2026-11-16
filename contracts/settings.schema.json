@@ -823,12 +823,25 @@
     },
     "SafetySettings": {
       "additionalProperties": true,
-      "description": "Touch-safety warning threshold. Serialized inside ``measurement``.\n\n``safety_voltage_warn_silenced`` is the sticky per-profile flag behind the\nwarning dialog's \"don't show again\" checkbox.\n\nThe threshold runs to 1100 V, the 2410's range and the Settings dialog's\nmaximum: a threshold the dialog can save must not make the profile\nunrunnable here. 0 disables the warning. Both keys belong to the profile;\na strict run request may not send either (``resolve.SAFETY_KEYS``).",
+      "description": "Touch-safety warning threshold. Serialized inside ``measurement``.\n\n``safety_voltage_warn_silenced`` is the sticky per-profile flag behind the\nwarning dialog's \"don't show again\" checkbox.\n``safety_voltage_warn_silenced_until`` is the timed form, a Unix time:\nthe warning is silenced until then and back by itself afterwards. An\nexpired value is ignored, never cleared (``safety.warning_silenced``).\n\nThe threshold runs to 1100 V, the 2410's range and the Settings dialog's\nmaximum: a threshold the dialog can save must not make the profile\nunrunnable here. 0 disables the warning. Every key here belongs to the\nprofile; a strict run request may not send any (``resolve.SAFETY_KEYS``).",
       "properties": {
         "safety_voltage_warn_silenced": {
           "default": false,
           "title": "Safety Voltage Warn Silenced",
           "type": "boolean"
+        },
+        "safety_voltage_warn_silenced_until": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Safety Voltage Warn Silenced Until"
         },
         "safety_voltage_warn_v": {
           "default": 30.0,

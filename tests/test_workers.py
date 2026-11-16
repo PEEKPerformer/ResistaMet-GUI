@@ -196,7 +196,13 @@ def _drive_worker(qapp, worker: MeasurementWorker, *,
     while worker.isRunning() and time.time() < deadline:
         qapp.processEvents()
         time.sleep(0.01)
-    worker.wait(3000)
+    if not worker.wait(3000):
+        # Never hand a running QThread back: if the test drops it, Qt aborts
+        # the whole process ("Destroyed while thread is still running").
+        worker.stop_measurement()
+        if not worker.wait(30000):
+            raise AssertionError("worker thread did not finish")
+        raise AssertionError(f"worker still running {timeout_s:g} s after start")
     # Final drain: deliver any signals queued just before run() exited
     for _ in range(5):
         qapp.processEvents()
@@ -1042,7 +1048,12 @@ def _drive_vdp_worker(qapp, worker: VdpMeasurementWorker, timeout_s: float = 15.
     while worker.isRunning() and time.time() < deadline:
         qapp.processEvents()
         time.sleep(0.01)
-    worker.wait(3000)
+    if not worker.wait(3000):
+        # As in _drive_worker: never hand a running QThread back.
+        worker.stop_measurement()
+        if not worker.wait(30000):
+            raise AssertionError("vdP worker thread did not finish")
+        raise AssertionError(f"vdP worker still running {timeout_s:g} s after start")
     for _ in range(5):
         qapp.processEvents()
         time.sleep(0.01)
@@ -1237,7 +1248,10 @@ class TestFourPointDeltaReadRetry:
             return real_read_delta()
 
         monkeypatch.setattr(run, '_read_delta', flaky)
-        monkeypatch.setattr(time, 'sleep', lambda s: None)
+        # The retries back off through RunControl.sleep, not time.sleep, so
+        # there is nothing to patch for speed. Patching time.sleep made the
+        # test's own event loop below spin without yielding, which starved
+        # the run thread on a loaded CI runner.
         return state
 
     def test_transient_failure_retries_and_completes(self, qapp, fake_rm, tmp_path, monkeypatch):

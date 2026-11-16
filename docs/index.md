@@ -57,6 +57,7 @@ Optional flags:
 | [GPIB and VISA backends](gpib.md) | Choosing a VISA backend, NI GPIB-USB on macOS / Linux, Prologix adapters, the `--check-visa` diagnostic |
 | [Backend API](api.md) | Driving a measurement without a GUI: the localhost HTTP + WebSocket API, events, prompts, a Python example |
 | [Desktop app](desktop.md) | The Tauri desktop app (in development): views, running from source, where data goes |
+| [AI agents (MCP)](mcp.md) | Letting an AI agent such as Claude Code drive a measurement through the API: setup, tools, what needs a person, the audit log |
 | [Troubleshooting](troubleshooting.md) | Common errors and how to resolve them |
 | [Simulator Fidelity](sim_fidelity.md) | What the in-package fake covers, what it doesn't, and how it's validated |
 | [Citation](citation.md) | BibTeX, DOIs, downstream publications |

@@ -4,8 +4,10 @@ import {
   applyEvent,
   dismissOutputNotice,
   getSessionSnapshot,
+  backendRestarted,
   markPromptAnswered,
   promptRunId,
+  runPanelSettings,
   setStatus,
 } from "./session.ts";
 import type { SessionStatus } from "../generated/session.ts";
@@ -136,4 +138,59 @@ test("after a reload the status says who started the run", () => {
   assert.equal(getSessionSnapshot().runStartedBy, "agent");
   setStatus({ ...awaiting("run-9:safety_voltage_ack-1", "run-9"), started_by: null });
   assert.equal(getSessionSnapshot().runStartedBy, null);
+});
+
+const AGENT_MEASUREMENT = { res_auto_range: false, res_test_current: 1e-3, nplc: 10 };
+
+function runStartedWith(runId: string, startedBy: string | null): AnyEvent {
+  const payload = {
+    mode: "resistance", sample_name: "s", username: "alice", started_at: 0, started_by: startedBy,
+    settings: { measurement: AGENT_MEASUREMENT, file: { data_directory: "x" }, started_by: startedBy },
+  };
+  return { type: "run_started", seq: 1, t: 0, run_id: runId, v: 1, payload } as unknown as AnyEvent;
+}
+
+function runningStatus(runId: string, startedBy: string | null, state: SessionStatus["state"] = "running"): SessionStatus {
+  return {
+    instrument: null, last_seq: 2, mode: "resistance", path: null, pending_prompt: null,
+    run_id: runId, started_by: startedBy, state,
+  };
+}
+
+test("an agent's run shows its own measurement settings in that mode's panel", () => {
+  applyEvent(runStartedWith("run-10", "agent"));
+  setStatus(runningStatus("run-10", "agent"));
+  assert.deepEqual(runPanelSettings(getSessionSnapshot(), "resistance"), AGENT_MEASUREMENT);
+  // Paused, waiting on a prompt or stopping, it is still the run on the bus.
+  setStatus(runningStatus("run-10", "agent", "stopping"));
+  assert.deepEqual(runPanelSettings(getSessionSnapshot(), "resistance"), AGENT_MEASUREMENT);
+  // A run started without the API is not the window's either.
+  applyEvent(runStartedWith("run-11", null));
+  setStatus(runningStatus("run-11", null));
+  assert.deepEqual(runPanelSettings(getSessionSnapshot(), "resistance"), AGENT_MEASUREMENT);
+});
+
+test("the window's own run, another mode's panel and an ended run show the form", () => {
+  applyEvent(runStartedWith("run-12", "ui"));
+  setStatus(runningStatus("run-12", "ui"));
+  assert.equal(runPanelSettings(getSessionSnapshot(), "resistance"), null);
+
+  applyEvent(runStartedWith("run-13", "agent"));
+  setStatus(runningStatus("run-13", "agent"));
+  assert.equal(runPanelSettings(getSessionSnapshot(), "source_v"), null);
+
+  setStatus(runningStatus("run-13", "agent", "idle"));
+  assert.equal(runPanelSettings(getSessionSnapshot(), "resistance"), null);
+});
+
+test("settings announced for another run are not shown as this one's", () => {
+  applyEvent(runStartedWith("run-14", "agent"));
+  // A reload late in run-15 lost its run_started; run-14's settings are not its.
+  setStatus(runningStatus("run-15", "agent"));
+  assert.equal(runPanelSettings(getSessionSnapshot(), "resistance"), null);
+  // A new backend reuses run ids, so what the old one announced is dropped.
+  applyEvent(runStartedWith("run-16", "agent"));
+  backendRestarted();
+  setStatus(runningStatus("run-16", "agent"));
+  assert.equal(runPanelSettings(getSessionSnapshot(), "resistance"), null);
 });

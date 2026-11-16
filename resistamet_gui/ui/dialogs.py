@@ -1,4 +1,7 @@
 import os
+import time
+from datetime import datetime
+
 from PySide6.QtWidgets import (
     QDialog, QFrame, QScrollArea, QTabWidget, QWidget, QVBoxLayout, QFormLayout,
     QHBoxLayout, QLineEdit, QPushButton, QDoubleSpinBox, QSpinBox, QComboBox, QLabel,
@@ -8,6 +11,7 @@ from PySide6.QtCore import Qt
 
 from .. import visa_backend
 from ..config import ConfigManager
+from ..safety import warning_silenced
 from .visa_helpers import gpib_interface_problem
 from .widgets import EngineeringSpinBox, NoScrollSpinBox
 
@@ -400,9 +404,16 @@ class SettingsDialog(QDialog):
         self.filter_count.setValue(int(m_cfg.get('filter_count', 10)))
         self.res_offset_comp.setChecked(bool(m_cfg.get('res_offset_comp', False)))
         self.safety_voltage_warn_v.setValue(float(m_cfg.get('safety_voltage_warn_v', 30.0)))
-        self.safety_voltage_warn_silenced.setChecked(
-            bool(m_cfg.get('safety_voltage_warn_silenced', False))
-        )
+        # Checked while any silence is in force, the timed one too, so a
+        # person who sees the warning missing can see why and turn it back
+        # on. save_settings writes only when the box was changed.
+        self._safety_silenced_loaded = warning_silenced(self.settings, time.time())
+        self.safety_voltage_warn_silenced.setChecked(self._safety_silenced_loaded)
+        until = m_cfg.get('safety_voltage_warn_silenced_until')
+        if self._safety_silenced_loaded and not m_cfg.get('safety_voltage_warn_silenced'):
+            self.safety_voltage_warn_silenced.setText(
+                "Suppress touch-safety warning for this profile "
+                f"(until {datetime.fromtimestamp(until):%Y-%m-%d %H:%M})")
         self.aux_log_enabled.setChecked(bool(m_cfg.get('aux_log_enabled', False)))
         drv = str(m_cfg.get('aux_driver', 'arduino_thermocouple'))
         idx = self.aux_driver.findText(drv)
@@ -475,7 +486,12 @@ class SettingsDialog(QDialog):
         m_cfg['filter_count'] = self.filter_count.value()
         m_cfg['res_offset_comp'] = self.res_offset_comp.isChecked()
         m_cfg['safety_voltage_warn_v'] = float(self.safety_voltage_warn_v.value())
-        m_cfg['safety_voltage_warn_silenced'] = self.safety_voltage_warn_silenced.isChecked()
+        silenced = self.safety_voltage_warn_silenced.isChecked()
+        if silenced != self._safety_silenced_loaded:
+            m_cfg['safety_voltage_warn_silenced'] = silenced
+            if not silenced:
+                # Unchecked means warn again now, timed silence included.
+                m_cfg['safety_voltage_warn_silenced_until'] = None
         m_cfg['aux_log_enabled'] = self.aux_log_enabled.isChecked()
         m_cfg['aux_driver'] = self.aux_driver.currentText()
         m_cfg['aux_address'] = self.aux_address.text().strip()

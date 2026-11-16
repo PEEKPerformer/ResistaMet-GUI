@@ -149,9 +149,9 @@ class TestAnAgentsHazardousRunAlwaysAsks:
             self, agent, ui, fake_rm, sink):
         """The person's answer is theirs to give; the next agent run asks again.
 
-        The answer's ``silence_for_profile`` is logged, as on any run; the
-        profile's flag is what a person sets in the window. Neither reaches an
-        agent's run.
+        The answer's ``silence_for_profile`` is logged, as on any run, and
+        saved to the profile; it silences the person's own runs and never
+        reaches an agent's.
         """
         assert _start(agent).status_code == 202
         assert _wait_for(lambda: _pending(agent) is not None)
@@ -162,7 +162,7 @@ class TestAnAgentsHazardousRunAlwaysAsks:
         assert _wait_for(lambda: sink.of_type('sample'))
         assert 'safety_silenced' in [e.payload['code'] for e in sink.of_type('log')]
         _end(ui)
-        _silence(ui)
+        assert ui.get('/profiles/alice').json()['measurement']['safety_voltage_warn_silenced']
 
         assert _start(agent).status_code == 202
         assert _wait_for(lambda: _pending(agent) is not None)
@@ -214,3 +214,121 @@ class TestTheServerStampsWhoStartedTheRun:
 
         assert f"# started_by: {who}\n" in open(path, encoding='utf-8').read()
         assert parse_metadata(path)['started_by'] == who
+
+
+DAY = 86400.0
+
+
+class TestAnsweringTheSafetyPromptSavesTheSilence:
+    """Asked for in the answer, the silence is kept on the run's profile."""
+
+    def _asked(self, client):
+        assert _start(client).status_code == 202
+        assert _wait_for(lambda: _pending(client) is not None)
+        return _pending(client)
+
+    def _answer(self, client, prompt, choice='acknowledge', **fields):
+        return client.post('/session/prompt', json={
+            'prompt_id': prompt['prompt_id'], 'choice': choice, 'fields': fields})
+
+    def _stored(self, config):
+        # Read back from the file, so the save reached the disk.
+        reloaded = ConfigManager(config_file=config.config_file)
+        return reloaded.get_user_settings('alice')['measurement']
+
+    def test_silence_for_profile_saves_the_flag(self, ui, config, fake_rm, sink):
+        assert self._answer(ui, self._asked(ui), silence_for_profile=True).status_code == 200
+        _end(ui)
+
+        stored = self._stored(config)
+        assert stored['safety_voltage_warn_silenced'] is True
+        assert stored['safety_voltage_warn_silenced_until'] is None
+
+    def test_silence_for_days_saves_when_it_runs_out(self, ui, config, fake_rm, sink):
+        prompt = self._asked(ui)
+        before = time.time()
+        assert self._answer(ui, prompt, silence_for_days=7).status_code == 200
+        after = time.time()
+        _end(ui)
+
+        stored = self._stored(config)
+        assert before + 7 * DAY <= stored['safety_voltage_warn_silenced_until'] <= after + 7 * DAY
+        assert stored['safety_voltage_warn_silenced'] is False
+        log = [e.payload['message'] for e in sink.of_type('log')
+               if e.payload['code'] == 'safety_silenced']
+        assert log == ["Touch-safety warning silenced for this profile for 7 days."]
+
+    def test_a_fraction_of_a_day_is_a_number_of_days_too(self, ui, config, fake_rm, sink):
+        prompt = self._asked(ui)
+        before = time.time()
+        assert self._answer(ui, prompt, silence_for_days=0.5).status_code == 200
+        _end(ui)
+        assert self._stored(config)['safety_voltage_warn_silenced_until'] >= before + 0.5 * DAY
+
+    @pytest.mark.parametrize('fields', [{'silence_for_profile': True},
+                                         {'silence_for_days': 7}])
+    def test_cancel_saves_nothing(self, ui, config, fake_rm, sink, fields):
+        before = self._stored(config)
+        assert self._answer(ui, self._asked(ui), choice='cancel', **fields).status_code == 200
+        assert _wait_for(lambda: ui.get('/session').json()['state'] == 'idle')
+
+        assert self._stored(config) == before
+        assert 'safety_silenced' not in [e.payload['code'] for e in sink.of_type('log')]
+
+    def test_asking_for_no_silence_saves_nothing(self, ui, config, fake_rm, sink):
+        before = self._stored(config)
+        assert self._answer(ui, self._asked(ui), silence_for_profile=False).status_code == 200
+        _end(ui)
+        assert self._stored(config) == before
+
+    @pytest.mark.parametrize('fields', [
+        {'silence_forever': True},
+        {'silence_for_days': 0},
+        {'silence_for_days': -1},
+        {'silence_for_days': 366},
+        {'silence_for_days': '7'},
+        {'silence_for_days': True},
+        {'silence_for_days': None, 'note': 'x'},
+        {'silence_for_profile': 'yes'},
+        {'silence_for_profile': True, 'silence_for_days': 7},
+    ])
+    def test_fields_it_does_not_take_are_refused_and_it_stays_pending(
+            self, ui, config, fake_rm, sink, fields):
+        before = self._stored(config)
+        prompt = self._asked(ui)
+
+        response = self._answer(ui, prompt, **fields)
+
+        assert response.status_code == 422
+        assert _pending(ui)['prompt_id'] == prompt['prompt_id']
+        assert self._stored(config) == before
+        assert fake_rm.opened == []
+        # Still answerable, properly.
+        assert self._answer(ui, prompt, choice='cancel').status_code == 200
+        assert _wait_for(lambda: ui.get('/session').json()['state'] == 'idle')
+
+    def test_a_silence_saved_at_the_prompt_spares_the_window_s_next_run(
+            self, ui, config, fake_rm, sink):
+        assert self._answer(ui, self._asked(ui), silence_for_days=7).status_code == 200
+        _end(ui)
+
+        run_id = _start(ui).json()['run_id']
+        assert _wait_for(lambda: any(e.run_id == run_id for e in sink.of_type('sample')))
+        assert len(sink.of_type('prompt')) == 1
+        _end(ui)
+
+    def test_but_not_an_agent_s_next_run(self, ui, agent, config, fake_rm, sink):
+        """mcp_layer.md M5: the silence is for the runs the person starts."""
+        assert self._answer(ui, self._asked(ui), silence_for_days=7).status_code == 200
+        _end(ui)
+
+        assert self._asked(agent)['kind'] == 'safety_voltage_ack'
+        assert len(sink.of_type('prompt')) == 2
+        _end(ui)
+
+    def test_an_agent_cannot_answer_it_to_save_one(self, ui, agent, config, fake_rm, sink):
+        before = self._stored(config)
+        prompt = self._asked(ui)
+        assert self._answer(agent, prompt, silence_for_profile=True).status_code == 403
+        assert self._stored(config) == before
+        _end(ui)

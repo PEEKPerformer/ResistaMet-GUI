@@ -1,6 +1,8 @@
 # MCP layer: an AI agent as a client of the measurement API
 
-**Status:** design, 2026-10-07. A1–A4 (§10) are built; the MCP server (M1–M4) is not.
+**Status:** design, 2026-10-07. A1–A4 and M1–M3 (§10) are built, with
+`docs/mcp.md`; the desktop's Settings toggle and limits section were built
+with A1 and A3. Tested against the simulator only.
 **Depends on:** `tauri_backend_split.md` (session, events, the API and its
 decision D4), `four_point_probe_spots.md` (spots and maps).
 
@@ -232,10 +234,12 @@ transcript.
 
 - **Packaging.**
   - `resistamet_gui/mcp/` holds `__main__.py`, `client.py` (HTTP), `tools.py`,
-    `summary.py` and `audit.py`.
-  - It ships as the optional extra `mcp = ["mcp>=2", "httpx"]`. The official
-    Python SDK needs Python 3.10 or later, as the GPIB-USB driver already
-    does.
+    `waiting.py` (`wait_for`, the event digest), `summary.py`, `audit.py` and
+    `server.py`.
+  - It ships as the optional extra `mcp = ["mcp>=2,<3", "httpx2"]`: httpx2 is
+    the HTTP client the SDK itself depends on, so there is no second one. The
+    official Python SDK needs Python 3.10 or later, as the GPIB-USB driver
+    already does.
   - The package does not import `session` or `api`: it is an HTTP client. An
     AST test enforces that, as for `gpib_usb`.
   - The desktop's frozen backend does not bundle it. A user installs it with
@@ -257,6 +261,18 @@ transcript.
   backend has more than one session. Until then they act on the one session.
 - **An `answer_prompt` tool** for prompts that are not `requires_human`, for
   example "the sample looks drifted, extend the run?".
+- **A profile-editing tool.** The API lets an agent edit every profile key but
+  the protected ones (M3), and add users. The MCP server has no tool for it
+  yet: an agent changes a run through its overrides, which leave the profile
+  as the operator set it. A `set_profile` tool over `PATCH /profiles/{user}`
+  may follow.
+- **Bounds and units in `GET /schema/settings`.** The route names each mode's
+  keys only, so `describe_mode` gives the keys and a user's values, units by
+  key name, and leaves bounds to `check_settings`. The exported JSON Schema
+  has the bounds; serving them from the route would let `describe_mode` give
+  them up front.
+- **The backend's version and the simulate flag** in `GET /health` or the
+  status, which `get_status` would pass on. Neither is served today.
 - **Unattended agent runs.** Today a hazardous or vdP run needs the window.
   The 25-hour weekend run on the thermoelectric rig shows the demand for
   unattended runs. If that becomes the need, it is a separate decision with

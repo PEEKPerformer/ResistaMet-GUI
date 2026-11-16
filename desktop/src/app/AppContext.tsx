@@ -53,9 +53,9 @@ const RUN_STATE_EVENTS: ReadonlySet<AnyEvent["type"]> = new Set([
 
 /** Point the per-run stores at the run an event belongs to.
  *
- *  run_started is the announcement, and carries the mode. But not every run
- *  is announced: van der Pauw runs emit no run_started, and after a reload
- *  late in a long run the history no longer holds it. Events arrive in order,
+ *  run_started is the announcement, and carries the mode. But a client does
+ *  not always see it: after a reload late in a long run the history no longer
+ *  holds it. Events arrive in order,
  *  so a run id the stores are not on is a newer run; without this its
  *  readings were dropped as strays from another run, or joined the previous
  *  run's series. The mode then comes from the backend's status if that is the

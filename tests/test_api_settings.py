@@ -212,6 +212,7 @@ class TestTouchSafetyKeysNeedTheUiRole:
             yield test_client
 
     @pytest.mark.parametrize('patch', [{'safety_voltage_warn_silenced': True},
+                                        {'safety_voltage_warn_silenced_until': 4102444800.0},
                                         {'safety_voltage_warn_v': 150.0}])
     def test_another_role_is_refused(self, agent, config, patch):
         before = copy.deepcopy(config.config['user_settings']['alice'])
