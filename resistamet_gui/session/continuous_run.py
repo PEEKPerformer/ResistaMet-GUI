@@ -449,10 +449,10 @@ class ContinuousRun:
             self.keithley.query(":READ?")
 
     @staticmethod
-    def _estimate_reading_time_s(measurement_settings, line_freq) -> float:
+    def _estimate_reading_time_s(measurement_settings, line_freq, mode=None) -> float:
         """How long one reading takes at these settings, by the timing model."""
         try:
-            rate = TimingSettings.from_dict(measurement_settings).max_rate_hz(line_freq)
+            rate = TimingSettings.from_dict(measurement_settings, mode).max_rate_hz(line_freq)
             return 1.0 / rate if rate > 0 else 1.0
         except Exception:
             return 1.0
@@ -835,7 +835,7 @@ class ContinuousRun:
                     self._control.finish('configure_failed')
                     return
                 self._reading_time_s = self._estimate_reading_time_s(
-                    measurement_settings, line_freq)
+                    measurement_settings, line_freq, self.mode)
                 self._allow_for_reading_time()
             except Exception as e:
                 self._events.error('configure_failed', 'smu', f"Error configuring instrument: {str(e)}")
