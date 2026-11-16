@@ -17,12 +17,13 @@ truthfully do (design doc, decision D4).
 """
 import logging
 import secrets
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 import json
 import math
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -121,22 +122,45 @@ def _default_config():
     return ConfigManager()
 
 
+#: Origins the desktop shell and the UI dev server load the page from.
+DEFAULT_ALLOWED_ORIGINS = (
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
+)
+
+
 def create_app(session: MeasurementSession, token: Optional[str] = None,
                 role: str = UI_ROLE,
                 profile_provider: Optional[Callable[[str], dict]] = None,
-                config=None, hub=None) -> FastAPI:
+                config=None, hub=None,
+                allowed_origins: Optional[Iterable[str]] = None) -> FastAPI:
     """Build the app around an existing session."""
     from .event_hub import EventHub
     from .events_ws import router as events_router
+    from .routes_results import router as results_router
     from .routes_session import router as session_router
     from .routes_settings import router as settings_router
 
     app = FastAPI(title="ResistaMet", version="2.0-dev",
                    default_response_class=NullNanJSONResponse)
+    # The webview is a different origin from the backend — tauri://localhost in
+    # the packaged app, the Vite dev server during UI work — so the browser
+    # needs to be told the cross-origin call is expected. The list is closed:
+    # a page from anywhere else still cannot reach the instrument.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(allowed_origins or DEFAULT_ALLOWED_ORIGINS),
+        allow_methods=["*"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
     app.state.api = ApiState(session, token or secrets.token_urlsafe(32), role,
                               profile_provider, config, hub or EventHub())
     app.include_router(session_router)
     app.include_router(settings_router)
+    app.include_router(results_router)
     app.include_router(events_router)
 
     @app.on_event("startup")

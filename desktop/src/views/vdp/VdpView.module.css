@@ -1,0 +1,265 @@
+.body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(340px, 1fr) auto;
+  gap: var(--sp-3);
+  overflow-y: auto; /* a short window scrolls rather than clipping the wizard */
+}
+
+.wizard {
+  min-height: 340px;
+}
+
+.wizardBody {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.step {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(160px, 240px) minmax(0, 1fr);
+  gap: var(--sp-6);
+  align-items: center;
+  min-width: 0;
+}
+
+.centered {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  text-align: center;
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+.centered .diagram {
+  width: 180px;
+}
+
+.instructions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  align-items: flex-start;
+}
+
+.stepTitle {
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+
+.wiring th {
+  text-align: left;
+  color: var(--fg-muted);
+  font-weight: 500;
+  padding: 2px 16px 2px 0;
+}
+
+.wiring td {
+  font-size: var(--text-lg);
+}
+
+.muted {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+/* --- stepper -------------------------------------------------------------- */
+
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.stepDot {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.stepDot[data-state="done"] {
+  background: var(--ok-muted);
+  border-color: transparent;
+  color: var(--ok);
+}
+
+.stepDot[data-state="active"] {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--fg-on-accent);
+}
+
+/* --- diagram -------------------------------------------------------------- */
+
+.diagram {
+  width: 100%;
+  max-width: 260px;
+}
+
+.sample {
+  fill: var(--bg-inset);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+
+.contact {
+  fill: var(--bg-panel);
+  stroke: var(--fg-faint);
+  stroke-width: 1.5;
+}
+
+.contact[data-role="fh"],
+.contact[data-role="fl"] {
+  fill: var(--data-i);
+  stroke: var(--data-i);
+}
+
+.contact[data-role="sh"],
+.contact[data-role="sl"] {
+  fill: var(--bg-panel);
+  stroke: var(--data-v);
+  stroke-width: 2.5;
+  stroke-dasharray: 3 2;
+}
+
+.contactLabel {
+  fill: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.contact[data-role="fh"] + .contactLabel,
+.contact[data-role="fl"] + .contactLabel {
+  fill: var(--fg-on-accent);
+}
+
+.currentArrow {
+  stroke: var(--data-i);
+  stroke-width: 2;
+  opacity: 0.8;
+}
+
+.currentArrowHead {
+  fill: var(--data-i);
+}
+
+.legend {
+  font-size: 9px;
+  fill: var(--fg-muted);
+}
+
+.legendForce {
+  fill: var(--data-i);
+}
+
+.legendSense {
+  fill: var(--data-v);
+}
+
+/* --- readings ------------------------------------------------------------- */
+
+.readingsBody {
+  max-height: 180px;
+  overflow: auto;
+}
+
+.readings {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.readings th {
+  text-align: left;
+  color: var(--fg-faint);
+  font-weight: 600;
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0 var(--sp-3) var(--sp-1) 0;
+}
+
+.readings td {
+  padding: 3px var(--sp-3) 3px 0;
+  border-top: 1px solid var(--border);
+}
+
+.group {
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
+}
+
+/* --- result --------------------------------------------------------------- */
+
+.result {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  justify-content: center;
+}
+
+.headline {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--sp-6);
+}
+
+.resultLabel {
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.resultValue {
+  font-size: var(--text-readout);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.unc {
+  color: var(--fg-muted);
+  font-size: var(--text-lg);
+  font-weight: 400;
+}
+
+.checks {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+
+.detailTable {
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.detailTable th {
+  text-align: left;
+  color: var(--fg-muted);
+  font-weight: 500;
+  padding: 3px 10px 3px 0;
+}
+
+.detailTable td {
+  padding: 3px 24px 3px 0;
+}

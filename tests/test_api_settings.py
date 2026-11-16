@@ -186,3 +186,22 @@ class TestJsonSafety:
             'mode': 'four_point', 'username': 'alice',
         }).text
         assert 'NaN' not in raw
+
+
+class TestAddUser:
+    def test_new_user_is_created_and_selected(self, client):
+        response = client.post('/users', json={'username': 'bob'})
+        assert response.status_code == 201
+        body = response.json()
+        assert 'bob' in body['users']
+        assert body['last_user'] == 'bob'
+        assert client.get('/profiles/bob').status_code == 200
+
+    def test_existing_user_is_just_selected(self, client):
+        before = client.get('/users').json()['users']
+        response = client.post('/users', json={'username': 'alice'})
+        assert response.status_code == 201
+        assert response.json()['users'] == before
+
+    def test_blank_name_is_rejected(self, client):
+        assert client.post('/users', json={'username': '   '}).status_code == 422

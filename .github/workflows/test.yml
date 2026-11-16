@@ -75,6 +75,24 @@ jobs:
         # passing silently, which would hide the layer the sidecar depends on.
         run: pytest tests/test_session.py tests/test_session_e2e.py tests/test_api_session.py tests/test_api_settings.py tests/test_api_events.py tests/test_api_sidecar.py -v -rs
 
+      - name: Desktop contract types are current
+        # The TypeScript types are generated from contracts/*.schema.json; a
+        # backend model change must regenerate them in the same PR.
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Desktop typecheck and build
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        working-directory: desktop
+        run: |
+          npm ci --no-audit --no-fund
+          npm run check:types
+          npm run build
+
       - name: Smoke-test the screenshot generator
         # Catches "generator broke" early — e.g. if format_readout_html
         # or accuracy.py changes shape, the generator's import or call
