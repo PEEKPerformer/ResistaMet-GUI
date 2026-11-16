@@ -324,8 +324,13 @@ export interface SweepSegmentPayload {
 
 /**
  * One F76 geometry measured: the +I and -I voltages at this wiring.
+ *
+ * ``compliance`` names the readings of this geometry taken in voltage
+ * compliance (their F76 labels, ``label_pos`` and/or ``label_neg``); empty
+ * when neither was. Such a reading is the limit, not the sample.
  */
 export interface VdpGeometryCompletePayload {
+  compliance?: string[];
   current_a: number;
   group: string;
   index: number;
@@ -343,13 +348,23 @@ export interface VdpGeometryCompletePayload {
  * the f(Q) homogeneity check and the combined uncertainties, so the panel
  * reads the same numbers the CSV metadata carries. The resistivities are
  * null when no thickness was given (``thickness_cm`` 0).
+ *
+ * ``valid`` false: the numbers are kept for diagnosis and are not a
+ * measurement; ``invalid_reason`` says why (readings in compliance, or
+ * readings whose signs cannot be one sample's). ``homogeneous`` is then
+ * false whatever the asymmetry. ``compliance_readings`` holds the F76
+ * labels of the readings taken in compliance, space-separated as in the
+ * file's footer (the labels themselves contain commas).
  */
 export interface VdpResultPayload {
   asymmetry_pct: number;
+  compliance?: boolean;
+  compliance_readings?: string;
   current_a: number;
   f_a: number;
   f_b: number;
   homogeneous: boolean;
+  invalid_reason?: string;
   q_a: number;
   q_b: number;
   rho_a: number | null;
@@ -359,6 +374,7 @@ export interface VdpResultPayload {
   sheet_resistance: number;
   sheet_resistance_uncertainty?: number | null;
   thickness_cm: number;
+  valid?: boolean;
   voltages?: {
     [k: string]: number | undefined;
   };

@@ -441,9 +441,11 @@ class TestResultDataclass:
         v = _uniform_sample_voltages(100.0, 1.0e-3)
         result = calculate_van_der_pauw(v, 1.0e-3, 1.0e-5)
         assert isinstance(result, VdpResult)
-        # Tuple unpacking should match the documented order.
+        # Tuple unpacking should match the documented order; valid and
+        # invalid_reason were added after the first ten.
         (rho_a, rho_b, rho_avg, sheet_r, q_a, q_b, f_a, f_b,
-         homogeneous, asym_pct) = result
+         homogeneous, asym_pct, valid, invalid_reason) = result
+        assert valid is True and invalid_reason == ""
         assert rho_a == result.rho_a
         assert sheet_r == result.sheet_resistance
         assert homogeneous is True

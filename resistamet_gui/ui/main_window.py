@@ -25,6 +25,7 @@ from ..resources import app_icon
 from ..schema.map_session import MapSession
 from ..schema.resolve import resolve_run_settings
 from ..session.instrument_lock import InstrumentBusy, hold_instrument
+from ..session.samples import fixed_range_for
 from ..constants import (
     __version__,
     AUX_PREVIEW_GIVEUP_TICKS,
@@ -1071,8 +1072,9 @@ class ResistanceMeterApp(QMainWindow):
             "V Compliance", widget.vdp_voltage_compliance,
         ))
 
+        # 7 decimals of a cm is 1 nm: at 6, a 15 nm film became 20 nm.
         widget.vdp_thickness_cm = NoScrollSpinBox(
-            decimals=6, minimum=0.0, maximum=10.0, singleStep=1e-4, suffix=" cm"
+            decimals=7, minimum=0.0, maximum=10.0, singleStep=1e-4, suffix=" cm"
         )
         widget.vdp_thickness_cm.setValue(0.0)
         widget.vdp_thickness_cm.setToolTip(
@@ -1393,6 +1395,15 @@ class ResistanceMeterApp(QMainWindow):
         widget.vdp_readings_table.item(2 * idx, 2).setBackground(QBrush(QColor("#e8f5e9")))
         widget.vdp_readings_table.item(2 * idx + 1, 2).setText(f"{readings['v_neg']:.6e}")
         widget.vdp_readings_table.item(2 * idx + 1, 2).setBackground(QBrush(QColor("#e8f5e9")))
+        # A reading taken in voltage compliance is the limit, not the
+        # sample: marked as the file's compliance column marks its row.
+        in_compliance = readings.get('compliance') or ()
+        for row, label in ((2 * idx, readings.get('label_pos')),
+                           (2 * idx + 1, readings.get('label_neg'))):
+            if label in in_compliance:
+                item = widget.vdp_readings_table.item(row, 2)
+                item.setText(f"{item.text()}  V_COMP")
+                item.setBackground(QBrush(QColor("#ffcdd2")))
         widget.vdp_filmstrip.mark_completed(idx)
 
     def _vdp_on_complete(self, result: Dict):
@@ -1428,23 +1439,29 @@ class ResistanceMeterApp(QMainWindow):
         ]
 
         # Combined uncertainty on Rs / ρ. Two contributions:
-        #   u_stat — from the four per-geometry R values: std/√N treating
-        #     them as repeated samples of the same underlying R (homogeneity
-        #     assumption — F76 asymmetry_pct quantifies the violation).
+        #   u_stat — from the disagreement of each reciprocal pair of
+        #     geometries (1 with 3, 2 with 4), which measure the same
+        #     quantity twice. Not the SD of the four R: the two pairs
+        #     differ by Q on any sample that is not square.
         #   u_inst — from voltage measurement spec on each of the 8 V
         #     readings, propagated through the (V_pos − V_neg)/(2I) average
-        #     to a per-geometry σ_R, then averaged. Treats the sourced
-        #     current as exact (source-accuracy not tracked yet).
+        #     to a per-geometry σ_R, then averaged. The sourced current is
+        #     treated as exact.
         # σ_Rs/Rs = σ_R/R because the F76 prefactor (π/ln2)·f and the
         # thickness t are treated as exact for this calculation.
-        # Single source of truth: the same helper the worker calls at
-        # finalize() so the panel and the CSV metadata cannot drift.
+        # Single source of truth: the same helper the run calls for the
+        # file's footer, with the same fixed voltage range when auto range
+        # is off, so the panel and the CSV metadata cannot drift.
         from ..calculations_vdp import vdp_combined_uncertainty
         nplc_now = float(widget.nplc.value())
         u = vdp_combined_uncertainty(
             voltages=voltages, current=current,
             sheet_resistance=rs, rho_avg=rho,
             model=self._active_model_name, nplc=nplc_now,
+            v_fixed_range=fixed_range_for({
+                'vdp_voltage_range_auto': widget.vdp_voltage_range_auto.isChecked(),
+                'vdp_voltage_compliance': widget.vdp_voltage_compliance.value(),
+            }, 'vdp_voltage_range_auto', 'vdp_voltage_compliance'),
         )
 
         widget.vdp_rs_label.setText(
@@ -1456,6 +1473,10 @@ class ResistanceMeterApp(QMainWindow):
                 f"ρ = {format_engineering(rho, 'Ω·cm', precision=precision)}"
                 f"  ± {format_engineering(u.u_rho, 'Ω·cm', precision=2)}"
             )
+        elif float(result.get('thickness_cm') or 0.0) > 0:
+            # A thickness was given and there is still no ρ: an invalid
+            # result whose signs rule one out.
+            widget.vdp_rho_label.setText("ρ: —")
         else:
             widget.vdp_rho_label.setText("ρ: — (no thickness)")
         widget.vdp_bar_chart.set_data(r_values, ["G1", "G2", "G3", "G4"])
@@ -1469,7 +1490,18 @@ class ResistanceMeterApp(QMainWindow):
             f"<br>asymmetry = {result['asymmetry_pct']:.3f} %"
         )
 
-        if result['homogeneous']:
+        # An invalid result (readings in compliance, or signs that cannot be
+        # one sample's) is neither verdict: the banner says so, and why.
+        invalid = not result.get('valid', True)
+        widget.vdp_homogeneity_banner.setWordWrap(invalid)
+        if invalid:
+            widget.vdp_homogeneity_banner.setText(
+                f"INVALID  ({result.get('invalid_reason') or 'no reason given'})"
+            )
+            widget.vdp_homogeneity_banner.setStyleSheet(
+                "color: white; background: #c62828; border-radius: 4px; padding: 6px;"
+            )
+        elif result['homogeneous']:
             widget.vdp_homogeneity_banner.setText(
                 f"HOMOGENEOUS  (asymmetry {result['asymmetry_pct']:.2f}% ≤ 10% F76 gate)"
             )

@@ -119,8 +119,15 @@ class VdpResult(NamedTuple):
     sheet_resistance: (R_s,A + R_s,B) / 2 = rho_avg / thickness (Ohm/square).
     q_a, q_b: voltage asymmetry ratios (normalized to >= 1).
     f_a, f_b: F76 Fig. 5 geometric factors derived from Q.
-    homogeneous: True iff |rho_a - rho_b| / rho_avg <= 10 percent.
+    homogeneous: True iff |rho_a - rho_b| / rho_avg <= 10 percent. Never
+        True when ``valid`` is False.
     asymmetry_pct: 100 * |rho_a - rho_b| / rho_avg.
+    valid: False when the readings cannot be one sample's F76 set: the
+        V(+I) - V(-I) differences of the four geometries do not all have
+        the positive sign the F76 wiring gives. Then sheet_resistance and
+        the resistivities are NaN and asymmetry_pct is inf; Q and f are
+        still those of the readings, for diagnosis.
+    invalid_reason: why, naming the F76 labels; "" when valid.
     """
     rho_a: float
     rho_b: float
@@ -132,6 +139,8 @@ class VdpResult(NamedTuple):
     f_b: float
     homogeneous: bool
     asymmetry_pct: float
+    valid: bool = True
+    invalid_reason: str = ""
 
 
 def f76_geometries() -> List[VdpGeometry]:
@@ -309,6 +318,11 @@ def vdp_sheet_resistance_pair(
             or is the instrument's overflow value, or if either geometry
             reads the same at both polarities (Q is then undefined). The
             message names the readings.
+
+    The sum is signed and Q is a magnitude, so two differences of opposite
+    sign partly cancel here without any error: R_s comes out too small and
+    Q and f look ordinary. ``vdp_sign_problem`` is the check for that;
+    ``calculate_van_der_pauw`` applies it and reports no R_s when it fails.
     """
     if current <= 0:
         raise ValueError("current must be > 0 A; got %r" % (current,))
@@ -322,10 +336,10 @@ def vdp_sheet_resistance_pair(
                 % (label, value)
             )
 
-    # Both deltas should be same-signed on a physical sample (current
+    # Both deltas are positive on a sample wired as F76 numbers it (current
     # reversal flips V; the subtraction doubles the signal and cancels
-    # thermal offset). We compute |Q| and let the user inspect raw V if
-    # the sign disagrees -- it usually means a wiring error.
+    # thermal offset). Q is taken as a magnitude; the signs are checked by
+    # vdp_sign_problem, not here.
     delta_first = v_pos - v_neg
     delta_second = v_perp_pos - v_perp_neg
 
@@ -356,6 +370,51 @@ _BASE_LABELS_A = ("V_21,34", "V_12,34", "V_32,41", "V_23,41")
 _BASE_LABELS_B = ("V_43,12", "V_34,12", "V_14,23", "V_41,23")
 _REQUIRED_BASE_LABELS = _BASE_LABELS_A + _BASE_LABELS_B
 
+# (+I label, -I label) of each physical geometry, in protocol order.
+_GEOMETRY_PAIRS = (
+    ("V_21,34", "V_12,34"),
+    ("V_32,41", "V_23,41"),
+    ("V_43,12", "V_34,12"),
+    ("V_14,23", "V_41,23"),
+)
+
+
+def vdp_sign_problem(voltages: Mapping[str, float]) -> str:
+    """Why the signs of the eight readings rule out a result, or "".
+
+    With the contacts numbered counter-clockwise and the leads where each
+    F76 label puts them, V(+I) - V(-I) is positive at all four geometries.
+    F76 eqs. (1) and (2) add those differences with their signs, so one
+    that is negative does not raise anything: it subtracts. Sense leads
+    swapped at geometries 2 and 4 of a square give R_s,A = R_s,B = 0 or,
+    on a sample with Q != 1, a plausible number that is far too small,
+    with Q, f and the 10 percent gate all passing. A negative difference
+    therefore invalidates the result whichever geometries it is at:
+
+    * some negative, some positive: the leads were reversed at the
+      negative ones (or the contacts are not in order round the edge);
+    * all four negative: reversed throughout. The magnitude would be
+      right, but a negative sheet resistance is not reported.
+
+    Returns the reason, naming the labels; "" when all four are positive.
+    A difference of exactly zero is not this function's business
+    (``vdp_sheet_resistance_pair`` raises for it).
+    """
+    negative = ["%s - %s" % (pos, neg) for pos, neg in _GEOMETRY_PAIRS
+                if voltages[pos] - voltages[neg] < 0]
+    if not negative:
+        return ""
+    if len(negative) == len(_GEOMETRY_PAIRS):
+        return ("V(+I) - V(-I) is negative at all four geometries: the sense "
+                "leads or the current leads are reversed throughout, and a "
+                "negative sheet resistance is not a result.")
+    return ("sign inconsistency: %s %s negative while the other geometries are "
+            "positive. The leads are reversed at %s (or the contacts are not "
+            "numbered in order round the edge); the F76 sums would partly "
+            "cancel, so no sheet resistance is reported."
+            % (", ".join(negative), "is" if len(negative) == 1 else "are",
+               "that geometry" if len(negative) == 1 else "those geometries"))
+
 
 def calculate_van_der_pauw(
     voltages: Mapping[str, float],
@@ -376,7 +435,11 @@ def calculate_van_der_pauw(
             else is computed as usual.
 
     Returns:
-        VdpResult.
+        VdpResult. When the signs of the readings rule a result out
+        (``vdp_sign_problem``), it comes back with ``valid`` False, the
+        reason in ``invalid_reason``, and NaN for the sheet resistance and
+        the resistivities: nothing is raised, so the caller still has Q,
+        f and its own raw voltages to diagnose the wiring with.
 
     Raises:
         KeyError: if a required label is missing from voltages.
@@ -410,14 +473,22 @@ def calculate_van_der_pauw(
     # F76's check is |rho_A - rho_B| / rho_av; t cancels, so it is the same
     # on the sheet resistances, and holds whether or not t was given.
     rs_avg = 0.5 * (rs_a + rs_b)
-    if rs_avg > 0:
+    invalid_reason = vdp_sign_problem(voltages)
+    if not invalid_reason and not rs_avg > 0:
+        # Not reachable with four positive differences; kept so that no
+        # non-positive R_s can leave here whatever the arithmetic did.
+        invalid_reason = "the sheet resistance did not come out positive (%r)" % (rs_avg,)
+    valid = not invalid_reason
+    if valid:
         sheet_resistance = rs_avg
         asymmetry_pct = 100.0 * abs(rs_a - rs_b) / rs_avg
     else:
         sheet_resistance = float("nan")
         asymmetry_pct = float("inf")
-    homogeneous = asymmetry_pct <= F76_HOMOGENEITY_TOLERANCE_PCT
-    if given:
+    homogeneous = valid and asymmetry_pct <= F76_HOMOGENEITY_TOLERANCE_PCT
+    # No resistivity without a valid R_s: rho = R_s * t, and a negative or
+    # half-cancelled R_s times a thickness is not a resistivity.
+    if given and valid:
         rho_a, rho_b = rs_a * thickness_cm, rs_b * thickness_cm
         rho_avg = 0.5 * (rho_a + rho_b)
     else:
@@ -434,6 +505,8 @@ def calculate_van_der_pauw(
         f_b=f_b,
         homogeneous=homogeneous,
         asymmetry_pct=asymmetry_pct,
+        valid=valid,
+        invalid_reason=invalid_reason,
     )
 
 
@@ -447,10 +520,11 @@ def calculate_van_der_pauw(
 class VdpCombinedUncertainty(NamedTuple):
     """Combined uncertainty for a vdP result.
 
-    ``u_inst_R`` and ``u_stat_R`` are intermediate (uncertainty on the
-    averaged R that the F76 chain operates on); ``u_rs`` and ``u_rho``
-    are the final per-Rs / per-ρ uncertainties propagated through
-    σ_X/X = σ_R/R (treating the F76 prefactor and thickness as exact).
+    ``u_inst_R`` and ``u_stat_R`` are intermediate (standard uncertainties
+    of the mean of the four per-geometry resistances, in ohms); ``u_rs``
+    and ``u_rho`` are the final per-Rs / per-ρ uncertainties propagated
+    through σ_X/X = σ_R/R (treating the F76 prefactor and thickness as
+    exact). See ``vdp_combined_uncertainty`` for the model.
     """
     u_inst_R: float
     u_stat_R: float
@@ -466,39 +540,94 @@ def vdp_combined_uncertainty(
     rho_avg,
     model: str = "2400",
     nplc: float = 1.0,
+    v_fixed_range: Optional[float] = None,
 ) -> VdpCombinedUncertainty:
     """Combine statistical and instrument uncertainty for a vdP result.
 
     Inputs mirror the worker's ``_compute_and_emit_result`` arguments:
     ``voltages`` is the 8-key F76 dict (V_21,34 etc.); ``current`` is
-    |I| in amps. The propagation:
+    |I| in amps. All uncertainties are standard uncertainties (k = 1).
+    ``v_fixed_range`` is the voltage range value that was sent when auto
+    range was off (the run sends the compliance voltage); the accuracy
+    lookup then uses the range the instrument was pinned to instead of
+    the lowest one the reading would fit. None: auto range.
 
-      - For each of the 4 F76 geometries, σ_R = √(σ_V_p² + σ_V_n²) / (2|I|)
-        with σ_V_p and σ_V_n from accuracy.voltage_uncertainty on the
-        respective +I and −I readings. Treats sourced current as exact.
-      - u_inst_R = mean across the 4 per-geometry σ_R (systematic floor).
-      - u_stat_R = std(R values) / √4 (statistical uncertainty of mean).
-      - u_total_R combined in quadrature.
+    Measurement model. Each geometry k gives a current-reversed
+    resistance R_k = (V_k(+I) - V_k(-I)) / (2 I). The four are NOT four
+    repeats of one quantity. A van der Pauw sample has two characteristic
+    resistances, and by the reciprocity theorem (R_ab,cd = R_cd,ab) each
+    is measured twice:
+
+        R_1 = R_21,34  and  R_3 = R_43,12   estimate the same quantity,
+        R_2 = R_32,41  and  R_4 = R_14,23   estimate the other.
+
+    The two quantities differ by the factor Q whenever the sample is not
+    square (Q = 3 means one is three times the other), and that
+    difference is the sample's shape, carried by f(Q); it is not scatter.
+    So the standard deviation of the four R_k is not used.
+
+      - u_stat_R (Type A, GUM 4.2). The statistical evidence in the eight
+        readings is the disagreement of each reciprocal pair. A mean of
+        n = 2 observations has experimental standard deviation
+        s / sqrt(2) = |x_1 - x_2| / 2 (GUM 4.2.3), so
+
+            u(R_13) = |R_1 - R_3| / 2,    u(R_24) = |R_2 - R_4| / 2,
+
+        and for R_avg = (R_13 + R_24) / 2, taking the two as uncorrelated
+        (GUM 5.1.2),
+
+            u_stat_R = (1/2) sqrt(u(R_13)^2 + u(R_24)^2)
+                     = (1/4) sqrt((R_1 - R_3)^2 + (R_2 - R_4)^2).
+
+        A noiseless sample of any Q gives exactly 0. Each pair has one
+        degree of freedom, so this is a coarse estimate; it also takes
+        in real non-reciprocity (an inhomogeneous sample, contacts of
+        finite size), which is what F76's 10 percent gate is about, and
+        is not removed here. The scatter between repeated reads at one
+        polarity (``vdp_readings_per_polarity`` > 1) is averaged away
+        before this function sees the voltages and is not a separate
+        term: it reaches the result through the pair differences.
+
+      - u_inst_R (Type B, GUM 4.3). For each geometry
+        σ_R = √(σ_V_p² + σ_V_n²) / (2|I|), with σ_V_p and σ_V_n from
+        accuracy.voltage_uncertainty on the +I and −I readings (the
+        Keithley 1-year accuracy, ±(% of reading + range offset), taken
+        as one standard deviation). u_inst_R is the mean of the four σ_R:
+        the four are not reduced by √4, as errors of one instrument on one
+        range are not independent from geometry to geometry.
+
+        Assumption, stated because it is one: the full specification,
+        gain term and offset term both, is applied to V(+I) and to V(−I)
+        as if the two errors were independent. The datasheet gives one
+        figure per range and no split into a part common to consecutive
+        readings and a part that is not, so no correlation is assumed.
+        The two extremes bracket it: an offset common to both readings
+        cancels in V(+I) − V(−I), which makes the quadrature sum too
+        large for the offset term; a gain error common to both adds
+        linearly, which makes it too small for the gain term by up to
+        √2. Which dominates depends on the reading as a fraction of the
+        range. The sourced current is treated as exact.
+
+      - u_total_R = √(u_inst_R² + u_stat_R²) (GUM 5.1.2).
       - Relative uncertainty propagates equally to Rs and ρ:
             σ_Rs / Rs = σ_ρ / ρ = u_total_R / |R_avg|
-        Treating the F76 prefactor (π / ln2) · f and t as exact.
+        with R_avg the mean of the four R_k, treating the F76 prefactor
+        (π / ln2) · f and t as exact. f depends on Q and so on the same
+        readings; its sensitivity (zero at Q = 1, small for moderate Q)
+        is neglected.
 
     Returns NaN-filled tuple on missing keys / non-finite inputs.
     """
     from .accuracy import voltage_uncertainty
-    pairs = (
-        ("V_21,34", "V_12,34"),
-        ("V_32,41", "V_23,41"),
-        ("V_43,12", "V_34,12"),
-        ("V_14,23", "V_41,23"),
-    )
     try:
         r_values: list[float] = []
         per_geom_sigma_r: list[float] = []
-        for p_label, n_label in pairs:
+        for p_label, n_label in _GEOMETRY_PAIRS:
             v_p = float(voltages[p_label]); v_n = float(voltages[n_label])
-            sig_p = voltage_uncertainty(v_p, model=model, nplc=nplc)
-            sig_n = voltage_uncertainty(v_n, model=model, nplc=nplc)
+            sig_p = voltage_uncertainty(v_p, model=model, nplc=nplc,
+                                        fixed_range=v_fixed_range)
+            sig_n = voltage_uncertainty(v_n, model=model, nplc=nplc,
+                                        fixed_range=v_fixed_range)
             per_geom_sigma_r.append(
                 math.sqrt(sig_p ** 2 + sig_n ** 2) / (2.0 * abs(current))
             )
@@ -509,11 +638,9 @@ def vdp_combined_uncertainty(
 
     r_avg = sum(r_values) / len(r_values)
     u_inst_R = sum(per_geom_sigma_r) / len(per_geom_sigma_r)
-    if len(r_values) > 1:
-        var = sum((x - r_avg) ** 2 for x in r_values) / (len(r_values) - 1)
-        u_stat_R = math.sqrt(var) / math.sqrt(len(r_values))
-    else:
-        u_stat_R = 0.0
+    # Reciprocal partners: geometries 1 and 3, geometries 2 and 4.
+    r_1, r_2, r_3, r_4 = r_values
+    u_stat_R = 0.25 * math.hypot(r_1 - r_3, r_2 - r_4)
     u_total_R = math.sqrt(u_inst_R ** 2 + u_stat_R ** 2)
 
     if r_avg == 0 or not math.isfinite(r_avg):

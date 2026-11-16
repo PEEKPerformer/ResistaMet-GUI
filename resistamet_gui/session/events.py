@@ -234,7 +234,12 @@ class AcquisitionFinishedPayload(EventModel):
 
 
 class VdpGeometryCompletePayload(EventModel):
-    """One F76 geometry measured: the +I and -I voltages at this wiring."""
+    """One F76 geometry measured: the +I and -I voltages at this wiring.
+
+    ``compliance`` names the readings of this geometry taken in voltage
+    compliance (their F76 labels, ``label_pos`` and/or ``label_neg``); empty
+    when neither was. Such a reading is the limit, not the sample.
+    """
 
     index: int
     name: str
@@ -244,6 +249,7 @@ class VdpGeometryCompletePayload(EventModel):
     label_neg: str
     v_neg: float
     current_a: float
+    compliance: List[str] = Field(default_factory=list)
 
 
 class VdpResultPayload(EventModel):
@@ -253,6 +259,13 @@ class VdpResultPayload(EventModel):
     the f(Q) homogeneity check and the combined uncertainties, so the panel
     reads the same numbers the CSV metadata carries. The resistivities are
     null when no thickness was given (``thickness_cm`` 0).
+
+    ``valid`` false: the numbers are kept for diagnosis and are not a
+    measurement; ``invalid_reason`` says why (readings in compliance, or
+    readings whose signs cannot be one sample's). ``homogeneous`` is then
+    false whatever the asymmetry. ``compliance_readings`` holds the F76
+    labels of the readings taken in compliance, space-separated as in the
+    file's footer (the labels themselves contain commas).
     """
 
     rho_a: Optional[float]
@@ -270,6 +283,10 @@ class VdpResultPayload(EventModel):
     thickness_cm: float
     sheet_resistance_uncertainty: Optional[float] = None
     rho_avg_uncertainty: Optional[float] = None
+    valid: bool = True
+    invalid_reason: str = ''
+    compliance: bool = False
+    compliance_readings: str = ''
 
 
 class PromptPayload(EventModel):

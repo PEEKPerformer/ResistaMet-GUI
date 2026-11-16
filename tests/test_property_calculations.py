@@ -464,11 +464,12 @@ class TestVanDerPauw:
         out = vdp.calculate_van_der_pauw(volts, current, thickness)
         assert out.asymmetry_pct == pytest.approx(100 * abs(out.rho_a - out.rho_b) / out.rho_avg, rel=1e-12)
         assert out.homogeneous == (out.asymmetry_pct <= vdp.F76_HOMOGENEITY_TOLERANCE_PCT)
-        # Sense leads the wrong way round: every reading changes sign. The
-        # result is a negative resistivity that must not pass the gate.
+        # Sense leads the wrong way round: every reading changes sign. No
+        # negative resistivity is reported, and nothing passes the gate.
         backwards = vdp.calculate_van_der_pauw({k: -v for k, v in volts.items()}, current, thickness)
-        assert backwards.rho_avg == pytest.approx(-out.rho_avg, rel=1e-12)
+        assert math.isnan(backwards.rho_avg) and math.isnan(backwards.rho_a)
         assert math.isnan(backwards.sheet_resistance) and not backwards.homogeneous
+        assert not backwards.valid and backwards.invalid_reason
 
     @PROPERTY
     @given(st.dictionaries(st.sampled_from(vdp._REQUIRED_BASE_LABELS), any_reading, min_size=0, max_size=8),

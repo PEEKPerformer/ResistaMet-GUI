@@ -315,14 +315,18 @@ def get_column_config(mode: str, measurement_settings: Optional[Dict[str, Any]] 
         ),
         # Van der Pauw (F76 Method A): 4 rows, one per physical geometry.
         # Each row captures both polarities of that geometry; the summary
-        # rho/Rs lands in metadata at finalize().
+        # rho/Rs lands in metadata at finalize(). compliance is V_COMP when
+        # either polarity of the row was read in voltage compliance (the
+        # footer's vdp_result.compliance_readings says which), else OK.
         'vdp': (
             ['elapsed_s', 'geometry', 'group',
              'source_high', 'source_low', 'sense_high', 'sense_low',
-             'label_pos', 'V_pos', 'label_neg', 'V_neg', 'current_A'],
+             'label_pos', 'V_pos', 'label_neg', 'V_neg', 'current_A',
+             'compliance'],
             ['s', '', '',
              '', '', '', '',
-             '', 'V', '', 'V', 'A']
+             '', 'V', '', 'V', 'A',
+             '']
         ),
     }
     cols, units = configs.get(mode, (['elapsed_s', 'value'], ['s', '']))
