@@ -198,3 +198,23 @@
   gap: 2px;
   font-size: var(--text-sm);
 }
+
+.pathLine {
+  padding: var(--sp-1) 0;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.folderRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.folderRow > span {
+  overflow-wrap: anywhere;
+  user-select: text;
+}

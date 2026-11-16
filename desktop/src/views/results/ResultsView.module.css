@@ -87,9 +87,8 @@
   padding: var(--sp-2);
   color: var(--fg-faint);
   font-size: var(--text-xs);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* The whole path, on as many lines as it takes: it is where the files are. */
+  overflow-wrap: anywhere;
   user-select: text;
 }
 

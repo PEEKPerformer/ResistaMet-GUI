@@ -4,10 +4,13 @@ import { Shell } from "./components/shell/Shell";
 import { UserPicker } from "./components/dialogs/UserPicker";
 import { PromptDialog } from "./components/dialogs/PromptDialog";
 import { SettingsDialog } from "./components/dialogs/SettingsDialog";
+import { DataFolderDialog } from "./components/dialogs/DataFolderDialog";
 import { ContinuousView } from "./views/continuous/ContinuousView";
 import { SweepView } from "./views/sweep/SweepView";
 import { VdpView } from "./views/vdp/VdpView";
 import { ResultsView } from "./views/results/ResultsView";
+import { shouldAskForDataFolder } from "./lib/dataFolder";
+import { dataFolderDismissed, dismissDataFolder, useDataFolder } from "./state/dataFolder";
 import { useSession } from "./state/session";
 import { useUi } from "./state/ui";
 import styles from "./App.module.css";
@@ -38,6 +41,8 @@ function Workspace() {
   const ui = useUi();
   const session = useSession();
   const [dialog, setDialog] = useState<DialogName>(null);
+  const dataFolder = useDataFolder();
+  const [folderDismissed, setFolderDismissed] = useState(dataFolderDismissed);
 
   // No operator, no measuring: the picker opens itself until one is chosen.
   const showUserPicker = dialog === "user" || ui.username === null;
@@ -51,6 +56,15 @@ function Workspace() {
       </Shell>
       {prompt ? (
         <PromptDialog prompt={prompt} />
+      ) : dataFolder !== null && shouldAskForDataFolder(dataFolder, folderDismissed) ? (
+        // An installed app says where the files go before anything is measured.
+        <DataFolderDialog
+          state={dataFolder}
+          onClose={() => {
+            dismissDataFolder();
+            setFolderDismissed(true);
+          }}
+        />
       ) : showUserPicker ? (
         <UserPicker onClose={() => setDialog(null)} />
       ) : dialog === "settings" ? (

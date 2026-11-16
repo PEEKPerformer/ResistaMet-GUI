@@ -18,9 +18,9 @@ export interface BackendExited {
   message: string;
 }
 
-export async function invokeShell<T>(command: string): Promise<T> {
+export async function invokeShell<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(command);
+  return invoke<T>(command, args);
 }
 
 /** Subscribe to a shell event; the returned function unsubscribes, also when
