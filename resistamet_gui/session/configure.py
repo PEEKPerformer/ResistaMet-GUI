@@ -51,7 +51,7 @@ def _read_back_voltage_limit(keithley, events, max_source_v: Optional[float]) ->
     something that is not a number, is handled here; anything else is a bug
     and is left to fail the configure step.
 
-    A reply outside ``(0, max_source_v * 1.05]`` is not a limit either. The
+    A reply outside ``(0, max_source_v]`` is not a limit either. The
     overflow value 9.91e37 is finite and positive, and as a limit it would
     mean no sample could ever be flagged.
     """
@@ -62,7 +62,7 @@ def _read_back_voltage_limit(keithley, events, max_source_v: Optional[float]) ->
                     f"Warning: Could not read back the voltage limit ({exc}). "
                     f"The file will not record an effective limit.")
         return None
-    ceiling = (max_source_v or _FAMILY_MAX_SOURCE_V) * 1.05
+    ceiling = max_source_v or _FAMILY_MAX_SOURCE_V
     if not 0.0 < value <= ceiling:
         events.warn('limit_readback_rejected',
                     f"Warning: The instrument reported a voltage limit of {value:g} V, "

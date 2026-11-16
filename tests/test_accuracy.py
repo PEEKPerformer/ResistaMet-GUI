@@ -198,6 +198,16 @@ class TestEnhancedResistance:
         sigma = resistance_uncertainty(1.5, 1e-3, model="2400", nplc=1.0, enhanced=True)
         assert math.isclose(sigma, 0.85, rel_tol=1e-6)
 
+    def test_2kohm_range_below_1_plc(self):
+        # Datasheet p. 7 note 1: "For 0.1 PLC, add 0.005% of range to
+        # offset specifications ... For 0.01 PLC, add 0.05% of range". On
+        # the 2 kΩ range that is 0.1 Ω and 1 Ω. At R = 1500 Ω:
+        # 0.75 + 0.1 + 0.1 = 0.95 Ω, and 0.75 + 0.1 + 1 = 1.85 Ω.
+        medium = resistance_uncertainty(1.5, 1e-3, model="2400", nplc=0.1, enhanced=True)
+        fast = resistance_uncertainty(1.5, 1e-3, model="2400", nplc=0.01, enhanced=True)
+        assert math.isclose(medium, 0.95, rel_tol=1e-6)
+        assert math.isclose(fast, 1.85, rel_tol=1e-6)
+
     def test_200ohm_range(self):
         # 200 Ω Enhanced: 0.05% + 0.01 Ω. At R=100 Ω (V=10mV, I=100µA):
         # 0.0005 × 100 + 0.01 = 0.06 Ω.
@@ -244,6 +254,18 @@ class TestEnhancedResistance:
         e_on = resistance_uncertainty(v, i, model="2400", nplc=1.0, enhanced=True)
         assert math.isclose(e_off, e_on, rel_tol=1e-9)
 
+    @pytest.mark.parametrize("model", ["2425", "2430"])
+    def test_no_enhanced_rows_on_the_2425_and_2430(self, model):
+        # SPEC-2425 and SPEC-2430 Rev. C, p. 2, print a Normal ohms column
+        # only, and the datasheet's Enhanced footnote names the 2410, 2420
+        # and 2440, not these. 1500 Ω at 1 mA, which on a 2400 is the 2 kΩ
+        # Enhanced row (0.85 Ω, test_2kohm_range), is V/I propagation:
+        # σ_V = 0.012 % × 1.5 V + 300 µV = 480 µV and σ_I = 0.027 % × 1 mA
+        # + 60 nA = 330 nA, so σ_R = √(480e-6² + (1500 × 330e-9)²) / 1e-3
+        # = √(2.304e-7 + 2.45025e-7) / 1e-3 = 0.68951 Ω.
+        sigma = resistance_uncertainty(1.5, 1e-3, model=model, nplc=1.0, enhanced=True)
+        assert sigma == pytest.approx(0.68951, rel=1e-5)
+
     def test_manual_section_4_enhanced_example(self):
         # User manual §4 worked example: 100 mΩ @ 5 mA, enhanced mode.
         # The manual derives ±0.447% via linear-sum of measure specs.
@@ -269,11 +291,11 @@ class TestEnhancedResistance:
 
 def test_known_models_includes_full_2400_family():
     # The four-digit IDN strings the worker is going to hand us.
-    expected = {"2400", "2401", "2410", "2420", "2425", "2430", "2440"}
+    expected = {"2400", "2401", "2410", "2420", "2425", "2430", "2440", "2450"}
     assert expected.issubset(set(known_models()))
 
 
-@pytest.mark.parametrize("model", ["2400", "2401", "2410", "2420", "2425", "2430", "2440"])
+@pytest.mark.parametrize("model", ["2400", "2401", "2410", "2420", "2425", "2430", "2440", "2450"])
 def test_every_model_gives_finite_uncertainty(model):
     # Smoke check: typical mid-range V and I produce a finite, positive
     # uncertainty for every model in the table. Catches typos in the
@@ -499,3 +521,182 @@ def test_ten_volts_on_a_2420_uses_the_2420s_20_v_row():
     assert voltage_uncertainty(10.0, model="2420") == pytest.approx(0.00015 * 10.0 + 1e-3)
     assert voltage_uncertainty(10.0, model="2410") == pytest.approx(0.00015 * 10.0 + 1e-3)
     assert voltage_uncertainty(10.0, model="2400") == pytest.approx(0.00015 * 10.0 + 1.5e-3)
+
+
+# ---------------------------------------------------------------------------
+# Models the datasheet does not cover: row by row from their own sheets
+# ---------------------------------------------------------------------------
+
+# (range, source % rdg, source offset, measure % rdg, measure offset)
+_SPEC_SHEET_VOLTAGE = {
+    # SPEC-2425 Rev. C, Voltage Programming Accuracy (p. 1) and Voltage
+    # Measurement Accuracy (p. 2).
+    "2425": (
+        (0.2,   0.02, 600 * _UV, 0.012, 300 * _UV),
+        (2.0,   0.02, 600 * _UV, 0.012, 300 * _UV),
+        (20.0,  0.02, 2.4 * _MV, 0.015, 1 * _MV),
+        (100.0, 0.02, 12 * _MV,  0.015, 5 * _MV),
+    ),
+    # SPEC-2430 Rev. C, the same tables on the same pages.
+    "2430": (
+        (0.2,   0.02, 600 * _UV, 0.012, 300 * _UV),
+        (2.0,   0.02, 600 * _UV, 0.012, 300 * _UV),
+        (20.0,  0.02, 2.4 * _MV, 0.015, 1 * _MV),
+        (100.0, 0.02, 12 * _MV,  0.015, 5 * _MV),
+    ),
+    # SPEC-2450 Rev. C, Voltage Specifications (p. 2).
+    "2450": (
+        (0.02,  0.100, 200 * _UV, 0.100, 150 * _UV),
+        (0.2,   0.015, 200 * _UV, 0.012, 200 * _UV),
+        (2.0,   0.020, 300 * _UV, 0.012, 300 * _UV),
+        (20.0,  0.015, 2.4 * _MV, 0.015, 1 * _MV),
+        (200.0, 0.015, 24 * _MV,  0.015, 10 * _MV),
+    ),
+}
+_SPEC_SHEET_CURRENT = {
+    # SPEC-2425 Rev. C, Current Programming Accuracy (p. 1) and Current
+    # Measurement Accuracy (p. 2).
+    "2425": (
+        (10 * _UA,  0.033, 2 * _NA,   0.027, 700 * _PA),
+        (100 * _UA, 0.031, 20 * _NA,  0.025, 6 * _NA),
+        (1 * _MA,   0.034, 200 * _NA, 0.027, 60 * _NA),
+        (10 * _MA,  0.045, 2 * _UA,   0.035, 600 * _NA),
+        (100 * _MA, 0.066, 20 * _UA,  0.055, 6 * _UA),
+        (1.0,       0.067, 900 * _UA, 0.060, 570 * _UA),
+        (3.0,       0.059, 2.8 * _MA, 0.052, 1.71 * _MA),
+    ),
+    # SPEC-2430 Rev. C, the same tables on the same pages; the 10 A range
+    # is pulse mode only.
+    "2430": (
+        (10 * _UA,  0.033, 2 * _NA,   0.027, 700 * _PA),
+        (100 * _UA, 0.031, 20 * _NA,  0.025, 6 * _NA),
+        (1 * _MA,   0.034, 200 * _NA, 0.027, 60 * _NA),
+        (10 * _MA,  0.045, 2 * _UA,   0.035, 600 * _NA),
+        (100 * _MA, 0.066, 20 * _UA,  0.055, 6 * _UA),
+        (1.0,       0.067, 900 * _UA, 0.060, 570 * _UA),
+        (3.0,       0.059, 2.8 * _MA, 0.052, 1.71 * _MA),
+        (10.0,      0.089, 5.9 * _MA, 0.082, 1.71 * _MA),
+    ),
+    # SPEC-2450 Rev. C, Current Specifications (p. 2).
+    "2450": (
+        (10 * _NA,  0.100, 100 * _PA, 0.10,  50 * _PA),
+        (100 * _NA, 0.060, 150 * _PA, 0.060, 100 * _PA),
+        (1 * _UA,   0.025, 400 * _PA, 0.025, 300 * _PA),
+        (10 * _UA,  0.025, 1.5 * _NA, 0.025, 700 * _PA),
+        (100 * _UA, 0.020, 15 * _NA,  0.02,  6 * _NA),
+        (1 * _MA,   0.020, 150 * _NA, 0.02,  60 * _NA),
+        (10 * _MA,  0.020, 1.5 * _UA, 0.02,  600 * _NA),
+        (100 * _MA, 0.025, 15 * _UA,  0.025, 6 * _UA),
+        (1.0,       0.067, 900 * _UA, 0.03,  500 * _UA),
+    ),
+}
+
+
+@pytest.mark.parametrize("model", sorted(_SPEC_SHEET_VOLTAGE))
+def test_voltage_tables_are_the_spec_sheets_rows(model):
+    from resistamet_gui import accuracy as acc
+
+    expected = _SPEC_SHEET_VOLTAGE[model]
+    assert _rows(acc._V_SOURCE[model]) == _approx_rows(
+        [(rng, pct, off) for rng, pct, off, _, _ in expected])
+    assert _rows(acc._V_MEASURE[model]) == _approx_rows(
+        [(rng, pct, off) for rng, _, _, pct, off in expected])
+
+
+@pytest.mark.parametrize("model", sorted(_SPEC_SHEET_CURRENT))
+def test_current_tables_are_the_spec_sheets_rows(model):
+    from resistamet_gui import accuracy as acc
+
+    expected = _SPEC_SHEET_CURRENT[model]
+    assert _rows(acc._I_SOURCE[model]) == _approx_rows(
+        [(rng, pct, off) for rng, pct, off, _, _ in expected])
+    assert _rows(acc._I_MEASURE[model]) == _approx_rows(
+        [(rng, pct, off) for rng, _, _, pct, off in expected])
+
+
+def test_eighty_volts_on_a_2425_uses_the_100_v_row():
+    """SPEC-2425 Rev. C, 100.000 V range: source 0.02 % + 12 mV (p. 1),
+    measurement 0.015 % + 5 mV (p. 2). At 80 V: 16 + 12 = 28 mV and
+    12 + 5 = 17 mV."""
+    assert voltage_source_uncertainty(80.0, model="2425") == pytest.approx(28e-3)
+    assert voltage_uncertainty(80.0, model="2425") == pytest.approx(17e-3)
+
+
+def test_the_2425s_3_a_range_takes_the_larger_speed_adder():
+    """SPEC-2425 Rev. C, p. 2 note 1: "except 200mV, 1A, 3A ranges, add
+    0.05%" at 0.1 PLC and "add 0.5%" at 0.01 PLC. 2 A on the 3 A range
+    (0.052 % + 1.71 mA): 1.04 + 1.71 + 1.5 = 4.25 mA at 0.1 PLC and
+    1.04 + 1.71 + 15 = 17.75 mA at 0.01 PLC. The datasheet does not name
+    the 2420's 3 A range, which takes 0.005 % and 0.05 % of range:
+    1.04 + 1.71 + 0.15 = 2.9 mA and 1.04 + 1.71 + 1.5 = 4.25 mA."""
+    assert current_uncertainty(2.0, model="2425", nplc=0.1) == pytest.approx(4.25e-3)
+    assert current_uncertainty(2.0, model="2425", nplc=0.01) == pytest.approx(17.75e-3)
+    assert current_uncertainty(2.0, model="2420", nplc=0.1) == pytest.approx(2.9e-3)
+    assert current_uncertainty(2.0, model="2420", nplc=0.01) == pytest.approx(4.25e-3)
+
+
+def test_the_2430s_speed_adders():
+    """SPEC-2430 Rev. C, p. 2 note 1: "except 200mV, 1A, 3A, 10A ranges,
+    add 0.05%" at 0.1 PLC; at 0.01 PLC "add 0.5%; 3A, 10A ranges add
+    15mA". 5 A on the 10 A range (0.082 % + 1.71 mA): 4.1 + 1.71 + 5 =
+    10.81 mA at 0.1 PLC, 4.1 + 1.71 + 15 = 20.81 mA at 0.01 PLC (not
+    0.5 % of 10 A, 50 mA). 2 A on the 3 A range at 0.01 PLC: 1.04 + 1.71
+    + 15 = 17.75 mA. 0.5 A on the 1 A range at 0.01 PLC: 0.3 + 0.57 + 5 =
+    5.87 mA."""
+    assert current_uncertainty(5.0, model="2430", nplc=0.1) == pytest.approx(10.81e-3)
+    assert current_uncertainty(5.0, model="2430", nplc=0.01) == pytest.approx(20.81e-3)
+    assert current_uncertainty(2.0, model="2430", nplc=0.01) == pytest.approx(17.75e-3)
+    assert current_uncertainty(0.5, model="2430", nplc=0.01) == pytest.approx(5.87e-3)
+
+
+# SPEC-2450 Rev. C, Resistance Measurement Accuracy (p. 3), Enhanced
+# accuracy column: (range in Ω, % rdg, offset in Ω).
+_SPEC_2450_ENHANCED = (
+    (20.0,    0.073, 0.001),
+    (200.0,   0.053, 0.01),
+    (2.0e3,   0.045, 0.1),
+    (20.0e3,  0.043, 1.0),
+    (200.0e3, 0.046, 10.0),
+    (2.0e6,   0.049, 100.0),
+    (20.0e6,  0.052, 500.0),
+    (200.0e6, 0.349, 5.0e3),
+)
+
+
+def test_2450_enhanced_rows_are_the_spec_sheets():
+    from resistamet_gui import accuracy as acc
+
+    assert _rows(acc._R_ENHANCED["2450"]) == _approx_rows(_SPEC_2450_ENHANCED)
+
+
+def test_a_2450_reading_uses_the_2450s_rows():
+    """SPEC-2450 Rev. C. 0.5 A on the 1 A range, measurement 0.03 % +
+    500 uA (p. 2): 150 + 500 = 650 uA, where the 2400's row it used to
+    borrow gives 0.22 % + 570 uA = 1.67 mA. 20 Ohm enhanced, 0.073 % +
+    0.001 Ohm (p. 3): 0.0146 + 0.001 = 0.0156 Ohm, where the 2400's is
+    0.07 % + 0.001 Ohm = 0.015 Ohm."""
+    assert current_uncertainty(0.5, model="2450") == pytest.approx(650e-6)
+    assert resistance_uncertainty(20e-3, 1e-3, model="2450", enhanced=True) == pytest.approx(0.0156)
+
+
+def test_a_2450_below_1_plc_takes_the_larger_modifier_on_20_mv():
+    """SPEC-2450 Rev. C prints no modifier below 1 PLC, so the 2450 borrows
+    the datasheet's and treats its 20 mV range like 200 mV. 10 mV on the
+    20 mV range, 0.1 % + 150 uV = 160 uV at 1 PLC; 0.05 % of 20 mV = 10 uV
+    more at 0.1 PLC, 0.5 % = 100 uV more at 0.01 PLC."""
+    assert voltage_uncertainty(10e-3, model="2450", nplc=1.0) == pytest.approx(160e-6)
+    assert voltage_uncertainty(10e-3, model="2450", nplc=0.1) == pytest.approx(170e-6)
+    assert voltage_uncertainty(10e-3, model="2450", nplc=0.01) == pytest.approx(260e-6)
+    # The 2400 has no 20 mV range: the same reading is on 200 mV.
+    assert voltage_uncertainty(10e-3, model="2400", nplc=0.01) == pytest.approx(
+        voltage_uncertainty(10e-3, model="2400", nplc=1.0) + 0.005 * 0.2)
+
+
+@pytest.mark.parametrize("nplc", [0.3, 0.1, 0.06, 0.01])
+def test_a_2450_uncertainty_never_shrinks_below_1_plc(nplc):
+    for value in (10e-3, 0.15, 1.5, 15.0, 150.0):
+        assert voltage_uncertainty(value, model="2450", nplc=nplc) > \
+            voltage_uncertainty(value, model="2450", nplc=1.0)
+    for value in (5e-9, 50e-9, 0.5e-6, 5e-6, 50e-6, 0.5e-3, 5e-3, 50e-3, 0.5):
+        assert current_uncertainty(value, model="2450", nplc=nplc) > \
+            current_uncertainty(value, model="2450", nplc=1.0)

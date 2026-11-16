@@ -112,18 +112,20 @@ This matches the list CI uses — see [`.github/workflows/test.yml`](https://git
 
 ResistaMet GUI identifies the connected model from its `*IDN?` response and surfaces the matching source/measure envelope at connect time. The full table:
 
-| Model | Max source V | Max source I | Max power | Notes |
+| Model | Max source V | Max source I | Max DC power | Notes |
 |---|---|---|---|---|
-| **2400** | ±200 V | ±1.05 A | 22 W | Original 2400 SCPI surface |
-| **2401** | ±20 V | ±1.05 A | 22 W | Low-voltage variant of the 2400 |
+| **2400** | ±210 V | ±1.05 A | 22 W | Original 2400 SCPI surface |
+| **2401** | ±21 V | ±1.05 A | 22 W | Low-voltage variant of the 2400 |
 | **2410** | ±1100 V | ±1.05 A | 22 W | High-voltage; special handling above 100 V |
-| **2420** | ±60 V | ±3.05 A | 22 W | Bench-primary; 29 SCPI fixtures captured |
-| **2425** | ±100 V | ±3.05 A | 22 W |  |
-| **2430** | ±100 V | ±3.05 A | 22 W | Pulse mode supports 10 A (5 W avg) |
-| **2440** | ±40 V | ±5.05 A | 22 W | Highest-current model in the family |
-| **2450** | ±200 V | ±1.05 A | 22 W | Touchscreen successor; TSP+SCPI surface |
+| **2420** | ±63 V | ±3.15 A | 66 W | Bench-primary; 29 SCPI fixtures captured |
+| **2425** | ±105 V | ±3.15 A | 110 W |  |
+| **2430** | ±105 V | ±3.15 A | 110 W | Pulse mode reaches ±10.5 A (10 A range, 8 % duty cycle max) |
+| **2440** | ±42 V | ±5.25 A | 55 W | Highest-current model in the family |
+| **2450** | ±210 V | ±1.05 A | 20 W | Touchscreen successor; TSP+SCPI surface |
 
-Source: per-model `ModelSpec` table in [`resistamet_gui/instrument.py`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/resistamet_gui/instrument.py), grounded in the Keithley datasheet.
+The voltage and current maxima are not available together: each holds only up to the other's lower limit (a 2420 gives 3.15 A up to 21 V, and 1.05 A up to 63 V). ResistaMet shows these limits; it does not enforce them, the instrument does.
+
+Source: per-model `ModelSpec` table in [`resistamet_gui/instrument.py`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/resistamet_gui/instrument.py), from each model's specifications ("SOURCE/SINK LIMITS" and "MAX. OUTPUT POWER"). The 20 W, 60 W and 50 W in the Series 2400 datasheet's ordering information are nominal ratings.
 
 ### What's bench-validated vs documented
 

@@ -13,7 +13,9 @@ from . import visa_backend
 class ModelSpec:
     """Documented capabilities of one Keithley 2400-series model.
 
-    Source/measure limits come from the Keithley datasheets; ``family``
+    ``max_source_v`` and ``max_source_i`` are the largest magnitudes the
+    datasheet's source/sink limits allow (each at the other's lower limit);
+    ``max_power_w`` is its maximum DC output power. ``family``
     distinguishes the original 2400 SCPI surface (2400/2410/2420/2425/2430/
     2440) from the 2450's TSP+SCPI surface, which diverges in some places.
     """
@@ -26,20 +28,27 @@ class ModelSpec:
 
 
 # Keyed by the four-digit model number that appears in the IDN string,
-# e.g. "MODEL 2420" -> "2420". Sourced from the 2400-series datasheets.
+# e.g. "MODEL 2420" -> "2420". From each model's specifications ("MAX.
+# OUTPUT POWER", "SOURCE/SINK LIMITS"): the 2400/2401 sheet, 2410 Rev. D,
+# 2420 Rev. D, 2425 Rev. C, 2430 Rev. C, 2440 Rev. C, and SPEC-2450C.
+# The 20 W / 60 W / 50 W in the Series 2400 datasheet's ordering
+# information are nominal ratings, not these limits. The 2430 sheet's DC
+# limit names only the 105 V / 1.05 A corner; its 3.15 A is the DC 3 A
+# range's 105 %, as on the 2425.
 # Add new entries when community submissions land hardware traces.
 _MODELS: dict[str, ModelSpec] = {
-    "2400": ModelSpec("2400", 200.0, 1.05, 22.0, family="2400"),
-    "2401": ModelSpec("2401", 20.0,  1.05, 22.0, family="2400",
-                       notes="Low-voltage variant of the 2400 (20V max)"),
+    "2400": ModelSpec("2400", 210.0,  1.05, 22.0, family="2400"),
+    "2401": ModelSpec("2401", 21.0,   1.05, 22.0, family="2400",
+                       notes="Low-voltage variant of the 2400 (21 V max)"),
     "2410": ModelSpec("2410", 1100.0, 1.05, 22.0, family="2400",
                        notes="High-voltage model — special handling for >100V"),
-    "2420": ModelSpec("2420", 60.0,  3.05, 22.0, family="2400"),
-    "2425": ModelSpec("2425", 100.0, 3.05, 22.0, family="2400"),
-    "2430": ModelSpec("2430", 100.0, 3.05, 22.0, family="2400",
-                       notes="Pulse mode supports up to 10A (5W avg)"),
-    "2440": ModelSpec("2440", 40.0,  5.05, 22.0, family="2400"),
-    "2450": ModelSpec("2450", 200.0, 1.05, 22.0, family="2450",
+    "2420": ModelSpec("2420", 63.0,   3.15, 66.0, family="2400"),
+    "2425": ModelSpec("2425", 105.0,  3.15, 110.0, family="2400"),
+    "2430": ModelSpec("2430", 105.0,  3.15, 110.0, family="2400",
+                       notes="Pulse mode reaches 10.5 A (10 A range, 8% duty "
+                             "cycle max); the limits here are DC"),
+    "2440": ModelSpec("2440", 42.0,   5.25, 55.0, family="2400"),
+    "2450": ModelSpec("2450", 210.0,  1.05, 20.0, family="2450",
                        notes="Touchscreen successor — TSP+SCPI surface; "
                              "some FORM/STAT details may differ from 2400 family"),
 }
@@ -221,62 +230,6 @@ class Keithley2400(VisaInstrument):
         except Exception:
             return None
 
-    def enable_autozero(self, on: bool = True):
-        self.write(f":SYST:AZER:STAT {'ON' if on else 'OFF'}")
-
-    def set_4wire(self, on: bool):
-        self.write(":SYST:RSEN ON" if on else ":SYST:RSEN OFF")
-
-    def setup_resistance(self, test_current: float, v_comp: float, nplc: float, auto_range: bool, four_wire: bool):
-        self.set_4wire(four_wire)
-        self.write(":SENS:FUNC:CONC OFF")
-        self.write(":SENS:FUNC 'RES'")
-        # Disable auto-ohms before configuring source/compliance
-        # (auto-ohms is ON by default after selecting RES function
-        # and rejects :SOUR:CURR:RANG, :SOUR:CURR, :SENS:VOLT:PROT)
-        self.write(":SENS:RES:MODE MAN")
-        self.write(":SOUR:FUNC CURR")
-        self.write(f":SOUR:CURR:RANG {abs(test_current)}")
-        self.write(f":SOUR:CURR {test_current}")
-        self.write(f":SENS:VOLT:PROT {v_comp}")
-        self.write(f":SENS:RES:NPLC {nplc}")
-        if auto_range:
-            self.write(":SENS:RES:MODE AUTO")
-        else:
-            rmax = v_comp / abs(test_current) if abs(test_current) > 0 else 210e6
-            self.write(f":SENS:RES:RANG {rmax}")
-        # Include STAT for hardware compliance detection (bit 3)
-        self.write(":FORM:ELEM RES,STAT")
-
-    def setup_source_voltage(self, voltage: float, i_comp: float, nplc: float, auto_range_curr: bool):
-        self.set_4wire(False)
-        self.write(":SENS:FUNC:CONC OFF")
-        self.write(":SENS:FUNC 'CURR:DC'")
-        self.write(":SOUR:FUNC VOLT")
-        self.write(f":SOUR:VOLT:RANG {abs(voltage)}")
-        self.write(f":SOUR:VOLT {voltage}")
-        self.write(f":SENS:CURR:PROT {i_comp}")
-        self.write(":SENS:CURR:RANG:AUTO ON" if auto_range_curr else ":SENS:CURR:RANG:AUTO OFF")
-        if not auto_range_curr:
-            self.write(f":SENS:CURR:RANG {i_comp}")
-        self.write(f":SENS:CURR:NPLC {nplc}")
-        # Keithley 2400 series returns elements in fixed order: VOLT, CURR, STAT
-        self.write(":FORM:ELEM VOLT,CURR,STAT")
-
-    def setup_source_current(self, current: float, v_comp: float, nplc: float, auto_range_volt: bool):
-        self.set_4wire(False)
-        self.write(":SENS:FUNC:CONC OFF")
-        self.write(":SENS:FUNC 'VOLT:DC'")
-        self.write(":SOUR:FUNC CURR")
-        self.write(f":SOUR:CURR:RANG {abs(current)}")
-        self.write(f":SOUR:CURR {current}")
-        self.write(f":SENS:VOLT:PROT {v_comp}")
-        self.write(":SENS:VOLT:RANG:AUTO ON" if auto_range_volt else ":SENS:VOLT:RANG:AUTO OFF")
-        if not auto_range_volt:
-            self.write(f":SENS:VOLT:RANG {v_comp}")
-        self.write(f":SENS:VOLT:NPLC {nplc}")
-        self.write(":FORM:ELEM VOLT,CURR,STAT")
-
     def setup_sweep(self, source_func: str, start: float, stop: float, step: float,
                      compliance: float, nplc: float, source_delay: float = 0.0):
         """Configure a linear staircase sweep.
@@ -316,8 +269,3 @@ class Keithley2400(VisaInstrument):
         self.write(f":SOUR:DEL {source_delay}")
         self.write(":FORM:ELEM VOLT,CURR,STAT")
         return points
-
-    def common_fast(self):
-        self.write(":TRIG:DEL 0")
-        self.write(":SOUR:DEL:AUTO ON")
-
