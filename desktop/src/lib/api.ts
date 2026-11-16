@@ -272,8 +272,9 @@ export class ApiClient {
     return response.text();
   }
 
-  resultsDirectory(): Promise<{ root: string; exists: boolean; separator: string }> {
-    return this.request("GET", "/results/directory");
+  /** Where `user`'s files go, absolute; without one, the last operator's. */
+  resultsDirectory(user?: string | null): Promise<{ root: string; exists: boolean; separator: string }> {
+    return this.request("GET", `/results/directory${user ? `?user=${encodeURIComponent(user)}` : ""}`);
   }
 
   // --- four-point maps ---------------------------------------------------
