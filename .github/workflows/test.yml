@@ -16,6 +16,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12"]
+        # ubuntu-latest is Ubuntu 26.04, for which setup-python has no 3.9.
+        # The 3.9 floor is still tested on Windows, the platform the lab runs.
+        exclude:
+          - os: ubuntu-latest
+            python-version: "3.9"
 
     steps:
       - name: Check out repository
