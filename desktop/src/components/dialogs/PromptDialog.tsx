@@ -9,6 +9,7 @@ import { useState } from "react";
 import { useApi } from "../../app/AppContext";
 import type { PendingPrompt } from "../../lib/api";
 import { ApiError } from "../../lib/api";
+import { fppCurrentDecision, type FppCurrentDetail } from "../../lib/fppCurrentDecision";
 import { SILENCE_CHOICES, silenceFields, type SilenceChoice } from "../../lib/safetySilence";
 import { setView, useUi } from "../../state/ui";
 import { Button, Dialog, Notice } from "../ui";
@@ -28,6 +29,8 @@ export function PromptDialog({ prompt }: Props) {
       // an agent started can reach this prompt with another view open, and
       // nothing said so; here the person reads what to do and goes there.
       return ui.view === "vdp" ? null : <VdpGeometryPrompt prompt={prompt} />;
+    case "fpp_current_decision":
+      return <FppCurrentPrompt prompt={prompt} />;
     default:
       // Anything the backend may add later gets the generic form.
       return <GenericPrompt prompt={prompt} />;
@@ -120,6 +123,41 @@ function VdpGeometryPrompt({ prompt }: Props) {
       <div className={styles.safety}>
         <p>{detail.message ?? detail.name ?? "The run is waiting for the next wiring."}</p>
         <p>Output off.</p>
+      </div>
+    </Dialog>
+  );
+}
+
+function FppCurrentPrompt({ prompt }: Props) {
+  const { answer, busy, error } = useAnswer(prompt);
+  const { title, reason, rows } = fppCurrentDecision(prompt.detail as FppCurrentDetail);
+  return (
+    <Dialog
+      title={title}
+      dismissable={false}
+      footer={
+        <>
+          <Button variant="ghost" disabled={busy} onClick={() => void answer("abort")}>
+            Abort
+          </Button>
+          <Button variant="primary" disabled={busy} onClick={() => void answer("proceed")}>
+            Proceed
+          </Button>
+        </>
+      }
+    >
+      <div className={styles.safety}>
+        {reason ? <p>{reason}</p> : null}
+        <dl className={styles.facts}>
+          {rows.map((row) => (
+            <div key={row.label}>
+              <dt>{row.label}</dt>
+              <dd className="num">{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+        <p>Output off.</p>
+        {error ? <Notice tone="danger">{error}</Notice> : null}
       </div>
     </Dialog>
   );
