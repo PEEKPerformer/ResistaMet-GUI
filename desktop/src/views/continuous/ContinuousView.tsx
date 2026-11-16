@@ -16,7 +16,7 @@ import type { Resolved } from "../../lib/api";
 import { ApiError } from "../../lib/api";
 import { NAME_THE_SAMPLE } from "../../lib/copy";
 import { formatElapsed, formatEngineering } from "../../lib/format";
-import { runPanelSettings, useSession } from "../../state/session";
+import { runPanelSettings, selectedSourceCurrent, useSession } from "../../state/session";
 import { useLatestSample } from "../../state/samples";
 import { useUi } from "../../state/ui";
 import { seedOverrides, setOverride, useOverrides } from "../../state/overrides";
@@ -215,7 +215,9 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
   // A run an agent started shows its own values, read-only; the tab's wait
   // underneath, untouched, for when it ends.
   const runValues = runPanelSettings(session, mode);
-  const panelValues = runValues ?? overrides;
+  // The finder's choice replaces the probe current in the form while its run goes.
+  const selectedCurrent = selectedSourceCurrent(session, mode);
+  const panelValues = selectedCurrent === null ? (runValues ?? overrides) : { ...(runValues ?? overrides), fpp_current: selectedCurrent };
   const panelIssues = runValues ? [] : (resolved?.issues ?? []);
 
   return (

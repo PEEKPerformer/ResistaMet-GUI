@@ -58,6 +58,9 @@ export interface SessionSnapshot {
   /** The settings the last run_started announced, with the run they are
    *  for. Not in the status: after a reload that lost the event, unknown. */
   runSettings: { runId: string | null; settings: Record<string, unknown> } | null;
+  /** The source current the four-point current finder chose, with the run
+   *  it chose it for. */
+  fppSelectedCurrent: { runId: string | null; currentA: number } | null;
 }
 
 const MAX_LOG_LINES = 500;
@@ -73,6 +76,7 @@ let snapshot: SessionSnapshot = {
   outputUnverified: false,
   runStartedBy: null,
   runSettings: null,
+  fppSelectedCurrent: null,
 };
 
 const listeners = new Set<() => void>();
@@ -121,7 +125,7 @@ export function markPromptAnswered(promptId: string): void {
  *  what was remembered about the old one's would be held against them. */
 export function backendRestarted(): void {
   answeredPrompts.clear();
-  publish({ ...snapshot, lastRunEnded: null, gap: false, runSettings: null });
+  publish({ ...snapshot, lastRunEnded: null, gap: false, runSettings: null, fppSelectedCurrent: null });
 }
 
 /** The run the pending prompt belongs to, for an answer to name. */
@@ -239,7 +243,11 @@ export function applyEvent(event: AnyEvent): void {
         gap: false,
         runStartedBy: event.payload.started_by ?? null,
         runSettings: { runId: event.run_id ?? null, settings: event.payload.settings ?? {} },
+        fppSelectedCurrent: null,
       });
+      return;
+    case "fpp_current_selected":
+      publish({ ...snapshot, fppSelectedCurrent: { runId: event.run_id ?? null, currentA: event.payload.current_a } });
       return;
     case "run_ended":
       publish({
@@ -286,4 +294,17 @@ export function runPanelSettings(
   if (runSettings === null || runSettings.runId !== status.run_id) return null;
   const measurement = runSettings.settings.measurement;
   return typeof measurement === "object" && measurement !== null ? (measurement as Record<string, unknown>) : null;
+}
+
+/** The source current the finder chose for the four-point run going now;
+ *  null in any other mode, with no run, or before it has chosen. The panel
+ *  shows it in place of the current the probe started at. */
+export function selectedSourceCurrent(
+  session: Pick<SessionSnapshot, "status" | "fppSelectedCurrent">,
+  mode: Mode,
+): number | null {
+  const { status, fppSelectedCurrent } = session;
+  if (mode !== "four_point" || status === null || status.state === "idle" || status.mode !== mode) return null;
+  if (fppSelectedCurrent === null || fppSelectedCurrent.runId !== status.run_id) return null;
+  return fppSelectedCurrent.currentA;
 }

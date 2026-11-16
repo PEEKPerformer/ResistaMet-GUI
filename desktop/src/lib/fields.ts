@@ -108,10 +108,24 @@ export const FOUR_POINT_FIELDS: FieldGroup<Keys<FourPointSettings>>[] = [
   {
     title: "Source",
     fields: [
-      { key: "fpp_current", label: "Source current", unit: "A" },
+      // As in the PySide6 tab: while the finder is on this is the current
+      // its probe starts at, locked, and during a run the one it chose.
+      {
+        key: "fpp_current",
+        label: "Source current",
+        unit: "A",
+        overriddenBy: { key: "fpp_autoselect_current", when: true, hint: "Probe current; the selected one during a run." },
+      },
       { key: "fpp_voltage_compliance", label: "Voltage compliance", unit: "V" },
       { key: "fpp_voltage_range_auto", label: "Auto range" },
       { key: "fpp_samples", label: "Samples per spot", hint: "0 runs until stopped." },
+    ],
+  },
+  {
+    title: "Auto-select current",
+    fields: [
+      { key: "fpp_autoselect_current", label: "Probe and select" },
+      { key: "fpp_autoselect_sigfigs", label: "Target sig figs", showWhen: { key: "fpp_autoselect_current", in: [true] } },
     ],
   },
   {
@@ -168,13 +182,6 @@ export const FOUR_POINT_FIELDS: FieldGroup<Keys<FourPointSettings>>[] = [
     fields: [
       { key: "fpp_temperature_c", label: "Temperature", unit: "°C", hint: "Blank = not measured." },
       { key: "fpp_dopant_type", label: "Dopant", options: { none: "None", n: "n-type", p: "p-type" } },
-    ],
-  },
-  {
-    title: "Auto-select current",
-    fields: [
-      { key: "fpp_autoselect_current", label: "Probe and select", hint: "Source current is the probe current." },
-      { key: "fpp_autoselect_sigfigs", label: "Target sig figs", showWhen: { key: "fpp_autoselect_current", in: [true] } },
     ],
   },
   {

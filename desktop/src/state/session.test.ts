@@ -8,6 +8,7 @@ import {
   markPromptAnswered,
   promptRunId,
   runPanelSettings,
+  selectedSourceCurrent,
   setStatus,
 } from "./session.ts";
 import type { SessionStatus } from "../generated/session.ts";
@@ -193,4 +194,39 @@ test("settings announced for another run are not shown as this one's", () => {
   backendRestarted();
   setStatus(runningStatus("run-16", "agent"));
   assert.equal(runPanelSettings(getSessionSnapshot(), "resistance"), null);
+});
+
+function currentSelected(runId: string, currentA: number): AnyEvent {
+  const payload = { current_a: currentA, requested_current_a: 1e-3, verdict: "ok", target_sig_figs: 4 };
+  return { type: "fpp_current_selected", seq: 3, t: 0, run_id: runId, v: 1, payload } as unknown as AnyEvent;
+}
+
+function fourPointStatus(runId: string, state: SessionStatus["state"] = "running"): SessionStatus {
+  return { ...runningStatus(runId, "ui", state), mode: "four_point" };
+}
+
+test("the current the finder chose is the four-point run's source current while it runs", () => {
+  applyEvent(runStartedWith("run-20", "ui"));
+  setStatus(fourPointStatus("run-20"));
+  assert.equal(selectedSourceCurrent(getSessionSnapshot(), "four_point"), null);
+  applyEvent(currentSelected("run-20", 2.5e-4));
+  assert.equal(selectedSourceCurrent(getSessionSnapshot(), "four_point"), 2.5e-4);
+  assert.equal(selectedSourceCurrent(getSessionSnapshot(), "resistance"), null);
+  setStatus(fourPointStatus("run-20", "idle"));
+  assert.equal(selectedSourceCurrent(getSessionSnapshot(), "four_point"), null);
+});
+
+test("a current chosen for another run is not this run's", () => {
+  applyEvent(currentSelected("run-21", 1e-5));
+  // The next run has not chosen yet, with or without its run_started seen.
+  setStatus(fourPointStatus("run-22"));
+  assert.equal(selectedSourceCurrent(getSessionSnapshot(), "four_point"), null);
+  setStatus(fourPointStatus("run-21"));
+  applyEvent(runStartedWith("run-21", "ui"));
+  assert.equal(selectedSourceCurrent(getSessionSnapshot(), "four_point"), null);
+  // A new backend reuses run ids.
+  applyEvent(currentSelected("run-23", 1e-5));
+  backendRestarted();
+  setStatus(fourPointStatus("run-23"));
+  assert.equal(selectedSourceCurrent(getSessionSnapshot(), "four_point"), null);
 });
