@@ -17,7 +17,8 @@ import numpy as np
 import pyvisa
 
 from ..constants import (
-    AUX_READY_TIMEOUT_S, FPP_AUTOSELECT_DISCARD_READINGS, MODE_DISPLAY_NAMES,
+    AUX_READY_TIMEOUT_S, FPP_AUTOSELECT_DISCARD_READINGS,
+    KEITHLEY_COMPLIANCE_MAGIC_NUMBER, MODE_DISPLAY_NAMES,
     KEITHLEY_STAT_BIT_COMPLIANCE as _STAT_BIT_COMPLIANCE,
 )
 from ..data_export import AUX_LOG_MODES, effective_filter_type, splice_before_tail
@@ -798,6 +799,7 @@ class ContinuousRun:
                         self._control.finish('power_envelope')
                         return  # pre-flight refused the power envelope
                     self._fpp_overpower_emitted = False  # debounce: emit once
+                    self._fpp_power_warned = False
                 elif self.mode == 'sweep':
                     configured = configure_sweep(self.keithley, self._events, measurement_settings, nplc)
                 else:
@@ -1121,7 +1123,10 @@ class ContinuousRun:
                     if self.mode == 'four_point':
                         v_meas = data_dict.get('voltage', float('nan'))
                         i_meas = data_dict.get('current', float('nan'))
-                        if np.isfinite(v_meas) and np.isfinite(i_meas):
+                        # An overflow reading (9.9e37) is not a voltage, and
+                        # as one it is 1e34 W.
+                        if (np.isfinite(v_meas) and np.isfinite(i_meas)
+                                and abs(v_meas) < KEITHLEY_COMPLIANCE_MAGIC_NUMBER):
                             measured_power = abs(v_meas * i_meas)
                             stop_w = self._mode_state.power_stop_w
                             warn_w = self._mode_state.power_warn_w
@@ -1144,7 +1149,10 @@ class ContinuousRun:
                                 except Exception:
                                     pass
                                 self._control.finish('overpower')
-                            elif measured_power > warn_w:
+                            elif measured_power > warn_w and not self._fpp_power_warned:
+                                # Once a run: the same line on every row
+                                # buried the rest of the log.
+                                self._fpp_power_warned = True
                                 self._events.warn('power_envelope', 
                                     f"Warning: 4PP power {format_power(measured_power)} above "
                                     f"warn threshold {format_power(warn_w)}"
