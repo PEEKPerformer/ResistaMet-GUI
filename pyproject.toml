@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resistamet-gui"
-version = "1.12.3"
+version = "1.13.1"
 description = "Open-source GUI for electrical characterization with Keithley 2400/2450 sourcemeters and four-point probe analysis"
 readme = "README.md"
 license = { file = "LICENSE.md" }
@@ -103,6 +103,11 @@ Releases = "https://github.com/PEEKPerformer/ResistaMet-GUI/releases"
 
 [tool.setuptools.packages.find]
 include = ["resistamet_gui*"]
+
+[tool.setuptools.package-data]
+# Ship the logo / window-icon assets inside the wheel so app_icon() finds
+# them after a plain `pip install` (not just from a source checkout).
+resistamet_gui = ["assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

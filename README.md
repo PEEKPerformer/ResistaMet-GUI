@@ -1,12 +1,19 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.png">
+    <img src="docs/logo.png" alt="ResistaMet logo" width="120">
+  </picture>
+</p>
+
 # ResistaMet GUI
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19919751.svg)](https://doi.org/10.5281/zenodo.19919751)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19919751-blue)](https://doi.org/10.5281/zenodo.19919751)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docs](https://img.shields.io/badge/docs-bfer.land-blue.svg)](https://bfer.land/ResistaMet-GUI/)
 
 Open-source graphical interface for electrical characterization with Keithley 2400-family sourcemeters, with ASTM F84-aligned four-point-probe and ASTM F76 van der Pauw analysis built in.
 
-**Version:** 1.12.3
+**Version:** 1.13.1
 **Author:** Brenden Ferland
 
 ![ResistaMet GUI — Van der Pauw tab, mid-protocol. The sample diagram shows lead wiring for the active F76 geometry; the filmstrip below tracks progress through the four geometries.](docs/screenshots/06_van_der_pauw.png)

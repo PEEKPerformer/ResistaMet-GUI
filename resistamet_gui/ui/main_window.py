@@ -21,6 +21,7 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as Navigation
 
 from ..buffers import EnhancedDataBuffer
 from ..config import ConfigManager
+from ..resources import app_icon
 from ..schema.map_session import MapSession
 from ..schema.resolve import resolve_run_settings
 from ..session.instrument_lock import InstrumentBusy, hold_instrument
@@ -110,7 +111,7 @@ class ResistanceMeterApp(QMainWindow):
         # chrome. The horizontal-splitter layout makes this floor reachable;
         # the previous 900×700 was tied to the old vertical-splitter layout.
         self.setMinimumSize(720, 560)
-        self.setWindowIcon(QIcon.fromTheme("accessories-voltmeter"))
+        self.setWindowIcon(app_icon())
         self.init_ui()
         self.select_user()
 
