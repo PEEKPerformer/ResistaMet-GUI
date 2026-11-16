@@ -39,6 +39,19 @@ from .dialogs import SettingsDialog, UserSelectionDialog
 from .visa_helpers import configured_resource_manager, query_idn
 
 
+def _is_finite(value) -> bool:
+    """A real, finite number (not NaN, not None, not a string)."""
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
+
+
+def _rsd_pct(mean, sd) -> float:
+    """SD as a percentage of |mean|; NaN where either is missing or the mean is 0."""
+    if not (_is_finite(mean) and _is_finite(sd)) or mean == 0:
+        return float('nan')
+    return sd / abs(mean) * 100.0
+
+
 class ResistanceMeterApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -85,6 +98,9 @@ class ResistanceMeterApp(QMainWindow):
         self._active_model_name = "2400"
         # Last derived 4PP values from the worker (see _on_sample_derived).
         self._last_fpp_derived = None
+        # The four-point run the table's rows came from: the settings it was
+        # started with and which formula it used. A saved spot keeps its own.
+        self._fpp_run = None
         # Targets for the dynamic sampling-rate cap: each entry is the tab
         # widget that exposes a .sampling_rate spinbox. Refreshed whenever
         # user_settings changes (Settings dialog save, profile switch) and
@@ -2322,6 +2338,8 @@ class ResistanceMeterApp(QMainWindow):
         self.measurement_worker = MeasurementWorker(mode=mode, sample_name=sample_name, username=self.current_user, settings=current_settings)
         self.measurement_worker.instrument_identified.connect(self._on_instrument_identified)
         self._last_fpp_derived = None
+        if mode == 'four_point':
+            self._fpp_run = {'measurement': dict(current_settings['measurement']), 'method': None}
         self.measurement_worker.data_point.connect(self.update_data)
         self.measurement_worker.sample_derived.connect(self._on_sample_derived)
         self.measurement_worker.status_update.connect(self.log_status_from_worker)
@@ -2586,6 +2604,8 @@ class ResistanceMeterApp(QMainWindow):
             # its numbers instead of a second, different calculation.
             derived = self._last_fpp_derived
             if derived is not None:
+                if self._fpp_run is not None and self._fpp_run['method'] is None:
+                    self._fpp_run['method'] = derived.get('method')
                 ts, _, _ = buffer.get_data_for_plot('voltage')
                 elapsed = (timestamp - ts[0]) if ts else 0.0
                 row = (
@@ -2829,12 +2849,16 @@ class ResistanceMeterApp(QMainWindow):
         from ..calculations import four_point_combined_uncertainty
         v_readings = [r[1] for r in valid_rows]
         i_readings = [r[2] for r in valid_rows]
+        # The range the run was pinned to with auto range off, as the
+        # file's footer statistics use it.
+        v_fixed_range = self._fpp_fixed_voltage_range()
 
         def fmt(stat_idx: int) -> str:
             values = [r[stat_idx] for r in valid_rows]
             u = four_point_combined_uncertainty(
                 values, v_readings, i_readings,
                 model=self._active_model_name, nplc=nplc_now,
+                v_fixed_range=v_fixed_range,
             )
             if u is None:
                 return "--"
@@ -2852,10 +2876,7 @@ class ResistanceMeterApp(QMainWindow):
         if hasattr(w, 'fpp_histogram') and (n <= 200 or n % 5 == 0):
             rs_values = [r[4] for r in valid_rows]
             if hasattr(w, '_fpp_spots') and len(w._fpp_spots) >= 2:
-                names = [s['name'] for s in w._fpp_spots]
-                means = [s['rs_mean'] for s in w._fpp_spots]
-                stds = [s['rs_std'] for s in w._fpp_spots]
-                w.fpp_histogram.update_bar_chart(names, means, stds)
+                w.fpp_histogram.update_bar_chart(*self._fpp_spot_bars())
             else:
                 w.fpp_histogram.update_histogram(rs_values, 'Rs (Ω/□)')
 
@@ -3048,61 +3069,105 @@ class ResistanceMeterApp(QMainWindow):
         # Idle aux preview follows the 4PP tab (which hosts the readout).
         self._maybe_start_aux_preview()
 
+    def _fpp_statistics(self, rows, run=None) -> Dict:
+        """The statistics of 4PP table rows, as a run's file footer has them.
+
+        ``session.spot_stats`` is what a four-point run computes at its end,
+        so a spot saved here and the file of the run that measured it agree:
+        rows in compliance are counted and left out (they record a bound, not
+        a measurement), and a quantity with no finite value is NaN, never 0.
+        """
+        from ..session.spot_stats import SpotSamples, spot_statistics
+        samples = SpotSamples()
+        for row in rows:
+            samples.add(row[1], row[2], {'rs': row[4], 'rho': row[5], 'sigma': row[6]},
+                        row[7] if len(row) >= 8 else 'OK')
+        measurement = (run or {}).get('measurement') or {}
+        try:
+            nplc = float(measurement.get('nplc'))
+        except (TypeError, ValueError):
+            nplc = float(self.tab_four_point.nplc.value())
+        return spot_statistics(samples, model=self._active_model_name, nplc=nplc,
+                               v_fixed_range=self._fpp_fixed_voltage_range(measurement))
+
+    def _fpp_fixed_voltage_range(self, measurement=None):
+        """The voltage range a 4PP run was pinned to; None in auto range.
+
+        From the run's settings when given, else from the tab's widgets
+        (which a run locks, so during one they are its settings).
+        """
+        if not measurement or 'fpp_voltage_range_auto' not in measurement:
+            w = self.tab_four_point
+            measurement = {
+                'fpp_voltage_range_auto': w.fpp_voltage_range_auto.isChecked(),
+                'fpp_voltage_compliance': w.fpp_voltage_compliance.value(),
+            }
+        return fixed_range_for(measurement, 'fpp_voltage_range_auto',
+                               'fpp_voltage_compliance')
+
+    def _fpp_spot_bars(self):
+        """Names, Rs means and SDs of the saved spots that have an Rs to draw."""
+        spots = [s for s in self.tab_four_point._fpp_spots if _is_finite(s.get('rs_mean'))]
+        return ([s['name'] for s in spots], [s['rs_mean'] for s in spots],
+                [s['rs_std'] if _is_finite(s.get('rs_std')) else 0.0 for s in spots])
+
+    @staticmethod
+    def _fpp_run_header(run) -> list:
+        """Summary rows for the settings a four-point run computed its rows with.
+
+        Only what the run's formula read: K, alpha and the model on the
+        legacy path, the specimen and temperature inputs on the F84 one.
+        """
+        measurement = (run or {}).get('measurement')
+        if not measurement:
+            return []
+        thickness_cm = float(measurement.get('fpp_thickness_um') or 0.0) * 1e-4
+        rows = [["Spacing s (cm)", measurement.get('fpp_spacing_cm')],
+                ["Thickness t (cm)", thickness_cm]]
+        if run.get('method') == 'f84':
+            temperature = measurement.get('fpp_temperature_c')
+            return [["Method", "ASTM F84"]] + rows + [
+                ["Diameter D (cm)", measurement.get('fpp_diameter_cm')],
+                ["Geometry", measurement.get('fpp_geometry')],
+                ["Temperature (°C)", temperature if _is_finite(temperature) else "N/A"],
+                ["Dopant", measurement.get('fpp_dopant_type')],
+            ]
+        return [["Model", measurement.get('fpp_model')]] + rows + [
+            ["K", measurement.get('fpp_k_factor')],
+            ["Alpha", measurement.get('fpp_alpha')],
+        ]
+
     def export_fpp_summary(self):
-        # Export summary for 4-point probe using current buffer and settings
-        buffer = self.data_buffers.get('four_point')
-        if not buffer:
-            QMessageBox.information(self, "Export Summary", "4-point probe buffer not available.")
-            return
-        t, vvals, _ = buffer.get_data_for_plot('voltage')
-        _, ivals, _ = buffer.get_data_for_plot('current')
-        if not t:
+        """Write the 4PP summary of what was measured, not of the tab as it is now.
+
+        Every number comes from the rows the run produced -- the worker's own
+        Rs, rho and sigma, F84 corrections included -- and the header from
+        the settings that run was started with: the tab can have been edited
+        since. The statistics are the run's own (``_fpp_statistics``).
+        """
+        fpp_widget = self.tab_four_point
+        spots = getattr(fpp_widget, '_fpp_spots', [])
+        unsaved = list(getattr(fpp_widget, '_fpp_rows', []))
+        if unsaved:
+            run = self._fpp_run
+            stats = self._fpp_statistics(unsaved, run)
+        elif spots:
+            # Nothing unsaved: the last run is the last saved spot.
+            run = spots[-1].get('run')
+            stats = self._fpp_statistics(spots[-1].get('rows', []), run)
+        else:
             QMessageBox.information(self, "Export Summary", "No data available for 4-point probe.")
             return
-        ratio = []
-        for v, i in zip(vvals, ivals):
-            if isinstance(i, (int, float)) and i != 0 and not np.isnan(i):
-                ratio.append(v / i)
-            else:
-                ratio.append(float('nan'))
-        s = self.tab_four_point.fpp_spacing_cm.value()
-        t_um = self.tab_four_point.fpp_thickness_um.value()
-        t_thick = t_um * 1e-4
-        alpha = self.tab_four_point.fpp_alpha.value()
-        model = self.tab_four_point.fpp_model.currentText()
-        k_factor = self.tab_four_point.fpp_k_factor.value() or 4.532
-        if model == 'thin_film' and alpha and alpha != 1.0:
-            Rs = np.array([k_factor * alpha * r if np.isfinite(r) else np.nan for r in ratio])
-        else:
-            Rs = np.array([k_factor * r if np.isfinite(r) else np.nan for r in ratio])
-        # The run's own formula, so a thickness of 0 (not entered) gives no
-        # resistivity here either rather than a mean of exactly 0.
-        from ..calculations import calculate_resistivity
-        rho = np.array([calculate_resistivity(r, s, t_thick, k_factor, alpha, model)
-                        for r in ratio])
-        # Calculate conductivity safely, avoiding divide by zero warnings
-        with np.errstate(divide='ignore', invalid='ignore'):
-            sigma = np.where(np.isfinite(rho) & (rho != 0), 1.0 / rho, np.nan)
-        
-        def safe_stat(a):
-            """Calculate mean and std with proper handling of empty arrays and warnings"""
-            valid_values = a[np.isfinite(a)]
-            if len(valid_values) == 0:
-                return float('nan'), float('nan')
-            elif len(valid_values) == 1:
-                return float(valid_values[0]), 0.0
-            else:
-                with np.errstate(invalid='ignore'):
-                    mean_val = float(np.nanmean(a))
-                    std_val = float(np.nanstd(a, ddof=1))
-                    return mean_val, std_val
-        
-        Rs_mean, Rs_std = safe_stat(Rs)
-        rho_mean, rho_std = safe_stat(rho)
-        sigma_mean, sigma_std = safe_stat(sigma)
         filename, _ = QFileDialog.getSaveFileName(self, "Save Summary", "fpp_summary.csv", "CSV Files (*.csv)")
         if not filename:
             return
+
+        def safe_format(val, spec=".6g"):
+            """Format value safely, handling NaN and infinite values"""
+            if not _is_finite(val):
+                return "N/A"
+            return f"{val:{spec}}"
+
         import csv
         try:
             with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
@@ -3110,52 +3175,47 @@ class ResistanceMeterApp(QMainWindow):
                 w.writerow(["4-Point Probe Summary"])
                 w.writerow(["Sample", self.sample_input.text()])
                 w.writerow(["User", self.current_user or "-"])
-                w.writerow(["Model", model])
-                w.writerow(["Spacing s (cm)", s])
-                w.writerow(["Thickness t (cm)", t_thick])
-                w.writerow(["Alpha", alpha])
+                w.writerows(self._fpp_run_header(run))
+                w.writerow(["Samples", stats['n']])
+                w.writerow(["Excluded (compliance)", stats['n_excluded']])
                 w.writerow([])
-                def safe_format(val):
-                    """Format value safely, handling NaN and infinite values"""
-                    if np.isnan(val) or np.isinf(val):
-                        return "N/A"
-                    return f"{val:.6g}"
-                
                 w.writerow(["Metric", "Mean", "StdDev"])
-                w.writerow(["Sheet Resistance (Ω/□)", safe_format(Rs_mean), safe_format(Rs_std)])
-                w.writerow(["Resistivity (Ω·cm)", safe_format(rho_mean), safe_format(rho_std)])
-                w.writerow(["Conductivity (S/cm)", safe_format(sigma_mean), safe_format(sigma_std)])
+                for label, name in (("Sheet Resistance (Ω/□)", 'rs'),
+                                    ("Resistivity (Ω·cm)", 'rho'),
+                                    ("Conductivity (S/cm)", 'sigma')):
+                    w.writerow([label, safe_format(stats[name]['mean']),
+                                safe_format(stats[name]['sd'])])
 
                 # Multi-spot section (if spots were saved)
-                fpp_widget = self.tab_four_point
-                spots = getattr(fpp_widget, '_fpp_spots', [])
                 if spots:
                     w.writerow([])
                     w.writerow(["Per-Spot Results"])
                     w.writerow(["Spot", "N", "Rs Mean (Ω/□)", "Rs Std", "Rs RSD%",
-                                "ρ Mean (Ω·cm)", "ρ Std", "σ Mean (S/cm)", "σ Std"])
+                                "ρ Mean (Ω·cm)", "ρ Std", "σ Mean (S/cm)", "σ Std",
+                                "Excluded (compliance)"])
                     for sp in spots:
-                        rs_rsd = (sp['rs_std'] / sp['rs_mean'] * 100) if sp['rs_mean'] != 0 else 0
                         w.writerow([sp['name'], sp['n'],
-                                    safe_format(sp['rs_mean']), safe_format(sp['rs_std']), f"{rs_rsd:.2f}",
+                                    safe_format(sp['rs_mean']), safe_format(sp['rs_std']),
+                                    safe_format(_rsd_pct(sp['rs_mean'], sp['rs_std']), ".2f"),
                                     safe_format(sp['rho_mean']), safe_format(sp['rho_std']),
-                                    safe_format(sp['sigma_mean']), safe_format(sp['sigma_std'])])
+                                    safe_format(sp['sigma_mean']), safe_format(sp['sigma_std']),
+                                    sp.get('n_excluded', 0)])
                     # Include unsaved current readings as "Current"
-                    if fpp_widget._fpp_rows:
-                        w.writerow(["(Current unsaved)", len(fpp_widget._fpp_rows),
-                                    safe_format(Rs_mean), safe_format(Rs_std), "", "", "", "", ""])
-                    # Inter-spot uniformity
-                    if len(spots) >= 2:
-                        spot_rs = [sp['rs_mean'] for sp in spots if sp['rs_mean'] != 0]
-                        if spot_rs:
-                            inter_mean = np.mean(spot_rs)
-                            inter_std = np.std(spot_rs, ddof=1)
-                            inter_rsd = (inter_std / inter_mean * 100) if inter_mean != 0 else 0
-                            w.writerow([])
-                            w.writerow(["Inter-spot Uniformity"])
-                            w.writerow(["Rs Mean-of-Means (Ω/□)", safe_format(inter_mean)])
-                            w.writerow(["Rs Std-of-Means (Ω/□)", safe_format(inter_std)])
-                            w.writerow(["Inter-spot RSD%", f"{inter_rsd:.2f}"])
+                    if unsaved:
+                        w.writerow(["(Current unsaved)", stats['n'],
+                                    safe_format(stats['rs']['mean']), safe_format(stats['rs']['sd']),
+                                    "", "", "", "", "", stats['n_excluded']])
+                    # Inter-spot uniformity, over the spots that have an Rs
+                    spot_rs = [sp['rs_mean'] for sp in spots if _is_finite(sp['rs_mean'])]
+                    if len(spot_rs) >= 2:
+                        inter_mean = float(np.mean(spot_rs))
+                        inter_std = float(np.std(spot_rs, ddof=1))
+                        w.writerow([])
+                        w.writerow(["Inter-spot Uniformity"])
+                        w.writerow(["Rs Mean-of-Means (Ω/□)", safe_format(inter_mean)])
+                        w.writerow(["Rs Std-of-Means (Ω/□)", safe_format(inter_std)])
+                        w.writerow(["Inter-spot RSD%",
+                                    safe_format(_rsd_pct(inter_mean, inter_std), ".2f")])
 
             self.log_status(f"Summary saved: {filename}")
         except Exception as e:
@@ -3449,40 +3509,37 @@ class ResistanceMeterApp(QMainWindow):
         if not hasattr(w, '_fpp_rows') or not w._fpp_rows:
             self.log_status("No readings to save as a spot.", color="orange")
             return
-        import math
         name = w.fpp_spot_name.text().strip() or f"Spot {w._fpp_spot_counter}"
         rows = list(w._fpp_rows)
-        n = len(rows)
-
-        def stat(idx):
-            arr = [r[idx] for r in rows if isinstance(r[idx], (int, float)) and not math.isnan(r[idx])]
-            if not arr:
-                return 0.0, 0.0
-            mean = float(np.mean(arr))
-            std = float(np.std(arr, ddof=1)) if len(arr) > 1 else 0.0
-            return mean, std
-
-        rs_mean, rs_std = stat(4)
-        rho_mean, rho_std = stat(5)
-        sigma_mean, sigma_std = stat(6)
+        # The run's own statistics: compliance rows left out, and NaN -- not
+        # 0 -- for a quantity the run could not give (no thickness, no rho).
+        stats = self._fpp_statistics(rows, self._fpp_run)
+        n = stats['n']
+        rs_mean, rs_std = stats['rs']['mean'], stats['rs']['sd']
 
         spot = {
-            'name': name, 'n': n, 'rows': rows,
+            'name': name, 'n': n, 'n_excluded': stats['n_excluded'], 'rows': rows,
             'rs_mean': rs_mean, 'rs_std': rs_std,
-            'rho_mean': rho_mean, 'rho_std': rho_std,
-            'sigma_mean': sigma_mean, 'sigma_std': sigma_std,
+            'rho_mean': stats['rho']['mean'], 'rho_std': stats['rho']['sd'],
+            'sigma_mean': stats['sigma']['mean'], 'sigma_std': stats['sigma']['sd'],
+            # What the rows were computed with, for Export Summary.
+            'run': self._fpp_run,
         }
         w._fpp_spots.append(spot)
+
+        def shown(val, spec):
+            return f"{val:{spec}}" if _is_finite(val) else "--"
 
         # Update spots summary table
         table = w.fpp_spots_table
         row_idx = table.rowCount()
         table.insertRow(row_idx)
-        rsd = (rs_std / rs_mean * 100) if rs_mean != 0 else 0
-        for col, val in enumerate([name, str(n), f"{rs_mean:.5g}", f"{rs_std:.3g}", f"{rsd:.2f}"]):
+        cells = [name, str(n), shown(rs_mean, ".5g"), shown(rs_std, ".3g"),
+                 shown(_rsd_pct(rs_mean, rs_std), ".2f")]
+        for col, val in enumerate(cells):
             table.setItem(row_idx, col, QTableWidgetItem(val))
 
-        self.log_status(f"Spot '{name}' saved: N={n}, Rs={rs_mean:.5g} ± {rs_std:.3g} Ω/□", color="darkGreen")
+        self.log_status(f"Spot '{name}' saved: N={n}, Rs={shown(rs_mean, '.5g')} ± {shown(rs_std, '.3g')} Ω/□", color="darkGreen")
 
         # Increment auto-name and clear current readings
         w._fpp_spot_counter += 1
@@ -3491,10 +3548,7 @@ class ResistanceMeterApp(QMainWindow):
 
         # Update histogram to bar chart if ≥2 spots
         if len(w._fpp_spots) >= 2:
-            names = [s['name'] for s in w._fpp_spots]
-            means = [s['rs_mean'] for s in w._fpp_spots]
-            stds = [s['rs_std'] for s in w._fpp_spots]
-            w.fpp_histogram.update_bar_chart(names, means, stds)
+            w.fpp_histogram.update_bar_chart(*self._fpp_spot_bars())
 
     def _clear_all_fpp_spots(self):
         """Clear all saved spots and current readings."""
