@@ -20,7 +20,7 @@ from ..constants import (
     AUX_READY_TIMEOUT_S, MODE_DISPLAY_NAMES,
     KEITHLEY_STAT_BIT_COMPLIANCE as _STAT_BIT_COMPLIANCE,
 )
-from ..data_export import AUX_LOG_MODES, splice_before_tail
+from ..data_export import AUX_LOG_MODES, effective_filter_type, splice_before_tail
 from ..formatting import format_power
 from ..instrument import Keithley2400, humanize_connection_error
 from ..sensors import aux_column_names, make_sensor, reading_to_columns
@@ -703,7 +703,12 @@ class ContinuousRun:
 
                 # Hardware averaging filter (2400 series uses :SENS:AVER, not per-function paths)
                 if measurement_settings.get('filter_enabled', False):
-                    ftype = str(measurement_settings.get('filter_type', 'repeat')).upper()[:3]
+                    ftype = effective_filter_type(self.mode, measurement_settings).upper()[:3]
+                    requested = str(measurement_settings.get('filter_type', 'repeat')).upper()[:3]
+                    if ftype != requested:
+                        self._events.warn('filter_type_overridden',
+                            "Warning: Delta mode reads two polarities per sample; "
+                            "using a repeat filter instead of the moving filter.")
                     fcount = int(measurement_settings.get('filter_count', 10))
                     self.keithley.write(f":SENS:AVER:TCON {ftype}")
                     self.keithley.write(f":SENS:AVER:COUN {fcount}")
@@ -1166,7 +1171,11 @@ class ContinuousRun:
                 end_metadata = {
                     'ended_at': end_time.isoformat(),
                     'total_samples': self.exporter.row_count,
-                    'duration_s': time.time() - self.start_time
+                    'duration_s': time.time() - self.start_time,
+                    # Why the run ended. The marker above this block reads
+                    # "run completed" for every run that got a footer, a
+                    # read error or a compliance stop included.
+                    'end_reason': self._control.finish_reason or 'completed',
                 }
                 # Marks made after the last row, or whose rows never reached
                 # the file: the footer is the only place left for them.
