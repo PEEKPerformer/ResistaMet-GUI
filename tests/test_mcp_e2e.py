@@ -349,6 +349,15 @@ def test_a_van_der_pauw_run_followed_by_a_new_server_for_every_call(bench):
         'user': 'alice', 'mode': 'vdp', 'sample_name': 'vdp-stateless',
         'overrides': {'vdp_thickness_cm': 0.01}})
     assert not failed, started
+    # The person answers a moment after the wait has begun, so the moment has
+    # to be longer than a call takes to begin: each one builds a server and a
+    # client first. At a fixed half second the answer sometimes arrived first
+    # on a slow runner, and the wait, with nothing left to wait for, came
+    # back at once.
+    began = time.monotonic()
+    failed, _ = call_once(bench, 'get_status')
+    assert not failed
+    answer_after = max(1.0, 4.0 * (time.monotonic() - began))
     answered = []
     for geometry in range(4):
         failed, waited = call_once(bench, 'wait_for', {'until': 'prompt', 'timeout_s': 60})
@@ -368,7 +377,7 @@ def test_a_van_der_pauw_run_followed_by_a_new_server_for_every_call(bench):
             assert not failed and held['fired'] == 'timeout', held
             assert held['prompt_at_start']['still_pending'] is True
 
-        person = threading.Timer(0.5, bench.ui, args=('POST', '/session/prompt'),
+        person = threading.Timer(answer_after, bench.ui, args=('POST', '/session/prompt'),
                                  kwargs={'json': {'prompt_id': prompt['prompt_id'],
                                                   'choice': 'proceed'}})
         person.start()
