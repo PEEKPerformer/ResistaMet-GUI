@@ -476,17 +476,21 @@ def f2_finite_diameter(
     diameter_cm: Optional[float] = None,
     geometry: str = 'circle',
 ) -> float:
-    """Geometry correction factor for a finite-size specimen.
+    """Geometry correction factor for a finite-size specimen, probe centred.
 
     For `geometry='circle'` this is F2 from ASTM F84-02 Table 3, a function of
-    S/D (probe spacing / wafer diameter). Returns 4.5324 = pi/ln(2) at the
-    infinite-diameter limit and decreases for finite slices (~4.171 at S/D=0.10).
+    S/D (probe spacing / wafer diameter), up to the table's last row at
+    S/D = 0.10 (4.171). For a smaller disc the table has no value and the
+    closed-form image solution it was computed from is used
+    (`calculations_geometry.circle_factor`).
 
     For `geometry in ('square', 'rectangle_2', 'rectangle_3', 'rectangle_4')`
-    this returns the Smits 1958 correction factor for a square or rectangular
-    sample of aspect ratio L/W ∈ {2, 3, 4}, indexed by D/s where D = sample
-    width (dimension perpendicular to the probe array), from Smits 1958
-    Table I.
+    this is the image series for a square or a rectangle of aspect ratio
+    L/W in {2, 3, 4} (`calculations_geometry.rectangle_factor`), with D the
+    sample width, perpendicular to the probe array. Smits 1958 Table I prints
+    the same factor at a few D/s; its rows agree to 6 parts in 10 000.
+
+    A sample the probe does not fit on (three spacings long) has no factor.
 
     Args:
         spacing_cm: Probe-tip spacing S, cm.
@@ -498,8 +502,9 @@ def f2_finite_diameter(
             'rectangle_4'. Default 'circle' preserves prior behavior.
 
     Returns:
-        Correction factor (dimensionless). NaN if `geometry` is unrecognized
-        or if `spacing_cm` is non-finite/non-positive.
+        Correction factor (dimensionless). NaN if `geometry` is unrecognized,
+        if `spacing_cm` is non-finite/non-positive, or if the probe does not
+        fit on the sample.
     """
     if diameter_cm is None or diameter_cm <= 0 or not np.isfinite(diameter_cm):
         return _F84_TABLE3_F2[0][1]
@@ -508,7 +513,14 @@ def f2_finite_diameter(
 
     geom = geometry.lower().strip()
     if geom == 'circle':
-        return _linear_interp(spacing_cm / diameter_cm, _F84_TABLE3_F2, 1)
+        s_over_d = spacing_cm / diameter_cm
+        if s_over_d <= _F84_TABLE3_F2[-1][0]:
+            return _linear_interp(s_over_d, _F84_TABLE3_F2, 1)
+        # Past the end of Table 3 (S/D > 0.10) the table has no value. It was
+        # clamped at its last entry, 4.171, which is 25 % high for a 5 mm disc
+        # on a 1.016 mm probe. The closed form the table was computed from
+        # covers every disc the probe fits on.
+        return _centred_factor('circle', diameter_cm, spacing_cm)
 
     if geom not in _GEOMETRIES:
         return float('nan')
@@ -517,18 +529,48 @@ def f2_finite_diameter(
     col_idx = {'square': 1, 'rectangle_2': 2,
                'rectangle_3': 3, 'rectangle_4': 4}[geom]
 
-    # Square uses only the main Smits table (D/s >= 3). Rectangles can dip
-    # below D/s = 3 via the low-D/s extension; pick which table applies.
-    if d_over_s < 3.0 and geom != 'square':
-        low_col = {'rectangle_2': 1, 'rectangle_3': 2, 'rectangle_4': 3}[geom]
-        val = _linear_interp(d_over_s, _SMITS_RECT_LOW_DS, low_col)
-        # rectangle_2 is undefined below D/s = 1.5; NaN propagates.
-        if np.isfinite(val):
-            return val
-        # Below the L/W=2 floor: clamp to the lowest defined value.
-        return _SMITS_RECT_LOW_DS[2][low_col]  # row at D/s = 1.5
+    # The image sum the Smits table was computed from, at every D/s. Straight
+    # lines between rows as sparse as the table's were up to 1.6 % low (a
+    # square at D/s = 3.5), and everything above D/s = 40 got the D/s = 40
+    # value. The printed rows agree with it to 6 parts in 10 000.
+    if d_over_s >= 1e6:
+        # The unbounded sheet, pi / ln 2: the edges take less than one part
+        # in 1e10 off it here, and the series cannot resolve tips this close
+        # together against the sample.
+        return math.pi / math.log(2.0)
+    factor = _centred_factor(geom, diameter_cm, spacing_cm)
+    if np.isfinite(factor):
+        return factor
+    # The probe does not fit. Smits still prints a value where the end tips
+    # sit exactly on the edge (L/W = 3 at D/s = 1); that row is returned as
+    # printed, and anything else has no factor.
+    for table, col in ((_SMITS_GEOMETRY_CF, col_idx),
+                       (_SMITS_RECT_LOW_DS, col_idx - 1)):
+        if col < 1:
+            continue  # the low-D/s rows have no square column
+        for row in table:
+            if math.isclose(d_over_s, row[0], rel_tol=1e-9) and np.isfinite(row[col]):
+                return row[col]
+    return float('nan')
 
-    return _linear_interp(d_over_s, _SMITS_GEOMETRY_CF, col_idx)
+
+def _centred_factor(geom: str, dimension_cm: float, spacing_cm: float) -> float:
+    """The geometry factor for a probe at the centre, from the closed forms.
+
+    NaN when the probe does not fit on the sample: there is then no
+    four-point measurement to correct.
+    """
+    from .calculations_geometry import circle_factor, rectangle_factor
+    try:
+        if geom == 'circle':
+            return circle_factor(dimension_cm, spacing_cm)
+        aspect = {'square': 1.0, 'rectangle_2': 2.0,
+                  'rectangle_3': 3.0, 'rectangle_4': 4.0}[geom]
+        # Smits's d is the width, across the probe line; the probe runs along
+        # the length a = aspect * d.
+        return rectangle_factor(dimension_cm, aspect * dimension_cm, spacing_cm)
+    except ValueError:
+        return float('nan')
 
 
 def f_thickness_correction(thickness_cm: float, spacing_cm: float) -> float:
