@@ -36,7 +36,7 @@ from .spot_map import write_map_summary
 from .spot_record import spot_record_from_settings
 from .spot_stats import SpotSamples, spot_statistics
 from .samples import (
-    build_row, parse_four_point, parse_resistance, parse_source_i, parse_source_v,
+    build_row, fixed_range_for, parse_four_point, parse_resistance, parse_source_i, parse_source_v,
 )
 
 logger = logging.getLogger(__name__)
@@ -1256,7 +1256,11 @@ class ContinuousRun:
         if self._spot_samples is None:
             return None
         try:
-            stats = spot_statistics(self._spot_samples, model=self._model_name, nplc=nplc)
+            stats = spot_statistics(
+                self._spot_samples, model=self._model_name, nplc=nplc,
+                v_fixed_range=fixed_range_for(
+                    self.settings.get('measurement', {}),
+                    'fpp_voltage_range_auto', 'fpp_voltage_compliance'))
             # The same expression run_ended uses. It lets a map tell a spot
             # that was stopped early from one that ran its course; what a map
             # should do about it is not decided here.
