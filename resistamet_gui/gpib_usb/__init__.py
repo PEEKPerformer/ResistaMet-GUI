@@ -4,13 +4,14 @@ Written from ``docs/design/ni_usb_gpib_protocol.md`` only; see
 ``docs/design/ni_usb_gpib_clean_room.md``.
 
 NI stopped shipping a GPIB driver for macOS; the adapter is simple enough to
-drive over libusb. ``install()`` registers a pyvisa-py session so
-``GPIB0::24::INSTR`` opens through this package when an NI adapter is
-plugged in, and through whatever pyvisa-py had before otherwise. Nothing
-here imports Qt.
+drive over libusb. ``install()`` registers pyvisa-py sessions so
+``GPIB0::24::INSTR`` and the board itself, ``GPIB0::INTFC``, open through
+this package when an NI adapter is plugged in, and through whatever
+pyvisa-py had before otherwise. Nothing here imports Qt.
 
 Layers, bottom up: ``protocol`` (bytes, pure), ``transport`` (pyusb),
-``controller`` (sequencing over one adapter), ``visa_session`` (pyvisa-py).
+``controller`` (sequencing over one adapter), ``visa_session`` and
+``visa_intfc`` (pyvisa-py).
 """
 import logging
 

@@ -1,0 +1,10 @@
+831474.512 RM open, scenario nolistener
+831474.512 open GPIB0::5::INSTR (nothing there)
+831479.699 opened; write *IDN?
+write -> VI_ERROR_NLISTENERS (-1073807265): No listeners condition is detected (both NRFD and NDAC are deasserted).
+831480.201 read
+read -> VI_ERROR_TMO (-1073807339): Timeout expired before operation completed.
+831485.402 open GPIB0::24::1::INSTR (secondary address on the 2420)
+831485.471 opened; query *IDN?
+'KEITHLEY INSTRUMENTS INC.,MODEL 2420,1230523,C30   Mar 17 2006 09:29:29/A02  /H/L\n'
+831486.488 done

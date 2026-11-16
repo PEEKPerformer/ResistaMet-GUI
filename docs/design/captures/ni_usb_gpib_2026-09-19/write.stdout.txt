@@ -1,0 +1,6 @@
+831459.005 RM open, scenario write
+831459.598 write *CLS (no read)
+831460.101 send_end False, write *CLS
+831460.604 send_end True, write_termination None, write_raw(b"*CLS")
+831461.108 write_termination "\r\n"
+831461.615 done

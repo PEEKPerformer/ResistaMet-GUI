@@ -1,0 +1,22 @@
+831491.684 RM open, scenario timeouts
+831499.236 timeout 100 -> attr 100; query *IDN?
+82
+831499.652 timeout 300 -> attr 300; query *IDN?
+82
+831500.066 timeout 1000 -> attr 1000; query *IDN?
+82
+831500.481 timeout 3000 -> attr 3000; query *IDN?
+82
+831500.895 timeout 10000 -> attr 10000; query *IDN?
+82
+831501.309 timeout 30000 -> attr 30000; query *IDN?
+82
+831501.724 timeout 100000 -> attr 100000; query *IDN?
+82
+831502.139 timeout 300000 -> attr 300000; query *IDN?
+82
+831502.554 timeout 1000000 -> attr 1000000; query *IDN?
+82
+831502.970 timeout inf -> attr inf; query *IDN?
+82
+831503.486 done

@@ -1,0 +1,38 @@
+831778.278 RM open, scenario board_io
+831778.861 send_ifc (a fresh INTFC session is not CIC until then)
+831779.362 send_command UNL LAD24 MTA0
+831779.664 board write *IDN?\n
+831779.966 send_command UNL TAD24 MLA0
+831780.267 board read
+python.exe : Traceback (most recent call last):
+At <harness>\capture.ps1:7 char:1
++ & python "$D\scenario.py" $Scenario 2>&1 | Tee-Object -FilePath "$D\$ ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "<harness>\scenario.py", line 295, in <module>
+    SCENARIOS[name](rm)
+  File "<harness>\scenario.py", line 255, in sc_board_io
+    stamp('board read'); print(repr(b.read_raw(200))); time.sleep(0.3)
+                                    ^^^^^^^^^^^^^^^
+  File "<python>\Lib\site-packages\pyvisa\resources\messagebased.py", line 
+430, in read_raw
+    return bytes(self._read_raw(size))
+                 ^^^^^^^^^^^^^^^^^^^^
+  File "<python>\Lib\site-packages\pyvisa\resources\messagebased.py", line 
+475, in _read_raw
+    chunk, status = self.visalib.read(self.session, size)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<python>\Lib\site-packages\pyvisa\ctwrapper\functions.py", line 
+2339, in read
+    ret = library.viRead(session, buffer, count, byref(return_count))
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<python>\Lib\site-packages\pyvisa\ctwrapper\highlevel.py", line 
+227, in _return_handler
+    return self.handle_return_value(session, ret_value)  # type: ignore
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<python>\Lib\site-packages\pyvisa\highlevel.py", line 252, in 
+handle_return_value
+    raise errors.VisaIOError(rv)
+pyvisa.errors.VisaIOError: VI_ERROR_TMO (-1073807339): Timeout expired before operation completed.

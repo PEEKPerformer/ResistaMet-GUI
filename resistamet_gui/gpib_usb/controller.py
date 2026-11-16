@@ -119,6 +119,11 @@ class Controller:
         return self._own_address
 
     @property
+    def system_controller(self) -> bool:
+        """Whether attach set the adapter up as system controller (§2.6 row 16)."""
+        return self._system_controller
+
+    @property
     def lock(self) -> threading.RLock:
         """Hold this to make a sequence of operations atomic (see ``device_ops``)."""
         return self._lock
@@ -264,14 +269,32 @@ class Controller:
             code, limit = p.effective_timeout(timeout_s)
             wait = p.host_wait_s(limit, self._infinite_wait_s)
             self._address(_LISTEN, pad, sad, code, wait, readdress)
-            written = 0
-            for start in range(0, len(data), p.MAX_TRANSFER_BYTES):
-                chunk = data[start:start + p.MAX_TRANSFER_BYTES]
-                last = start + len(chunk) == len(data)
-                status, _ = self._exchange(p.write_message(chunk, code, send_eoi and last),
-                                           p.STATUS_REPLY_LENGTH, wait, 'write')
-                written += status.transferred(len(chunk))
-            return written
+            return self._write_instruction(data, code, wait, send_eoi)
+
+    def write_raw(self, data: bytes, *, send_eoi: bool = True,
+                  timeout_s: Optional[float]) -> int:
+        """0x0d with the bus as it stands: no addressing (§5.1).
+
+        For callers that addressed the bus themselves with command bytes. The
+        adapter reports error 3 or 8 when nothing is addressed to listen.
+        """
+        with self._guard():
+            self._ensure_attached()
+            if not data:
+                return 0
+            code, limit = p.effective_timeout(timeout_s)
+            wait = p.host_wait_s(limit, self._infinite_wait_s)
+            return self._write_instruction(data, code, wait, send_eoi)
+
+    def _write_instruction(self, data: bytes, code: int, wait_s: float, send_eoi: bool) -> int:
+        written = 0
+        for start in range(0, len(data), p.MAX_TRANSFER_BYTES):
+            chunk = data[start:start + p.MAX_TRANSFER_BYTES]
+            last = start + len(chunk) == len(data)
+            status, _ = self._exchange(p.write_message(chunk, code, send_eoi and last),
+                                       p.STATUS_REPLY_LENGTH, wait_s, 'write')
+            written += status.transferred(len(chunk))
+        return written
 
     def read(self, pad: int, *, sad: Optional[int] = None, max_bytes: int,
              timeout_s: Optional[float], eos: Optional[int] = None,
