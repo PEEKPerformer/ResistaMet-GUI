@@ -44,3 +44,39 @@ def test_run_control_works_without_qt():
                              capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == 'ok'
+
+
+CHECK_PROMPT = """
+import threading
+from resistamet_gui.session.control import RunControl
+
+control = RunControl()
+control.running = True
+prompt = control.raise_prompt('vdp_geometry', ['proceed', 'abort'], detail={'index': 0})
+assert control.pending_prompt.prompt_id == prompt.prompt_id
+assert control.answer_prompt('stale-id', 'proceed') is False
+assert control.answer_prompt(prompt.prompt_id, 'proceed') is True
+assert control.answer_prompt(prompt.prompt_id, 'abort') is False, 'first answer wins'
+assert control.wait_for_prompt() == 'proceed'
+assert control.pending_prompt is None
+
+# a stop releases the wait with no answer
+second = control.raise_prompt('vdp_geometry', ['proceed', 'abort'])
+released = []
+def waiter():
+    released.append(control.wait_for_prompt())
+t = threading.Thread(target=waiter)
+t.start()
+control.running = False
+control.proceed_event.set()
+t.join(timeout=2)
+assert released == [None], released
+print('ok')
+"""
+
+
+def test_prompt_handshake_without_qt():
+    result = subprocess.run([sys.executable, '-c', CHECK_PROMPT],
+                             capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'ok'

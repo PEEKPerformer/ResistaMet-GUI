@@ -10,7 +10,24 @@ callbacks. The lock guards the fields only — never I/O, never an emit — so a
 slow instrument read can never block whoever is trying to stop the run.
 """
 import threading
-from typing import List
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+
+@dataclass(frozen=True)
+class PendingPrompt:
+    """A decision the run is blocked on.
+
+    ``requires_human`` marks the ones a person must actually make — rewiring
+    leads, acknowledging a hazardous voltage — so a non-UI client can be
+    refused rather than allowed to wave them through.
+    """
+
+    prompt_id: str
+    kind: str
+    options: List[str]
+    requires_human: bool = True
+    detail: Dict[str, Any] = field(default_factory=dict)
 
 
 class RunControl:
@@ -24,6 +41,10 @@ class RunControl:
         #: Set when the operator has answered a prompt, and by stop, so a
         #: waiting run always wakes.
         self.proceed_event = threading.Event()
+        self._finish_reason: Optional[str] = None
+        self._prompt: Optional[PendingPrompt] = None
+        self._answer: Optional[str] = None
+        self._prompt_count = 0
 
     @property
     def running(self) -> bool:
@@ -44,6 +65,72 @@ class RunControl:
     def paused(self, value: bool) -> None:
         with self._lock:
             self._paused = value
+
+    @property
+    def finish_reason(self) -> Optional[str]:
+        """Why the run ended, or None while it is still going."""
+        with self._lock:
+            return self._finish_reason
+
+    def finish(self, reason: str) -> None:
+        """End the run, recording why. First writer wins.
+
+        Several things can end a run within milliseconds of each other — a
+        compliance stop the operator also clicked stop on, say. Keeping the
+        first reason means the report says what actually happened rather than
+        whichever code path ran last.
+        """
+        with self._lock:
+            if self._finish_reason is None:
+                self._finish_reason = reason
+            self._running = False
+        self.proceed_event.set()
+
+    # --- operator prompts -------------------------------------------------
+
+    @property
+    def pending_prompt(self) -> Optional[PendingPrompt]:
+        with self._lock:
+            return self._prompt
+
+    def raise_prompt(self, kind: str, options: List[str],
+                      requires_human: bool = True, detail: Optional[Dict[str, Any]] = None
+                      ) -> PendingPrompt:
+        """Block the run on a decision. Returns the prompt to report."""
+        with self._lock:
+            self._prompt_count += 1
+            prompt = PendingPrompt(
+                prompt_id=f"{kind}-{self._prompt_count}",
+                kind=kind, options=list(options),
+                requires_human=requires_human, detail=dict(detail or {}),
+            )
+            self._prompt = prompt
+            self._answer = None
+        self.proceed_event.clear()
+        return prompt
+
+    def answer_prompt(self, prompt_id: str, choice: str) -> bool:
+        """Answer the pending prompt. First valid answer wins; stale ids lose."""
+        with self._lock:
+            prompt = self._prompt
+            if prompt is None or prompt.prompt_id != prompt_id or self._answer is not None:
+                return False
+            self._answer = choice
+        self.proceed_event.set()
+        return True
+
+    def wait_for_prompt(self) -> Optional[str]:
+        """Block until the prompt is answered or the run is stopped.
+
+        Returns the choice, or None when stop woke the wait instead — the
+        caller decides what abandoning the run means for it.
+        """
+        self.proceed_event.wait()
+        with self._lock:
+            answer = self._answer
+            self._prompt = None
+            self._answer = None
+        return answer
 
     @property
     def event_marker(self) -> str:

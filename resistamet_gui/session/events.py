@@ -18,7 +18,7 @@ Non-finite floats (NaN sigma, an unmeasured temperature) serialize as ``null``;
 in-process sinks receive the real float. JSON has no NaN, and a client that
 must special-case a non-standard token is a client that will get it wrong.
 """
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -58,6 +58,202 @@ class ErrorPayload(EventModel):
     fatal: bool = True
 
 
+class InstrumentConnectedPayload(EventModel):
+    """The SMU answered *IDN? and its limits are known."""
+
+    address: str
+    idn: str
+    model: str
+    max_source_v: Optional[float] = None
+    max_source_i: Optional[float] = None
+    max_power_w: Optional[float] = None
+
+
+class LineFrequencyPayload(EventModel):
+    """Mains frequency, queried or assumed. Continuous modes only."""
+
+    hz: float
+    assumed: bool = False
+
+
+class DerivedPayload(EventModel):
+    """The 4PP quantities computed for this sample, as written to the row.
+
+    ``method`` says which correction path produced them: the ASTM F84
+    decomposition or the legacy K*alpha form.
+    """
+
+    ratio: float
+    rs: float
+    rho: float
+    sigma: float
+    v_unc: float
+    i_unc: float
+    method: Literal['f84', 'legacy']
+
+
+class DeltaPayload(EventModel):
+    """Per-polarity values from a current-reversal (delta) reading."""
+
+    v_plus: float
+    v_minus: float
+    r_f: float
+    r_r: float
+
+
+class SamplePayload(EventModel):
+    """One acquired point.
+
+    ``values`` is the mode's data dict exactly as the parse produced it, with
+    no coercion — the aux-fault column is a string, and a client that wants
+    numbers must say which key it means.
+    """
+
+    t_unix: float
+    elapsed_s: float
+    compliance: Literal['OK', 'V_COMP', 'I_COMP'] = 'OK'
+    event_marker: str = ''
+    values: Dict[str, Any] = Field(default_factory=dict)
+    #: 4PP only; absent for modes that derive nothing.
+    derived: Optional[DerivedPayload] = None
+    #: 4PP delta mode only.
+    delta: Optional[DeltaPayload] = None
+
+
+class CompliancePayload(EventModel):
+    """The source is in compliance on this sample."""
+
+    kind: Literal['Voltage', 'Current']
+    stop_on_compliance: bool = False
+
+
+class OverpowerPayload(EventModel):
+    """Measured V*I crossed the 4PP probe-safety hard stop."""
+
+    measured_w: float
+    stop_w: float
+
+
+class SweepSegmentPayload(EventModel):
+    """One completed sweep direction, returned by the instrument in bulk."""
+
+    direction: Literal['forward', 'reverse'] = 'forward'
+    voltages: List[float] = Field(default_factory=list)
+    currents: List[float] = Field(default_factory=list)
+    compliance: List[str] = Field(default_factory=list)
+
+
+class AcquisitionFinishedPayload(EventModel):
+    """The acquisition loop ended; cleanup and finalize still follow."""
+
+    mode: str
+
+
+class VdpGeometryCompletePayload(EventModel):
+    """One F76 geometry measured: the +I and -I voltages at this wiring."""
+
+    index: int
+    name: str
+    group: str
+    label_pos: str
+    v_pos: float
+    label_neg: str
+    v_neg: float
+    current_a: float
+
+
+class VdpResultPayload(EventModel):
+    """The finished van der Pauw result, ASTM F76.
+
+    Field for field what the GUI result panel has always received, including
+    the f(Q) homogeneity check and the combined uncertainties, so the panel
+    reads the same numbers the CSV metadata carries.
+    """
+
+    rho_a: float
+    rho_b: float
+    rho_avg: float
+    sheet_resistance: float
+    q_a: float
+    q_b: float
+    f_a: float
+    f_b: float
+    homogeneous: bool
+    asymmetry_pct: float
+    voltages: Dict[str, float] = Field(default_factory=dict)
+    current_a: float
+    thickness_cm: float
+    sheet_resistance_uncertainty: Optional[float] = None
+    rho_avg_uncertainty: Optional[float] = None
+
+
+class PromptPayload(EventModel):
+    """The run is blocked until someone answers."""
+
+    prompt_id: str
+    kind: Literal['vdp_geometry', 'safety_voltage_ack', 'cable_null_shorted']
+    options: List[str] = Field(default_factory=list)
+    requires_human: bool = True
+    detail: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PromptResolvedPayload(EventModel):
+    """How a prompt ended: answered, or released by a stop."""
+
+    prompt_id: str
+    choice: Optional[str] = None
+    answered_by: Optional[str] = None
+
+
+class RunStartedPayload(EventModel):
+    """A run is beginning; the settings are exactly what it will use."""
+
+    mode: str
+    sample_name: str
+    username: str
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    started_at: float
+
+
+class AuxConnectedPayload(EventModel):
+    """The auxiliary sensor is open and has declared its channels."""
+
+    driver: str
+    address: str
+    channels: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class FileOpenedPayload(EventModel):
+    """The run's output file exists and its column schema is fixed."""
+
+    path: str
+    columns: List[str] = Field(default_factory=list)
+    units: List[str] = Field(default_factory=list)
+
+
+class FileFinalizedPayload(EventModel):
+    """The run's file is closed, with its end metadata written."""
+
+    path: str
+    end_metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RunStatePayload(EventModel):
+    """Paused, resumed or stopping, as observed by the acquisition thread."""
+
+    reason: Optional[str] = None
+
+
+class RunEndedPayload(EventModel):
+    """Always the last event of a run, whatever ended it."""
+
+    reason: str
+    ok: bool = True
+    samples: int = 0
+    duration_s: float = 0.0
+    path: Optional[str] = None
+
+
 class Event(EventModel):
     """One thing that happened during a run."""
 
@@ -73,4 +269,23 @@ class Event(EventModel):
 PAYLOAD_MODELS = {
     'log': LogPayload,
     'error': ErrorPayload,
+    'instrument_connected': InstrumentConnectedPayload,
+    'line_frequency': LineFrequencyPayload,
+    'sample': SamplePayload,
+    'compliance': CompliancePayload,
+    'overpower_trip': OverpowerPayload,
+    'sweep_segment': SweepSegmentPayload,
+    'acquisition_finished': AcquisitionFinishedPayload,
+    'vdp_geometry_complete': VdpGeometryCompletePayload,
+    'vdp_result': VdpResultPayload,
+    'prompt': PromptPayload,
+    'prompt_resolved': PromptResolvedPayload,
+    'run_started': RunStartedPayload,
+    'aux_connected': AuxConnectedPayload,
+    'file_opened': FileOpenedPayload,
+    'file_finalized': FileFinalizedPayload,
+    'paused': RunStatePayload,
+    'resumed': RunStatePayload,
+    'stopping': RunStatePayload,
+    'run_ended': RunEndedPayload,
 }

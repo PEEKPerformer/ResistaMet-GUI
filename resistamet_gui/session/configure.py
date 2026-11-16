@@ -40,7 +40,7 @@ class SweepState:
     up_down: bool
 
 
-def configure_resistance(keithley, out, measurement_settings, nplc):
+def configure_resistance(keithley, events, measurement_settings, nplc):
     """Source I, measure R. 2-wire or 4-wire, optional offset compensation.
 
     Returns (state, metadata, csv_headers, source_value_str).
@@ -92,7 +92,7 @@ def configure_resistance(keithley, out, measurement_settings, nplc):
 
     return state, metadata, csv_headers, source_value_str
 
-def configure_source_v(keithley, out, measurement_settings, nplc):
+def configure_source_v(keithley, events, measurement_settings, nplc):
     """Source V, measure I.
 
     Returns (state, metadata, csv_headers, source_value_str); this mode
@@ -129,7 +129,7 @@ def configure_source_v(keithley, out, measurement_settings, nplc):
 
     return state, metadata, csv_headers, source_value_str
 
-def configure_source_i(keithley, out, measurement_settings, nplc):
+def configure_source_i(keithley, events, measurement_settings, nplc):
     """Source I, measure V.
 
     Returns (state, metadata, csv_headers, source_value_str); this mode
@@ -163,7 +163,7 @@ def configure_source_i(keithley, out, measurement_settings, nplc):
 
     return state, metadata, csv_headers, source_value_str
 
-def configure_four_point(keithley, out, measurement_settings, nplc):
+def configure_four_point(keithley, events, measurement_settings, nplc):
     """Four-point probe. Returns None when the pre-flight refuses the power envelope.
 
     Returns (state, metadata, csv_headers, source_value_str).
@@ -208,7 +208,7 @@ def configure_four_point(keithley, out, measurement_settings, nplc):
     # voltage, i.e. probe sees I_source * V_compliance.
     worst_case_power = abs(source_current) * abs(voltage_compliance)
     if worst_case_power > state.power_stop_w:
-        out.error_occurred(
+        events.error('power_envelope', 'run',
             f"Configured 4PP power ({worst_case_power*1e3:.1f} mW = "
             f"{abs(source_current)*1e3:.3g} mA × {abs(voltage_compliance):.3g} V) "
             f"exceeds the probe-safety hard stop "
@@ -218,7 +218,7 @@ def configure_four_point(keithley, out, measurement_settings, nplc):
         )
         return
     if worst_case_power > state.power_warn_w:
-        out.status_update(
+        events.warn('power_envelope',
             f"⚠️ 4PP power envelope: up to {worst_case_power*1e3:.1f} mW "
             f"(I × V_comp). Above warning threshold "
             f"{state.power_warn_w*1e3:.0f} mW — proceed with care."
@@ -242,7 +242,7 @@ def configure_four_point(keithley, out, measurement_settings, nplc):
 
     return state, metadata, csv_headers, source_value_str
 
-def configure_sweep(keithley, out, measurement_settings, nplc):
+def configure_sweep(keithley, events, measurement_settings, nplc):
     """Bulk linear sweep, set up on the instrument's own sweep engine.
 
     Returns (state, metadata, csv_headers, source_value_str).

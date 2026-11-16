@@ -38,11 +38,11 @@ class VdpRun:
 
     MODE = 'vdp'
 
-    def __init__(self, sample_name, username, settings, control, out):
+    def __init__(self, sample_name, username, settings, control, events):
         self.sample_name = sample_name
         self.username = username
         self.settings = settings
-        self._out = out
+        self._events = events
         self._control = control
         self._voltages: Dict[str, float] = {}
         self.keithley = None
@@ -63,25 +63,27 @@ class VdpRun:
 
     def proceed(self) -> None:
         """UI slot: user has reconnected leads; take this geometry's reading."""
-        self._control.proceed_event.set()
+        prompt = self._control.pending_prompt
+        if prompt is not None:
+            self._control.answer_prompt(prompt.prompt_id, 'proceed')
 
     def stop_measurement(self) -> None:
-        self._out.status_update("Stopping vdP measurement...")
-        self.running = False
-        # Unblock any wait_for_user pause.
-        self._control.proceed_event.set()
+        self._events.emit('stopping', {'reason': 'user_stop'})
+        self._events.log('stopping', "Stopping vdP measurement...")
+        # finish() also wakes a geometry wait.
+        self._control.finish('user_stop')
 
     def _emit_compress_status(self, orig_path: Path, gz_path: Path,
                               orig_mb: float, gz_mb: float) -> None:
         """Status callback fired by CsvExporter after gzip finalize."""
-        self._out.status_update(
+        self._events.log('compress', 
             f"Compressed {orig_path.name} -> {gz_path.name} "
             f"({orig_mb:.1f} MB -> {gz_mb:.1f} MB)"
         )
 
     def _emit_large_file_status(self, path: Path, size_mb: float) -> None:
         """Status callback fired by CsvExporter when an uncompressed run is large."""
-        self._out.status_update(
+        self._events.warn('large_file', 
             f"Run wrote {size_mb:.1f} MB to {path.name}. "
             f"Compression is off — enable in Settings -> Output to gzip future runs."
         )
@@ -93,13 +95,24 @@ class VdpRun:
             self._run_geometries()
             self._compute_and_emit_result()
         except _VdpAborted:
-            self._out.status_update("vdP measurement aborted by user")
+            self._control.finish('user_stop')
+            self._events.log('aborted', "vdP measurement aborted by user")
         except Exception as e:
+            self._control.finish('worker_error')
             logger.exception("vdP measurement failed")
-            self._out.error_occurred(f"vdP error: {e}")
+            self._events.error('worker_error', 'run', f"vdP error: {e}")
         finally:
             self.running = False
+            samples = self.exporter.row_count if self.exporter else 0
             self._cleanup()
+            reason = self._control.finish_reason or 'completed'
+            self._events.emit('run_ended', {
+                'reason': reason,
+                'ok': reason in ('completed', 'user_stop'),
+                'samples': samples,
+                'duration_s': time.time() - self._start_time if self._start_time else 0.0,
+                'path': self.filename or None,
+            })
 
     def _connect_and_configure(self) -> None:
         # Lazy imports to avoid a Qt-load-time cost when vdP isn't used.
@@ -107,7 +120,7 @@ class VdpRun:
 
         measurement = self.settings['measurement']
         gpib = measurement['gpib_address']
-        self._out.status_update(f"Connecting to instrument at {gpib}...")
+        self._events.log('connecting', f"Connecting to instrument at {gpib}...")
         try:
             self.keithley = Keithley2400(gpib).connect()
         except Exception as e:
@@ -115,11 +128,18 @@ class VdpRun:
             # the user can actually act on.
             raise RuntimeError(humanize_connection_error(e, gpib)) from e
         self._instrument_idn = self.keithley.query("*IDN?").strip()
-        self._out.status_update(f"Connected to: {self._instrument_idn}")
+        self._events.log('connected', f"Connected to: {self._instrument_idn}")
         spec = self.keithley.detect_model()
         self._model_name = spec.model if spec else "2400"
         try:
-            self._out.instrument_identified(self._model_name)
+            self._events.emit('instrument_connected', {
+                'address': gpib,
+                'idn': self._instrument_idn,
+                'model': self._model_name,
+                'max_source_v': spec.max_source_v if spec else None,
+                'max_source_i': spec.max_source_i if spec else None,
+                'max_power_w': spec.max_power_w if spec else None,
+            })
         except Exception:
             pass
 
@@ -199,7 +219,7 @@ class VdpRun:
         primary_paths = self.exporter.output_paths
         self.filename = str(primary_paths[0]) if primary_paths else str(base_path)
         names = ", ".join(p.name for p in primary_paths)
-        self._out.status_update(f"Data file: {names}")
+        self._events.log('file_opened', f"Data file: {names}")
 
         self._sleep_inhibitor.inhibit(f"ResistaMet: vdP on {self.sample_name}")
         self._start_time = time.time()
@@ -215,8 +235,8 @@ class VdpRun:
             if not self.running:
                 raise _VdpAborted()
 
-            self._control.proceed_event.clear()
-            self._out.geometry_ready(idx, {
+            prompt = self._control.raise_prompt('vdp_geometry', ['proceed', 'abort'], detail={
+                'index': idx,
                 'name': geom.name,
                 'source_high': geom.source_high,
                 'source_low': geom.source_low,
@@ -226,14 +246,23 @@ class VdpRun:
                 'label_neg': geom.label_neg,
                 'group': geom.group,
             })
-            self._out.status_update(
+            self._events.emit('prompt', {
+                'prompt_id': prompt.prompt_id,
+                'kind': prompt.kind,
+                'options': prompt.options,
+                'requires_human': prompt.requires_human,
+                'detail': prompt.detail,
+            })
+            self._events.log('geometry_prompt', 
                 f"{geom.name}: connect Force HI->C{geom.source_high}, "
                 f"Force LO->C{geom.source_low}, "
                 f"Sense HI->C{geom.sense_high}, "
                 f"Sense LO->C{geom.sense_low}; press Measure."
             )
-            self._control.proceed_event.wait()
-            if not self.running:
+            choice = self._control.wait_for_prompt()
+            self._events.emit('prompt_resolved', {
+                'prompt_id': prompt.prompt_id, 'choice': choice})
+            if not self.running or choice == 'abort':
                 raise _VdpAborted()
 
             self.keithley.write(":OUTP ON")
@@ -251,7 +280,8 @@ class VdpRun:
             self.keithley.write(":OUTP OFF")
 
             if (stat_pos | stat_neg) & _STAT_BIT_COMPLIANCE:
-                self._out.compliance_hit("Voltage")
+                self._events.emit('compliance', {'kind': 'Voltage',
+                                                  'stop_on_compliance': False})
 
             self._voltages[geom.label_pos] = v_pos
             self._voltages[geom.label_neg] = v_neg
@@ -270,7 +300,8 @@ class VdpRun:
             except Exception:
                 logger.warning("vdP: failed to write export row", exc_info=True)
 
-            self._out.geometry_complete(idx, {
+            self._events.emit('vdp_geometry_complete', {
+                'index': idx,
                 'name': geom.name,
                 'label_pos': geom.label_pos, 'v_pos': v_pos,
                 'label_neg': geom.label_neg, 'v_neg': v_neg,
@@ -336,8 +367,8 @@ class VdpRun:
             'sheet_resistance_uncertainty': u_rs,
             'rho_avg_uncertainty': u_rho,
         }
-        self._out.vdp_complete(result_dict)
-        self._out.status_update(
+        self._events.emit('vdp_result', result_dict)
+        self._events.log('completed', 
             f"vdP done: Rs={result.sheet_resistance:.4g} Ohm/sq, "
             f"rho={result.rho_avg:.4g} Ohm.cm, "
             f"asym={result.asymmetry_pct:.2f}% "
@@ -354,9 +385,9 @@ class VdpRun:
             try:
                 self.keithley.write(":OUTP OFF")
                 self.keithley.close()
-                self._out.status_update("Instrument disconnected.")
+                self._events.log('cleanup', "Instrument disconnected.")
             except Exception as e:
-                self._out.status_update(f"Warning: cleanup error: {e}")
+                self._events.warn('cleanup', f"Warning: cleanup error: {e}")
             finally:
                 self.keithley = None
         if self.exporter:

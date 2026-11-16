@@ -828,7 +828,10 @@ needed `nplc`, `use_delta` and `reading_str` passed explicitly; `session/delta.p
 - **PR-26-1 (Refactor):** inside `workers.py`, `class VdpRun`; `VdpMeasurementWorker` composes it.
 - **PR-26-2 (Move):** `VdpRun` → `session/vdp_run.py`.
 
-**Phase 3: typed events** (Qt behaviour unchanged)
+**Phase 3: typed events** (Qt behaviour unchanged) — **landed**, 8 commits, 743 tests green.
+Deviations: PR-30b also converted the `out.*` calls inside `configure.py`/`samples.py` (they take the
+emitter now, not the facade); PR-32b additionally names the setup-failure exits, which previously ended a
+run with no report at all.
 - **PR-30a (Refactor):** data events (`sample`, `compliance`, `overpower_trip`, `sweep_segment`,
   `acquisition_finished`, `instrument_connected`, `line_frequency`) + their payload models.
 - **PR-30b (Refactor):** `log`/`error` classification, with the per-site table in the PR body.

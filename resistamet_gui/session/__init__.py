@@ -5,13 +5,24 @@ procedures drive the PySide6 adapters in ``workers.py`` and the API sidecar.
 See ``docs/design/tauri_backend_split.md`` section 3.
 """
 from .emitter import EventEmitter, ListSink
-from .events import EVENT_SCHEMA_VERSION, PAYLOAD_MODELS, ErrorPayload, Event, LogPayload
+from .events import (
+    EVENT_SCHEMA_VERSION, PAYLOAD_MODELS, AcquisitionFinishedPayload, CompliancePayload,
+    ErrorPayload, Event, InstrumentConnectedPayload, LineFrequencyPayload, LogPayload,
+    OverpowerPayload, SamplePayload, SweepSegmentPayload,
+)
 
 __all__ = [
     'EVENT_SCHEMA_VERSION',
     'PAYLOAD_MODELS',
+    'AcquisitionFinishedPayload',
+    'CompliancePayload',
     'ErrorPayload',
     'Event',
+    'InstrumentConnectedPayload',
+    'LineFrequencyPayload',
+    'OverpowerPayload',
+    'SamplePayload',
+    'SweepSegmentPayload',
     'EventEmitter',
     'ListSink',
     'LogPayload',
