@@ -820,7 +820,12 @@ class ContinuousRun:
                     self._events.log('filter', f"Hardware filter: {ftype} x{fcount}")
 
                 self.keithley.write(":TRIG:DEL 0")
-                self.keithley.write(":SOUR:DEL:AUTO ON")
+                if self.mode != 'sweep':
+                    # A sweep has set its own step delay (:SOUR:DEL, in
+                    # setup_sweep). Auto delay sent after it replaces it with
+                    # 1 ms (bench, 2026-11-16), and the header recorded a
+                    # delay the points never had.
+                    self.keithley.write(":SOUR:DEL:AUTO ON")
                 self._reading_time_s = self._estimate_reading_time_s(
                     measurement_settings, line_freq)
                 self._allow_for_reading_time()

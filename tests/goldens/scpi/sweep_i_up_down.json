@@ -32,7 +32,6 @@
     ":FORM:ELEM VOLT,CURR,STAT",
     ":SOUR:SWE:DIR UP",
     ":TRIG:DEL 0",
-    ":SOUR:DEL:AUTO ON",
     ":OUTP ON"
   ]
 }
