@@ -367,12 +367,16 @@ class TestStatus:
         session.start(profile, 'vdp', 'wafer1', 'alice')
         assert _wait_for(lambda: session.status()['pending_prompt'] is not None)
         detail = session.status()['pending_prompt']['detail']
+
+        def logged():
+            return [e.payload['message'] for e in sink.of_type('log')
+                    if e.payload['code'] == 'geometry_prompt']
+        # The prompt is pending a moment before its log line is emitted.
+        assert _wait_for(lambda: logged() != [])
         session.stop()
         assert detail['message'] == ("Geometry 1 of 4: connect Force HI→C2, Force LO→C1, "
                                      "Sense HI→C3, Sense LO→C4, then press Measure.")
-        logged = [e.payload['message'] for e in sink.of_type('log')
-                  if e.payload['code'] == 'geometry_prompt']
-        assert logged == [detail['message']]
+        assert logged() == [detail['message']]
 
     def test_the_status_model_has_the_reply_s_keys(self, session):
         from resistamet_gui.session.status import PendingPrompt, SessionStatus
