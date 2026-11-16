@@ -418,10 +418,10 @@ _SWEEP_HAZARD_KEYS = ('sweep_source', 'sweep_start', 'sweep_stop')
 _ARITHMETIC_ERRORS = (TypeError, ValueError, ArithmeticError)
 
 
-def _max_rate_hz(m_cfg: Dict[str, Any]) -> float:
+def _max_rate_hz(m_cfg: Dict[str, Any], mode: Optional[str] = None) -> float:
     from ..timing import TimingSettings
 
-    return TimingSettings.from_dict(m_cfg).max_rate_hz()
+    return TimingSettings.from_dict(m_cfg, mode).max_rate_hz()
 
 
 def _sweep_points(m_cfg: Dict[str, Any]) -> Optional[int]:
@@ -446,7 +446,7 @@ def _derive(m_cfg: Dict[str, Any], mode: str, failed: set,
     ``except`` is for a value that validates and still cannot be computed
     with; it is reported under the first key the computation reads.
     """
-    wanted = [('max_rate_hz', _TIMING_KEYS, _max_rate_hz)]
+    wanted = [('max_rate_hz', _TIMING_KEYS, lambda m: _max_rate_hz(m, mode))]
     if mode == 'sweep':
         wanted.append(('sweep_points', _SWEEP_POINT_KEYS, _sweep_points))
     if mode == 'four_point':
