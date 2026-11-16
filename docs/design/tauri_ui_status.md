@@ -181,9 +181,64 @@ and served at `/maps`, the PySide6 window sends the spot too, and the
 correction factor is known at any position on a circular or rectangular
 sample, so a spot near an edge is warned about with the error it costs.
 
-Left for a decision or for bench data: the runtime power stop that
-validation makes unreachable, the predicted maximum rate, ρ shown as 0 when
-the thickness is unknown, and the 45 s watchdog grace after the window dies.
+Four were left for a decision or for bench data: the runtime power stop
+that validation makes unreachable, the predicted maximum rate, ρ shown as 0
+when the thickness is unknown, and the 45 s watchdog grace after the window
+dies. As of 2026-11-16 three are closed and the watchdog remains.
+
+ρ with no thickness is closed (`e0cceb2`). A thin-film resistivity without a
+thickness is NaN where it is calculated, so ordinary rows, compliance-bound
+rows and the F84 path all write `nan` for ρ and σ, the footer statistics give
+them n = 0, events carry null, both panels show a dash and the MCP summary
+leaves them out. Rs is unaffected, and the semi-infinite model, which does
+not read the thickness, still gives a ρ.
+
+The runtime power stop cannot fire on an ordinary run of a passive sample.
+The resolver refuses |I| × V_compliance above `fpp_power_stop_w` at start,
+the run's pre-flight refuses it again, and the monitor compares the
+programmed |I| times the sensed |V|, which compliance keeps at or below that
+product (a sample held in compliance with the worst case exactly at the stop
+runs to the end). It was reachable two ways, both seen on the simulator and
+both closed. With the current finder on and `fpp_power_stop_w` /
+`fpp_voltage_compliance` below the finder's 1 µA floor, a sample the finder
+asked about and was told to proceed with ran at 1 µA outside the envelope
+(0.1 mW stop, 200 V, 150 MΩ: stopped at 150 µW on the first row), because the
+finder judged its own choice against the warning threshold only; it now
+refuses at the stop level, as the pre-flight does. And the overflow value in
+the VOLT element was taken as a voltage, stopping the run on 9.9e33 W; the
+monitor now leaves such a row to its compliance flag. The stop therefore
+stays as a defence against a reading above the compliance it was configured
+with, which nothing has yet produced. The runtime warning, reachable on any
+run the pre-flight warned about, is logged once a run and no longer on every
+row.
+
+The predicted maximum rate is settled for the 2420. `/settings/resolve`
+halved the estimate for offset-compensated ohms in every mode, though only
+resistance mode uses it (0.88 Hz reported for a four-point run on the default
+profile where the model gives 1.77 Hz); the estimate now counts the flag for
+resistance alone, in the preview, the desktop's max-rate line and the run's
+read timeout. The model itself agrees with the lab's files to 3 %. For
+four-point at NPLC 1, auto-zero on and a repeat filter of 10 it predicts
+0.566 s a reading. Rows written by the PySide6 release are 1.17 s apart at a
+clamped 1.7 Hz, and rows written by the desktop build of September are
+0.671 s apart at a requested 10 Hz; both were scheduled one interval after
+the previous read returned, which leaves a read of 0.57 to 0.58 s. Since
+`d4459ab` the next read is due one interval after the last was requested, so
+the same settings now give a row every 0.57 s or so. The run does not clamp
+to the estimate: the PySide6 window clamps its spinbox, the API warns, and
+the run reads as fast as the instrument answers.
+
+The watchdog has no 45 s in it. The backend acts on its stdin closing at
+once, allows the run 35 s to turn the output off and finalize, and the shell
+waits 40 s before killing it. On the simulator a parent killed outright in
+the middle of a run (SIGKILL, macOS) had the backend log `stdin closed`,
+finalize the file as `user_stop` and exit within 0.25 s. The 44 s seen on the
+Windows bench between a forced kill of the shell and that log line was
+therefore spent with the pipe still open after the shell had died, which no
+code in the backend accounts for and which has not been repeated. Left for
+the lab PC: kill the shell of a current build during a run, time the
+`stdin closed` line, and find what keeps the pipe open; then decide whether
+the backend should also watch the parent's process id.
 
 ## The driver's second bench day and the UI on a Mac, 2026-09-21
 

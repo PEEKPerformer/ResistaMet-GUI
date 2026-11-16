@@ -59,6 +59,10 @@ Sheet resistance, resistivity, and conductivity via a collinear 4-point probe. A
 
 In the 4PP tab → **Advanced** → check **Current Reversal (Delta Mode)**. Each reading then alternates `+I` / `−I` and reports `V_delta = (V₊ − V₋) / 2`.
 
+#### Auto-select current
+
+Off by default. Check **Auto-select current** on the 4PP tab and set **Target sig figs** (default 4); **Source current** is then the current the sample is probed at. Before the run a current-reversal probe measures V/I and its scatter, and the run sources the smallest current whose sense voltage reaches the target figures, kept under half the voltage compliance, the instrument's current limit and the power hard stop. If the sample cannot reach the target within those limits, or is too resistive or too conductive to measure, a **Proceed / Abort** dialog asks with the output off; Abort starts nothing and writes no file. See [Settings → Four-point current finder](settings.md#four-point-current-finder).
+
 ### Van der Pauw
 
 ASTM F76-08 Method A for sheet resistance and resistivity on arbitrary-shape, hole-free samples with four periphery contacts.

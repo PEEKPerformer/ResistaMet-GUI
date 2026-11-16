@@ -108,6 +108,17 @@ Only the dimensions the chosen shape has are read: a width left over from a rect
 
 The desktop app has the first six in the **Sample** group of the four-point settings panel. The PySide6 window has no fields for them at this commit; there, set them in `config.json` (or through `PATCH /profiles/{user}`). An API run can send them as overrides.
 
+### Four-point current finder
+
+| Setting | Default | Bounds | What it does |
+|---|---|---|---|
+| **Auto-select current** (`fpp_autoselect_current`) | `False` | on / off | Before the run, probe the sample and choose the source current. `fpp_current` (**Source current**) is then the current the probe is made at, not necessarily the one the run uses. |
+| **Target sig figs** (`fpp_autoselect_sigfigs`) | `4` | `1 – 6` | Significant figures the finder aims for: a sense voltage of 10ⁿ times the noise floor the probe measured. |
+
+With the setting on, a four-point run starts with a current-reversal probe at `fpp_current`: nine +I / −I pairs, the first thrown away, which give V/I and, as the noise floor, the scatter of the eight pair values (never taken as less than 1 µV). The run then sources the smallest current, not below 1 µA, whose sense voltage reaches the target; the current is capped where the sense voltage would pass half of `fpp_voltage_compliance`, at the connected model's current limit, and where current × compliance would pass `fpp_power_stop_w`. When the target is met inside those caps the run goes on at that current without asking. Otherwise it asks **Proceed / Abort** with the output off (prompt `fpp_current_decision` through the [API](api.md#prompts)): when the capped current falls short of the target, when it gives less than one significant figure, and when the sample is too resistive, meaning 1 µA would already need more than half the compliance voltage or the source is still in compliance at 1 µA. Abort, or no answer within the prompt's timeout, ends the run before a data file is opened.
+
+The file name and `params.source_current_A` carry the current the run used; the header also records the one asked for ([Data outputs → Four-Point Probe](outputs.md#four-point-probe)). The PySide6 window has both fields on the Four-Point Probe tab, the desktop app in the **Auto-select current** group of the four-point panel. Checked against the simulator only at this commit.
+
 ### I-V sweep compliance
 
 `sweep_compliance` limits the quantity the sweep *measures*, so its unit follows `sweep_source`:
@@ -221,6 +232,7 @@ Some settings live on the individual mode tabs because they're per-measurement-c
 - **Source Range Auto / Voltage Range Auto** — every tab
 - **Cable null** — Resistance tab
 - **Delta mode (current reversal)** — Four-Point Probe tab Advanced section
+- **Auto-select current / Target sig figs** — Four-Point Probe tab (see [Four-point current finder](#four-point-current-finder))
 - **Geometry / dopant / temperature** — Four-Point Probe tab (drive F84 corrections)
 - **Sample thickness** — Four-Point Probe and Van der Pauw tabs
 - **Sweep start / stop / step / direction / per-step delay / measurement type** — I-V Sweep tab (`sweep_measurement_type`: `2-wire` by default, or `4-wire` for remote sense)

@@ -81,6 +81,13 @@ Development branch `phase0/reviewable-baseline`. The measuring code is separated
 - **Switching user kept the previous user's tab values** for four-point delta mode and the whole sweep tab, and **saving the Settings dialog reset values typed on a tab** (a four-point thickness or diameter going back to 0 changes the formula used). Every tab value is loaded on a user switch, and a Settings save changes only what that save changed. Load Profile restores everything Save Profile writes, and the cable-null label always shows the null a run would apply.
 - **Export Summary recomputed four-point results from the tab** at export time, with the legacy formula whatever the run used, including compliance rows, and wrote a mean of 0 for a spot with no value. It writes the run's own rows, settings and statistics.
 
+- **A downward sweep stepped by the wrong amount on the instrument.** Its step was sent as a positive number, which a 2420 refuses (`-222`), keeping the step of its reset point count of 2500: a 0.5 V to 0 V sweep in five points stepped by 0.2 mV. The step is sent with the sign that leads from start to stop. (Bench, output off, 2026-11-16.)
+- **A sweep's step delay was replaced by auto delay.** `:SOUR:DEL:AUTO ON` was sent after the delay and resets it to 1 ms, while the header recorded the delay asked for. A sweep no longer sends it.
+- **A setting the instrument refused did not stop the run.** A 2420 asked for 100 V refuses the range and the level and stays at 0 V; the run went on under a header that recorded 100 V. The error queue is read after configuration in every mode, and a run whose queue is not empty ends as `configure_failed` with the instrument's messages, before the output comes on.
+- **The rate preview was halved outside resistance mode.** Offset-compensated ohms was counted for every mode in `POST /settings/resolve`, the desktop's max-rate line and the run's read timeout.
+- **Four-point power checks.** The current finder refuses a choice above `fpp_power_stop_w`, as the pre-flight check refuses a request; an overflow reading is no longer multiplied into a power; the runtime warning is logged once a run.
+- **A 1 µA four-point run was named `..._4PP_0.00mA.csv`.** Below 5 µA the name gives microamps (`1.00uA`).
+
 ## [1.12.3] - 2026-05-26
 
 Paper-only patch. No software changes from v1.12.2.
