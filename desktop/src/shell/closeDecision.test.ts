@@ -4,7 +4,7 @@ import { decideClose } from "./closeDecision.ts";
 import type { SessionStatus } from "../generated/session.ts";
 
 function status(state: SessionStatus["state"], mode: SessionStatus["mode"] = null): SessionStatus {
-  return { instrument: null, last_seq: 0, mode, path: null, pending_prompt: null, run_id: null, state };
+  return { instrument: null, last_seq: 0, mode, path: null, pending_prompt: null, run_id: null, started_by: null, state };
 }
 
 test("an idle session closes without asking", () => {

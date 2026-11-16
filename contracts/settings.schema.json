@@ -1,5 +1,158 @@
 {
   "definitions": {
+    "AgentLimitCheck": {
+      "$defs": {
+        "AgentLimitViolation": {
+          "description": "One way a run goes beyond what an agent may start.\n\n``limit`` names the bound: one of the profile's ``agent_limits`` keys\nwhen ``source`` is ``'agent_limits'``, a ``ModelSpec`` field when it is\n``'model'`` (and ``model`` says which). ``keys`` are the run's setting\nkeys that produce ``value``; ``value`` is None when the instrument\nchooses the quantity itself, and ``allowed`` is None when the profile's\nlimit is itself not a valid number.",
+          "properties": {
+            "allowed": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Allowed"
+            },
+            "keys": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Keys",
+              "type": "array"
+            },
+            "limit": {
+              "enum": [
+                "max_voltage_v",
+                "max_current_a",
+                "max_power_w",
+                "max_source_v",
+                "max_source_i"
+              ],
+              "title": "Limit",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            },
+            "source": {
+              "enum": [
+                "agent_limits",
+                "model"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Value"
+            }
+          },
+          "required": [
+            "limit",
+            "source",
+            "model",
+            "keys",
+            "value",
+            "allowed",
+            "message"
+          ],
+          "title": "AgentLimitViolation",
+          "type": "object"
+        }
+      },
+      "description": "The verdict on a run an agent would start. ``ok`` when nothing is beyond.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "violations": {
+          "items": {
+            "$ref": "#/$defs/AgentLimitViolation"
+          },
+          "title": "Violations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "ok",
+        "violations"
+      ],
+      "title": "AgentLimitCheck",
+      "type": "object"
+    },
+    "AgentLimitSettings": {
+      "additionalProperties": true,
+      "description": "What a run an AI agent starts may put on the device. Its own section.\n\nA section beside ``measurement`` rather than more keys inside it, because\nthese are not settings of a run: the resolver never copies them into one,\nso they cannot reach a data file, and a run request only carries\nmeasurement keys. They bound the ``agent`` role only; a run a person\nstarts is never held to them (``docs/design/mcp_layer.md`` M4).\n\nNone is no cap beyond the instrument's own. A cap is a positive, finite\nnumber: 0 would refuse every run, which is what turning agents off is for.",
+      "properties": {
+        "max_current_a": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Largest |I| an agent's run may source or allow as compliance, in A. None = the instrument's own limit.",
+          "title": "Max Current A"
+        },
+        "max_power_w": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Largest |V| x |I| an agent's run could deliver, in W. None = the instrument's own limit.",
+          "title": "Max Power W"
+        },
+        "max_voltage_v": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 30.0,
+          "description": "Largest |V| an agent's run may source or allow as compliance, in V. None = the instrument's own limit.",
+          "title": "Max Voltage V"
+        }
+      },
+      "title": "AgentLimitSettings",
+      "type": "object"
+    },
     "AuxSensorSettings": {
       "additionalProperties": true,
       "description": "Auxiliary-sensor co-logging. Serialized inside ``measurement``.\n\nCo-logging is only wired into the continuous modes\n(``data_export.AUX_LOG_MODES``); the resolver reports an issue when a\nrequest asks for it on a sweep or vdP run.",
@@ -335,8 +488,14 @@
     },
     "InstrumentSettings": {
       "additionalProperties": true,
-      "description": "Knobs that apply to every mode, wherever the value comes from.\n\n``gpib_address``, ``visa_library`` and ``gpib_interface`` are machine-local\n\u2014 ``ConfigManager`` keeps them under ``machines[hostname]`` and injects\nthem into the profile on read, so they are never stored per user\n(``config.py``).",
+      "description": "Knobs that apply to every mode, wherever the value comes from.\n\n``gpib_address``, ``visa_library``, ``gpib_interface`` and\n``allow_agents`` are machine-local \u2014 ``ConfigManager`` keeps them in this\nmachine's own file and injects them into the profile on read, so they are\nnever stored per user (``config.py``).",
       "properties": {
+        "allow_agents": {
+          "default": false,
+          "description": "Let AI agents connect to a backend on this machine, through an MCP server, with a token of their own (role 'agent'). Machine-local; only the 'ui' role may change it.",
+          "title": "Allow Agents",
+          "type": "boolean"
+        },
         "auto_zero": {
           "default": "once",
           "enum": [

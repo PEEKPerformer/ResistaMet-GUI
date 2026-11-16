@@ -16,6 +16,11 @@ Three things a parent process needs, and gets here:
   finalize the file, then exit — with a grace period long enough for a stop to
   land during a slow VISA operation.
 
+The handshake carries the ``ui`` token only. When agents are allowed -- this
+machine's ``allow_agents`` setting, or ``--allow-agents`` for this process --
+their token goes to a connection file instead (``agent_access``), written once
+the port is known and removed on the way out.
+
 ``--check-visa`` serves nothing: it prints what VISA this machine has as one
 JSON line and exits, which is how a frozen install is diagnosed on a PC with
 no development tools.
@@ -80,6 +85,11 @@ def _parse_args(argv):
     parser.add_argument("--gpib-interface", default=None, metavar="'' | PRLGX-...::INTFC",
                          help="Override the machine's configured GPIB interface, for "
                               "--check-visa. Only 'bus' opens it.")
+    parser.add_argument("--allow-agents", action="store_true",
+                         help="Let AI agents connect to this process, whatever this "
+                              "machine's allow_agents setting says, without changing "
+                              "it. Their token is written to "
+                              "~/.resistamet/api/connection.json, never to stdout.")
     parser.add_argument("--allow-remote", action="store_true",
                          help="Permit a --host that is not a loopback address. The "
                               "token then crosses the network in plaintext.")
@@ -171,6 +181,10 @@ def build(args):
               if args.config else ConfigManager(**options))
     token = args.token or secrets.token_urlsafe(32)
     app = create_app(session, token=token, config=config, hub=hub)
+    if args.allow_agents or config.get_allow_agents():
+        # The token exists from here; the file that tells an agent about it
+        # waits for the URL, which main() learns once the socket is bound.
+        app.state.api.agent_access.enable()
     return app, session, token
 
 
@@ -236,9 +250,12 @@ def main(argv=None):
     server = uvicorn.Server(config)
     app.state.api.server = server
 
-    # One line, on stdout, once: everything the parent needs to connect.
-    print(json.dumps({'url': f"http://{args.host}:{port}", 'token': token,
-                       'pid': os.getpid()}), flush=True)
+    url = f"http://{args.host}:{port}"
+    agent_access = app.state.api.agent_access
+
+    # One line, on stdout, once: everything the parent needs to connect. The
+    # agent token is not in it: the parent is the window, not an agent.
+    print(json.dumps({'url': url, 'token': token, 'pid': os.getpid()}), flush=True)
 
     def parent_went_away():
         # The run first: it can be turning the output off while the server
@@ -251,8 +268,14 @@ def main(argv=None):
 
     _exit_through_the_shutdown_on_signals(server)
     try:
+        # The connection file names the URL, so it can only be written now;
+        # inside the try, so the finally removes it whatever happens next.
+        agent_access.set_url(url)
         server.run(sockets=[listener])
     finally:
+        # Nothing is listening any more: stop advertising it to agents before
+        # the wait below, which can be long.
+        agent_access.disable()
         # The run gets its grace period before the process goes away, so the
         # output is off and the file is finalized.
         session.close(timeout=SHUTDOWN_GRACE_S)

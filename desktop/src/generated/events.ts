@@ -207,6 +207,10 @@ export interface RunEndedPayload {
 
 /**
  * A run is beginning; the settings are exactly what it will use.
+ *
+ * ``started_by`` is the API role that started the run (``ui``, ``agent``),
+ * stamped by the server from the token, never taken from the request. None
+ * for a run started without the API, as the PySide6 window's are.
  */
 export interface RunStartedPayload {
   mode: string;
@@ -215,6 +219,7 @@ export interface RunStartedPayload {
     [k: string]: unknown | undefined;
   };
   started_at: number;
+  started_by?: string | null;
   username: string;
 }
 

@@ -25,7 +25,7 @@ No Qt, no pyvisa: this module is importable from anywhere.
 import re
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from ..constants import DEFAULT_SETTINGS
 
@@ -33,6 +33,7 @@ _M = DEFAULT_SETTINGS['measurement']
 _F = DEFAULT_SETTINGS['file']
 _O = DEFAULT_SETTINGS['output']
 _D = DEFAULT_SETTINGS['display']
+_A = DEFAULT_SETTINGS['agent_limits']
 
 #: pyvisa's two Prologix interface resource classes (``pyvisa/rname.py``):
 #: ``PRLGX-ASRL[board]::serial device::INTFC`` and
@@ -51,10 +52,10 @@ class SettingsModel(BaseModel):
 class InstrumentSettings(SettingsModel):
     """Knobs that apply to every mode, wherever the value comes from.
 
-    ``gpib_address``, ``visa_library`` and ``gpib_interface`` are machine-local
-    — ``ConfigManager`` keeps them under ``machines[hostname]`` and injects
-    them into the profile on read, so they are never stored per user
-    (``config.py``).
+    ``gpib_address``, ``visa_library``, ``gpib_interface`` and
+    ``allow_agents`` are machine-local — ``ConfigManager`` keeps them in this
+    machine's own file and injects them into the profile on read, so they are
+    never stored per user (``config.py``).
     """
 
     gpib_address: str = Field(default=_M['gpib_address'], min_length=1)
@@ -75,6 +76,16 @@ class InstrumentSettings(SettingsModel):
             "PRLGX-TCPIP[board]::<host>[::port]::INTFC, port 1234 by default. "
             "[board] defaults to 0 and is the <board> of the instrument "
             "address."
+        ),
+    )
+    #: Strict: a switch that lets an AI agent drive the instrument is true or
+    #: false, never a string or a number that happens to read as one.
+    allow_agents: StrictBool = Field(
+        default=_M['allow_agents'],
+        description=(
+            "Let AI agents connect to a backend on this machine, through an "
+            "MCP server, with a token of their own (role 'agent'). "
+            "Machine-local; only the 'ui' role may change it."
         ),
     )
     nplc: float = Field(default=_M['nplc'], ge=0.01, le=10.0)
@@ -124,6 +135,33 @@ class SafetySettings(SettingsModel):
 
     safety_voltage_warn_v: float = Field(default=_M['safety_voltage_warn_v'], ge=0.0, le=1100.0)
     safety_voltage_warn_silenced: bool = _M['safety_voltage_warn_silenced']
+
+
+class AgentLimitSettings(SettingsModel):
+    """What a run an AI agent starts may put on the device. Its own section.
+
+    A section beside ``measurement`` rather than more keys inside it, because
+    these are not settings of a run: the resolver never copies them into one,
+    so they cannot reach a data file, and a run request only carries
+    measurement keys. They bound the ``agent`` role only; a run a person
+    starts is never held to them (``docs/design/mcp_layer.md`` M4).
+
+    None is no cap beyond the instrument's own. A cap is a positive, finite
+    number: 0 would refuse every run, which is what turning agents off is for.
+    """
+
+    max_voltage_v: Optional[float] = Field(
+        default=_A['max_voltage_v'], gt=0.0, allow_inf_nan=False, strict=True,
+        description="Largest |V| an agent's run may source or allow as compliance, in V. "
+                    "None = the instrument's own limit.")
+    max_current_a: Optional[float] = Field(
+        default=_A['max_current_a'], gt=0.0, allow_inf_nan=False, strict=True,
+        description="Largest |I| an agent's run may source or allow as compliance, in A. "
+                    "None = the instrument's own limit.")
+    max_power_w: Optional[float] = Field(
+        default=_A['max_power_w'], gt=0.0, allow_inf_nan=False, strict=True,
+        description="Largest |V| x |I| an agent's run could deliver, in W. "
+                    "None = the instrument's own limit.")
 
 
 class FileSettings(SettingsModel):

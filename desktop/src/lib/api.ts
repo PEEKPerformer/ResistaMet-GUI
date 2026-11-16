@@ -7,7 +7,7 @@
 // backend gave rather than one it made up.
 
 import type { BackendInfo } from "./backend";
-import type { ClientInfo, Mode, RunRequest } from "../generated/settings";
+import type { AgentLimitCheck, ClientInfo, Mode, RunRequest } from "../generated/settings";
 import type { EventEnvelope } from "../generated/events";
 import type { InstrumentInfo, SessionStatus } from "../generated/session";
 import type { MapImage, MapImageRegistration, SpotMap, SpotPreflight, SpotPreflightRequest } from "../generated/maps";
@@ -51,6 +51,9 @@ export interface Resolved {
   ok: boolean;
   issues: Issue[];
   hazard: Hazard | null;
+  /** The verdict a start from an AI agent would get; null when the settings
+   *  have errors. The window itself is never held to it. */
+  agent_limits: AgentLimitCheck | null;
 }
 
 export interface ModeSchema {

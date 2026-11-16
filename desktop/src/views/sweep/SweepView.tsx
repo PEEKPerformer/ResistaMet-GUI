@@ -19,6 +19,7 @@ import { seedOverrides, setOverride, useOverrides } from "../../state/overrides"
 import { Badge, Button, Notice, Panel } from "../../components/ui";
 import { BackendNotice } from "../../components/BackendNotice";
 import { OutputNotice } from "../../components/OutputNotice";
+import { AgentRunNotice } from "../../components/AgentRunNotice";
 import { Icons } from "../../components/icons";
 import { XYPlot, type XYSeries } from "../../components/plot/XYPlot";
 import { FieldRow, SettingsForm } from "../../components/forms/SettingsForm";
@@ -154,6 +155,7 @@ export function SweepView() {
 
         <BackendNotice />
         <OutputNotice />
+        <AgentRunNotice mode={MODE} />
         {error ? <Notice tone="danger">{error}</Notice> : null}
         {reset ? <Notice tone="info">{reset}</Notice> : null}
         {running && !thisRunning ? <Notice tone="info">Another run is in progress.</Notice> : null}

@@ -290,13 +290,19 @@ class PromptResolvedPayload(EventModel):
 
 
 class RunStartedPayload(EventModel):
-    """A run is beginning; the settings are exactly what it will use."""
+    """A run is beginning; the settings are exactly what it will use.
+
+    ``started_by`` is the API role that started the run (``ui``, ``agent``),
+    stamped by the server from the token, never taken from the request. None
+    for a run started without the API, as the PySide6 window's are.
+    """
 
     mode: str
     sample_name: str
     username: str
     settings: Dict[str, Any] = Field(default_factory=dict)
     started_at: float
+    started_by: Optional[str] = None
 
 
 class AuxConnectedPayload(EventModel):

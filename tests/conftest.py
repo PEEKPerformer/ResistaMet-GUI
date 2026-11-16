@@ -65,6 +65,23 @@ def _private_machine_settings(tmp_path_factory, monkeypatch) -> None:
     monkeypatch.setattr(config, 'default_machine_file', lambda: str(path))
 
 
+@pytest.fixture(autouse=True)
+def _private_agent_connection_file(tmp_path_factory, monkeypatch) -> None:
+    """No test writes, or deletes, the file a real MCP server looks for.
+
+    An API built by a test that turns agent access on would otherwise
+    advertise itself in the developer's home directory, or find the file of
+    a backend the developer has running and decline to start.
+    """
+    try:
+        from resistamet_gui.api import agent_access
+    except ImportError:
+        return  # no API extra installed, so nothing here can write the file
+
+    path =tmp_path_factory.mktemp('api') / 'connection.json'
+    monkeypatch.setattr(agent_access, 'default_connection_file', lambda: str(path))
+
+
 @pytest.fixture
 def fake_rm(monkeypatch) -> FakeResourceManager:
     """Replace ``pyvisa.ResourceManager`` with a FakeResourceManager.
