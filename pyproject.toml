@@ -56,6 +56,7 @@ dependencies = [
     "matplotlib>=3.3.0",
     "pyqtgraph>=0.13.0",
     "pyserial>=3.4",
+    "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]

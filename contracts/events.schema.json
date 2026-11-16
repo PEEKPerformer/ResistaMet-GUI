@@ -1,0 +1,119 @@
+{
+  "envelope": {
+    "additionalProperties": false,
+    "description": "One thing that happened during a run.",
+    "properties": {
+      "payload": {
+        "additionalProperties": true,
+        "title": "Payload",
+        "type": "object"
+      },
+      "run_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Run Id"
+      },
+      "seq": {
+        "minimum": 0,
+        "title": "Seq",
+        "type": "integer"
+      },
+      "t": {
+        "title": "T",
+        "type": "number"
+      },
+      "type": {
+        "title": "Type",
+        "type": "string"
+      },
+      "v": {
+        "default": 1,
+        "title": "V",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "type",
+      "seq",
+      "t"
+    ],
+    "title": "Event",
+    "type": "object"
+  },
+  "payloads": {
+    "error": {
+      "additionalProperties": false,
+      "description": "Something failed. ``source`` says which subsystem.\n\n``source`` replaces the substring matching the UI does today to decide\nwhether an error came from the instrument, the aux sensor or the file.\n``fatal`` marks the errors that end the run.",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "fatal": {
+          "default": true,
+          "title": "Fatal",
+          "type": "boolean"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "smu",
+            "aux",
+            "file",
+            "run"
+          ],
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "source",
+        "message"
+      ],
+      "title": "ErrorPayload",
+      "type": "object"
+    },
+    "log": {
+      "additionalProperties": false,
+      "description": "Human-readable progress, one per current ``status_update`` site.\n\n``code`` is a short closed set so a client can act on an event without\nparsing prose; ``message`` stays the exact text the GUI shows today.",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "level": {
+          "default": "info",
+          "enum": [
+            "info",
+            "warning",
+            "error"
+          ],
+          "title": "Level",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "LogPayload",
+      "type": "object"
+    }
+  },
+  "version": 1
+}

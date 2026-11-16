@@ -789,7 +789,9 @@ phase run in order unless marked independent. Kinds: **Move**, **Mech** (word-di
 - **PR-04 (Behavior):** 4PP delta read gets the non-delta path's bounded retry loop (D9).
 - **PR-05 (Behavior):** event marks queue instead of overwriting (D5).
 
-**Phase 1: contracts, additive**
+**Phase 1: contracts, additive** — **landed**, one commit each, 701 tests green.
+PR-13 and PR-14 ran after PR-15 rather than before it (both additive, nothing depended on the order);
+the capture tool now calls the window's `_overrides_from_widgets` instead of keeping its own copy.
 - **PR-10 (Add):** pydantic; `schema/settings_common.py`; `test_schema_no_qt.py`; `--self-test` + build.yml.
 - **PR-11a (Add):** resistance, source-V/I, sweep, vdP models + bounds test.
 - **PR-11b (Add):** 4PP model + worst-case power rule + `RunRequest` + bounds test.
@@ -797,6 +799,7 @@ phase run in order unless marked independent. Kinds: **Move**, **Mech** (word-di
 - **PR-13 (Add):** `session/events.py` envelope + `log`/`error` payloads, `session/emitter.py`, `ListSink`.
 - **PR-14 (Add):** `tools/export_contracts.py` + committed JSON Schema + drift test.
 - **PR-15 (Refactor):** `gather_settings_for_mode` delegates to the resolver (widget reads stay).
+  Landed: main_window −32/+23 lines, goldens re-captured against the refactored window are byte-identical.
 
 **Phase 2: de-Qt the workers in place, then move** (tests unchanged throughout)
 - **PR-20 (Mech):** every `self.<signal>.emit(` → `self._out.<signal>(`; `_QtOutputs` forwarder.
