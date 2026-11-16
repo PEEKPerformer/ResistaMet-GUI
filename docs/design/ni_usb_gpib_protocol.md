@@ -337,7 +337,7 @@ single termination block.
 | 0x08 | Register read | `n` (count of reads) | n × (`bank addr`) | see 3.5 |
 | 0x09 | Register write | `n 00` (count of writes) | n × (`bank addr value`) | 16-byte register-write reply |
 | 0x0a | Read data from bus | `m e t cl ch 00 00` (see 5.2) | an embedded 0x09 block, see 5.2 | data blocks + status, see 5.2 |
-| 0x0b | Read data from bus, data delivered raw on bulk IN 0x88 (observed 2026-09-19, §10.1.2) | `m e t c0 c1 c2 c3` (32-bit negative count) | none | 12-byte block on 0x84: status block + `xx 00 00 00` (xx = 0xe0 EOI seen / 0x60 not); data on 0x88 |
+| 0x0b | Read data from bus, data delivered raw on bulk IN 0x88 (observed 2026-09-19, §10.1.2) | `m e t c0 c1 c2 c3` (32-bit negative count) | none | 12-byte block on 0x84: status block + `xx 00 00 00` (xx = 0xe0 EOI seen / 0x60 not); data on 0x88, padded to an even length (§10.1.3) |
 | 0x0c | Command bytes (adapter drives ATN true for the duration) | `c 00 t` (c = 8-bit count code, t = timeout code) | up to 16 command bytes | 12-byte status reply |
 | 0x0d | Write data to bus | `cl ch t 00 00 f 00` (see 5.1) | data bytes | 12-byte status reply |
 | 0x0e | Write data to bus, data sent raw on bulk OUT 0x06 (observed 2026-09-19, §10.5.2) | `00 00 t 00 e f 00 c0 c1 c2 c3` (32-bit negative count; block is 12 bytes) | none (data on 0x06) | 8-byte status block, id 0x0e |
@@ -1257,7 +1257,7 @@ NI uses two read instructions, chosen by the requested count:
 | Requested count | Instruction | Data returned on | Observed counts |
 |-----------------|-------------|------------------|-----------------|
 | 1 .. 1024 | 0x0a (5.2) | bulk IN 0x84, framed in 0x36 / 0x37 blocks | 1, 2, 8, 10, 15, 16, 30, 31, 32, 60, 63, 64, 65, 100, 127, 128, 200, 255, 256, 511, 512, 1023, 1024 (counts.pcap 0.4288 .. 12.8188; partial.pcap; eosmodes.pcap; eos.pcap 1.5455) |
-| 4096 .. 20480 | 0x0b (new) | bulk IN 0x88, raw, unframed | 4096 (counts.pcap 13.4323), 20480 (counts.pcap 14.0488; every 0x0b in idn, clear, eos, trac, srq, timeouts, nolistener, two_sessions, longwrite, readtimeout_long, terminate) |
+| 4096 .. 20480 | 0x0b (new) | bulk IN 0x88, raw, unframed, padded to an even length (10.1.3) | 4096 (counts.pcap 13.4323), 20480 (counts.pcap 14.0488; every 0x0b in idn, clear, eos, trac, srq, timeouts, nolistener, two_sessions, longwrite, readtimeout_long, terminate) |
 
 The switch lies between 1024 and 4096; no count in between was captured.
 20480 is pyvisa's default chunk size, so every `viRead` issued by pyvisa's
@@ -1296,13 +1296,17 @@ immediately) write of 5.2 is not sent; only 0x55, after the read.
 
 #### 10.1.3 The 0x0b reply
 
-The data arrives first on bulk IN 0x88 as one transfer of exactly the bytes
-read, no framing, no padding, no termination block: 82 bytes for the 2420's
-`*IDN?` answer (idn.pcap 0.5254 IN88 82 B), 2 bytes for `1\n` (srq.pcap
-2.5390 IN88 2 B), 20480 and 328 bytes for the chunks of a 61 768-byte
-message (trac.pcap 4.5340, 12.4998). When nothing was read the 0x88
-transfer completes with zero bytes (nolistener.pcap 9.8121 IN88 0 B, the
-read that timed out). 0.4-0.5 ms after the 0x88 completion the 56-byte
+The data arrives first on bulk IN 0x88 as one transfer, no framing, no
+termination block, of the bytes read **rounded up to an even length**: 82
+bytes for the 2420's `*IDN?` answer (idn.pcap 0.5254 IN88 82 B), 2 bytes
+for `1\n` (srq.pcap 2.5390 IN88 2 B), 20480 and 328 bytes for the chunks
+of a 61 768-byte message (trac.pcap 4.5340, 12.4998), but **6 bytes `31 31
+30 33 0a 00` for the 5-byte `1103\n`** (trac.pcap 13.0075 IN88 6 B) whose
+0x0b reply count is `05 b0 ff ff` = 5 - 20480 (13.0079). The one padding
+byte observed was 0x00; the count in the 0x0b reply, not the 0x88
+transfer length, gives the number of bytes read. When nothing was read the
+0x88 transfer completes with zero bytes (nolistener.pcap 9.8121 IN88 0 B,
+the read that timed out). 0.4-0.5 ms after the 0x88 completion the 56-byte
 reply arrives on 0x84:
 
 ```
@@ -1324,7 +1328,8 @@ reply arrives on 0x84:
 | 8 | 0xe0 when the last byte came with EOI, 0x60 otherwise (same byte as item 3 of the 0x0a trailer in 5.2) | e0 after EOI; 60 for full chunks and for the timeout |
 | 9-11 | `00 00 00` | always |
 
-Bytes read = requested + count (count negative or zero). END (0x2000) in
+Bytes read = requested + count (count negative or zero); use this, not
+the 0x88 transfer length, which may carry one padding byte. END (0x2000) in
 ibsta is the end-of-message indication; it was set only on the last chunk
 of the 61 768-byte read (trac.pcap 12.5002) and clear on the three full
 20480-byte chunks (4.5344, 8.5276, 12.4537).
@@ -1907,7 +1912,9 @@ trac.pcap). `VI_ERROR_INV_MODE` likewise produced nothing (10.6.4).
 
 - Use 0x0b with data on 0x88 for large reads and 0x0e with data on 0x06
   for large writes when matching NI's behaviour; the framed 0x0a / 0x0d
-  paths remain valid for the counts NI uses them for.
+  paths remain valid for the counts NI uses them for. Take the byte count
+  of a 0x0b read from its reply, not from the 0x88 transfer, which is
+  padded to an even length (10.1.3).
 - Accept `e` != 0 with `m` = 0 in reads (NI does it on every read); do not
   rely on error 4 for that combination.
 - Parse replies block by block using the per-block lengths of 10.2.1,

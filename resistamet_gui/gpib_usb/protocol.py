@@ -28,27 +28,54 @@ from . import tables as t
 # --------------------------------------------------------------------------
 
 OP_TAKE_CONTROL = 0x01
+OP_PRESENCE_PROBE = 0x02       # §10.6.1
+OP_STATUS_SNAPSHOT = 0x03      # §10.2.2
 OP_TERMINATION = 0x04
 OP_GO_TO_STANDBY = 0x06
 OP_PARALLEL_POLL = 0x07
 OP_REGISTER_READ = 0x08
 OP_REGISTER_WRITE = 0x09
 OP_READ = 0x0A
+OP_READ_RAW = 0x0B             # §10.1.2: data on the alternate bulk IN
 OP_COMMAND = 0x0C
 OP_WRITE = 0x0D
+OP_WRITE_RAW = 0x0E            # §10.5.2: data on the alternate bulk OUT
 OP_INTERFACE_CLEAR = 0x0F
+OP_SERIAL_POLL = 0x10          # §10.5.4
 
+BLOCK_PAD = 0x11               # ``11 00 00 00``, four before a 0x37 run (§10.1.5); skip
+BLOCK_STATUS_QUERY = 0x21      # the 0x21 control request's reply id (§10.3.5)
 BLOCK_REGISTER_VALUES = 0x34   # up to 3 register values
 BLOCK_REGISTER_END = 0x35
 BLOCK_DATA_15 = 0x36           # id + 15 data bytes
 BLOCK_DATA_30 = 0x37           # id + 00 + 30 data bytes
 BLOCK_READ_STATUS = 0x38
+BLOCK_SERIAL_POLL_STATUS = 0x39  # follows the 0x3a block (§10.5.4)
+BLOCK_SERIAL_POLL_RESULT = 0x3A  # ``3a P S sb``
 
 TERMINATION_BLOCK = b'\x04\x00\x00\x00'
 STATUS_BLOCK_LENGTH = 8
 STATUS_REPLY_LENGTH = 12
 REGISTER_WRITE_REPLY_LENGTH = 16
 REGISTER_READ_REPLY_LENGTH = 32
+#: Reply lengths by block id (§10.2.1, §3.5). The 0x38 read status is listed
+#: with its 4-byte tail (ADR1, last-block count, pad), the 0x09 status with
+#: its writes-completed word, the 0x0b status with its EOI tail.
+REPLY_BLOCK_LENGTHS = {
+    OP_TAKE_CONTROL: 8, OP_STATUS_SNAPSHOT: 8, OP_GO_TO_STANDBY: 8, OP_COMMAND: 8,
+    OP_WRITE: 8, OP_WRITE_RAW: 8, OP_INTERFACE_CLEAR: 8, BLOCK_STATUS_QUERY: 8,
+    BLOCK_SERIAL_POLL_STATUS: 8,
+    OP_PRESENCE_PROBE: 12, OP_REGISTER_WRITE: 12, OP_READ_RAW: 12, BLOCK_READ_STATUS: 12,
+    BLOCK_PAD: 4, BLOCK_REGISTER_VALUES: 4, BLOCK_REGISTER_END: 4, BLOCK_SERIAL_POLL_RESULT: 4,
+    BLOCK_DATA_15: 16, BLOCK_DATA_30: 32,
+}
+#: The 0x84 reply to a 0x0b, 0x0e or 0x10 message from this driver is a few
+#: blocks, parsed by id; one max-size packet holds it with room for anything
+#: the device adds.
+SMALL_REPLY_BUFFER = 512
+#: The 8-byte interrupt push of §10.4.2: ``30 18 00 sb 31 a1 01 00``.
+SRQ_PUSH_LENGTH = 8
+SRQ_PUSH_ID = 0x30
 #: Observed on GPIB-USB-HS 01CEE482: status block (8) + ADR1 + last-block
 #: count + 2 pad + termination (4). The specification derived 28 bytes with
 #: an embedded 0x09 status block that the device does not send.
@@ -59,10 +86,18 @@ READ_REPLY_TRAILER_MAX = 28
 
 MAX_COMMAND_BYTES = 16       # §5.3, all models
 MAX_TRANSFER_BYTES = 0xFFFF  # §5.1, §5.2
+#: The 0x0b / 0x0e count field is 32 bits wide as observed (§10.1.2), but no
+#: count above 0xffff was captured and §10.1.2 leaves open whether the field is
+#: 32 bits or 16 bits followed by ``ff ff``. Up to 0xffff the two readings
+#: encode identically, so one instruction carries at most that; callers loop.
+MAX_RAW_TRANSFER_BYTES = 0xFFFF
 
 WRITE_FLAG_EOI = 0x08        # §5.1 ``f``
 EOS_MODE_REOS = 0x04         # §5.2 ``m``: terminate on the EOS character
 EOS_MODE_BIN = 0x10          # §5.2 ``m``: compare all 8 bits
+#: Bit 7 of the read tail byte (item 3 of §5.2; byte 8 of the 0x0b block,
+#: §10.1.3): the last byte came with EOI. Tells EOI from an EOS match.
+TAIL_EOI = 0x80
 
 #: The two AUXMR writes embedded in every read instruction (§5.2).
 READ_EMBEDDED_WRITES: Tuple[Tuple[int, int, int], ...] = (
@@ -136,6 +171,23 @@ def encode_count8(length: int) -> int:
     return (0x100 - length) & 0xFF
 
 
+def encode_count32(length: int) -> bytes:
+    """Two's-complement negative of ``length``, 32-bit little-endian (§3.3, §10.1.2).
+
+    ``00 b0 ff ff`` = -20480, ``fe f7 ff ff`` = -2050. Capped at
+    ``MAX_RAW_TRANSFER_BYTES`` so the bytes are the same under both readings
+    of the field's width.
+    """
+    if not 1 <= length <= MAX_RAW_TRANSFER_BYTES:
+        raise ValueError('raw transfer length %d outside 1..%d' % (length, MAX_RAW_TRANSFER_BYTES))
+    return (-length).to_bytes(4, 'little', signed=True)
+
+
+def decode_count32(buf: bytes, offset: int) -> int:
+    """The signed 32-bit (transferred - requested) of a 0x0b / 0x0e status (§10.1.3)."""
+    return int.from_bytes(buf[offset:offset + 4], 'little', signed=True)
+
+
 # --------------------------------------------------------------------------
 # §3.1 message assembly
 # --------------------------------------------------------------------------
@@ -165,39 +217,132 @@ def interface_clear_message() -> bytes:
     return build_message(bytes((OP_INTERFACE_CLEAR, 0, 0, 0)))
 
 
-def command_message(command_bytes: bytes, timeout_code: int) -> bytes:
-    """§5.3: ``0c c 00 t <cmd...>``; at most 16 command bytes."""
+def status_snapshot_block() -> bytes:
+    """§10.2.2: ``03 00 00 00``; replies with the ibsta current when it executes."""
+    return bytes((OP_STATUS_SNAPSHOT, 0, 0, 0))
+
+
+def command_block(command_bytes: bytes, timeout_code: int) -> bytes:
+    """§5.3: ``0c c 00 t <cmd...>`` (unpadded); at most 16 command bytes."""
     if not 1 <= len(command_bytes) <= MAX_COMMAND_BYTES:
         raise ValueError('%d command bytes; one instruction carries 1..%d'
                          % (len(command_bytes), MAX_COMMAND_BYTES))
-    header = bytes((OP_COMMAND, encode_count8(len(command_bytes)), 0x00, timeout_code))
-    return build_message(header + command_bytes)
+    return bytes((OP_COMMAND, encode_count8(len(command_bytes)), 0x00, timeout_code)) + command_bytes
 
 
-def write_message(data: bytes, timeout_code: int, send_eoi: bool) -> bytes:
-    """§5.1: ``0d cl ch t 00 00 f 00 <data...>``."""
-    header = (bytes((OP_WRITE,)) + encode_count16(len(data))
-              + bytes((timeout_code, 0x00, 0x00, WRITE_FLAG_EOI if send_eoi else 0x00, 0x00)))
-    return build_message(header + data)
+def command_message(command_bytes: bytes, timeout_code: int) -> bytes:
+    return build_message(command_block(command_bytes, timeout_code))
+
+
+def _eos_byte(eos: Optional[int], name: str) -> int:
+    value = 0x00 if eos is None else eos
+    if not 0 <= value <= 0xFF:
+        raise ValueError('%s %r is not a byte' % (name, eos))
+    return value
+
+
+def write_block(data: bytes, timeout_code: int, send_eoi: bool, eos_char: Optional[int] = None) -> bytes:
+    """§5.1: ``0d cl ch t 00 e f 00 <data...>`` (unpadded).
+
+    ``e`` (byte 5) is 0x00 in the bench-proven form. NI fills it with the
+    session's termination character on every write (§10.5.1); whether it has
+    any effect was not tested, so callers choose.
+    """
+    return (bytes((OP_WRITE,)) + encode_count16(len(data))
+            + bytes((timeout_code, 0x00, _eos_byte(eos_char, 'termination character'),
+                     WRITE_FLAG_EOI if send_eoi else 0x00, 0x00))
+            + data)
+
+
+def write_message(data: bytes, timeout_code: int, send_eoi: bool,
+                  eos_char: Optional[int] = None) -> bytes:
+    return build_message(write_block(data, timeout_code, send_eoi, eos_char))
+
+
+def write_raw_block(length: int, timeout_code: int, send_eoi: bool,
+                    eos_char: Optional[int] = None) -> bytes:
+    """§10.5.2: ``0e 00 00 t 00 e f 00 c0 c1 c2 c3``; the data goes on the alternate bulk OUT.
+
+    NI's one observed 0x0e carried ``e`` = the termination character (0x0a)
+    and ``f`` = 0x08: ``0e 00 00 fe 00 0a 08 00 fe f7 ff ff`` for 2050 bytes.
+    """
+    return (bytes((OP_WRITE_RAW, 0x00, 0x00, timeout_code, 0x00,
+                   _eos_byte(eos_char, 'termination character'),
+                   WRITE_FLAG_EOI if send_eoi else 0x00, 0x00))
+            + encode_count32(length))
+
+
+def write_raw_message(length: int, timeout_code: int, send_eoi: bool,
+                      eos_char: Optional[int] = None) -> bytes:
+    return build_message(write_raw_block(length, timeout_code, send_eoi, eos_char))
+
+
+def read_eos_bytes(eos: Optional[int], eos_8bit: bool, termchar: Optional[int]) -> bytes:
+    """The ``m e`` bytes of a read instruction (§5.2, §10.1.6).
+
+    ``eos`` given: ``m`` = REOS (+ BIN for an 8-bit compare), ``e`` = the
+    character; END is then reported for a match as for EOI. ``eos`` None:
+    ``m`` = 0x00 and ``e`` = ``termchar`` -- NI puts the session's
+    termination character there with the compare disabled and never got
+    error 4 (§10.1.6); ``termchar`` None keeps the bench-proven ``00 00``.
+    """
+    if eos is None:
+        return bytes((0x00, _eos_byte(termchar, 'termination character')))
+    return bytes((EOS_MODE_REOS | (EOS_MODE_BIN if eos_8bit else 0x00), _eos_byte(eos, 'EOS character')))
 
 
 def read_message(max_bytes: int, timeout_code: int,
-                 eos: Optional[int] = None, eos_8bit: bool = False) -> bytes:
-    """§5.2: ``0a m e t cl ch 00 00`` plus the embedded two-write block.
-
-    With EOS disabled both ``m`` and ``e`` are zero; anything else there
-    earns error 4 from the device.
-    """
-    if eos is None:
-        mode, char = 0x00, 0x00
-    else:
-        if not 0 <= eos <= 0xFF:
-            raise ValueError('EOS character %r is not a byte' % (eos,))
-        mode = EOS_MODE_REOS | (EOS_MODE_BIN if eos_8bit else 0x00)
-        char = eos
-    header = (bytes((OP_READ, mode, char, timeout_code)) + encode_count16(max_bytes)
-              + b'\x00\x00')
+                 eos: Optional[int] = None, eos_8bit: bool = False,
+                 termchar: Optional[int] = None) -> bytes:
+    """§5.2: ``0a m e t cl ch 00 00`` plus the embedded two-write block."""
+    header = (bytes((OP_READ,)) + read_eos_bytes(eos, eos_8bit, termchar) + bytes((timeout_code,))
+              + encode_count16(max_bytes) + b'\x00\x00')
     return build_message(header, register_write_block(READ_EMBEDDED_WRITES))
+
+
+def read_raw_block(max_bytes: int, timeout_code: int,
+                   eos: Optional[int] = None, eos_8bit: bool = False,
+                   termchar: Optional[int] = None) -> bytes:
+    """§10.1.2: ``0b m e t c0 c1 c2 c3``; the data arrives on the alternate bulk IN.
+
+    ``0b 00 0a fe 00 b0 ff ff`` is NI's read of 20480 with the termination
+    character disabled and a 30 s timeout.
+    """
+    return (bytes((OP_READ_RAW,)) + read_eos_bytes(eos, eos_8bit, termchar) + bytes((timeout_code,))
+            + encode_count32(max_bytes))
+
+
+#: The register write NI sends after every 0x0b (§10.1.2): AUXMR 0x55, clear END.
+#: The 0x51 holdoff of the 0x0a form is not sent with 0x0b.
+READ_RAW_FOLLOWING_WRITES: Tuple[Tuple[int, int, int], ...] = ((1, 0x0A, 0x55),)
+
+
+def read_raw_message(max_bytes: int, timeout_code: int,
+                     eos: Optional[int] = None, eos_8bit: bool = False,
+                     termchar: Optional[int] = None) -> bytes:
+    """The 0x0b instruction followed by the clear-END register write, as NI sends them."""
+    return build_message(read_raw_block(max_bytes, timeout_code, eos, eos_8bit, termchar),
+                         register_write_block(READ_RAW_FOLLOWING_WRITES))
+
+
+def serial_poll_block(pad: int, timeout_code: int, sad: Optional[int] = None, flag: int = 0x00) -> bytes:
+    """§10.5.4: ``10 01 00 x P S t 00``.
+
+    ``x`` was 0x00 in a fresh session and 0x01 after an SRQ had been serviced;
+    its meaning is not established, so 0x00 unless a caller knows better.
+    ``S`` is 0x60 | secondary as for the presence probe (§10.6.1); the
+    secondary form of 0x10 itself was not captured.
+    """
+    if not 0 <= pad <= 30:
+        raise ValueError('primary address %d outside 0..30' % pad)
+    if flag not in (0x00, 0x01):
+        raise ValueError('serial poll flag byte %r; only 0x00 and 0x01 were observed' % (flag,))
+    return bytes((OP_SERIAL_POLL, 0x01, 0x00, flag, pad,
+                  0x00 if sad is None else t.secondary_address(sad), timeout_code, 0x00))
+
+
+def serial_poll_message(pad: int, timeout_code: int, sad: Optional[int] = None, flag: int = 0x00) -> bytes:
+    return build_message(serial_poll_block(pad, timeout_code, sad, flag))
 
 
 def register_write_block(writes: Sequence[Tuple[int, int, int]]) -> bytes:
@@ -371,11 +516,14 @@ class ReadReply:
         return self.status.end
 
 
+_READ_LEADING_BLOCKS = (BLOCK_DATA_15, BLOCK_DATA_30, BLOCK_PAD)
+
+
 def read_status_offset(reply: bytes) -> int:
-    """Where the 0x38 block starts: after the leading data blocks (§5.2)."""
+    """Where the 0x38 block starts: after the leading data and pad blocks (§5.2, §10.1.5)."""
     offset = 0
-    while offset < len(reply) and reply[offset] in (BLOCK_DATA_15, BLOCK_DATA_30):
-        offset += 16 if reply[offset] == BLOCK_DATA_15 else 32
+    while offset < len(reply) and reply[offset] in _READ_LEADING_BLOCKS:
+        offset += REPLY_BLOCK_LENGTHS[reply[offset]]
     return offset
 
 
@@ -383,15 +531,18 @@ def parse_read_reply(reply: bytes, requested: int) -> ReadReply:
     """Data blocks, then the fixed 28-byte trailer (§5.2 reply layout)."""
     payloads: List[bytes] = []
     offset = 0
-    while offset < len(reply) and reply[offset] in (BLOCK_DATA_15, BLOCK_DATA_30):
+    while offset < len(reply) and reply[offset] in _READ_LEADING_BLOCKS:
         # Blocks are told apart by their id, so a reply mixing the two sizes
-        # (the specification is unsure whether that happens) parses too.
+        # (the specification is unsure whether that happens) parses too. The
+        # ``11 00 00 00`` blocks NI's batched replies carry are skipped (§10.9).
         if reply[offset] == BLOCK_DATA_15:
             payloads.append(reply[offset + 1:offset + 16])
             offset += 16
-        else:
+        elif reply[offset] == BLOCK_DATA_30:
             payloads.append(reply[offset + 2:offset + 32])
             offset += 32
+        else:
+            offset += 4
     if len(reply) < offset + READ_REPLY_TRAILER_LENGTH:
         raise ProtocolError('read reply trailer short: %s' % reply.hex())
     status = parse_status_block(reply, offset)
@@ -429,6 +580,151 @@ def read_reply_buffer_size(max_bytes: int, max_packet_size: int) -> int:
     blocks_15 = -(-max_bytes // 15) * 16
     total = max(blocks_30, blocks_15) + READ_REPLY_TRAILER_MAX
     return -(-total // max_packet_size) * max_packet_size
+
+
+def raw_read_buffer_size(max_bytes: int, max_packet_size: int) -> int:
+    """Host receive buffer on the alternate bulk IN for a 0x0b of ``max_bytes``.
+
+    At least one packet larger than the longest transfer the device may send
+    for the request: the count itself, or one byte more, since the device
+    pads an odd transfer to an even length (6 bytes on the wire for a 5-byte
+    reply, trac.pcap 13.0075). A transfer that fills whole packets exactly
+    is then ended by the device's zero-length packet, as NI's 32768-byte
+    reads of 20480-byte chunks were (§10.1.4); a buffer the transfer fills
+    exactly would leave that packet queued for the next read, which would
+    return no data. Hence the padded count, not the count, decides: a
+    65535-byte request answered in full arrives as 65536 bytes.
+    """
+    return ((max_bytes + 1) // max_packet_size + 1) * max_packet_size
+
+
+# --------------------------------------------------------------------------
+# §10.2.1 block-by-block replies; §10.1.3, §10.5.2, §10.5.4 the new blocks
+# --------------------------------------------------------------------------
+
+
+def split_reply_blocks(reply: bytes) -> List[Tuple[int, bytes]]:
+    """The blocks of a reply up to its termination block, as (id, bytes) (§10.2.1).
+
+    Lengths come from ``REPLY_BLOCK_LENGTHS``; an id outside it, a block cut
+    short, or a reply without a termination block is a ``ProtocolError``.
+    """
+    blocks: List[Tuple[int, bytes]] = []
+    offset = 0
+    while True:
+        if offset >= len(reply):
+            raise ProtocolError('reply has no termination block: %s' % reply.hex())
+        block_id = reply[offset]
+        if block_id == OP_TERMINATION:
+            return blocks
+        length = REPLY_BLOCK_LENGTHS.get(block_id)
+        if length is None:
+            raise ProtocolError('unknown block id 0x%02x at offset %d: %s' % (block_id, offset, reply.hex()))
+        if offset + length > len(reply):
+            raise ProtocolError('block 0x%02x cut short at offset %d: %s' % (block_id, offset, reply.hex()))
+        blocks.append((block_id, reply[offset:offset + length]))
+        offset += length
+
+
+def _single_block(blocks: Sequence[Tuple[int, bytes]], block_id: int, reply: bytes) -> bytes:
+    found = [block for found_id, block in blocks if found_id == block_id]
+    if len(found) != 1:
+        raise ProtocolError('expected one 0x%02x block, found %d: %s' % (block_id, len(found), reply.hex()))
+    return found[0]
+
+
+@dataclass(frozen=True)
+class RawReadReply:
+    """A parsed 0x0b reply (§10.1.3) joined with its data from the alternate bulk IN."""
+
+    data: bytes
+    status: StatusBlock  # id 0x0b; ``count`` is the low 16 bits only
+    count32: int         # (transferred - requested), signed
+    eoi: bool            # bit 7 of the tail byte: the last byte came with EOI
+
+    @property
+    def end(self) -> bool:
+        return self.status.end
+
+
+def parse_raw_read_reply(reply: bytes, requested: int, data: bytes) -> RawReadReply:
+    """The 0x84 reply to a 0x0b, with the bytes that arrived on the alternate bulk IN.
+
+    Bytes read = requested + count (count <= 0). The count is authoritative:
+    the transfer on the alternate endpoint is truncated to it (one capture
+    shows 6 bytes on the wire for a count of 5), and fewer bytes than the
+    count says is a ``ProtocolError``.
+    """
+    blocks = split_reply_blocks(reply)
+    block = _single_block(blocks, OP_READ_RAW, reply)
+    status = parse_status_block(block)
+    count32 = decode_count32(block, 4)
+    transferred = requested + count32
+    if not 0 <= transferred <= requested:
+        raise ProtocolError('0x0b count %d for a request of %d: %s' % (count32, requested, reply.hex()))
+    if len(data) < transferred:
+        raise ProtocolError('0x0b reply says %d bytes read but %d arrived' % (transferred, len(data)))
+    return RawReadReply(data=data[:transferred], status=status, count32=count32,
+                        eoi=bool(block[8] & TAIL_EOI))
+
+
+@dataclass(frozen=True)
+class RawWriteReply:
+    """A parsed 0x0e reply (§10.5.2): an 8-byte status block with a 32-bit count."""
+
+    status: StatusBlock
+    count32: int
+
+    def transferred(self, requested: int) -> int:
+        return requested + self.count32
+
+
+def parse_raw_write_reply(reply: bytes) -> RawWriteReply:
+    blocks = split_reply_blocks(reply)
+    block = _single_block(blocks, OP_WRITE_RAW, reply)
+    return RawWriteReply(status=parse_status_block(block), count32=decode_count32(block, 4))
+
+
+@dataclass(frozen=True)
+class SerialPollReply:
+    """A parsed 0x10 reply (§10.5.4): ``3a P S sb`` then a status block with id 0x39."""
+
+    status_byte: int
+    pad: int
+    sad_byte: int
+    status: StatusBlock
+
+
+def parse_serial_poll_reply(reply: bytes) -> SerialPollReply:
+    blocks = split_reply_blocks(reply)
+    result = _single_block(blocks, BLOCK_SERIAL_POLL_RESULT, reply)
+    status = parse_status_block(_single_block(blocks, BLOCK_SERIAL_POLL_STATUS, reply))
+    return SerialPollReply(status_byte=result[3], pad=result[1], sad_byte=result[2], status=status)
+
+
+@dataclass(frozen=True)
+class SrqPush:
+    """The 8-byte interrupt push on a service request (§10.4.2)."""
+
+    ibsta: int        # 0x1800 = SRQI | RQS in both captures
+    status_byte: int  # the instrument's status byte, already serial-polled by the adapter
+    raw: bytes
+
+    @property
+    def srqi(self) -> bool:
+        return bool(self.ibsta & t.IBSTA_SRQI)
+
+
+def parse_srq_push(push: bytes) -> SrqPush:
+    """``30 18 00 sb 31 a1 01 00``: ibsta big-endian at 1-2, the status byte at 3.
+
+    Bytes 4-7 are not established. Byte 0 was 0x30 in every push captured;
+    it is not checked, since no other push has been seen to compare with.
+    """
+    if len(push) < SRQ_PUSH_LENGTH:
+        raise ProtocolError('interrupt push of %d bytes, expected %d: %s'
+                            % (len(push), SRQ_PUSH_LENGTH, push.hex()))
+    return SrqPush(ibsta=int.from_bytes(push[1:3], 'big'), status_byte=push[3], raw=bytes(push[:SRQ_PUSH_LENGTH]))
 
 
 # --------------------------------------------------------------------------

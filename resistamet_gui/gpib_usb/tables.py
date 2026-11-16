@@ -34,20 +34,32 @@ class Model:
     product_id: int
     endpoint_out: int        # libusb address of the primary bulk OUT
     endpoint_in: int         # libusb address of the primary bulk IN (0x80 | n)
-    endpoint_interrupt: int  # present but unused here (§2.5)
+    endpoint_interrupt: int  # the SRQ push arrives here (§2.5, §10.4.2)
     needs_firmware: bool     # enumerates but cannot be driven
     readiness_poll: bool     # §2.3 applies (not on the USB-B)
     hs_plus_extras: bool     # the three extra control requests of §2.4
+    #: The alternate bulk pair of §1.2: raw data of 0x0e writes goes out here
+    #: and raw data of 0x0b reads comes in here (§10.1.3, §10.5.2). None where
+    #: the model lacks one of the two (the USB-B has only an alternate IN), in
+    #: which case only the framed 0x0a / 0x0d paths are used.
+    endpoint_out_raw: Optional[int] = None
+    endpoint_in_raw: Optional[int] = None
+
+    @property
+    def raw_endpoints(self) -> bool:
+        return self.endpoint_out_raw is not None and self.endpoint_in_raw is not None
 
 
 MODELS: Dict[int, Model] = {
     PID_USB_B: Model('GPIB-USB-B', PID_USB_B, 0x02, 0x82, 0x84, False, False, False),
     PID_USB_B_PRE_FIRMWARE: Model('GPIB-USB-B (no firmware)', PID_USB_B_PRE_FIRMWARE,
                                   0x02, 0x82, 0x84, True, False, False),
-    PID_HS: Model('GPIB-USB-HS', PID_HS, 0x02, 0x84, 0x81, False, True, False),
-    PID_HS_PLUS: Model('GPIB-USB-HS+', PID_HS_PLUS, 0x01, 0x82, 0x83, False, True, True),
-    PID_KUSB_488A: Model('KUSB-488A', PID_KUSB_488A, 0x02, 0x84, 0x81, False, True, False),
-    PID_MC_USB_488: Model('USB-488', PID_MC_USB_488, 0x02, 0x84, 0x81, False, True, False),
+    # The raw pair was observed on the HS (§10); the KUSB-488A and USB-488 share
+    # its endpoints and protocol (§1.1), the HS+ has its own alternate pair (§1.2).
+    PID_HS: Model('GPIB-USB-HS', PID_HS, 0x02, 0x84, 0x81, False, True, False, 0x06, 0x88),
+    PID_HS_PLUS: Model('GPIB-USB-HS+', PID_HS_PLUS, 0x01, 0x82, 0x83, False, True, True, 0x04, 0x85),
+    PID_KUSB_488A: Model('KUSB-488A', PID_KUSB_488A, 0x02, 0x84, 0x81, False, True, False, 0x06, 0x88),
+    PID_MC_USB_488: Model('USB-488', PID_MC_USB_488, 0x02, 0x84, 0x81, False, True, False, 0x06, 0x88),
 }
 
 # --------------------------------------------------------------------------
@@ -56,6 +68,7 @@ MODELS: Dict[int, Model] = {
 
 REQUEST_TYPE_VENDOR_DEVICE = 0xC0     # IN | Vendor | Device
 REQUEST_TYPE_VENDOR_INTERFACE = 0xC1  # IN | Vendor | Interface (0xf8 only)
+REQUEST_TYPE_VENDOR_DEVICE_OUT = 0x40  # OUT | Vendor | Device (0x3b only, §10.4.2)
 
 
 @dataclass(frozen=True)
@@ -73,6 +86,11 @@ SERIAL_NUMBER_QUERY = ControlRequest(0x41, 0x0000, 0x0000, 16)
 READINESS_QUERY = ControlRequest(0x40, 0x0000, 0x0000, 16)
 STOP_REQUEST = ControlRequest(0x20, 0x0000, 0x0000, 8)
 STATUS_QUERY = ControlRequest(0x21, 0x0200, 0x0000, 8)
+#: Host-to-device, no data: sent after every interrupt push and before the
+#: interrupt read is re-armed (§2.2, §10.4.2). Its function is not established.
+SRQ_ACKNOWLEDGE = ControlRequest(0x3B, 0x0000, 0x0000, 0, REQUEST_TYPE_VENDOR_DEVICE_OUT)
+#: NI keeps one interrupt read of this size outstanding (§2.5, §10.4.2).
+INTERRUPT_READ_LENGTH = 64
 
 #: HS+ only, issued in this order after the readiness poll (§2.4), with the
 #: reply each is expected to produce.
@@ -123,6 +141,7 @@ ERR_ATN_ASSERTED = 0x02
 ERR_NOT_ADDRESSED = 0x03
 ERR_EOS_REJECTED = 0x04
 ERR_NO_ACCEPTOR = 0x05
+ERR_NOT_CIC = 0x07
 ERR_NO_LISTENER = 0x08
 ERR_TIMEOUT = 0x0A
 
@@ -133,6 +152,7 @@ ERROR_LABELS: Dict[int, str] = {
     ERR_NOT_ADDRESSED: 'not addressed',
     ERR_EOS_REJECTED: 'EOS configuration rejected / command chunk too long',
     ERR_NO_ACCEPTOR: 'no acceptor on the bus',
+    ERR_NOT_CIC: 'not controller in charge',
     ERR_NO_LISTENER: 'no listener addressed',
     ERR_TIMEOUT: 'device-side timeout',
 }
@@ -307,7 +327,12 @@ def address_talker_command(controller: int, pad: int, sad: Optional[int] = None)
 
 
 def serial_poll_enable_command(controller: int, pad: int, sad: Optional[int] = None) -> bytes:
-    """``3f 20+C 18 40+N [60+S]``."""
+    """``3f 20+C 18 40+N [60+S]`` -- the IEEE-488.1 serial-poll sequence of §5.9, §6.
+
+    Not sent by the driver, which polls with the 0x10 instruction (§10.5.4);
+    kept with ``SERIAL_POLL_DISABLE_COMMAND`` as the §6 encoding, exercised
+    only by tests.
+    """
     return (bytes((CMD_UNL, listen_address(controller), CMD_SPE))
             + _with_secondary(talk_address(pad), sad))
 

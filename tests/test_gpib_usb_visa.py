@@ -7,7 +7,7 @@ presence probe), holding one fake instrument at address 24 that answers
 ``list_resources``, ``open_resource``, ``query``.
 """
 import sys
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pytest
 
@@ -30,6 +30,7 @@ from resistamet_gui.gpib_usb import protocol as p  # noqa: E402
 from resistamet_gui.gpib_usb import tables as t  # noqa: E402
 from resistamet_gui.gpib_usb import controller as controller_module  # noqa: E402
 from resistamet_gui.gpib_usb import transport, visa_session  # noqa: E402
+from resistamet_gui.gpib_usb import boards  # noqa: E402
 from resistamet_gui.gpib_usb.boards import BoardRegistry  # noqa: E402
 from resistamet_gui.gpib_usb.transport import AdapterInfo, TransportError  # noqa: E402
 from resistamet_gui.gpib_usb.visa_intfc import NiUsbGpibIntfcDispatch  # noqa: E402
@@ -50,6 +51,8 @@ class FakeInstrument:
         self.received: List[bytes] = []
         self.pending = b''
         self.cleared = 0
+        #: What a serial poll returns.
+        self.status_byte = 0
 
     def accept(self, data: bytes, eoi: bool) -> None:
         self.received.append(data)
@@ -61,6 +64,7 @@ class SimulatedAdapter:
     """Answers protocol messages like an attached HS with instruments on the bus."""
 
     max_packet_size = 512
+    max_packet_size_raw = 512
 
     def __init__(self, instruments: Dict[int, FakeInstrument], serial_reply: bytes = h('41 78 56 34 12')) -> None:
         self.instruments = instruments
@@ -75,9 +79,15 @@ class SimulatedAdapter:
         #: Set by a test to hold the SRQ line asserted.
         self.srq = False
         self.reply = b''
+        #: What the next bulk_in_raw returns (the data of a 0x0b), None when none is owed.
+        self.raw_reply: Optional[bytes] = None
+        #: (length, EOI) of the 0x0e whose bytes the next bulk_out_raw must bring.
+        self.pending_raw_write: Optional[Tuple[int, bool]] = None
+        self.raw_writes: List[bytes] = []
         self.messages: List[bytes] = []
         self.control_requests: List[int] = []
         self.bulk_in_timeouts: List[int] = []
+        self.raw_in_timeouts: List[int] = []
         self.closed = False
         #: Raised by the next bulk_out, once.
         self.fail_next: Optional[Exception] = None
@@ -139,6 +149,13 @@ class SimulatedAdapter:
             self.reply = self._write(data)
         elif opcode == p.OP_READ:
             self.reply = self._read(data)
+        elif opcode == p.OP_READ_RAW:
+            self.reply = self._read_raw(data)
+        elif opcode == p.OP_WRITE_RAW:
+            # §10.5.2: the header now, the bytes on the alternate OUT next; the reply after those.
+            self.pending_raw_write = (-int.from_bytes(data[8:12], 'little', signed=True), bool(data[6] & 0x08))
+        elif opcode == p.OP_SERIAL_POLL:
+            self.reply = self._serial_poll(data)
         else:
             raise AssertionError('unexpected opcode 0x%02x' % opcode)
 
@@ -181,17 +198,29 @@ class SimulatedAdapter:
             self.instruments[pad].accept(payload, bool(data[6] & 0x08))
         return self._status(p.OP_WRITE) + h('04 00 00 00')
 
-    def _read(self, data: bytes) -> bytes:
-        requested = 0x10000 - int.from_bytes(data[4:6], 'little')
-        eos_mode, eos_char = data[1], data[2]
-        # The 16-byte trailer as the real adapter sends it.
-        trailer_tail = h('04 00 00 00')
-        if self.atn:
-            return self._status(0x38, error=2, count=-requested) + h('60 00 00 00') + trailer_tail
+    def _serial_poll(self, data: bytes) -> bytes:
+        """0x10 (§10.5.4): ``3a P S sb`` then a 0x39 status block; error 0x0a for an absent device."""
+        pad, sad_byte = data[4], data[5]
+        instrument = self.instruments.get(pad)
+        self.atn = True  # the adapter addresses the bus itself
+        if instrument is None:
+            return bytes((0x3A, pad, sad_byte, 0x00)) + self._status(0x39, error=0x0A, count=-1) + h('04 00 00 00')
+        return bytes((0x3A, pad, sad_byte, instrument.status_byte)) + self._status(0x39, ibsta=0x0074) + h('04 00 00 00')
+
+    def _write_raw(self, payload: bytes, eoi: bool) -> bytes:
+        """The 0x0e reply once the bytes have arrived: an 8-byte status with a 32-bit count."""
+        if not self.listening:
+            count = (-len(payload)).to_bytes(4, 'little', signed=True)
+            return bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x08)) + count + h('04 00 00 00')
+        for pad in self.listening:
+            self.instruments[pad].accept(payload, eoi)
+        return bytes((p.OP_WRITE_RAW, 0x00, 0x28, 0x00)) + h('00 00 00 00') + h('04 00 00 00')
+
+    def _talker_output(self, requested: int, eos_mode: int, eos_char: int) -> Optional[Tuple[bytes, bool]]:
+        """What the addressed talker gives up for one read: (bytes, END), or None when nothing is pending."""
         instrument = self.instruments.get(self.talker) if self.talker is not None else None
         if instrument is None or not instrument.pending:
-            return (self._status(0x38, error=0x0A, count=-requested, ibsta=0x0020)
-                    + h('e0 5e 00 00') + trailer_tail)
+            return None
         source = instrument.pending
         if eos_mode & 0x04 and bytes((eos_char,)) in source:
             cut = source.index(bytes((eos_char,))) + 1
@@ -199,7 +228,36 @@ class SimulatedAdapter:
             cut = len(source)
         cut = min(cut, requested)
         out, instrument.pending = source[:cut], source[cut:]
-        end = not instrument.pending or (eos_mode & 0x04 and out.endswith(bytes((eos_char,))))
+        end = not instrument.pending or bool(eos_mode & 0x04 and out.endswith(bytes((eos_char,))))
+        return out, end
+
+    def _read_raw(self, data: bytes) -> bytes:
+        """0x0b (§10.1.3): the bytes go to the alternate IN, a 12-byte 0x0b block and the
+        clear-END write's status come back on the primary."""
+        requested = -int.from_bytes(data[4:8], 'little', signed=True)
+        result = None if self.atn else self._talker_output(requested, data[1], data[2])
+        if result is None:
+            out, end, error = b'', False, (2 if self.atn else 0x0A)
+        else:
+            (out, end), error = result, 0
+        self.raw_reply = out
+        count = (len(out) - requested).to_bytes(4, 'little', signed=True)
+        status = bytes((p.OP_READ_RAW,)) + (0x2064 if end else 0x0064).to_bytes(2, 'big') + bytes((error,))
+        return (status + count + bytes((0xE0 if end else 0x60, 0, 0, 0))
+                + h('09 00 64 00') + count + h('01 00 00 00') + h('04 00 00 00'))
+
+    def _read(self, data: bytes) -> bytes:
+        requested = 0x10000 - int.from_bytes(data[4:6], 'little')
+        eos_mode, eos_char = data[1], data[2]
+        # The 16-byte trailer as the real adapter sends it.
+        trailer_tail = h('04 00 00 00')
+        if self.atn:
+            return self._status(0x38, error=2, count=-requested) + h('60 00 00 00') + trailer_tail
+        result = self._talker_output(requested, eos_mode, eos_char)
+        if result is None:
+            return (self._status(0x38, error=0x0A, count=-requested, ibsta=0x0020)
+                    + h('e0 5e 00 00') + trailer_tail)
+        out, end = result
         blocks = b''
         for start in range(0, len(out), 15):
             chunk = out[start:start + 15]
@@ -214,6 +272,30 @@ class SimulatedAdapter:
         assert len(self.reply) <= length, 'reply of %d bytes would overflow %d' % (len(self.reply), length)
         reply, self.reply = self.reply, b''
         return reply
+
+    # The alternate pair and the interrupt endpoint; behaviour is added with the
+    # instructions that use them.
+    def bulk_out_raw(self, data: bytes, timeout_ms: int) -> int:
+        assert self.pending_raw_write is not None, 'raw bulk OUT with no 0x0e outstanding'
+        length, eoi = self.pending_raw_write
+        assert len(data) == length, 'the 0x0e announced %d bytes, %d arrived' % (length, len(data))
+        self.pending_raw_write = None
+        self.raw_writes.append(data)
+        self.reply = self._write_raw(data, eoi)
+        return len(data)
+
+    def bulk_in_raw(self, length: int, timeout_ms: int) -> bytes:
+        self.raw_in_timeouts.append(timeout_ms)
+        assert self.raw_reply is not None, 'raw bulk IN with no 0x0b outstanding'
+        assert len(self.raw_reply) < length, 'raw data of %d bytes needs a buffer larger than %d' % (len(self.raw_reply), length)
+        reply, self.raw_reply = self.raw_reply, None
+        return reply
+
+    def interrupt_in(self, length: int, timeout_ms: int) -> bytes:
+        raise AssertionError('unexpected interrupt read')
+
+    def control_out(self, request, value, index, data, timeout_ms, request_type=0x40) -> None:
+        raise AssertionError('unexpected control OUT 0x%02x' % request)
 
     def close(self) -> None:
         self.closed = True
@@ -369,8 +451,14 @@ class TestInstrumentSession:
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
         write = adapter.instructions(p.OP_WRITE)[-1]
         assert write == p.write_message(b'*IDN?\r\n', 0xFD, send_eoi=True)
-        read = adapter.instructions(p.OP_READ)[-1]
-        assert read[1:4] == h('00 00 fd')  # EOS disabled, 10 s device timeout
+        # pyvisa reads in 20480-byte chunks, so the read is a 0x0b with the data on the
+        # alternate endpoint, as it is under NI's driver (§10.1.1).
+        assert adapter.instructions(p.OP_READ) == []
+        read = adapter.instructions(p.OP_READ_RAW)[-1]
+        # Compare off: m 00 and e 00 (the bench-proven form under our AUXRA 0x81 init; NI
+        # sends e 0a under its 0x99 init, §10.1.6), 10 s code, -20480.
+        assert read[:8] == h('0b 00 00 fd 00 b0 ff ff')
+        assert adapter.raw_in_timeouts[-1] == 15000 + 20480  # host wait + 20480 B at 1000 B/s
         # Addressing: controller talks / instrument listens, then instrument talks.
         commands = adapter.instructions(p.OP_COMMAND)[-2:]
         assert commands[0][4:7] == bytes((0x3F, 0x40, 0x38))
@@ -380,8 +468,89 @@ class TestInstrumentSession:
     def test_read_termination_selects_eos_and_is_stripped(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR', read_termination='\n')
         assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30'
-        read = adapter.instructions(p.OP_READ)[-1]
+        read = adapter.instructions(p.OP_READ_RAW)[-1]
         assert read[1:3] == h('14 0a')
+        inst.close()
+
+    def test_a_long_write_goes_raw(self, rm, adapter):
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.timeout = 20000
+        inst.write('*CLS;' * 409 + '*CL')  # 2048 + '\r\n' = 2050 bytes, as longwrite.pcap
+        assert adapter.instructions(p.OP_WRITE) == []
+        header = adapter.instructions(p.OP_WRITE_RAW)[-1]
+        # NI's header (longwrite.pcap 1.8914) with e = 0x00 in place of its 0x0a: the character
+        # goes into e only with the compare on (see _termchar_byte).
+        assert header == h('0e 00 00 fe 00 00 08 00 fe f7 ff ff 04 00 00 00')
+        inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR_EN, True)
+        inst.write('*CLS;' * 409 + '*CL')
+        assert adapter.instructions(p.OP_WRITE_RAW)[-1][5] == 0x0A
+        assert adapter.raw_writes[-1] == b'*CLS;' * 409 + b'*CL\r\n'
+        assert adapter.instruments[24].received[-1] == adapter.raw_writes[-1]
+        inst.close()
+
+    def test_a_long_write_to_an_empty_address_reports_no_listeners(self, rm, adapter):
+        inst = rm.open_resource('GPIB0::5::INSTR')
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            inst.write('x' * 3000)
+        assert info.value.error_code == StatusCode.error_no_listeners
+        inst.close()
+
+    def test_plain_reads_send_the_bench_proven_eos_bytes(self, rm, adapter):
+        # The first *IDN? of a bench day, on both read forms: m 00 e 00 with the compare off,
+        # whatever VI_ATTR_TERMCHAR holds (pyvisa's default is 0x0a).
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        assert inst.get_visa_attribute(constants.VI_ATTR_TERMCHAR) == 0x0A
+        assert inst.get_visa_attribute(constants.VI_ATTR_TERMCHAR_EN) is False
+        inst.write('*IDN?')
+        inst.read()
+        assert adapter.instructions(p.OP_READ_RAW)[-1] == h('0b 00 00 fc 00 b0 ff ff 09 01 00 01 0a 55 00 00 04 00 00 00')
+        inst.chunk_size = 256
+        inst.write('*IDN?')
+        inst.read()
+        assert adapter.instructions(p.OP_READ)[-1] == h(
+            '0a 00 00 fc 00 ff 00 00 09 02 00 01 0a 51 01 0a 55 00 00 00 04 00 00 00')  # §3.6 worked example
+        inst.close()
+
+    def test_changing_the_termination_character_changes_e_only_when_enabled(self, rm, adapter):
+        # eosmodes.pcap: TERMCHAR 0x2c enabled -> 14 2c. Disabled, we keep 00 00 (see _termchar_byte).
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR, 0x2C)
+        inst.write('*IDN?')
+        assert inst.read() == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
+        assert adapter.instructions(p.OP_READ_RAW)[-1][1:3] == h('00 00')
+        inst.set_visa_attribute(constants.VI_ATTR_TERMCHAR_EN, True)
+        inst.write('*IDN?')
+        assert inst.read() == 'KEITHLEY INSTRUMENTS INC.,'
+        assert adapter.instructions(p.OP_READ_RAW)[-1][1:3] == h('14 2c')
+        inst.close()
+
+    def test_the_environment_switch_keeps_every_transfer_framed(self, rm, adapter, monkeypatch):
+        monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, '0')
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
+        inst.write('*CLS;' * 500)
+        assert adapter.instructions(p.OP_READ_RAW) == [] and adapter.instructions(p.OP_WRITE_RAW) == []
+        assert adapter.instructions(p.OP_READ)[-1][4:6] == h('00 b0')     # the 20480-byte chunk, framed
+        assert len(adapter.instructions(p.OP_WRITE)[-1]) == 8 + 2502 + 2 + 4
+        inst.close()
+
+    def test_the_environment_switch_spellings(self, monkeypatch):
+        for value in ('0', 'false', 'No', ' off '):
+            monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, value)
+            assert boards.raw_transfers_enabled() is False, value
+        for value in ('1', 'true', 'yes', ''):
+            monkeypatch.setenv(boards.RAW_TRANSFERS_ENV, value)
+            assert boards.raw_transfers_enabled() is True, value
+        monkeypatch.delenv(boards.RAW_TRANSFERS_ENV)
+        assert boards.raw_transfers_enabled() is True
+
+    def test_a_small_chunk_size_reads_through_the_framed_instruction(self, rm, adapter):
+        inst = rm.open_resource('GPIB0::24::INSTR')
+        inst.chunk_size = 256
+        assert inst.query('*IDN?') == 'KEITHLEY INSTRUMENTS INC.,MODEL 2400,1234567,C30\n'
+        assert adapter.instructions(p.OP_READ_RAW) == []
+        read = adapter.instructions(p.OP_READ)[-1]
+        assert read[1:6] == h('00 00 fc 00 ff')  # compare off: 00 00; 3 s default timeout, -256
         inst.close()
 
     def test_timeout_attribute_reaches_the_instruction(self, rm, adapter):
@@ -420,6 +589,13 @@ class TestInstrumentSession:
         inst.timeout = 100
         with pytest.raises(pyvisa.errors.VisaIOError) as info:
             inst.read()
+        assert info.value.error_code == StatusCode.error_timeout
+        inst.close()
+
+    def test_read_stb_of_an_absent_device_is_a_timeout(self, rm, adapter):
+        inst = rm.open_resource('GPIB0::5::INSTR')
+        with pytest.raises(pyvisa.errors.VisaIOError) as info:
+            inst.read_stb()
         assert info.value.error_code == StatusCode.error_timeout
         inst.close()
 
@@ -513,11 +689,13 @@ class TestInstrumentSession:
     def test_read_stb_and_trigger_carry_the_session_timeout(self, rm, adapter):
         inst = rm.open_resource('GPIB0::24::INSTR')
         inst.timeout = 1000
-        adapter.instruments[24].pending = b'\x40'
+        adapter.instruments[24].status_byte = 0x40
+        commands_before = len(adapter.instructions(p.OP_COMMAND))
         assert inst.read_stb() == 0x40
-        commands = adapter.instructions(p.OP_COMMAND)
-        assert commands[-1][4:6] == bytes((0x19, 0x5F)) and commands[-1][3] == 0xFB
-        assert adapter.instructions(p.OP_READ)[-1][3] == 0xFB
+        # One 0x10 instruction (§10.5.4), no SPE / SPD command bytes and no read.
+        assert adapter.instructions(p.OP_SERIAL_POLL)[-1] == h('10 01 00 00 18 00 fb 00 04 00 00 00')
+        assert len(adapter.instructions(p.OP_COMMAND)) == commands_before
+        assert adapter.instructions(p.OP_READ) == [] and adapter.instructions(p.OP_READ_RAW) == []
         inst.assert_trigger()
         assert adapter.instructions(p.OP_COMMAND)[-1][4:7] == bytes((0x3F, 0x38, 0x08))
         assert adapter.instructions(p.OP_COMMAND)[-1][3] == 0xFB

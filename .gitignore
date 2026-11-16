@@ -233,3 +233,6 @@ locks/
 # The desktop UI has a src/lib; the Python build-artifact rule above must not eat it.
 !desktop/src/lib/
 !resistamet-api.spec
+
+# Lab-internal working notes (bench narratives, machine details); kept out of the public repo
+docs/notes/
