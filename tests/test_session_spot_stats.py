@@ -22,7 +22,10 @@ def _voltages(rs_values):
 
 
 def _instrument_floor(voltages, currents, model, nplc):
-    floors = [resistance_uncertainty(v, i, model=model, nplc=nplc) / abs(v / i)
+    """Measured V and sourced I, in quadrature, relative to V/I."""
+    from resistamet_gui.accuracy import current_source_uncertainty, voltage_uncertainty
+    floors = [math.hypot(voltage_uncertainty(v, model, nplc) / v,
+                         current_source_uncertainty(i, model) / i)
               for v, i in zip(voltages, currents)]
     return sum(floors) / len(floors)
 
@@ -195,11 +198,11 @@ class TestTheInstrumentFloorIsWorkedOutOnce:
         from resistamet_gui import accuracy
 
         calls = {'n': 0}
-        real = accuracy.resistance_uncertainty
+        real = accuracy.voltage_uncertainty
 
         def counted(*args, **kwargs):
             calls['n'] += 1
             return real(*args, **kwargs)
-        monkeypatch.setattr(accuracy, 'resistance_uncertainty', counted)
+        monkeypatch.setattr(accuracy, 'voltage_uncertainty', counted)
         spot_statistics(self._samples())
         assert calls['n'] == 4          # one per reading, not three

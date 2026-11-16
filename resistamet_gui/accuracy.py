@@ -504,26 +504,44 @@ def _pick_range(value: float, specs: Sequence[AccuracySpec], overrange: float = 
 # ---------------------------------------------------------------------------
 
 
-def voltage_uncertainty(voltage: float, model: str = _DEFAULT_MODEL, nplc: float = 1.0) -> float:
+def _measure_range(value: float, specs: Sequence[AccuracySpec],
+                   fixed_range: float | None) -> AccuracySpec:
+    """The range a reading was taken on.
+
+    In auto range that is inferred from the reading. With ``fixed_range``
+    (the value the range command was sent, auto range off) it is the lowest
+    range that holds that value, whatever the reading: 1 mV read on the 20 V
+    range carries the 20 V range's offset, five times the 200 mV range's.
+    """
+    if fixed_range is not None and math.isfinite(fixed_range) and fixed_range > 0:
+        return _pick_range(fixed_range, specs, overrange=1.0)
+    return _pick_range(value, specs)
+
+
+def voltage_uncertainty(voltage: float, model: str = _DEFAULT_MODEL, nplc: float = 1.0,
+                        fixed_range: float | None = None) -> float:
     """±σ_V for one voltage measurement (one-sigma equivalent, base unit V).
 
-    Range is inferred from |voltage| via the 105% overrange rule. ``model``
-    is the four-digit string from IDN ("2400", "2410", ...). NPLC modifies
-    the offset term per the datasheet's Speed table.
+    Range is inferred from |voltage| via the 105% overrange rule, unless
+    ``fixed_range`` says which range the instrument was pinned to (see
+    ``_measure_range``). ``model`` is the four-digit string from IDN
+    ("2400", "2410", ...). NPLC modifies the offset term per the datasheet's
+    Speed table.
     """
     if not math.isfinite(voltage):
         return float("nan")
     specs = _V_MEASURE.get(model, _V_MEASURE[_DEFAULT_MODEL])
-    spec = _pick_range(voltage, specs)
+    spec = _measure_range(voltage, specs, fixed_range)
     return spec.uncertainty(voltage) + _nplc_modifier(nplc, spec, "voltage", model)
 
 
-def current_uncertainty(current: float, model: str = _DEFAULT_MODEL, nplc: float = 1.0) -> float:
+def current_uncertainty(current: float, model: str = _DEFAULT_MODEL, nplc: float = 1.0,
+                        fixed_range: float | None = None) -> float:
     """±σ_I for one current measurement (base unit A). See voltage_uncertainty."""
     if not math.isfinite(current):
         return float("nan")
     specs = _I_MEASURE.get(model, _I_MEASURE[_DEFAULT_MODEL])
-    spec = _pick_range(current, specs)
+    spec = _measure_range(current, specs, fixed_range)
     return spec.uncertainty(current) + _nplc_modifier(nplc, spec, "current", model)
 
 

@@ -296,6 +296,33 @@ def calculate_four_point_probe(
     )
 
 
+def four_point_method(measurement_settings) -> str:
+    """Which calculation a four-point run uses: ``'f84'`` or ``'legacy'``.
+
+    The F84 decomposition is selected by any input only it uses: a finite
+    sample dimension, a geometry other than a circle, or a temperature with a
+    dopant type. Otherwise the K * alpha path is used. On the F84 path
+    ``fpp_k_factor``, ``fpp_alpha`` and ``fpp_model`` play no part.
+
+    One function, because the rows are built by it and the file header says
+    which path built them.
+    """
+    try:
+        diameter_cm = float(measurement_settings.get('fpp_diameter_cm') or 0.0)
+    except (TypeError, ValueError):
+        diameter_cm = 0.0
+    geometry = str(measurement_settings.get('fpp_geometry') or 'circle')
+    try:
+        temperature = float(measurement_settings.get('fpp_temperature_c'))
+    except (TypeError, ValueError):
+        temperature = float('nan')
+    dopant = str(measurement_settings.get('fpp_dopant_type') or 'none').lower()
+    if (diameter_cm > 0 or geometry != 'circle'
+            or (math.isfinite(temperature) and dopant in ('n', 'p'))):
+        return 'f84'
+    return 'legacy'
+
+
 def calculate_four_point_probe_f84(
     voltage: float,
     current: float,
@@ -823,13 +850,17 @@ def four_point_combined_uncertainty(
     i_readings,
     model: str = "2400",
     nplc: float = 1.0,
+    v_fixed_range: Optional[float] = None,
 ) -> Optional[FourPointCombinedUncertainty]:
     """Combine statistical and instrument uncertainty for a 4PP statistic.
 
     ``values`` is the list of per-reading derived quantities (Rs, ρ, or σ).
     ``v_readings`` / ``i_readings`` are the parallel raw V and I per row,
-    used to compute the relative instrument floor σ_R/R via
-    ``accuracy.resistance_uncertainty``. Lists must have matching length.
+    used to compute the relative instrument floor σ_R/R: the measurement
+    accuracy of V and the source accuracy of I, the same two the rows'
+    ``V_unc_V`` and ``I_unc_A`` columns carry. Lists must have matching
+    length. ``v_fixed_range`` is the voltage range value the run was pinned
+    to when auto range was off (``accuracy._measure_range``).
 
     The instrument contribution is treated as a *systematic* per-reading
     floor (mean of σ_R/R across readings) that does NOT reduce with N —
@@ -840,7 +871,7 @@ def four_point_combined_uncertainty(
 
     Returns ``None`` if no finite values are provided. NaN-safe on inputs.
     """
-    from .accuracy import resistance_uncertainty
+    from .accuracy import current_source_uncertainty, voltage_uncertainty
     if not values:
         return None
     finite_values = [v for v in values if isinstance(v, (int, float)) and math.isfinite(v)]
@@ -869,7 +900,12 @@ def four_point_combined_uncertainty(
         r = v / i
         if r == 0 or not math.isfinite(r):
             continue
-        sigma_r = resistance_uncertainty(v, i, model=model, nplc=nplc)
+        # V is measured and I is sourced, so the measure specification for V
+        # and the source specification for I, in quadrature (GUM 5.1.6 Eq. 12
+        # in the form accuracy.resistance_uncertainty uses).
+        sigma_v = voltage_uncertainty(v, model, nplc, fixed_range=v_fixed_range)
+        sigma_i = current_source_uncertainty(i, model)
+        sigma_r = math.hypot(sigma_v, abs(r) * sigma_i) / abs(i)
         if math.isfinite(sigma_r) and sigma_r > 0:
             rel_floors.append(sigma_r / abs(r))
     mean_rel_inst = sum(rel_floors) / len(rel_floors) if rel_floors else 0.0

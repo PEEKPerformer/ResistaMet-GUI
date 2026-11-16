@@ -21,6 +21,60 @@ def _is_overflow(reading) -> bool:
     return bool(np.isfinite(reading) and abs(reading) >= KEITHLEY_COMPLIANCE_MAGIC_NUMBER)
 
 
+def _number(settings, key, default):
+    """A numeric setting, with ``default`` only when it is missing.
+
+    ``float(settings.get(key) or default)`` also replaced a 0 that was
+    entered, so the calculation could run on a value the header does not
+    show. What a 0 means is the calculation's to decide (an alpha of 0 is
+    "no correction" in ``calculate_sheet_resistance``).
+    """
+    value = settings.get(key)
+    if value is None:
+        return float(default)
+    value = float(value)
+    return float(default) if np.isnan(value) else value
+
+
+def _commanded(settings, key, echoed):
+    """The programmed source level; the echoed element only if it is unknown.
+
+    With one function sensed, the other element of a reading is not a
+    measurement. The code took it for an echo of the programmed level, and on
+    a 2420 it was not one: after the source level had changed it approached
+    the setpoint by a fixed fraction per reading (20 % of it on the first row,
+    99.99 % by the fiftieth) while the measured voltage was steady from the
+    first, so V/I started five times too high. The level sent to the
+    instrument is known exactly, so that is what a row records.
+    """
+    value = settings.get(key)
+    if value is None:
+        return echoed
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return echoed
+    return value if np.isfinite(value) else echoed
+
+
+def fixed_range_for(settings, auto_key, limit_key):
+    """The measure range a run was pinned to, or None in auto range.
+
+    The configure step sends the compliance value as the range when auto
+    range is off, and the instrument takes the lowest range that holds it.
+    The accuracy lookup has to be told, because a small reading on a high
+    range would otherwise be given the low range's specification.
+    """
+    if settings.get(auto_key, True):
+        return None
+    limit = settings.get(limit_key)
+    try:
+        limit = abs(float(limit))
+    except (TypeError, ValueError):
+        return None
+    return limit if np.isfinite(limit) and limit > 0 else None
+
+
 def parse_resistance(parts, stat_word, hw_compliance, measurement_settings, nplc,
                   model_name, mode_state, events, reading_str=''):
     """Parse a resistance reading: V, I, R, plus sigma_R and the cable null.
@@ -98,16 +152,27 @@ def parse_source_v(parts, stat_word, hw_compliance, measurement_settings, nplc,
         current = float(parts[1]) if len(parts) > 1 else float('nan')
     except Exception:
         voltage = float('nan'); current = float('nan')
+    # V_set is the level that was programmed, not the VOLT element.
+    voltage = _commanded(measurement_settings, 'vsource_voltage', voltage)
     compliance_type = 'Current'
     comp_limit_i = measurement_settings.get('vsource_current_compliance')
     if hw_compliance or (np.isfinite(current) and abs(current) >= comp_limit_i * 0.99):
         compliance_status = 'I_COMP'
     sigma_v_src = voltage_source_uncertainty(voltage, model=model_name)
-    sigma_i_meas = current_uncertainty(current, model=model_name, nplc=nplc)
+    if _is_overflow(current):
+        # The overflow value is not a current; it has no accuracy.
+        sigma_i_meas = float('nan')
+    else:
+        sigma_i_meas = current_uncertainty(
+            current, model=model_name, nplc=nplc,
+            fixed_range=fixed_range_for(measurement_settings,
+                                        'vsource_current_range_auto',
+                                        'vsource_current_compliance'))
     # σ on R = V_set / I_meas: RSS of relative uncertainties.
     # NaN-safe — current_unc inherits NaN when current is 0
     # and we already gate that below.
-    if np.isfinite(voltage) and np.isfinite(current) and current != 0 and voltage != 0:
+    if (np.isfinite(voltage) and np.isfinite(current) and current != 0 and voltage != 0
+            and not _is_overflow(current)):
         r_calc = voltage / current
         rel = (sigma_v_src / voltage) ** 2 + (sigma_i_meas / current) ** 2
         sigma_r = abs(r_calc) * np.sqrt(rel)
@@ -138,13 +203,24 @@ def parse_source_i(parts, stat_word, hw_compliance, measurement_settings, nplc,
         current = float(parts[1]) if len(parts) > 1 else float('nan')
     except Exception:
         voltage = float('nan'); current = float('nan')
+    # I_set is the level that was programmed, not the CURR element.
+    current = _commanded(measurement_settings, 'isource_current', current)
     compliance_type = 'Voltage'
     comp_limit_v = measurement_settings.get('isource_voltage_compliance')
     if hw_compliance or (np.isfinite(voltage) and abs(voltage) >= comp_limit_v * 0.99):
         compliance_status = 'V_COMP'
-    sigma_v_meas = voltage_uncertainty(voltage, model=model_name, nplc=nplc)
+    if _is_overflow(voltage):
+        # The overflow value is not a voltage; it has no accuracy.
+        sigma_v_meas = float('nan')
+    else:
+        sigma_v_meas = voltage_uncertainty(
+            voltage, model=model_name, nplc=nplc,
+            fixed_range=fixed_range_for(measurement_settings,
+                                        'isource_voltage_range_auto',
+                                        'isource_voltage_compliance'))
     sigma_i_src = current_source_uncertainty(current, model=model_name)
-    if np.isfinite(voltage) and np.isfinite(current) and current != 0 and voltage != 0:
+    if (np.isfinite(voltage) and np.isfinite(current) and current != 0 and voltage != 0
+            and not _is_overflow(voltage)):
         r_calc = voltage / current
         rel = (sigma_v_meas / voltage) ** 2 + (sigma_i_src / current) ** 2
         sigma_r = abs(r_calc) * np.sqrt(rel)
@@ -173,6 +249,13 @@ def parse_four_point(parts, stat_word, hw_compliance, measurement_settings, nplc
         current = float(parts[1]) if len(parts) > 1 else float('nan')
     except Exception:
         voltage = float('nan'); current = float('nan')
+    # The current is the one programmed, not the CURR element (see
+    # _commanded). A delta-mode reading is synthesized by the run with the
+    # programmed magnitude already in that place, so it is left as it is.
+    if not getattr(mode_state, 'delta_mode', False):
+        programmed = getattr(mode_state, 'source_current', None)
+        if programmed is not None and np.isfinite(programmed):
+            current = float(programmed)
     compliance_type = 'Voltage'
     comp_limit_v = measurement_settings.get('fpp_voltage_compliance')
     if hw_compliance or (np.isfinite(voltage) and abs(voltage) >= comp_limit_v * 0.99):
@@ -207,12 +290,10 @@ def build_row(mode, elapsed_time, data_dict, compliance_status, event_marker,
         v = data_dict.get('voltage', float('nan'))
         i = data_dict.get('current', float('nan'))
 
-        # Decide F84-decomposed path vs legacy K*alpha path.
-        # F84 is selected if the user supplied any F84-only
-        # input (finite D, non-circle geometry, or a T+dopant
-        # combo). Defaults keep the legacy path active so
-        # existing config.json users see identical numbers.
-        diameter_cm = float(measurement_settings.get('fpp_diameter_cm') or 0.0)
+        # F84-decomposed path or the legacy K*alpha path; the file header
+        # records which (data_export.build_metadata asks the same function).
+        from ..calculations import four_point_method
+        diameter_cm = _number(measurement_settings, 'fpp_diameter_cm', 0.0)
         geometry = str(measurement_settings.get('fpp_geometry') or 'circle')
         temp_raw = measurement_settings.get('fpp_temperature_c')
         try:
@@ -222,24 +303,33 @@ def build_row(mode, elapsed_time, data_dict, compliance_status, event_marker,
         except (TypeError, ValueError):
             temp_c_val = None
         dopant = str(measurement_settings.get('fpp_dopant_type') or 'none').lower()
-        use_f84 = (diameter_cm > 0
-                   or geometry != 'circle'
-                   or (temp_c_val is not None and dopant in ('n', 'p')))
+        use_f84 = four_point_method(measurement_settings) == 'f84'
 
         # Common kwargs for the legacy path.
         fpp_kwargs = dict(
-            spacing_cm=float(measurement_settings.get('fpp_spacing_cm') or 0.1016),
-            thickness_um=float(measurement_settings.get('fpp_thickness_um') or 0.0),
-            k_factor=float(measurement_settings.get('fpp_k_factor') or 4.532),
-            alpha=float(measurement_settings.get('fpp_alpha') or 1.0),
+            spacing_cm=_number(measurement_settings, 'fpp_spacing_cm', 0.1016),
+            thickness_um=_number(measurement_settings, 'fpp_thickness_um', 0.0),
+            k_factor=_number(measurement_settings, 'fpp_k_factor', 4.532),
+            alpha=_number(measurement_settings, 'fpp_alpha', 1.0),
             model=str(measurement_settings.get('fpp_model') or 'thin_film'),
         )
+        v_comp_setting = _number(measurement_settings, 'fpp_voltage_compliance', 5.0)
+        # In a row, i is already the programmed current; the setting is only
+        # the fallback for a row that somehow has none.
+        src_i_setting = i if (np.isfinite(i) and i != 0) else _number(
+            measurement_settings, 'fpp_current', 1e-3)
+        v_fixed_range = fixed_range_for(
+            measurement_settings, 'fpp_voltage_range_auto', 'fpp_voltage_compliance')
+        v_sigma = voltage_uncertainty(v, model=model_name, nplc=nplc,
+                                      fixed_range=v_fixed_range)
+        # The current is sourced, not measured: the source specification.
+        i_sigma = current_source_uncertainty(i, model=model_name)
 
         if use_f84:
             # F84 path: F2·w·F(w/S)·F_sp [·F_T].
             from ..calculations import (
                 calculate_four_point_probe_f84, calculate_conductivity,
-                calculate_ratio, estimate_current_floor,
+                calculate_ratio, estimate_current_floor, f2_finite_diameter,
             )
             spacing_cm = fpp_kwargs['spacing_cm']
             thickness_um = fpp_kwargs['thickness_um']
@@ -248,12 +338,10 @@ def build_row(mode, elapsed_time, data_dict, compliance_status, event_marker,
             i_for_calc = i
             ratio_for_calc = calculate_ratio(v, i)
             if compliance_status != 'OK':
-                src_i = float(measurement_settings.get('fpp_current') or 1e-3)
-                v_comp = float(measurement_settings.get('fpp_voltage_compliance') or 5.0)
-                i_floor = estimate_current_floor(src_i)
+                i_floor = estimate_current_floor(src_i_setting)
                 i_eff = max(abs(i), i_floor) if np.isfinite(i) else i_floor
-                ratio_for_calc = abs(v_comp) / i_eff if i_eff > 0 else float('nan')
-                v_for_calc = abs(v_comp)
+                ratio_for_calc = abs(v_comp_setting) / i_eff if i_eff > 0 else float('nan')
+                v_for_calc = abs(v_comp_setting)
                 i_for_calc = i_eff
             f84 = calculate_four_point_probe_f84(
                 voltage=v_for_calc, current=i_for_calc,
@@ -263,16 +351,24 @@ def build_row(mode, elapsed_time, data_dict, compliance_status, event_marker,
                 temperature_c=temp_c_val,
                 dopant_type=dopant if dopant in ('n', 'p') else None,
             )
-            rs_val = (
-                f84.rho_T / thickness_cm
-                if (thickness_cm > 0 and np.isfinite(f84.rho_T))
-                else float('nan')
-            )
             # Use rho_23 when available; otherwise rho_T.
             rho_report = f84.rho_23 if f84.rho_23 is not None else f84.rho_T
+            if thickness_cm > 0:
+                # rho_T, not the temperature-corrected value: Rs is what was
+                # measured, at the temperature it was measured at.
+                rs_val = (f84.rho_T / thickness_cm
+                          if np.isfinite(f84.rho_T) else float('nan'))
+            else:
+                # A sheet resistance needs no thickness: Rs = F2 * V/I. It
+                # used to be rho / t here too, which is NaN with no thickness
+                # entered, in every row.
+                f2 = f2_finite_diameter(
+                    spacing_cm, diameter_cm if diameter_cm > 0 else None,
+                    geometry=geometry)
+                rs_val = (f2 * ratio_for_calc
+                          if np.isfinite(f2) and np.isfinite(ratio_for_calc)
+                          else float('nan'))
             sigma = calculate_conductivity(rho_report)
-            v_sigma = voltage_uncertainty(v, model=model_name, nplc=nplc)
-            i_sigma = current_uncertainty(i, model=model_name, nplc=nplc)
             row_data = [
                 elapsed_time, v, i,
                 ratio_for_calc, rs_val,
@@ -290,9 +386,9 @@ def build_row(mode, elapsed_time, data_dict, compliance_status, event_marker,
             if compliance_status != 'OK':
                 from ..calculations import calculate_four_point_probe_bound
                 result = calculate_four_point_probe_bound(
-                    v_compliance=float(measurement_settings.get('fpp_voltage_compliance') or 5.0),
+                    v_compliance=v_comp_setting,
                     measured_current=i,
-                    source_current=float(measurement_settings.get('fpp_current') or 1e-3),
+                    source_current=src_i_setting,
                     **fpp_kwargs,
                 )
             else:
@@ -300,8 +396,6 @@ def build_row(mode, elapsed_time, data_dict, compliance_status, event_marker,
                 result = calculate_four_point_probe(
                     voltage=v, current=i, **fpp_kwargs,
                 )
-            v_sigma = voltage_uncertainty(v, model=model_name, nplc=nplc)
-            i_sigma = current_uncertainty(i, model=model_name, nplc=nplc)
             row_data = [
                 elapsed_time, v, i,
                 result.ratio, result.sheet_resistance,
@@ -330,7 +424,11 @@ def build_row(mode, elapsed_time, data_dict, compliance_status, event_marker,
         # source_v or source_i
         v = data_dict.get('voltage', float('nan'))
         i = data_dict.get('current', float('nan'))
-        r = (v / i) if (np.isfinite(v) and np.isfinite(i) and i != 0) else float('nan')
+        # An overflow reading (9.9e37) is finite, and V/I of it is a number
+        # of the order 1e40 that looks like a result.
+        usable = (np.isfinite(v) and np.isfinite(i) and i != 0
+                  and not _is_overflow(v) and not _is_overflow(i))
+        r = (v / i) if usable else float('nan')
         r_unc = data_dict.get('resistance_unc', float('nan'))
         if mode == 'source_v':
             i_unc = data_dict.get('current_unc', float('nan'))
