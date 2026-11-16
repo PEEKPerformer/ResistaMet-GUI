@@ -11,16 +11,19 @@ line; ``read_latest()`` is a NON-BLOCKING cache read. Tests inject a fake
 uses after ``connect()``), then use ``wait_for_reading`` where they need to
 block for the first line.
 """
+import threading
 import time
 
 import pytest
 
 from resistamet_gui.constants import AUX_STALE_AFTER_S
 from resistamet_gui.sensors import (
+    FLAG_NON_FINITE,
     ArduinoThermocouple,
     AuxiliarySensor,
     SensorChannel,
     SensorError,
+    SensorHeaderError,
     SensorReading,
     SensorReadError,
     StreamSensor,
@@ -33,6 +36,7 @@ from resistamet_gui.sensors import (
     parse_thermocouple_line,
     reading_to_columns,
     register_sensor,
+    reserved_channel_keys,
 )
 
 
@@ -171,6 +175,28 @@ def test_read_latest_raises_when_stale(_closer):
         s.read_latest()
 
 
+def test_reading_age_is_measured_against_its_timestamp():
+    r = SensorReading(timestamp=100.0, values={"t": 21.0})
+    assert r.age_s(100.0) == 0.0
+    assert r.age_s(103.5) == 3.5
+    assert r.age_s(99.0) == 0.0          # clock stepped back: not negative
+
+
+def test_a_stalled_stream_shows_its_age_while_still_served(_closer):
+    """The stream stops after one line. read_latest keeps returning that
+    reading until AUX_STALE_AFTER_S, and age_s is what tells the caller the
+    value is old."""
+    now = [50.0]
+    s = _start(ArduinoThermocouple("ASRL6::INSTR", clock=lambda: now[0]),
+               ["DATA,21.0,22.0,0,0"])
+    _closer(s)
+    s.wait_for_reading(2.0)
+    now[0] += AUX_STALE_AFTER_S - 1.0
+    r = s.read_latest()                  # still inside the staleness limit
+    assert r.ok, "the repeated value carries no fault of its own"
+    assert r.age_s(now[0]) == AUX_STALE_AFTER_S - 1.0
+
+
 def test_reader_resyncs_past_banner_lines(_closer):
     s = _arduino_with(["maxwelld foam-TC v1", "READY", "DATA,21.0,22.0,0,0"])
     _closer(s)
@@ -193,6 +219,105 @@ def test_close_stops_reader_thread(_closer):
     assert not reader.is_alive(), "reader thread survived close()"
     with pytest.raises(SensorReadError):
         s.read_latest()          # cache cleared on close
+
+
+class _BlockingDev:
+    """A device whose read() blocks until a line is released or, when
+    ``close_aborts_read`` is set, until the session is closed — the two
+    behaviours a VISA backend can have."""
+
+    def __init__(self, close_aborts_read):
+        self._close_aborts_read = close_aborts_read
+        self._wake = threading.Event()
+        self.in_read = threading.Event()
+        self.closed = False
+
+    def read(self):
+        self.in_read.set()
+        self._wake.wait(10.0)
+        if self.closed and self._close_aborts_read:
+            raise OSError("session closed")
+        return "DATA,21.0,22.0,0,0"
+
+    def release(self):
+        self._wake.set()
+
+    def close(self):
+        self.closed = True
+        if self._close_aborts_read:
+            self._wake.set()
+
+
+def _blocked_in_read(close_aborts_read):
+    s = ArduinoThermocouple("ASRL6::INSTR")
+    dev = _BlockingDev(close_aborts_read)
+    s.dev = dev
+    s._start_reader()
+    assert dev.in_read.wait(2.0), "reader never reached read()"
+    return s, dev, s._reader
+
+
+def test_close_ends_a_blocked_read_when_the_backend_aborts_it():
+    s, dev, reader = _blocked_in_read(close_aborts_read=True)
+    t0 = time.monotonic()
+    s.close()
+    assert time.monotonic() - t0 < 0.5, "close() waited on an aborted read"
+    assert dev.closed
+    assert not reader.is_alive()
+
+
+def test_close_is_bounded_when_the_backend_does_not_abort_the_read():
+    """Closing the session does not end the pending read. close() must still
+    return — after its 1 s wait for the reader, not after the read's own
+    timeout — and the reader thread may outlive it. That is the documented
+    contract: the thread is a daemon and exits once the read returns."""
+    s, dev, reader = _blocked_in_read(close_aborts_read=False)
+    try:
+        t0 = time.monotonic()
+        s.close()
+        took = time.monotonic() - t0
+        assert 0.9 < took < 2.0, f"close() took {took:.2f}s"
+        assert dev.closed
+        assert reader.is_alive(), "the reader is expected to outlive close()"
+        with pytest.raises(SensorReadError):
+            s.read_latest()              # cache cleared even so
+    finally:
+        dev.release()
+    reader.join(2.0)
+    assert not reader.is_alive(), "reader did not exit once its read returned"
+
+
+def test_a_reader_that_outlives_close_leaves_the_sensor_alone():
+    """The line its read finally returns must not refill the cache of a
+    closed sensor."""
+    s, dev, reader = _blocked_in_read(close_aborts_read=False)
+    s.close()
+    dev.release()
+    reader.join(2.0)
+    assert not reader.is_alive()
+    with pytest.raises(SensorReadError, match="No reading"):
+        s.read_latest()
+
+
+def test_reopening_does_not_revive_the_previous_reader():
+    """The old reader is still inside its read when the sensor is reopened.
+    It must exit when that read returns, not start reading the new device
+    alongside the new reader."""
+    s, old_dev, old_reader = _blocked_in_read(close_aborts_read=False)
+    s.close()
+    new_dev = _BlockingDev(close_aborts_read=True)
+    s.dev = new_dev
+    s._start_reader()
+    try:
+        assert new_dev.in_read.wait(2.0)
+        old_dev.release()
+        old_reader.join(2.0)
+        assert not old_reader.is_alive(), "previous reader kept running"
+        with pytest.raises(SensorReadError, match="No reading"):
+            s.read_latest()              # its late line was discarded
+    finally:
+        old_dev.release()
+        s.close()
 
 
 def test_arduino_declares_two_channels():
@@ -391,24 +516,126 @@ def test_parse_stream_header_valid():
     assert [c.unit for c in chans] == ["psi", "degC", "N"]
 
 
-@pytest.mark.parametrize("bad", ["", "DATA,1,2", "HDR,noun", "HDR,", "HDR,:psi"])
-def test_parse_stream_header_rejects(bad):
-    assert parse_stream_header(bad) is None
+@pytest.mark.parametrize("not_a_header", ["", "DATA,1,2", "READY", "hdr,a:x"])
+def test_parse_stream_header_skips_lines_that_are_not_headers(not_a_header):
+    assert parse_stream_header(not_a_header) is None
+
+
+@pytest.mark.parametrize("bad, named", [
+    ("HDR,noun", "noun"),          # no unit separator
+    ("HDR,", ""),                  # empty header
+    ("HDR,:psi", ""),              # empty key
+    ("HDR,a/b:x", "a/b"),          # HDF5 path separator
+    ("HDR,a#b:x", "a#b"),          # CSV comment marker
+    ("HDR,flow rate:x", "flow rate"),
+    ("HDR,1st:x", "1st"),          # leading digit
+    ("HDR,t-sample:degC", "t-sample"),
+    ("HDR,ok:x,tempé:degC", "tempé"),
+])
+def test_parse_stream_header_refuses_unusable_header_and_names_it(bad, named):
+    with pytest.raises(SensorHeaderError) as exc:
+        parse_stream_header(bad)
+    assert repr(named) in str(exc.value)
 
 
 def test_parse_stream_header_rejects_duplicate_keys():
     """Duplicate keys would produce duplicate CSV columns (silent data loss)
     and abort the HDF5 exporter's compound dtype — reject at the source."""
-    assert parse_stream_header("HDR,t:degC,t:degC") is None
-    assert parse_stream_header("HDR,a:x,b:y,a:z") is None
+    with pytest.raises(SensorHeaderError, match="'t' is declared twice"):
+        parse_stream_header("HDR,t:degC,t:degC")
+    with pytest.raises(SensorHeaderError, match="'a' is declared twice"):
+        parse_stream_header("HDR,a:x,b:y,a:z")
     # Distinct keys must not false-positive.
     assert parse_stream_header("HDR,t1:degC,t2:degC") is not None
+
+
+def test_parse_stream_header_rejects_the_fault_key():
+    """A device channel called ``fault`` would become a second ``aux_fault``
+    column: the CSV header repeats it and the row dict keeps only the
+    provenance value, so the channel's data is lost."""
+    with pytest.raises(SensorHeaderError, match="'fault' is reserved"):
+        parse_stream_header("HDR,fault:x,t:degC")
+    # Only the exact reserved name; a key that merely contains it is fine,
+    # and so is one whose unprefixed name matches a built-in column.
+    chans = parse_stream_header("HDR,fault_code:x,compliance:x")
+    assert [c.key for c in chans] == ["fault_code", "compliance"]
+
+
+def test_reserved_keys_cover_every_column_a_run_can_already_have():
+    """The reserved set is computed from the exporter's column tables. Pin
+    the consequence: whatever keys pass the parser, the spliced header of
+    every co-logging mode has no repeated column."""
+    from resistamet_gui.data_export import AUX_LOG_MODES, get_column_config
+
+    assert "fault" in reserved_channel_keys()
+    builtin = set()
+    for mode in AUX_LOG_MODES:
+        for settings in (None, {"fpp_delta_mode": True}):
+            builtin.update(get_column_config(mode, settings)[0])
+    # Try to collide with every built-in column, prefixed or not.
+    candidates = sorted(builtin | {c[len("aux_"):] for c in builtin
+                                   if c.startswith("aux_")} | {"fault"})
+    accepted = []
+    for key in candidates:
+        try:
+            accepted += parse_stream_header(f"HDR,{key}:x")
+        except SensorHeaderError:
+            pass
+    assert accepted, "every candidate was refused; the test proves nothing"
+
+    class _Declares:
+        def channels(self):
+            return accepted
+
+    aux = aux_column_names(_Declares())
+    for mode in AUX_LOG_MODES:
+        for settings in (None, {"fpp_delta_mode": True}):
+            cols, _ = get_column_config(mode, settings, aux_columns=aux,
+                                        aux_units=[""] * len(aux))
+            assert len(cols) == len(set(cols)), (mode, settings, cols)
 
 
 def test_parse_stream_data_positional():
     chans = [SensorChannel("a", "A", "x"), SensorChannel("b", "B", "y")]
     r = parse_stream_data("DATA,1.5,2.5", chans)
     assert r.values == {"a": 1.5, "b": 2.5}
+
+
+def test_parse_stream_data_clean_row_carries_no_flags():
+    chans = [SensorChannel("a", "A", "x"), SensorChannel("b", "B", "y")]
+    r = parse_stream_data("DATA,1.5,2.5", chans)
+    assert r.flags == {} and r.ok
+    assert reading_to_columns(r)["aux_fault"] == "0"
+
+
+@pytest.mark.parametrize("token", ["nan", "NaN", "-nan", "inf", "-inf",
+                                   "Infinity", "1e999"])
+def test_parse_stream_data_flags_non_finite_channel(token):
+    """An open transducer prints nan/inf. The value is kept, its channel is
+    flagged, and the good channel beside it is untouched."""
+    import math
+
+    chans = [SensorChannel("a", "A", "x"), SensorChannel("b", "B", "y")]
+    r = parse_stream_data(f"DATA,{token},2.5", chans)
+    assert r is not None, "the row must be recorded, not dropped"
+    assert not math.isfinite(r.values["a"])
+    assert r.values["b"] == 2.5
+    assert r.flags == {"a": FLAG_NON_FINITE}
+    assert r.ok is False
+    cols = reading_to_columns(r)
+    assert cols["aux_fault"] == "a=1"
+    assert cols["aux_b"] == 2.5
+
+
+def test_stream_sensor_delivers_flagged_non_finite_reading(_closer):
+    s = StreamSensor("ASRL7::INSTR")
+    _start(s, ["HDR,p:psi,t:degC", "DATA,nan,21.0"])
+    _closer(s)
+    s.wait_ready(2.0)
+    r = s.read_latest()
+    assert r.ok is False
+    assert format_fault(r.flags) == "p=1"
+    assert r.values["t"] == 21.0
 
 
 @pytest.mark.parametrize("bad", ["DATA,1", "DATA,1,2,3", "HDR,a:b", "DATA,x,y"])
@@ -437,14 +664,83 @@ def test_stream_sensor_no_header_raises(_closer):
         s.wait_ready(0.3)
 
 
+def test_wait_ready_timeout_says_which_port_and_what_is_missing(_closer):
+    """No header at all: the message names the port, the budget, and the
+    likely cause."""
+    s = StreamSensor("ASRL7::INSTR")
+    _start(s, ["DATA,1,2", "garbage"])
+    _closer(s)
+    with pytest.raises(SensorError) as exc:
+        s.wait_ready(0.3)
+    msg = str(exc.value)
+    assert "ASRL7::INSTR" in msg
+    assert "no channel description within 0.3s" in msg
+    assert "wrong device or driver" in msg
+
+
+def test_wait_ready_timeout_when_header_came_but_no_data(_closer):
+    """Channels are known but nothing was ever read: a different message,
+    and a SensorReadError so callers can tell the two apart."""
+    s = StreamSensor("ASRL7::INSTR")
+    _start(s, ["HDR,p:psi"])
+    _closer(s)
+    with pytest.raises(SensorReadError, match="No valid reading from ASRL7::INSTR"):
+        s.wait_ready(0.3)
+    assert [c.key for c in s.channels()] == ["p"]
+
+
+def test_stream_sensor_header_arriving_late(_closer):
+    """The port opens mid-stream: rows arrive before the header. They cannot
+    be parsed without channels and are skipped; the sensor becomes ready once
+    the header shows up, and only rows after it are cached."""
+    s = StreamSensor("ASRL7::INSTR")
+    _start(s, ["1,0.5", "DATA,30.1,0.5", "DATA,30.2,0.5",
+               "HDR,p:psi,f:N", "DATA,32.5,0.98"])
+    _closer(s)
+    s.wait_ready(2.0)
+    assert [c.key for c in s.channels()] == ["p", "f"]
+    assert s.read_latest().values == {"p": 32.5, "f": 0.98}
+
+
+def test_stream_sensor_keeps_its_first_header(_closer):
+    """A header repeated mid-run (a device that resends it periodically) is
+    not a data row and does not change the declared channels."""
+    s = StreamSensor("ASRL7::INSTR")
+    _start(s, ["HDR,p:psi", "DATA,1.0", "HDR,q:bar", "DATA,2.0"])
+    _closer(s)
+    s.wait_ready(2.0)
+    assert _wait(lambda: s.dev.exhausted)
+    assert _wait(lambda: s.read_latest().values == {"p": 2.0})
+    assert [c.key for c in s.channels()] == ["p"]
+
+
 def test_stream_sensor_duplicate_header_never_ready(_closer):
     """A dup-key header is rejected by the parser, so the sensor never
     reports channels and wait_ready fails with a clear error."""
     s = StreamSensor("ASRL7::INSTR")
     _start(s, ["HDR,t:degC,t:degC", "DATA,1,2"])
     _closer(s)
-    with pytest.raises(SensorError):
+    with pytest.raises(SensorError, match="'t' is declared twice"):
         s.wait_ready(0.3)
+
+
+def test_stream_sensor_reports_the_refused_key(_closer):
+    """The operator sees which key the device got wrong, not a bare timeout."""
+    s = StreamSensor("ASRL7::INSTR")
+    _start(s, ["HDR,fault:x,t:degC", "DATA,7.5,21.0"])
+    _closer(s)
+    with pytest.raises(SensorError, match="ASRL7::INSTR.*'fault' is reserved"):
+        s.wait_ready(0.3)
+    assert s.channels() == []
+
+
+def test_stream_sensor_recovers_when_a_usable_header_follows(_closer):
+    s = StreamSensor("ASRL7::INSTR")
+    _start(s, ["HDR,fault:x", "HDR,t:degC", "DATA,21.0"])
+    _closer(s)
+    s.wait_ready(2.0)
+    assert [c.key for c in s.channels()] == ["t"]
+    assert s.read_latest().values == {"t": 21.0}
 
 
 def test_stream_sensor_satisfies_protocol_and_registered():
@@ -469,3 +765,117 @@ def test_stream_sensor_through_fake_under_sim():
             s.close()
     finally:
         pyvisa.ResourceManager = orig
+
+
+# --- Serial line settings ---------------------------------------------------
+
+@pytest.fixture
+def _sim_visa():
+    """The package's fake VISA, with both simulated serial sensors on it."""
+    import pyvisa
+    from resistamet_gui.simulator import enable_simulation
+    orig = pyvisa.ResourceManager
+    enable_simulation(aux_address="ASRL6::INSTR", stream_address="ASRL7::INSTR")
+    try:
+        yield
+    finally:
+        pyvisa.ResourceManager = orig
+
+
+@pytest.mark.parametrize("driver, address", [
+    ("arduino_thermocouple", "ASRL6::INSTR"),
+    ("stream_sensor", "ASRL7::INSTR"),
+])
+def test_serial_settings_reach_the_visa_session(_sim_visa, driver, address):
+    from pyvisa.constants import Parity, StopBits
+
+    s = make_sensor(driver, address, baud_rate=9600, data_bits=7,
+                    parity="even", stop_bits=2, termination="\r").open()
+    try:
+        assert s.dev.baud_rate == 9600
+        assert s.dev.data_bits == 7
+        assert s.dev.parity is Parity.even
+        assert s.dev.stop_bits is StopBits.two
+        assert s.dev.read_termination == "\r"
+        s.wait_ready(2.0)                # and the stream still reads
+    finally:
+        s.close()
+
+
+def test_open_failure_names_the_address_and_what_is_there(_sim_visa):
+    """A wrong address fails in open() with the address and the resources
+    that do exist, and leaves no reader thread behind."""
+    s = make_sensor("stream_sensor", "ASRL99::INSTR")
+    with pytest.raises(RuntimeError) as exc:
+        s.open()
+    msg = str(exc.value)
+    assert "ASRL99::INSTR" in msg and "not found" in msg
+    assert "ASRL7::INSTR" in msg         # what the bus does have
+    assert s._reader is None and s.dev is None
+    s.close()                            # closing a never-opened sensor is fine
+
+
+def test_serial_settings_left_out_are_not_touched(_sim_visa):
+    """Defaults unchanged: with no settings given, open() sets nothing beyond
+    what VisaInstrument.connect() already does."""
+    s = make_sensor("stream_sensor", "ASRL7::INSTR").open()
+    try:
+        for name in ("baud_rate", "data_bits", "parity", "stop_bits"):
+            assert not hasattr(s.dev, name), name
+        assert s.dev.read_termination == "\n"
+    finally:
+        s.close()
+
+    s = make_sensor("stream_sensor", "ASRL7::INSTR", baud_rate=115200).open()
+    try:
+        assert s.dev.baud_rate == 115200
+        assert not hasattr(s.dev, "parity")
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("opts, named", [
+    ({"baud_rate": 0}, "baud_rate"),
+    ({"baud_rate": "fast"}, "baud_rate"),
+    ({"data_bits": 9}, "data_bits"),
+    ({"parity": "sometimes"}, "parity"),
+    ({"stop_bits": 3}, "stop_bits"),
+    ({"termination": ""}, "termination"),
+])
+def test_bad_serial_setting_fails_before_any_port_is_opened(opts, named):
+    with pytest.raises(ValueError, match=named):
+        make_sensor("stream_sensor", "ASRL7::INSTR", **opts)
+
+
+def test_stop_bits_and_parity_spellings():
+    from pyvisa.constants import Parity, StopBits
+    from resistamet_gui.sensors import serial_session_attributes
+
+    assert serial_session_attributes() == {}
+    assert serial_session_attributes(stop_bits=1)["stop_bits"] is StopBits.one
+    assert (serial_session_attributes(stop_bits=1.5)["stop_bits"]
+            is StopBits.one_and_a_half)
+    assert serial_session_attributes(parity="None")["parity"] is Parity.none
+    assert serial_session_attributes(parity=Parity.odd)["parity"] is Parity.odd
+
+
+def test_port_is_released_when_a_setting_is_refused():
+    """A backend that refuses a setting must not leave the port open."""
+    from resistamet_gui._simulator import FakeSerialSensor
+
+    class _Refuses(FakeSerialSensor):
+        @property
+        def baud_rate(self):
+            return 9600
+
+        @baud_rate.setter
+        def baud_rate(self, _v):
+            raise OSError("unsupported baud rate")
+
+    dev = _Refuses()
+    s = ArduinoThermocouple("ASRL6::INSTR", baud_rate=12345)
+    s.connect = lambda: setattr(s, "dev", dev)
+    with pytest.raises(OSError, match="unsupported baud rate"):
+        s.open()
+    assert dev._closed and s.dev is None
+    assert s._reader is None, "no reader thread for a port that never opened"

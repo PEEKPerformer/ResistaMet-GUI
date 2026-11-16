@@ -93,3 +93,30 @@ def test_logging_off_leaves_schema_unchanged(sim_window, app):
         f"4PP schema drifted with logging off: {header} != {baseline}"
     )
     assert not any(c.startswith("aux_") for c in header)
+
+
+def test_aux_and_delta_columns_splice_together(sim_window, app):
+    """Delta mode and aux logging both splice columns in before
+    compliance/event. With both on, every value must still sit under its own
+    header: delta columns first, then the aux block, then the tail."""
+    _enable_aux(sim_window)
+    sim_window.tab_four_point.fpp_delta_mode.setChecked(True)
+    _run_4pp(sim_window, app, seconds=3.0)
+
+    rows = read_csv_data(_newest_4pp_csv())
+    header, data = rows[0], rows[1:]
+    assert data, "no 4PP data rows written"
+    order = ["V_plus", "V_minus", "R_f", "R_r",
+             "aux_t_sample", "aux_t_coldjunction", "aux_fault",
+             "compliance", "event"]
+    assert [c for c in header if c in order] == order, header
+    assert header[-len(order):] == order, header
+
+    ti, fi = header.index("aux_t_sample"), header.index("aux_fault")
+    ri, ci = header.index("R_f"), header.index("compliance")
+    for r in data:
+        assert len(r) == len(header), r
+        assert abs(float(r[ti]) - SIM_TEMP_C) <= 2.0, r
+        assert r[fi] == "0", r
+        assert float(r[ri]) > 0, r       # a resistance, not a temperature
+        assert r[ci] == "OK", r
