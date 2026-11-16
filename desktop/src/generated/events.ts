@@ -77,6 +77,26 @@ export interface FileOpenedPayload {
 }
 
 /**
+ * The 4PP current finder chose the run's source current.
+ *
+ * ``resistance_ohm`` is a lower bound when ``bound`` is true: the source
+ * was still in compliance at the smallest current, and nothing else was
+ * measured.
+ */
+export interface FppCurrentSelectedPayload {
+  bound?: boolean;
+  current_a: number;
+  expected_voltage_v?: number | null;
+  noise_floor_v?: number | null;
+  requested_current_a: number;
+  resistance_ohm?: number | null;
+  sig_figs?: number | null;
+  snr?: number | null;
+  target_sig_figs: number;
+  verdict: "ok" | "marginal" | "too_conductive" | "too_resistive";
+}
+
+/**
  * A four-point spot's position is a problem, said before the first sample.
  *
  * ``refused`` with ``off_sample``: a probe tip is on or beyond the edge and
@@ -178,7 +198,7 @@ export interface PromptPayload {
   detail?: {
     [k: string]: unknown | undefined;
   };
-  kind: "vdp_geometry" | "safety_voltage_ack" | "cable_null_shorted";
+  kind: "vdp_geometry" | "safety_voltage_ack" | "cable_null_shorted" | "fpp_current_decision";
   options?: string[];
   prompt_id: string;
   requires_human?: boolean;
@@ -390,6 +410,7 @@ export interface EventPayloadMap {
   error: ErrorPayload;
   file_finalized: FileFinalizedPayload;
   file_opened: FileOpenedPayload;
+  fpp_current_selected: FppCurrentSelectedPayload;
   geometry_warning: GeometryWarningPayload;
   instrument_connected: InstrumentConnectedPayload;
   line_frequency: LineFrequencyPayload;

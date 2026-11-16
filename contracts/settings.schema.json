@@ -314,6 +314,20 @@
           "title": "Fpp Array Angle Deg",
           "type": "number"
         },
+        "fpp_autoselect_current": {
+          "default": false,
+          "description": "true: before the run the sample is delta-probed at fpp_current and the smallest current that reaches fpp_autoselect_sigfigs is sourced instead, within fpp_power_stop_w, the model's current limit and half the voltage compliance. A sample that cannot reach the target raises the prompt fpp_current_decision (proceed / abort) with the output off. The file header records the current used and the one asked for.",
+          "title": "Fpp Autoselect Current",
+          "type": "boolean"
+        },
+        "fpp_autoselect_sigfigs": {
+          "default": 4,
+          "description": "Significant figures the current finder aims for: the sense voltage is 10**this times the measured scatter of the probe's reversal pairs.",
+          "maximum": 6,
+          "minimum": 1,
+          "title": "Fpp Autoselect Sigfigs",
+          "type": "integer"
+        },
         "fpp_current": {
           "default": 0.0001,
           "maximum": 3.0,

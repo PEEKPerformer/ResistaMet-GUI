@@ -1452,3 +1452,69 @@ class TestStopDuringSettle:
 
         assert spies.error_occurred == [], spies.error_occurred
         assert not any("Delta read error" in m for m in spies.status_update), spies.status_update
+
+
+class TestFourPointAutoselectCurrent:
+    """The pre-run current finder, as the Qt adapter exposes it: one signal
+    when the run is waiting on Proceed/Abort, one for the current chosen."""
+
+    @pytest.fixture(autouse=True)
+    def _no_minimum_settle(self, monkeypatch):
+        from resistamet_gui.session import current_finder
+        monkeypatch.setattr(current_finder, 'FPP_AUTOSELECT_MIN_SETTLE_S', 0.0)
+
+    def _settings(self, tmp_path):
+        s = _four_point_settings(tmp_path, samples=2)
+        s["measurement"]["fpp_autoselect_current"] = True
+        s["measurement"]["fpp_autoselect_sigfigs"] = 4
+        return s
+
+    def test_a_measurable_sample_gets_its_current_without_a_question(self, qapp, fake_rm,
+                                                                     tmp_path):
+        worker = MeasurementWorker("four_point", "s", "alice", self._settings(tmp_path))
+        decisions, chosen = [], []
+        worker.autoselect_decision.connect(decisions.append)
+        worker.autoselect_current_chosen.connect(chosen.append)
+        spies = _drive_worker(qapp, worker)
+
+        assert spies.error_occurred == []
+        assert decisions == []
+        assert chosen == [pytest.approx(1e-4)]
+        assert [d["current"] for _, d, _, _ in spies.data_point] == [pytest.approx(1e-4)] * 2
+        # The run's settings, which the GUI reads after it, say what was sourced.
+        assert worker.settings["measurement"]["fpp_current"] == pytest.approx(1e-4)
+
+    def test_declining_ends_the_run_before_any_point(self, qapp, fake_rm, tmp_path):
+        fake_rm._dut_r = 1e-5
+        worker = MeasurementWorker("four_point", "s", "alice", self._settings(tmp_path))
+        decisions = []
+        worker.autoselect_decision.connect(
+            lambda info: (decisions.append(dict(info)), worker.autoselect_respond(False)))
+        spies = _drive_worker(qapp, worker, timeout_s=8.0)
+
+        assert [d["verdict"] for d in decisions] == ["too_conductive"]
+        assert spies.data_point == []
+        assert spies.measurement_complete == []
+
+    def test_proceeding_runs_at_the_suggested_current(self, qapp, fake_rm, tmp_path):
+        fake_rm._dut_r = 1e-5
+        worker = MeasurementWorker("four_point", "s", "alice", self._settings(tmp_path))
+        decisions = []
+        worker.autoselect_decision.connect(
+            lambda info: (decisions.append(dict(info)), worker.autoselect_respond(True)))
+        spies = _drive_worker(qapp, worker, timeout_s=8.0)
+
+        assert len(decisions) == 1
+        assert [d["current"] for _, d, _, _ in spies.data_point] == \
+            [pytest.approx(decisions[0]["current_a"])] * 2
+
+    def test_stop_releases_a_pending_question(self, qapp, fake_rm, tmp_path):
+        fake_rm._dut_r = 1e-5
+        worker = MeasurementWorker("four_point", "s", "alice", self._settings(tmp_path))
+        worker.autoselect_decision.connect(lambda info: worker.stop_measurement())
+        spies = _drive_worker(qapp, worker, timeout_s=8.0)
+        assert spies.data_point == []
+
+    def test_an_answer_with_nothing_pending_is_ignored(self, qapp, fake_rm, tmp_path):
+        worker = MeasurementWorker("four_point", "s", "alice", self._settings(tmp_path))
+        worker.autoselect_respond(True)   # no run, no prompt: must not raise

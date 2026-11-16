@@ -344,6 +344,18 @@ class FourPointSettings(SettingsModel):
         description="true: a reading whose measured |V x I| is above fpp_power_stop_w "
                     "turns the output off and ends the run (reason overpower). false: such "
                     "a reading only warns, as one above fpp_power_warn_w does.")
+    fpp_autoselect_current: bool = Field(
+        default=_M['fpp_autoselect_current'],
+        description="true: before the run the sample is delta-probed at fpp_current and "
+                    "the smallest current that reaches fpp_autoselect_sigfigs is sourced "
+                    "instead, within fpp_power_stop_w, the model's current limit and half "
+                    "the voltage compliance. A sample that cannot reach the target raises "
+                    "the prompt fpp_current_decision (proceed / abort) with the output off. "
+                    "The file header records the current used and the one asked for.")
+    fpp_autoselect_sigfigs: int = Field(
+        default=_M['fpp_autoselect_sigfigs'], ge=1, le=6,
+        description="Significant figures the current finder aims for: the sense voltage "
+                    "is 10**this times the measured scatter of the probe's reversal pairs.")
 
     def worst_case_power_w(self) -> float:
         """|I| x |V_compliance|: the most the probe can dissipate.

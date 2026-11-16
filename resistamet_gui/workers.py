@@ -4,6 +4,7 @@ from PySide6.QtCore import QThread, Signal
 
 from .session.continuous_run import ContinuousRun
 from .session.control import RunControl
+from .session.current_finder import PROMPT_KIND as FPP_CURRENT_PROMPT
 from .session.emitter import EventEmitter
 from .session.vdp_run import VdpRun
 
@@ -58,6 +59,10 @@ class _QtSink:
                 detail = payload['detail']
                 self._worker.geometry_ready.emit(
                     detail['index'], {k: v for k, v in detail.items() if k != 'index'})
+            elif payload['kind'] == FPP_CURRENT_PROMPT:
+                self._worker.autoselect_decision.emit(dict(payload['detail']))
+        elif kind == 'fpp_current_selected':
+            self._worker.autoselect_current_chosen.emit(payload['current_a'])
         elif kind == 'vdp_geometry_complete':
             index = payload['index']
             self._worker.geometry_complete.emit(index, {
@@ -84,6 +89,12 @@ class MeasurementWorker(QThread):
     # GUI caches this for accuracy.py uncertainty lookups after the worker
     # thread tears down, since per-spot stats are computed post-measurement.
     instrument_identified = Signal(str)
+    # 4PP current finder. autoselect_decision: the run is blocked, output off,
+    # until autoselect_respond(); the dict is the prompt's detail (verdict,
+    # message, current_a, ...). autoselect_current_chosen: the current the run
+    # will source.
+    autoselect_decision = Signal(dict)
+    autoselect_current_chosen = Signal(float)
 
     def __init__(self, mode, sample_name, username, settings, parent=None):
         super().__init__(parent)
@@ -151,6 +162,12 @@ class MeasurementWorker(QThread):
 
     def stop_measurement(self) -> None:
         self._run.stop_measurement()
+
+    def autoselect_respond(self, proceed: bool) -> None:
+        """UI slot: the answer to the current finder's Proceed/Abort."""
+        prompt = self._control.pending_prompt
+        if prompt is not None and prompt.kind == FPP_CURRENT_PROMPT:
+            self._control.answer_prompt(prompt.prompt_id, 'proceed' if proceed else 'abort')
 
 
 class VdpMeasurementWorker(QThread):

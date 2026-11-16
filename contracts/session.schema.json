@@ -110,7 +110,8 @@
               "enum": [
                 "vdp_geometry",
                 "safety_voltage_ack",
-                "cable_null_shorted"
+                "cable_null_shorted",
+                "fpp_current_decision"
               ],
               "title": "Kind",
               "type": "string"

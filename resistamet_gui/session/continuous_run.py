@@ -17,7 +17,7 @@ import numpy as np
 import pyvisa
 
 from ..constants import (
-    AUX_READY_TIMEOUT_S, MODE_DISPLAY_NAMES,
+    AUX_READY_TIMEOUT_S, FPP_AUTOSELECT_DISCARD_READINGS, MODE_DISPLAY_NAMES,
     KEITHLEY_STAT_BIT_COMPLIANCE as _STAT_BIT_COMPLIANCE,
 )
 from ..data_export import AUX_LOG_MODES, effective_filter_type, splice_before_tail
@@ -26,11 +26,12 @@ from ..instrument import Keithley2400, humanize_connection_error
 from ..sensors import aux_column_names, make_sensor, reading_to_columns
 from ..system_utils import SleepInhibitor
 from ..timing import TimingSettings
+from . import current_finder
 from .control import RunStopped
 from .instrument_lock import HeldInstrument, InstrumentBusy
 from .configure import (
     configure_four_point, configure_resistance, configure_source_i,
-    configure_source_v, configure_sweep,
+    configure_source_v, configure_sweep, four_point_at_current,
 )
 from .run_files import create_base_path, open_exporter
 from .spot_map import write_map_summary
@@ -103,6 +104,8 @@ class ContinuousRun:
         self._last_delta = None
         #: The negative-V/I warning is given once per run, not per sample.
         self._fpp_negative_ratio_warned = False
+        #: True once the pre-run current finder has chosen this run's current.
+        self._autoselected = False
         # Set before anything is opened: this run's spot resolved against the
         # sample outline, or None for a run that carries no spot.
         self._spot_record = None
@@ -396,6 +399,54 @@ class ContinuousRun:
                 action()
             except Exception:
                 pass
+
+    def _autoselect_current(self, measurement_settings, settling_time):
+        """Run the pre-run current finder and take its current for the run.
+
+        Returns ``(measurement_settings, source_value_str)`` at the chosen
+        current, or None when the run is not to start: declined, stopped,
+        unanswered, or the probe failed. The output is off either way.
+
+        The settings are a copy. ``fpp_current`` becomes the current used,
+        which is what the header's ``source_current_A`` and the per-spot
+        statistics read; the one asked for is kept beside it.
+        """
+        requested = self._mode_state.source_current
+        spec = self._model_spec
+        try:
+            chosen = current_finder.find_current(
+                self.keithley, self._control, self._events, measurement_settings,
+                self._mode_state,
+                model_max_current=spec.max_source_i if spec is not None else 1.05,
+                settling_time=settling_time, prompt_timeout_s=self._prompt_timeout_s)
+        except RunStopped:
+            return None
+        except Exception as e:
+            self._events.error('autoselect_failed', 'smu',
+                                f"Error selecting the source current: {str(e)}")
+            self._control.finish('autoselect_failed')
+            return None
+        if chosen is None:
+            return None
+        self._mode_state, source_value_str = four_point_at_current(self._mode_state, chosen)
+        measurement_settings = {
+            **measurement_settings, 'fpp_current': chosen,
+            'fpp_autoselect_requested_current': requested,
+        }
+        self.settings = {**self.settings, 'measurement': measurement_settings}
+        self._autoselected = True
+        return measurement_settings, source_value_str
+
+    def _discard_readings(self, count: int) -> None:
+        """Read and throw away ``count`` readings before the first row.
+
+        After the current finder the first readings at the run's level
+        follow a change of source level and range.
+        """
+        for _ in range(count):
+            if self._control.stopped():
+                raise RunStopped()
+            self.keithley.query(":READ?")
 
     @staticmethod
     def _estimate_reading_time_s(measurement_settings, line_freq) -> float:
@@ -792,6 +843,20 @@ class ContinuousRun:
             if self._control.stopped():
                 refused = True
                 return
+
+            # The pre-run current finder (4PP, opt-in). After the configure
+            # step, which it needs, and before the file, whose name and
+            # header carry the current it chooses.
+            if current_finder.enabled(self.mode, measurement_settings):
+                selected = self._autoselect_current(measurement_settings, settling_time)
+                if selected is None:
+                    refused = True
+                    # finish() keeps the first reason: a stop or a timeout
+                    # reports as itself.
+                    self._control.finish('cancelled')
+                    return
+                measurement_settings, source_value_str = selected
+
             if not self._open_output_file(measurement_settings, source_value_str):
                 return
             file_ready = True
@@ -813,6 +878,8 @@ class ContinuousRun:
                     self.keithley.write(":OUTP ON")
                     self._events.log('settling', f"Waiting for settling time ({settling_time}s)...")
                     self._control.sleep(settling_time)
+                    if self._autoselected:
+                        self._discard_readings(FPP_AUTOSELECT_DISCARD_READINGS)
                 except RunStopped:
                     raise
                 except Exception as e:

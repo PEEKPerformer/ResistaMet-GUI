@@ -213,6 +213,107 @@
       "title": "FileOpenedPayload",
       "type": "object"
     },
+    "fpp_current_selected": {
+      "additionalProperties": false,
+      "description": "The 4PP current finder chose the run's source current.\n\n``resistance_ohm`` is a lower bound when ``bound`` is true: the source\nwas still in compliance at the smallest current, and nothing else was\nmeasured.",
+      "properties": {
+        "bound": {
+          "default": false,
+          "title": "Bound",
+          "type": "boolean"
+        },
+        "current_a": {
+          "title": "Current A",
+          "type": "number"
+        },
+        "expected_voltage_v": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Voltage V"
+        },
+        "noise_floor_v": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Noise Floor V"
+        },
+        "requested_current_a": {
+          "title": "Requested Current A",
+          "type": "number"
+        },
+        "resistance_ohm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resistance Ohm"
+        },
+        "sig_figs": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sig Figs"
+        },
+        "snr": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snr"
+        },
+        "target_sig_figs": {
+          "title": "Target Sig Figs",
+          "type": "number"
+        },
+        "verdict": {
+          "enum": [
+            "ok",
+            "marginal",
+            "too_conductive",
+            "too_resistive"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        }
+      },
+      "required": [
+        "current_a",
+        "requested_current_a",
+        "verdict",
+        "target_sig_figs"
+      ],
+      "title": "FppCurrentSelectedPayload",
+      "type": "object"
+    },
     "geometry_warning": {
       "$defs": {
         "SpotRequest": {
@@ -560,7 +661,8 @@
           "enum": [
             "vdp_geometry",
             "safety_voltage_ack",
-            "cable_null_shorted"
+            "cable_null_shorted",
+            "fpp_current_decision"
           ],
           "title": "Kind",
           "type": "string"

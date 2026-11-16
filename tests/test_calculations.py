@@ -707,3 +707,179 @@ class TestResistivityF84:
     def test_returns_named_tuple(self):
         result = calculate_resistivity_f84(50.0, 0.1, 0.001)
         assert isinstance(result, F84ResistivityResult)
+
+
+class TestSelectFourPointCurrent:
+    """The planner of the 4PP pre-run current finder."""
+
+    FLOOR = 1e-6
+    TARGET_SNR = 1e4   # 4 significant figures
+
+    def _flat_floor(self, _v):
+        return self.FLOOR
+
+    def _select(self, resistance, **kwargs):
+        from resistamet_gui.calculations import select_four_point_current
+        kwargs.setdefault('target_snr', self.TARGET_SNR)
+        kwargs.setdefault('max_current', 0.02)
+        kwargs.setdefault('sigma_v', self._flat_floor)
+        kwargs.setdefault('compliance_v', 5.0)
+        return select_four_point_current(resistance, **kwargs)
+
+    def test_measurable_sample_reaches_the_target(self):
+        # 100 ohm, SNR 1e4 over 1 uV -> 10 mV -> 0.1 mA.
+        sel = self._select(100.0)
+        assert sel.verdict == 'ok'
+        assert sel.current == pytest.approx(1e-4, rel=1e-6)
+        assert sel.expected_voltage == pytest.approx(0.01, rel=1e-6)
+        assert sel.snr == pytest.approx(1e4, rel=1e-6)
+        assert sel.sig_figs == pytest.approx(4.0, abs=1e-6)
+
+    def test_the_smallest_sufficient_current_not_the_ceiling(self):
+        sel = self._select(100.0, max_current=1.0, compliance_v=50.0)
+        assert sel.current == pytest.approx(1e-4, rel=1e-6)
+
+    def test_sign_of_resistance_is_ignored(self):
+        assert self._select(-100.0) == self._select(100.0)
+
+    def test_noise_floor_drives_the_current(self):
+        small = self._select(100.0, max_current=1.0, sigma_v=lambda _v: 1e-6, compliance_v=50.0)
+        big = self._select(100.0, max_current=1.0, sigma_v=lambda _v: 1e-4, compliance_v=50.0)
+        assert big.verdict == 'ok'
+        assert big.current == pytest.approx(100 * small.current, rel=1e-9)
+
+    def test_more_significant_figures_need_more_current(self):
+        three = self._select(100.0, target_snr=1e3, max_current=1.0, compliance_v=50.0)
+        five = self._select(100.0, target_snr=1e5, max_current=1.0, compliance_v=50.0)
+        assert five.current == pytest.approx(100 * three.current, rel=1e-9)
+        assert (three.verdict, five.verdict) == ('ok', 'ok')
+
+    def test_the_minimum_current_is_a_floor(self):
+        # 1 Mohm needs only 10 nA for 10 mV; the 2400 sources no less than 1 uA.
+        sel = self._select(1e6)
+        assert sel.verdict == 'ok'
+        assert sel.current == 1e-6
+        assert sel.snr == pytest.approx(1e6)
+
+    def test_too_conductive_under_one_figure_at_the_ceiling(self):
+        sel = self._select(15e-6)     # 0.3 uV at 20 mA
+        assert sel.verdict == 'too_conductive'
+        assert sel.current == pytest.approx(0.02)
+        assert sel.snr == pytest.approx(0.3)
+
+    def test_zero_or_invalid_resistance_is_too_conductive(self):
+        assert self._select(0.0).verdict == 'too_conductive'
+        assert self._select(float('nan')).verdict == 'too_conductive'
+
+    def test_a_current_ceiling_short_of_the_target_is_marginal(self):
+        # 15 uohm at 1 A: 15 uV, SNR 15. Above one figure, far short of four.
+        sel = self._select(15e-6, max_current=1.0)
+        assert sel.verdict == 'marginal'
+        assert sel.current == pytest.approx(1.0)
+        assert sel.snr == pytest.approx(15.0)
+        assert "1.2 significant figures" in sel.reason
+        assert "current ceiling" in sel.reason
+
+    def test_a_target_out_of_reach_of_compliance_is_marginal_at_half_compliance(self):
+        """The release parked this run at 4.5 V of a 5 V limit and called it ok.
+
+        1 kohm, 1 mV scatter, four figures: 10 V wanted, 5 V allowed.
+        """
+        sel = self._select(1e3, max_current=1.0, sigma_v=lambda _v: 1e-3)
+        assert sel.verdict == 'marginal'
+        assert sel.expected_voltage == pytest.approx(2.5)
+        assert sel.current == pytest.approx(2.5e-3)
+        assert sel.snr == pytest.approx(2500.0)
+        assert "3.4 significant figures" in sel.reason
+        assert "50% of the 5 V compliance" in sel.reason
+
+    def test_the_default_headroom_leaves_room_for_v_over_i_to_double(self):
+        # Bench runs under the release sat at 52-58 V of a 60 V limit.
+        sel = self._select(1e5, target_snr=1e8, max_current=1.0, compliance_v=60.0)
+        assert sel.expected_voltage == pytest.approx(30.0)
+        # V/I may rise by this much before a row is flagged V_COMP at 99 %.
+        assert 0.99 * 60.0 / sel.expected_voltage == pytest.approx(1.98)
+
+    def test_an_explicit_headroom_is_respected(self):
+        sel = self._select(1e5, target_snr=1e8, max_current=1.0, compliance_headroom=0.9)
+        assert sel.expected_voltage == pytest.approx(4.5)
+        assert sel.verdict == 'marginal'
+
+    def test_exactly_reaching_the_target_at_the_ceiling_is_ok(self):
+        # 100 ohm, ceiling exactly the 0.1 mA the target needs.
+        assert self._select(100.0, max_current=1e-4).verdict == 'ok'
+
+    def test_too_resistive_when_the_minimum_current_exceeds_the_headroom(self):
+        sel = self._select(1e9)
+        assert sel.verdict == 'too_resistive'
+        assert sel.current == 1e-6
+        # 4 Mohm x 1 uA = 4 V: under compliance, over the headroom.
+        assert self._select(4e6).verdict == 'too_resistive'
+        assert self._select(2e6).verdict == 'ok'
+
+    def test_no_compliance_means_no_voltage_ceiling(self):
+        sel = self._select(1e5, target_snr=1e8, max_current=1.0, compliance_v=None)
+        assert sel.verdict == 'ok'
+        assert sel.expected_voltage == pytest.approx(100.0)
+
+
+class TestDeltaProbeStatistics:
+    def test_resistance_is_the_mean_over_the_programmed_current(self):
+        from resistamet_gui.calculations import delta_probe_statistics
+        r, sigma = delta_probe_statistics([0.099, 0.101, 0.100, 0.100], 1e-3)
+        assert r == pytest.approx(100.0)
+        assert sigma == pytest.approx(np.std([0.099, 0.101, 0.100, 0.100], ddof=1))
+
+    def test_the_sign_of_the_ratio_is_kept(self):
+        from resistamet_gui.calculations import delta_probe_statistics
+        r, _ = delta_probe_statistics([-0.1, -0.1], 1e-3)
+        assert r == pytest.approx(-100.0)
+
+    def test_one_pair_resolves_nothing(self):
+        from resistamet_gui.calculations import delta_probe_statistics
+        assert delta_probe_statistics([0.1], 1e-3) == (pytest.approx(100.0), pytest.approx(0.1))
+
+    def test_no_pairs_or_no_current_is_nan(self):
+        from resistamet_gui.calculations import delta_probe_statistics
+        assert all(math.isnan(x) for x in delta_probe_statistics([], 1e-3))
+        assert all(math.isnan(x) for x in delta_probe_statistics([0.1], 0.0))
+
+
+class TestFourPointCurrentCeiling:
+    def _ceiling(self, *args):
+        from resistamet_gui.calculations import four_point_current_ceiling
+        return four_point_current_ceiling(*args)
+
+    def test_the_power_stop_at_full_compliance(self):
+        assert self._ceiling(1.05, 0.1, 5.0, 1e-6) == pytest.approx(0.02)
+
+    def test_the_model_limit_when_it_is_smaller(self):
+        assert self._ceiling(1.05, 22.0, 5.0, 1e-6) == pytest.approx(1.05)
+
+    def test_never_below_the_minimum_current(self):
+        assert self._ceiling(1.05, 1e-4, 200.0, 1e-6) == 1e-6
+
+    def test_no_compliance_leaves_the_model_limit(self):
+        assert self._ceiling(1.05, 0.1, 0.0, 1e-6) == pytest.approx(1.05)
+
+
+class TestSelectedCurrentIsARoundNumber:
+    """The selection's arithmetic ended a few units in the last place off a
+    round value on some platforms, and 0.00010000000000000002 was sent to the
+    instrument and written to the file name and the header."""
+
+    @pytest.mark.parametrize("resistance", [100.0, 100.0 * (1 + 2e-16), 99.99999999999999,
+                                            1234.5678, 3.3e6])
+    def test_six_significant_figures(self, resistance):
+        from resistamet_gui.calculations import select_four_point_current
+        chosen = select_four_point_current(
+            resistance, 1e4, 1.0, lambda _v: 1e-6, compliance_v=60.0)
+        assert chosen.current == float(f"{chosen.current:.6g}")
+        assert len(repr(chosen.current)) <= 12
+
+    def test_rounding_does_not_turn_a_reached_target_into_a_question(self):
+        from resistamet_gui.calculations import select_four_point_current
+        for resistance in (100.0, 1234.5678, 777.777, 3.14159e4):
+            chosen = select_four_point_current(
+                resistance, 1e4, 1.0, lambda _v: 1e-6, compliance_v=60.0)
+            assert chosen.verdict == 'ok', (resistance, chosen)

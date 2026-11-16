@@ -293,10 +293,31 @@ class PromptPayload(EventModel):
     """The run is blocked until someone answers."""
 
     prompt_id: str
-    kind: Literal['vdp_geometry', 'safety_voltage_ack', 'cable_null_shorted']
+    kind: Literal['vdp_geometry', 'safety_voltage_ack', 'cable_null_shorted',
+                  'fpp_current_decision']
     options: List[str] = Field(default_factory=list)
     requires_human: bool = True
     detail: Dict[str, Any] = Field(default_factory=dict)
+
+
+class FppCurrentSelectedPayload(EventModel):
+    """The 4PP current finder chose the run's source current.
+
+    ``resistance_ohm`` is a lower bound when ``bound`` is true: the source
+    was still in compliance at the smallest current, and nothing else was
+    measured.
+    """
+
+    current_a: float
+    requested_current_a: float
+    verdict: Literal['ok', 'marginal', 'too_conductive', 'too_resistive']
+    resistance_ohm: Optional[float] = None
+    bound: bool = False
+    expected_voltage_v: Optional[float] = None
+    noise_floor_v: Optional[float] = None
+    snr: Optional[float] = None
+    sig_figs: Optional[float] = None
+    target_sig_figs: float
 
 
 class PromptResolvedPayload(EventModel):
@@ -403,6 +424,7 @@ PAYLOAD_MODELS = {
     'vdp_result': VdpResultPayload,
     'prompt': PromptPayload,
     'prompt_resolved': PromptResolvedPayload,
+    'fpp_current_selected': FppCurrentSelectedPayload,
     'run_started': RunStartedPayload,
     'aux_connected': AuxConnectedPayload,
     'file_opened': FileOpenedPayload,

@@ -28,7 +28,8 @@ class PendingPrompt(EventModel):
     """The question a run is parked on. Same fields as the ``prompt`` event."""
 
     prompt_id: str
-    kind: Literal['vdp_geometry', 'safety_voltage_ack', 'cable_null_shorted']
+    kind: Literal['vdp_geometry', 'safety_voltage_ack', 'cable_null_shorted',
+                  'fpp_current_decision']
     options: List[str]
     requires_human: bool
     detail: Dict[str, Any]

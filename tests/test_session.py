@@ -1165,6 +1165,8 @@ class TestSpotStatisticsAtTheEndOfARun:
         # header did not use to say.
         'params.method', 'params.diameter_cm', 'params.geometry',
         'params.temperature_c', 'params.dopant_type', 'params.delta_mode',
+        # Whether the pre-run current finder chose source_current_A.
+        'params.autoselect_current',
         'filter.enabled', 'filter.type', 'filter.count',
     }
     FOOTER_KEYS_BEFORE = {'ended_at', 'total_samples', 'duration_s', 'end_reason'}

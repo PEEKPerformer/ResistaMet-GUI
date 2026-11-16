@@ -137,6 +137,14 @@ export interface FourPointSettings {
    * Direction of the probe array, anticlockwise from +x (a rectangle's length); a spot's own angle_deg wins. Position check only.
    */
   fpp_array_angle_deg?: number;
+  /**
+   * true: before the run the sample is delta-probed at fpp_current and the smallest current that reaches fpp_autoselect_sigfigs is sourced instead, within fpp_power_stop_w, the model's current limit and half the voltage compliance. A sample that cannot reach the target raises the prompt fpp_current_decision (proceed / abort) with the output off. The file header records the current used and the one asked for.
+   */
+  fpp_autoselect_current?: boolean;
+  /**
+   * Significant figures the current finder aims for: the sense voltage is 10**this times the measured scatter of the probe's reversal pairs.
+   */
+  fpp_autoselect_sigfigs?: number;
   fpp_current?: number;
   /**
    * Current reversal: each reading combines +I and -I, cancelling thermal offsets.
@@ -656,6 +664,16 @@ export const FIELD_META: Record<string, Record<string, FieldMeta>> = {
       "min": -360,
       "max": 360,
       "default": 0
+    },
+    "fpp_autoselect_current": {
+      "type": "boolean",
+      "default": false
+    },
+    "fpp_autoselect_sigfigs": {
+      "type": "integer",
+      "min": 1,
+      "max": 6,
+      "default": 4
     },
     "fpp_current": {
       "type": "number",

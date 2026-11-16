@@ -515,6 +515,15 @@ def build_metadata(
         }
         if meta['params']['delta_mode']:
             meta['params']['delta_settling_s'] = measurement_settings.get('fpp_delta_settling')
+        # The pre-run current finder: source_current_A above is then the
+        # current it chose, and these are what it was asked for.
+        meta['params']['autoselect_current'] = bool(
+            measurement_settings.get('fpp_autoselect_current', False))
+        if meta['params']['autoselect_current']:
+            meta['params']['autoselect_requested_current_A'] = measurement_settings.get(
+                'fpp_autoselect_requested_current', measurement_settings.get('fpp_current'))
+            meta['params']['autoselect_target_sig_figs'] = measurement_settings.get(
+                'fpp_autoselect_sigfigs')
     elif mode == 'vdp':
         meta['params'] = {
             'source_current_A': measurement_settings.get('vdp_current'),
