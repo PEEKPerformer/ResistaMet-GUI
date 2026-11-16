@@ -55,6 +55,23 @@ def _parse_args(argv):
              "value: 1e-3 (0.1%%). Only meaningful with --simulate.",
     )
     parser.add_argument(
+        "--sim-aux-address", default="ASRL6::INSTR", metavar="VISA",
+        help="VISA address the simulator exposes the auxiliary streaming "
+             "sensor at (default: ASRL6::INSTR). Only meaningful with "
+             "--simulate.",
+    )
+    parser.add_argument(
+        "--sim-temp", type=float, default=25.0, metavar="CELSIUS",
+        help="Temperature (deg C) the simulated auxiliary thermocouple streams "
+             "(default: 25.0). Only meaningful with --simulate.",
+    )
+    parser.add_argument(
+        "--sim-stream-address", default="ASRL7::INSTR", metavar="VISA",
+        help="VISA address the simulator exposes the multi-channel streaming "
+             "sensor (StreamSensor) at (default: ASRL7::INSTR). Only "
+             "meaningful with --simulate.",
+    )
+    parser.add_argument(
         "--version", action="version", version=f"ResistaMet GUI {__version__}",
     )
     return parser.parse_args(argv)
@@ -69,6 +86,9 @@ def main():
             dut_resistance_ohms=args.sim_resistance,
             model=args.sim_model,
             noise_rsd=args.sim_noise_rsd,
+            aux_address=args.sim_aux_address,
+            sim_temp_c=args.sim_temp,
+            stream_address=args.sim_stream_address,
         )
 
     from PySide6.QtWidgets import QApplication

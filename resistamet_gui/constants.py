@@ -79,6 +79,14 @@ DEFAULT_SETTINGS = {
         "fpp_power_warn_w": 1.0e-2,           # warn (status flash) above this measured V*I, watts
         "fpp_power_stop_w": 1.0e-1,           # hard stop above this measured V*I, watts
         "fpp_stop_on_overpower": True,        # abort 4PP run if measured power exceeds fpp_power_stop_w
+        # Auxiliary-sensor co-logging (global, Keithley-centric). When enabled,
+        # every continuous-mode point (resistance / source_v / source_i /
+        # four_point) is stamped with the aux sensor's channel values (aux_*
+        # columns). Off by default — keeps existing CSVs byte-identical. The
+        # address is machine-local in spirit (like gpib_address); not portable.
+        "aux_log_enabled": False,             # co-log an auxiliary data source with each point
+        "aux_driver": "arduino_thermocouple", # sensors.make_sensor() driver name
+        "aux_address": "ASRL6::INSTR",        # VISA/serial address of the auxiliary sensor
         # Van der Pauw (vdP) defaults per ASTM F76-08 Method A. 4 manual lead
         # reconnections, current reversal automated at each geometry → 8
         # voltage readings total. Thickness in cm to match F76 units.
@@ -165,3 +173,14 @@ MODE_TIMING_OVERRIDES = {
 # Keithley compliance heuristics
 KEITHLEY_COMPLIANCE_MAGIC_NUMBER = 9.9e37
 COMPLIANCE_THRESHOLD_FACTOR = 1.0
+
+# Auxiliary-sensor co-logging timing. The sensor driver runs a background
+# reader thread that caches the newest parsed line; read_latest() is a
+# non-blocking cache read so the Keithley acquisition loop and the GUI
+# never wait on the serial stream.
+AUX_STALE_AFTER_S = 5.0        # cached reading older than this raises SensorReadError
+AUX_READY_TIMEOUT_S = 5.0      # worker budget for first reading (+ header) after open
+AUX_PREVIEW_TIMEOUT_MS = 800   # VISA timeout for the idle-preview sensor handle
+AUX_PREVIEW_INTERVAL_MS = 500  # idle-preview repaint tick (2 Hz)
+AUX_PREVIEW_GIVEUP_TICKS = 6   # consecutive empty ticks before the preview stops
+                               # (6 x 500 ms = 3 s — outlasts the ~2 s Arduino USB reset)

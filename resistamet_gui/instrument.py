@@ -187,16 +187,19 @@ class VisaInstrument:
         return self.dev.query(cmd)
 
     def close(self):
+        # Close only our own device session. Do NOT close the ResourceManager:
+        # pyvisa caches one ResourceManager per VISA library process-wide, and
+        # rm.close() terminates every session opened through it — including
+        # other live instruments (e.g. an auxiliary sensor co-logging alongside
+        # the Keithley). See pyvisa highlevel.ResourceManager.close: "this will
+        # also terminate connections obtained from other ResourceManager
+        # instances."
         try:
             if self.dev:
                 self.dev.close()
         finally:
             self.dev = None
-            if self.rm:
-                try:
-                    self.rm.close()
-                finally:
-                    self.rm = None
+            self.rm = None
 
 
 class Keithley2400(VisaInstrument):

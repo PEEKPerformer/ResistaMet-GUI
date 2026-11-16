@@ -38,6 +38,7 @@ from __future__ import annotations
 import math
 import random
 import re
+import time
 from collections import deque
 from typing import Optional
 
@@ -743,6 +744,126 @@ class FakeKeithley:
         self._error_queue.append((code, message))
 
 
+class FakeSerialSensor:
+    """A drop-in for a streaming ASCII serial sensor (auxiliary-sensor seam).
+
+    Duck-types the subset of ``pyvisa.resources.MessageBasedResource`` that
+    :class:`resistamet_gui.sensors.SerialLineSensor` uses: settable
+    ``timeout``/``read_termination``/``write_termination``, ``read()`` returning
+    one ``DATA,<tip>,<cold>,<fault>,<status>`` line, plus ``flush``/``close``.
+
+    Streams a temperature centered on ``sim_temp_c`` (the K-type tip) with the
+    cold-junction ~1.5 °C above it, so ``--simulate`` exercises the co-logging
+    path end to end with no hardware. Noise is seeded for per-process
+    determinism, matching :class:`FakeKeithley`.
+    """
+
+    # Emulated stream period. The real board streams ~1-2 Hz; the fake runs
+    # faster so tests get fresh data quickly, but NOT instantly — the driver's
+    # background reader thread consumes read() in a loop, and an instant
+    # return would spin it hot.
+    STREAM_PERIOD_S = 0.02
+
+    def __init__(self, sim_temp_c: float = 25.0, noise_c: float = 0.05):
+        self.sim_temp_c = float(sim_temp_c)
+        self._noise_c = float(noise_c)
+        self._rng = random.Random(0x7EA)
+        # PyVISA-compatible knobs
+        self.timeout = 3000
+        self.read_termination = "\n"
+        self.write_termination = "\n"
+        # Handy in tests
+        self.read_count = 0
+        self._closed = False
+
+    def _line(self) -> str:
+        tip = self.sim_temp_c + self._rng.gauss(0.0, self._noise_c)
+        cold = self.sim_temp_c + 1.5 + self._rng.gauss(0.0, self._noise_c)
+        return f"DATA,{tip:.3f},{cold:.3f},0,0\r\n"
+
+    def read(self) -> str:
+        if self._closed:
+            raise pyvisa.errors.InvalidSession()
+        time.sleep(self.STREAM_PERIOD_S)
+        self.read_count += 1
+        return self._line()
+
+    def flush(self, *_args, **_kwargs) -> None:
+        pass
+
+    def write(self, *_args, **_kwargs):
+        # Read-only sensor; accept and ignore writes for duck-type safety.
+        return None
+
+    def query(self, _cmd: str) -> str:
+        # Not used on the read-only path, but harmless to support.
+        return self._line()
+
+    def close(self) -> None:
+        self._closed = True
+
+
+class FakeStreamSensor:
+    """Drop-in for a self-describing multi-channel streaming sensor.
+
+    Emits a ``HDR,<key>:<unit>,...`` line first, then positional
+    ``DATA,<v1>,<v2>,...`` rows — exercising :class:`StreamSensor`'s dynamic
+    channel discovery under ``--simulate`` with no hardware. Duck-types the
+    same pyvisa subset as :class:`FakeSerialSensor`. Seeded noise for
+    per-process determinism.
+    """
+
+    DEFAULT_CHANNELS = (
+        ("pressure", "psi", 35.0),
+        ("t_sample", "degC", 25.0),
+        ("force", "N", 1.0),
+    )
+
+    # See FakeSerialSensor.STREAM_PERIOD_S — paces the reader thread.
+    STREAM_PERIOD_S = 0.02
+
+    def __init__(self, channels=None, noise=0.02):
+        self._chans = list(channels or self.DEFAULT_CHANNELS)
+        self._noise = float(noise)
+        self._rng = random.Random(0x57EA)
+        self._sent_header = False
+        self.timeout = 3000
+        self.read_termination = "\n"
+        self.write_termination = "\n"
+        self.read_count = 0
+        self._closed = False
+
+    def _header(self) -> str:
+        return "HDR," + ",".join(f"{k}:{u}" for k, u, _ in self._chans) + "\r\n"
+
+    def _data(self) -> str:
+        vals = [base * (1 + self._rng.gauss(0.0, self._noise))
+                for _, _, base in self._chans]
+        return "DATA," + ",".join(f"{v:.4f}" for v in vals) + "\r\n"
+
+    def read(self) -> str:
+        if self._closed:
+            raise pyvisa.errors.InvalidSession()
+        time.sleep(self.STREAM_PERIOD_S)
+        self.read_count += 1
+        if not self._sent_header:
+            self._sent_header = True
+            return self._header()
+        return self._data()
+
+    def flush(self, *_args, **_kwargs) -> None:
+        pass
+
+    def write(self, *_args, **_kwargs):
+        return None
+
+    def query(self, _cmd: str) -> str:
+        return self._data()
+
+    def close(self) -> None:
+        self._closed = True
+
+
 # ============================================================================
 # Resource manager shim — lets us monkeypatch pyvisa with one line.
 # ============================================================================
@@ -764,6 +885,9 @@ class FakeResourceManager:
         idn: Optional[str] = None,
         model: Optional[str] = None,
         noise_rsd: float = 0.0,
+        aux_address: str = "ASRL6::INSTR",
+        sim_temp_c: float = 25.0,
+        stream_address: str = "ASRL7::INSTR",
     ):
         if idn is not None and model is not None:
             raise ValueError("pass either idn= or model=, not both")
@@ -774,6 +898,12 @@ class FakeResourceManager:
         self._idn = idn if idn is not None else (
             _idn_for_model(model) if model is not None else DEFAULT_IDN
         )
+        # Auxiliary streaming sensor (e.g. an Arduino thermocouple on ASRL).
+        # Exposed alongside the GPIB SMU so the pluggable-sensor path is
+        # exercisable under --simulate with no hardware.
+        self._aux_addr = aux_address
+        self._sim_temp_c = float(sim_temp_c)
+        self._stream_addr = stream_address
         self.opened: list[FakeKeithley] = []
 
         # Pre-injection: applied to the next opened FakeKeithley. Used by
@@ -784,9 +914,15 @@ class FakeResourceManager:
         self._pre_inject_exception: Optional[BaseException] = None
 
     def list_resources(self) -> tuple[str, ...]:
-        return (self._addr,)
+        return (self._addr, self._aux_addr, self._stream_addr)
 
     def open_resource(self, resource_name: str, **_kwargs):
+        # Auxiliary serial sensor branches — checked before the GPIB SMU so a
+        # streaming-sensor open under --simulate gets the right fake device.
+        if resource_name == self._aux_addr:
+            return FakeSerialSensor(sim_temp_c=self._sim_temp_c)
+        if resource_name == self._stream_addr:
+            return FakeStreamSensor()
         if resource_name != self._addr:
             raise pyvisa.errors.VisaIOError(-1073807343)  # VI_ERROR_RSRC_NFOUND
         dev = FakeKeithley(
