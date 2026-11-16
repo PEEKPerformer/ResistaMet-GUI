@@ -568,17 +568,26 @@ class ConfigManager:
     # --- user / global settings ------------------------------------------
 
     def get_user_settings(self, username: str) -> Dict:
+        """The settings ``username`` runs on: defaults, then shared, then their own.
+
+        Layered per key, so a key the user has not stored comes from the
+        shared (global) section, and one that is not there either from the
+        defaults. Storing one key therefore moves no other value: a profile
+        that holds a single measurement key still writes to the shared data
+        directory.
+        """
         user_settings = copy.deepcopy(DEFAULT_SETTINGS)
 
-        if 'user_settings' in self.config and username in self.config['user_settings']:
-            user_specific = self.config['user_settings'][username]
+        for section in _USER_SECTIONS:
+            shared = self.config.get(section)
+            if isinstance(shared, dict) and isinstance(user_settings.get(section), dict):
+                user_settings[section].update(copy.deepcopy(shared))
+
+        user_specific = self.config.get('user_settings', {}).get(username)
+        if isinstance(user_specific, dict):
             for section, settings in user_specific.items():
-                if section in user_settings and isinstance(user_settings[section], dict):
-                    user_settings[section].update(settings)
-        else:
-            for section in _USER_SECTIONS:
-                if section in self.config:
-                    user_settings[section] = dict(self.config[section])
+                if isinstance(user_settings.get(section), dict) and isinstance(settings, dict):
+                    user_settings[section].update(copy.deepcopy(settings))
 
         # Machine-local fields always win — they never live in user_settings
         # because the same profile may run on a different PC tomorrow.
