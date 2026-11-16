@@ -80,6 +80,20 @@ export interface InstrumentInfo {
   max_power_w: number | null;
 }
 
+/** Which VISA implementation answered: a vendor library ("ivi"), pyvisa-py
+ *  ("py"), or something that does not say ("unknown"). */
+export interface VisaBackend {
+  requested: string;
+  kind: "ivi" | "py" | "unknown";
+  library: string | null;
+  version: string | null;
+}
+
+export interface ResourceList {
+  resources: string[];
+  backend: VisaBackend;
+}
+
 export interface EventPage {
   events: EventEnvelope[];
   gap: boolean;
@@ -226,12 +240,16 @@ export class ApiClient {
 
   // --- instruments -------------------------------------------------------
 
-  resources(): Promise<{ resources: string[] }> {
-    return this.request("GET", "/instruments/resources");
+  /** `visaLibrary` undefined = this machine's saved backend. */
+  resources(visaLibrary?: string): Promise<ResourceList> {
+    const query = visaLibrary === undefined ? "" : `?visa_library=${encodeURIComponent(visaLibrary)}`;
+    return this.request("GET", `/instruments/resources${query}`);
   }
 
-  identify(address: string): Promise<InstrumentInfo> {
-    return this.request("POST", "/instruments/identify", { address });
+  identify(address: string, visaLibrary?: string): Promise<InstrumentInfo> {
+    const body: { address: string; visa_library?: string } = { address };
+    if (visaLibrary !== undefined) body.visa_library = visaLibrary;
+    return this.request("POST", "/instruments/identify", body);
   }
 
   // --- transport ---------------------------------------------------------

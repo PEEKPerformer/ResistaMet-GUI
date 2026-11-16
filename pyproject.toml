@@ -74,6 +74,11 @@ api = [
     "fastapi>=0.110",
     "uvicorn>=0.27",
 ]
+# NI GPIB-USB adapters from user space (resistamet_gui/gpib_usb); needs a
+# libusb shared library on the machine as well.
+usb = [
+    "pyusb>=1.2",
+]
 
 [project.scripts]
 resistamet-gui = "resistamet_gui.__main__:main"

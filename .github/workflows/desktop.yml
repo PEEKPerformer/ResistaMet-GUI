@@ -63,6 +63,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
+      - name: Install libusb (bundled with the frozen backend)
+        # The NI GPIB-USB user-space driver needs it; resistamet-api.spec
+        # copies the dylib beside the executable.
+        if: runner.os == 'macOS'
+        run: brew install libusb
+
       - name: Freeze the backend
         # One-dir bundle into desktop/sidecar, where tauri.conf.json's
         # bundle.resources picks it up.
@@ -84,6 +90,29 @@ jobs:
           proc.stdin.close()
           proc.wait(timeout=60)
           print("backend exited", proc.returncode)
+
+      - name: The frozen backend can load its VISA stack
+        # A frozen app has no Homebrew or apt path to find libusb on, so the
+        # NI GPIB-USB driver is only usable if the bundled copy loads. On
+        # Windows the adapter belongs to NI's driver and nothing is bundled.
+        shell: python
+        run: |
+          import json, os, subprocess, sys
+          exe = os.path.join("desktop", "sidecar", "resistamet-api",
+                             "resistamet-api.exe" if os.name == "nt" else "resistamet-api")
+          done = subprocess.run([exe, "--check-visa", "--visa-library", "@py",
+                                 "--config", "ci-config.json"],
+                                capture_output=True, text=True, timeout=120)
+          print(done.stdout.strip() or done.stderr[-2000:])
+          assert done.returncode == 0, done.returncode
+          report = json.loads(done.stdout)
+          assert report["backend"]["kind"] == "py", report["backend"]
+          ni_usb = report["ni_usb"]
+          if sys.platform == "darwin":
+              assert ni_usb["available"], ni_usb
+              assert ni_usb["libusb"], "the bundled libusb was not found"
+          else:
+              print("NI USB driver availability on this platform:", ni_usb["available"])
 
       # --- the shell ---------------------------------------------------------
       - name: Set up Node

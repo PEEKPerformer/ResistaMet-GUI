@@ -18,26 +18,101 @@ a tenth the size and out of any Qt-plugin path trouble on Windows.
     pyinstaller resistamet-api.spec --noconfirm --clean
     dist/resistamet-api/resistamet-api --port 0 --simulate --config /tmp/c.json
 """
+import shutil
 import sys
+import tempfile
 from pathlib import Path
+
+from PyInstaller.utils.hooks import copy_metadata
+
+
+def _version_metadata():
+    """Distribution metadata for the packages that report their own version.
+
+    pyvisa and pyvisa-py read their version through importlib.metadata; with
+    no dist-info in the bundle they answer "unknown", which makes
+    ``--check-visa`` output useless in a bug report from the lab.
+    """
+    found = []
+    for name in ("pyvisa", "pyvisa-py", "pyusb"):
+        try:
+            found += copy_metadata(name)
+        except Exception:
+            pass  # not installed on this build machine; the version stays unknown
+    return found
 
 block_cipher = None
 
 ROOT = Path(SPECPATH)
+
+
+def _libusb_files():
+    """The libusb shared library and its licence, when the build machine has one.
+
+    pyusb loads the library at runtime by name; a frozen app has no Homebrew
+    or apt path to find it on, so it ships beside the executable and
+    ``gpib_usb.transport.libusb_backend`` looks there first. Only done on
+    macOS and Linux: on Windows the NI adapter belongs to NI's own driver
+    and the app goes through NI-VISA.
+
+    libusb is LGPL-2.1. Loading the unmodified shared library dynamically
+    from an MIT program is permitted; the licence asks that its text
+    accompany the library, so ``COPYING`` ships next to it as
+    ``libusb-COPYING`` when the build machine has it.
+
+    Returns ``(binaries, datas)`` in PyInstaller's tuple form.
+    """
+    if sys.platform.startswith("win"):
+        return [], []
+    import ctypes.util
+
+    found = ctypes.util.find_library("usb-1.0")
+    candidates = [found] if found else []
+    if sys.platform == "darwin":
+        candidates += [
+            "/opt/homebrew/lib/libusb-1.0.0.dylib",
+            "/usr/local/lib/libusb-1.0.0.dylib",
+        ]
+    for candidate in candidates:
+        path = Path(candidate).resolve()
+        if not path.is_file():
+            continue
+        datas = []
+        for licence in (path.parent.parent / "COPYING",
+                        Path("/opt/homebrew/opt/libusb/COPYING"),
+                        Path("/usr/share/doc/libusb-1.0-0/copyright")):
+            if licence.is_file():
+                # datas keeps the source file name; stage a copy under the
+                # name it should have in the bundle.
+                staged = Path(tempfile.mkdtemp(prefix="resistamet-libusb-")) / "libusb-COPYING"
+                shutil.copyfile(licence, staged)
+                datas.append((str(staged), "."))
+                break
+        return [(str(path), ".")], datas
+    return [], []
+
+
+_LIBUSB_BINARIES, _LIBUSB_DATAS = _libusb_files()
+
 
 a = Analysis(
     # A launcher, not the module: PyInstaller runs its entry as a plain
     # script, where the package-relative imports in api/__main__.py would fail.
     [str(ROOT / "resistamet-api.py")],
     pathex=[str(ROOT)],
-    binaries=[],
-    datas=[],
+    binaries=_LIBUSB_BINARIES,
+    datas=_LIBUSB_DATAS + _version_metadata(),
     hiddenimports=[
         # pyvisa backends are chosen by name at runtime; static analysis does
         # not see them.
         "pyvisa",
         "pyvisa_py",
         "pyvisa_py.highlevel",
+        # the NI GPIB-USB user-space driver imports pyusb lazily
+        "usb",
+        "usb.core",
+        "usb.util",
+        "usb.backend.libusb1",
         # serial aux sensors, imported inside the driver
         "serial",
         "serial.tools.list_ports",
