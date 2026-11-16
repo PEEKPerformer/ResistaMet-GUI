@@ -6,24 +6,54 @@ proceed gate; current reversal at each geometry is automated, giving the eight
 voltage readings F76 averages. Reports through an outputs facade, no Qt.
 """
 import logging
+import math
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
+from ..constants import KEITHLEY_COMPLIANCE_MAGIC_NUMBER as _OVERFLOW_READING
 from ..constants import KEITHLEY_STAT_BIT_COMPLIANCE as _STAT_BIT_COMPLIANCE
-from ..data_export import build_metadata, get_column_config, make_exporter
+from ..data_export import (build_metadata, effective_filter_type, get_column_config,
+                           make_exporter)
 from ..instrument import Keithley2400, humanize_connection_error
 from ..system_utils import SleepInhibitor
 from .control import RunStopped
+from .events import PAYLOAD_MODELS
 from .instrument_lock import HeldInstrument, InstrumentBusy
 from .run_files import create_base_path
 
 logger = logging.getLogger(__name__)
 
 
+#: A reading at or above this fraction of the voltage limit is in
+#: compliance whatever its status word says; the other modes' rule
+#: (``session/samples.py``).
+_COMPLIANCE_FRACTION = 0.99
+
+
 class _VdpAborted(Exception):
     """Internal: worker was stopped via stop_measurement()."""
+
+
+class _Reading:
+    """One polarity of one geometry: N raw ``:READ?`` reduced to a voltage.
+
+    ``voltage`` is the mean of the raw voltages, unless one of them is not
+    a voltage at all (the 9.9e37 overflow value, or not finite): then it is
+    that raw value, so that one overflow among several is not averaged
+    into a number that looks like a measurement. ``unusable`` counts them.
+    ``in_compliance`` is true when any raw reading had the compliance
+    status bit set or was within 1 % of the voltage limit.
+    """
+
+    __slots__ = ('voltage', 'in_compliance', 'unusable', 'count')
+
+    def __init__(self, voltage, in_compliance, unusable, count):
+        self.voltage = voltage
+        self.in_compliance = in_compliance
+        self.unusable = unusable
+        self.count = count
 
 
 def wiring_message(geometry) -> str:
@@ -86,6 +116,10 @@ class VdpRun:
         self._instrument_lock = instrument_lock
         self._control = control
         self._voltages: Dict[str, float] = {}
+        #: F76 labels of the readings taken in voltage compliance, in order.
+        self._compliance_labels: List[str] = []
+        self._v_comp = 0.0
+        self._v_fixed_range = None
         self.keithley = None
         self.exporter = None
         self._instrument_idn = ""
@@ -251,7 +285,11 @@ class VdpRun:
             self._compute_and_emit_result()
         except (RunStopped, _VdpAborted):
             self._control.finish('user_stop')
-            if self._control.finish_reason == 'prompt_timeout':
+            if self._control.finish_reason == 'write_error':
+                # Nobody aborted it: the file could not take a row.
+                self._events.log('aborted', "vdP measurement ended: a row could not be "
+                                            "written to the data file")
+            elif self._control.finish_reason == 'prompt_timeout':
                 # Nobody aborted it: nobody answered.
                 self._events.log('aborted', "vdP measurement abandoned: no answer at the prompt")
             else:
@@ -358,13 +396,27 @@ class VdpRun:
         self.keithley.write(":SOUR:DEL:AUTO ON")
 
         if measurement.get('filter_enabled', False):
-            ftype = str(measurement.get('filter_type', 'repeat')).upper()[:3]
+            # The type comes from the helper build_metadata writes the
+            # header's filter block with, so the file says what was sent.
+            # For vdP that is always a repeat filter: a moving one would
+            # average the +I and -I readings together.
+            ftype = effective_filter_type(self.MODE, measurement).upper()[:3]
+            if str(measurement.get('filter_type', 'repeat')).lower().startswith('mov'):
+                self._events.warn('filter_type_overridden',
+                    "The profile asks for a moving filter; a van der Pauw run uses a "
+                    "repeat filter (a moving one would average the two current "
+                    "polarities together).")
             fcount = int(measurement.get('filter_count', 10))
             self.keithley.write(f":SENS:AVER:TCON {ftype}")
             self.keithley.write(f":SENS:AVER:COUN {fcount}")
             self.keithley.write(":SENS:AVER ON")
 
         self._i_mag = i_mag
+        self._v_comp = v_comp
+        #: The voltage range sent when auto range is off (the compliance
+        #: value, above), else None: the accuracy lookup then uses the range
+        #: the instrument was on, not the one the reading would fit.
+        self._v_fixed_range = None if auto_range else v_comp
 
         # A stop during the connect and configure: no file for a run that
         # measured nothing. The output has not been on.
@@ -454,20 +506,32 @@ class VdpRun:
             self.keithley.write(":OUTP ON")
             self.keithley.write(f":SOUR:CURR {self._i_mag}")
             self._control.sleep(settling)
-            v_pos, stat_pos = self._read_averaged(n_avg)
+            pos = self._read_averaged(n_avg)
 
             self.keithley.write(f":SOUR:CURR {-self._i_mag}")
             self._control.sleep(settling)
-            v_neg, stat_neg = self._read_averaged(n_avg)
+            neg = self._read_averaged(n_avg)
+            v_pos, v_neg = pos.voltage, neg.voltage
 
             # Return polarity to +I and disable output so the user can
             # safely reconnect leads for the next geometry.
             self.keithley.write(f":SOUR:CURR {self._i_mag}")
             self.keithley.write(":OUTP OFF")
 
-            if (stat_pos | stat_neg) & _STAT_BIT_COMPLIANCE:
+            in_compliance = [label for label, reading in
+                             ((geom.label_pos, pos), (geom.label_neg, neg))
+                             if reading.in_compliance]
+            if in_compliance:
+                # The run goes on (the other geometries are still worth
+                # having for diagnosis), but the readings are marked in the
+                # file and the result will not be a valid one.
+                self._compliance_labels.extend(in_compliance)
                 self._events.emit('compliance', {'kind': 'Voltage',
                                                   'stop_on_compliance': False})
+                self._events.warn('vdp_compliance',
+                    f"{geom.name}: voltage compliance at {', '.join(in_compliance)} "
+                    f"(limit {self._v_comp:g} V). The reading is the limit, not the "
+                    f"sample; this run's result will be marked invalid.")
 
             self._voltages[geom.label_pos] = v_pos
             self._voltages[geom.label_neg] = v_neg
@@ -480,11 +544,22 @@ class VdpRun:
                 geom.label_pos, v_pos,
                 geom.label_neg, v_neg,
                 self._i_mag,
+                'V_COMP' if in_compliance else 'OK',
             ]
             try:
                 self.exporter.write_row(row)
-            except Exception:
+            except Exception as e:
+                # A vdP file is four rows and each one is a rewiring by
+                # hand, so there is no "three in a row" as in the continuous
+                # modes: the first row the file does not take ends the run,
+                # with their end reason. The output is already off.
                 logger.warning("vdP: failed to write export row", exc_info=True)
+                self._events.error('write_failed', 'file',
+                    f"CRITICAL: could not write the row for {geom.name}: {e}. "
+                    f"Possible disk full or write permission issue. "
+                    f"The data file is incomplete; the run is ended.")
+                self._control.finish('write_error')
+                raise _VdpAborted()
 
             self._events.emit('vdp_geometry_complete', {
                 'index': idx,
@@ -493,7 +568,19 @@ class VdpRun:
                 'label_neg': geom.label_neg, 'v_neg': v_neg,
                 'current_a': self._i_mag,
                 'group': geom.group,
+                'compliance': list(in_compliance),
             })
+
+            for label, reading in ((geom.label_pos, pos), (geom.label_neg, neg)):
+                if reading.unusable:
+                    # No result can come of this run, so it ends here rather
+                    # than after the remaining rewirings. The row above
+                    # keeps the raw value for the record.
+                    raise ValueError(
+                        f"{label} is not a usable voltage: {reading.unusable} of "
+                        f"{reading.count} raw reading(s) at {geom.name} overflowed or "
+                        f"were not a number ({reading.voltage!r}). Check the connections "
+                        f"and the voltage range for that geometry and measure again.")
 
     def _compute_vdp_combined_uncertainty(self, result):
         """Thin wrapper around calculations_vdp.vdp_combined_uncertainty.
@@ -511,19 +598,33 @@ class VdpRun:
             rho_avg=float(result.rho_avg),
             model=self._model_name,
             nplc=nplc,
+            v_fixed_range=self._v_fixed_range,
         )
         return u.u_rs, u.u_rho
 
-    def _read_averaged(self, n: int):
-        """Issue N :READ? queries and return (mean V, OR of STAT bits)."""
-        v_sum = 0.0
+    def _read_averaged(self, n: int) -> _Reading:
+        """Issue N :READ? queries; each raw reading is checked, then the mean.
+
+        Overflow and compliance are properties of a raw reading. Checked on
+        the mean they are missed: one 9.9e37 among several is a huge finite
+        number once averaged, and one reading at the limit among several
+        below it averages to below the limit.
+        """
+        values: List[float] = []
         stat_or = 0
         for _ in range(n):
             raw = self.keithley.query(":READ?").strip()
             parts = [p.strip() for p in raw.split(',')]
-            v_sum += float(parts[0])
+            values.append(float(parts[0]))
             stat_or |= int(float(parts[-1]))
-        return v_sum / n, stat_or
+        unusable = [v for v in values
+                    if not math.isfinite(v) or abs(v) >= _OVERFLOW_READING]
+        at_limit = self._v_comp > 0 and any(
+            math.isfinite(v) and abs(v) >= self._v_comp * _COMPLIANCE_FRACTION
+            for v in values)
+        voltage = unusable[0] if unusable else sum(values) / n
+        return _Reading(voltage, bool(stat_or & _STAT_BIT_COMPLIANCE) or at_limit,
+                        len(unusable), n)
 
     def _compute_and_emit_result(self) -> None:
         from ..calculations_vdp import calculate_van_der_pauw
@@ -537,6 +638,20 @@ class VdpRun:
         # metadata carries the same numbers the result panel shows).
         u_rs, u_rho = self._compute_vdp_combined_uncertainty(result)
 
+        # Two things make a result invalid: readings whose signs cannot be
+        # one sample's (from the calculation), and readings taken in
+        # compliance (from this run). The numbers are kept either way, for
+        # diagnosis; 'valid' says whether they are a measurement.
+        reasons = []
+        if not result.valid:
+            reasons.append(result.invalid_reason)
+        if self._compliance_labels:
+            reasons.append(
+                f"voltage compliance at {', '.join(self._compliance_labels)}: "
+                f"those readings are the {self._v_comp:g} V limit, not the sample")
+        valid = not reasons
+        invalid_reason = "; ".join(reasons)
+
         result_dict = {
             'rho_a': result.rho_a,
             'rho_b': result.rho_b,
@@ -546,24 +661,45 @@ class VdpRun:
             'q_b': result.q_b,
             'f_a': result.f_a,
             'f_b': result.f_b,
-            'homogeneous': result.homogeneous,
+            # Never true of an invalid result: every reader of this dict
+            # that knows only this key (the result panel's banner, the run
+            # summary) then shows it as failing, not as a clean result.
+            'homogeneous': bool(result.homogeneous and valid),
             'asymmetry_pct': result.asymmetry_pct,
             'voltages': dict(self._voltages),
             'current_a': self._i_mag,
             'thickness_cm': thickness,
             'sheet_resistance_uncertainty': u_rs,
             'rho_avg_uncertainty': u_rho,
+            'valid': valid,
+            'invalid_reason': invalid_reason,
+            'compliance': bool(self._compliance_labels),
+            # Space-separated: the labels themselves contain commas.
+            'compliance_readings': " ".join(self._compliance_labels),
         }
         # The file first: a result that cannot be announced is still recorded.
         self._shut_down(result_dict)
-        self._events.emit('vdp_result', result_dict)
+        # The event carries the keys its payload model has; the file's
+        # footer (above) has them all.
+        known = PAYLOAD_MODELS['vdp_result'].model_fields
+        self._events.emit('vdp_result',
+                          {key: value for key, value in result_dict.items() if key in known})
         rho_text = (f"rho={result.rho_avg:.4g} Ω·cm" if thickness > 0
                     else "no thickness, no rho")
-        self._events.log('completed',
-            f"vdP done: Rs={result.sheet_resistance:.4g} Ω/sq, {rho_text}, "
-            f"asym={result.asymmetry_pct:.2f}% "
-            f"({'homogeneous' if result.homogeneous else 'NON-homogeneous'})"
-        )
+        if valid:
+            self._events.log('completed',
+                f"vdP done: Rs={result.sheet_resistance:.4g} Ω/sq, {rho_text}, "
+                f"asym={result.asymmetry_pct:.2f}% "
+                f"({'homogeneous' if result.homogeneous else 'NON-homogeneous'})"
+            )
+        else:
+            self._events.warn('vdp_result_invalid',
+                f"vdP result INVALID: {invalid_reason}")
+            self._events.log('completed',
+                f"vdP done, result INVALID ({invalid_reason}). For diagnosis only: "
+                f"Rs={result.sheet_resistance:.4g} Ω/sq, {rho_text}, "
+                f"asym={result.asymmetry_pct:.2f}%"
+            )
 
     def _shut_down(self, result_dict=None) -> None:
         """The end of a run that got as far as its instrument: output off,

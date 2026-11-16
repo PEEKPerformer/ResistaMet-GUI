@@ -13,6 +13,7 @@ import { MODE_FIELDS, MODE_LABEL, MODE_TIMING, TIMING_FIELDS } from "../../lib/f
 import { ApiError, type PendingPrompt, type Resolved } from "../../lib/api";
 import { NAME_THE_SAMPLE } from "../../lib/copy";
 import { formatEngineering } from "../../lib/format";
+import { vdpVerdict } from "../../lib/vdpVerdict";
 import { runPanelSettings, useSession } from "../../state/session";
 import { useVdp } from "../../state/vdp";
 import { useUi } from "../../state/ui";
@@ -230,8 +231,14 @@ export function VdpView() {
                       <td>
                         {g.name} <span className={own.group}>{g.group}</span>
                       </td>
-                      <td className="num">{formatEngineering(g.v_pos, "V")}</td>
-                      <td className="num">{formatEngineering(g.v_neg, "V")}</td>
+                      <td className="num">
+                        {formatEngineering(g.v_pos, "V")}
+                        {g.compliance?.includes(g.label_pos) ? <> <Badge tone="danger">V comp</Badge></> : null}
+                      </td>
+                      <td className="num">
+                        {formatEngineering(g.v_neg, "V")}
+                        {g.compliance?.includes(g.label_neg) ? <> <Badge tone="danger">V comp</Badge></> : null}
+                      </td>
                       <td className="num">{formatEngineering(g.current_a, "A")}</td>
                     </tr>
                   ))}
@@ -339,6 +346,7 @@ function ResultPanel({ result }: { result: NonNullable<ReturnType<typeof useVdp>
   const uRs = result.sheet_resistance_uncertainty;
   const uRho = result.rho_avg_uncertainty;
   const thicknessGiven = result.thickness_cm > 0;
+  const verdict = vdpVerdict(result);
   return (
     <div className={own.result}>
       <div className={own.headline}>
@@ -361,8 +369,8 @@ function ResultPanel({ result }: { result: NonNullable<ReturnType<typeof useVdp>
         </div>
       </div>
       <div className={own.checks}>
-        <Badge tone={result.homogeneous ? "ok" : "danger"}>{result.homogeneous ? "f(Q) homogeneity passes" : "f(Q) homogeneity fails"}</Badge>
-        <span className="num">asymmetry {result.asymmetry_pct.toFixed(2)} %</span>
+        <Badge tone={verdict.tone}>{verdict.label}</Badge>
+        <span className={result.valid === false ? undefined : "num"}>{verdict.detail}</span>
       </div>
       <table className={own.detailTable}>
         <tbody>
