@@ -1,0 +1,138 @@
+"""The sidecar as a real process: handshake, watchdog, shutdown.
+
+These spawn the entry point rather than importing it, because what is being
+tested is process behaviour — the parent reads one line from stdout, talks
+HTTP, and gets its child back when it closes stdin.
+"""
+import json
+import subprocess
+import sys
+import time
+
+import pytest
+
+pytest.importorskip("fastapi")
+pytest.importorskip("uvicorn")
+httpx = pytest.importorskip("httpx")
+
+
+def _spawn(tmp_path, *extra):
+    """Start the sidecar and return (process, handshake)."""
+    process = subprocess.Popen(
+        [sys.executable, '-m', 'resistamet_gui.api', '--port', '0', '--simulate',
+         '--config', str(tmp_path / 'config.json'), *extra],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True,
+    )
+    line = process.stdout.readline()
+    assert line, f"no handshake: {process.stderr.read()[:400]}"
+    return process, json.loads(line)
+
+
+def _stop(process):
+    if process.poll() is None:
+        process.kill()
+    process.wait(timeout=10)
+
+
+class TestHandshake:
+    def test_handshake_is_one_json_line_on_stdout(self, tmp_path):
+        process, handshake = _spawn(tmp_path)
+        try:
+            assert handshake['url'].startswith('http://127.0.0.1:')
+            assert handshake['token']
+            assert handshake['pid'] == process.pid
+        finally:
+            _stop(process)
+
+    def test_the_api_answers_on_the_advertised_url(self, tmp_path):
+        process, handshake = _spawn(tmp_path)
+        try:
+            response = httpx.get(f"{handshake['url']}/health", timeout=5.0)
+            assert response.status_code == 200
+        finally:
+            _stop(process)
+
+    def test_the_advertised_token_works_and_others_do_not(self, tmp_path):
+        process, handshake = _spawn(tmp_path)
+        try:
+            url = f"{handshake['url']}/session"
+            good = httpx.get(url, headers={'Authorization': f"Bearer {handshake['token']}"},
+                              timeout=5.0)
+            bad = httpx.get(url, headers={'Authorization': 'Bearer nope'}, timeout=5.0)
+            assert good.status_code == 200
+            assert good.json()['state'] == 'idle'
+            assert bad.status_code == 401
+        finally:
+            _stop(process)
+
+    def test_logs_go_to_stderr_not_stdout(self, tmp_path):
+        """The parent reads stdout as a protocol; a log line there breaks it."""
+        process, handshake = _spawn(tmp_path)
+        try:
+            httpx.get(f"{handshake['url']}/health", timeout=5.0)
+            process.stdin.close()
+            process.wait(timeout=20)
+            remainder = process.stdout.read()
+            assert remainder.strip() == ''
+        finally:
+            _stop(process)
+
+
+class TestShutdown:
+    def test_closing_stdin_stops_the_process(self, tmp_path):
+        """A killed parent must not leave a process holding the instrument."""
+        process, _ = _spawn(tmp_path)
+        try:
+            process.stdin.close()
+            process.wait(timeout=20)
+            assert process.returncode is not None
+        finally:
+            _stop(process)
+
+    def test_shutdown_route_stops_the_process(self, tmp_path):
+        process, handshake = _spawn(tmp_path)
+        try:
+            httpx.post(f"{handshake['url']}/session/shutdown",
+                        headers={'Authorization': f"Bearer {handshake['token']}"},
+                        timeout=5.0)
+            process.wait(timeout=20)
+            assert process.returncode is not None
+        finally:
+            _stop(process)
+
+    def test_a_run_is_finalized_before_exit(self, tmp_path):
+        """Shutdown stops the run, so the file is closed and the output off."""
+        process, handshake = _spawn(tmp_path)
+        headers = {'Authorization': f"Bearer {handshake['token']}"}
+        try:
+            httpx.post(f"{handshake['url']}/users", headers=headers, timeout=5.0)
+            started = httpx.post(
+                f"{handshake['url']}/session/start", headers=headers, timeout=10.0,
+                json={'mode': 'resistance', 'sample_name': 'sidecar', 'username': 'e2e',
+                       'overrides': {'res_test_current': 1e-3,
+                                      'res_voltage_compliance': 5.0}},
+            )
+            assert started.status_code == 202
+
+            # Wait for real rows, not just an open file: the point is that
+            # shutdown finalizes a run that was actually measuring.
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                status = httpx.get(f"{handshake['url']}/session", headers=headers,
+                                    timeout=5.0).json()
+                events = httpx.get(f"{handshake['url']}/session/events?limit=500",
+                                    headers=headers, timeout=5.0).json()['events']
+                if status['path'] and any(e['type'] == 'sample' for e in events):
+                    break
+                time.sleep(0.1)
+            assert status['path'], "run never opened a file"
+
+            httpx.post(f"{handshake['url']}/session/shutdown", headers=headers, timeout=5.0)
+            process.wait(timeout=30)
+
+            with open(status['path']) as handle:
+                text = handle.read()
+            assert '# --- run completed ---' in text or 'ended_at' in text
+        finally:
+            _stop(process)

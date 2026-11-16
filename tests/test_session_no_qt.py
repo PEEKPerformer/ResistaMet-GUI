@@ -9,6 +9,7 @@ import sys
 CHECK = """
 import sys
 import resistamet_gui.session
+import resistamet_gui.api
 leaked = sorted(m for m in sys.modules if m.split('.')[0] in ('PySide6', 'shiboken6'))
 print(','.join(leaked))
 """
