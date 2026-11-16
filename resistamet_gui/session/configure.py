@@ -342,9 +342,21 @@ def configure_four_point(keithley, events, measurement_settings, nplc):
     return state, metadata, csv_headers, source_value_str
 
 
+def current_label(amps: float) -> str:
+    """A source current as it appears in a file name: ``1.00mA``, ``2.50uA``.
+
+    Milliamps to two decimals, as the names have always had, down to the
+    last current that form can show; below that, microamps. A 1 uA run was
+    named ``0.00mA``.
+    """
+    if abs(amps) >= 5e-6 or amps == 0:
+        return f"{amps*1000:.2f}mA"
+    return f"{amps*1e6:.2f}uA"
+
+
 def _four_point_fragment(state: FourPointState) -> str:
     """The source part of a 4PP file name."""
-    fragment = f"{state.source_current*1000:.2f}mA"
+    fragment = current_label(state.source_current)
     if state.delta_mode:
         fragment += "_delta"
     return fragment
