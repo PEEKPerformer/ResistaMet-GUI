@@ -499,6 +499,23 @@ class FakeKeithley:
         self._queue_error(-113, "Undefined header")
 
     def _apply_settable(self, key: str, kind: str, arg: str) -> None:
+        # What a 2420 did on the bench (2026-11-16, output off):
+        # a trigger count above 2500 and a sweep step pointing away from the
+        # stop value are both refused with -222 and change nothing; setting
+        # the source delay turns auto delay off, and turning auto delay on
+        # replaces the delay with its own 1 ms.
+        try:
+            if key == "trig_coun" and int(_parse_float(arg)) > 2500:
+                self._queue_error(-222, "Parameter data out of range")
+                return
+            if key in ("sour_volt_step", "sour_curr_step"):
+                prefix = key[:-len("step")]
+                span = self.state[prefix + "stop"] - self.state[prefix + "start"]
+                if span * _parse_float(arg) < 0:
+                    self._queue_error(-222, "Parameter data out of range")
+                    return
+        except (ValueError, TypeError):
+            pass
         try:
             if kind == "bool":
                 self.state[key] = _parse_bool(arg)
@@ -536,6 +553,18 @@ class FakeKeithley:
                 self.state[key] = arg
         except (ValueError, TypeError):
             self._queue_error(-220, "Parameter error")
+            return
+        if key == "sour_del":
+            self.state["sour_del_auto"] = False
+        elif key == "sour_del_auto" and self.state[key]:
+            self.state["sour_del"] = 0.001
+        elif key.endswith(("_start", "_stop")):
+            # The step follows the direction from start to stop.
+            prefix = key.rsplit("_", 1)[0] + "_"
+            step = self.state.get(prefix + "step", 0.0)
+            span = self.state[prefix + "stop"] - self.state[prefix + "start"]
+            if step and span and step * span < 0:
+                self.state[prefix + "step"] = -step
 
     # ----------------------------------------------------------- query side
 
@@ -704,8 +733,7 @@ class FakeKeithley:
             sweep_values = [start + (stop - start) * k / (n_points - 1) for k in range(n_points)]
             # If a step was specified, prefer it for the spacing
             if step != 0 and (stop - start) != 0:
-                direction = 1 if stop >= start else -1
-                sweep_values = [start + direction * abs(step) * k for k in range(n_points)]
+                sweep_values = [start + step * k for k in range(n_points)]
 
         baseline = _STAT_BASELINE["sweep"]
         chunks = []

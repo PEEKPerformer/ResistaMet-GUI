@@ -239,7 +239,8 @@ class Keithley2400(VisaInstrument):
             source_func: 'VOLT' or 'CURR'
             start: Sweep start value
             stop: Sweep stop value
-            step: Sweep step size (always positive)
+            step: Sweep step size, as a magnitude; it is sent with the sign
+                that leads from start to stop
             compliance: Compliance limit for the measured function
             nplc: Integration time
             source_delay: Delay per step in seconds
@@ -252,6 +253,11 @@ class Keithley2400(VisaInstrument):
             raise ValueError(
                 f"A sweep of {points} points is more than the instrument's "
                 f"{MAX_SWEEP_POINTS}. Use a larger step.")
+        # The step carries the direction. A positive step for a sweep that
+        # runs downwards is refused (-222), and the instrument is left with
+        # the step of its reset point count, 2500: a 0.5 V to 0 V sweep in
+        # five points would have stepped by 0.2 mV.
+        signed_step = abs(step) if stop >= start else -abs(step)
         self.write(":SENS:FUNC:CONC OFF")
         if source_func == 'VOLT':
             self.write(":SOUR:FUNC VOLT")
@@ -260,7 +266,7 @@ class Keithley2400(VisaInstrument):
             self.write(f":SENS:CURR:NPLC {nplc}")
             self.write(f":SOUR:VOLT:START {start}")
             self.write(f":SOUR:VOLT:STOP {stop}")
-            self.write(f":SOUR:VOLT:STEP {step}")
+            self.write(f":SOUR:VOLT:STEP {signed_step}")
             self.write(":SOUR:VOLT:MODE SWE")
         else:
             self.write(":SOUR:FUNC CURR")
@@ -269,7 +275,7 @@ class Keithley2400(VisaInstrument):
             self.write(f":SENS:VOLT:NPLC {nplc}")
             self.write(f":SOUR:CURR:START {start}")
             self.write(f":SOUR:CURR:STOP {stop}")
-            self.write(f":SOUR:CURR:STEP {step}")
+            self.write(f":SOUR:CURR:STEP {signed_step}")
             self.write(":SOUR:CURR:MODE SWE")
         self.write(":SOUR:SWE:SPAC LIN")
         self.write(":SOUR:SWE:RANG AUTO")
