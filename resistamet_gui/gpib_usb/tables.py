@@ -4,7 +4,8 @@ The numbers here are the facts an implementer needs and nothing more: which
 USB ids are which adapter and where their endpoints are (§1), the control
 requests (§2.2-2.4), the 26-write register initialisation and its T1 rows
 (§2.6-2.9), the ibsta bits and error codes (§4), the device timeout table
-(§7.1), and the IEEE-488.1 command bytes (§6). No parsing, no I/O; the codec
+(§7.1) with the expiry each of two adapters was timed at under its codes
+(§7.3), and the IEEE-488.1 command bytes (§6). No parsing, no I/O; the codec
 that turns these into messages lives in ``protocol``.
 
 Section numbers refer to ``docs/design/ni_usb_gpib_protocol.md``.
@@ -178,6 +179,92 @@ TIMEOUT_TABLE: Tuple[Tuple[float, int], ...] = (
 #: The longest finite device timeout the table offers.
 TIMEOUT_MAX_S = TIMEOUT_TABLE[-1][0]
 
+#: §7.3: how long GPIB-USB-HS 013CC9DF waits under a code before it ends the
+#: instruction itself with error 0x0a, in seconds, timed on the wire with
+#: NI's driver. The limits above are nominal; these are one of the two tables
+#: a host wait has to outlast. Where a code was timed more than once the
+#: longest figure is kept (0xfc: six cases, 4.195316-4.196156; 0xfe: two).
+#: Each is a power of two in microseconds plus 0.8-1.9 ms, but no rounding of
+#: the nominal value gives all six exponents, so the figures are table facts,
+#: not computed.
+TIMEOUT_EXPIRY_MEASURED_S: Dict[int, float] = {
+    0xF9: 0.132272,    # nominal 100 ms
+    0xFA: 0.263541,    # nominal 300 ms: the one code that expires early
+    0xFB: 1.049837,    # nominal 1 s
+    0xFC: 4.196156,    # nominal 3 s
+    0xFD: 16.778423,   # nominal 10 s
+    0xFE: 33.555345,   # nominal 30 s
+}
+#: The most a reply was seen to trail the power of two behind its expiry, in
+#: twelve timed-out instructions (§7.2).
+TIMEOUT_EXPIRY_JITTER_S = 1.9e-3
+
+#: §7.3, "A second unit expires at other times": how long GPIB-USB-HS
+#: 01CEE482 waits under a code, in seconds, timed on the bench with this
+#: driver's messages (2026-09-21). Exact to the millisecond across repeats,
+#: the same for counts 1, 10 and 20480, and not powers of two: every figure
+#: is 1.25 times a round one -- 0.1, 0.3, 1, 3, 16 and 33 s -- which is the
+#: nominal limit up to 0xfc and, to the second, the other unit's power of two
+#: for 0xfd and 0xfe. The 0xf9 figure is a session total; its wire was not
+#: logged. Whether the unit, its firmware or the message differs is not
+#: established, so a host wait outlasts both tables. The comment on each row
+#: is the ratio to the 013CC9DF figure above.
+TIMEOUT_EXPIRY_BENCH_S: Dict[int, float] = {
+    0xF9: 0.127,       # nominal 100 ms; 0.96
+    0xFA: 0.375,       # nominal 300 ms; 1.42
+    0xFB: 1.250,       # nominal 1 s; 1.19
+    0xFC: 3.750,       # nominal 3 s; 0.89
+    0xFD: 20.000,      # nominal 10 s; 1.19
+    0xFE: 41.250,      # nominal 30 s; 1.23
+}
+#: The factor between the second unit's expiry and its round figure (§7.3).
+TIMEOUT_EXPIRY_BENCH_RATIO = 1.25
+
+#: §7.3, inference and not measurement: for the codes nobody timed, the
+#: smallest power of two in microseconds not below the nominal limit. It is
+#: the larger of the specification's two candidates, which §7.2 says a host
+#: wait should assume. No code timed on 013CC9DF exceeded it; 01CEE482 does
+#: under 0xfb, 0xfd and 0xfe, so ``timeout_expiry_s`` does not use it bare.
+TIMEOUT_EXPIRY_INFERRED_S: Dict[int, float] = {
+    0xF1: 16e-6, 0xF2: 32e-6, 0xF3: 128e-6, 0xF4: 512e-6,
+    0xF5: 1024e-6, 0xF6: 4096e-6, 0xF7: 16384e-6, 0xF8: 32768e-6,
+    0xFF: 134.217728, 0x01: 536.870912, 0x02: 1073.741824,
+}
+
+#: The nominal limit of §7.1 by code.
+TIMEOUT_NOMINAL_S: Dict[int, float] = {code: limit for limit, code in TIMEOUT_TABLE}
+
+
+def timeout_expiry_s(code: int) -> Optional[float]:
+    """The longest either timed adapter waits under ``code`` before ending the instruction (§7.3).
+
+    Two GPIB-USB-HS units were timed and disagree: 013CC9DF under NI's
+    driver (``TIMEOUT_EXPIRY_MEASURED_S``) and 01CEE482 under this one
+    (``TIMEOUT_EXPIRY_BENCH_S``). §7.3 says a host wait must outlast both
+    until the cause is established, so for a code both were timed under
+    this is the larger figure. For a code neither was timed under it is
+    1.25 times the larger of the nominal limit (§7.1) and the power of two
+    of §7.3's inference column. That rule is the second unit's pattern
+    made safe for the first: its round figure was the nominal limit for
+    0xf9-0xfc and, to the second, the first unit's power of two for 0xfd
+    and 0xfe, and of the rules §7.3 offers this is the one that, applied
+    to the six timed codes, gives a figure not below either unit's expiry
+    under any of them (0xfd: 1.25 x 16.78 = 20.97 s against the 20.0 s
+    measured; the bare power of two, 16.78 s, falls short, and 1.25 x
+    nominal, 12.5 s, further). None for the disabled code 0xf0, which
+    never expires.
+    """
+    if code == TIMEOUT_DISABLED_CODE:
+        return None
+    timed = [table[code] for table in (TIMEOUT_EXPIRY_MEASURED_S, TIMEOUT_EXPIRY_BENCH_S) if code in table]
+    if timed:
+        return max(timed)
+    try:
+        power_of_two = TIMEOUT_EXPIRY_INFERRED_S[code]
+    except KeyError:
+        raise ValueError('0x%02x is not a device timeout code' % code) from None
+    return TIMEOUT_EXPIRY_BENCH_RATIO * max(power_of_two, TIMEOUT_NOMINAL_S[code])
+
 # --------------------------------------------------------------------------
 # §2.6 / §2.7 / §2.9 register sequences
 # --------------------------------------------------------------------------
@@ -329,9 +416,9 @@ def address_talker_command(controller: int, pad: int, sad: Optional[int] = None)
 def serial_poll_enable_command(controller: int, pad: int, sad: Optional[int] = None) -> bytes:
     """``3f 20+C 18 40+N [60+S]`` -- the IEEE-488.1 serial-poll sequence of §5.9, §6.
 
-    Not sent by the driver, which polls with the 0x10 instruction (§10.5.4);
-    kept with ``SERIAL_POLL_DISABLE_COMMAND`` as the §6 encoding, exercised
-    only by tests.
+    With ``SERIAL_POLL_DISABLE_COMMAND`` the serial poll that ran on the
+    bench (``device_ops.serial_poll``); NI's driver polls with the 0x10
+    instruction instead (§10.5.4).
     """
     return (bytes((CMD_UNL, listen_address(controller), CMD_SPE))
             + _with_secondary(talk_address(pad), sad))
@@ -340,6 +427,13 @@ def serial_poll_enable_command(controller: int, pad: int, sad: Optional[int] = N
 SERIAL_POLL_DISABLE_COMMAND = bytes((CMD_SPD, CMD_UNT))
 
 
-def addressed_command(pad: int, command: int, sad: Optional[int] = None) -> bytes:
-    """``3f 20+N [60+S] <command>`` for SDC, GET, GTL, LLO."""
-    return bytes((CMD_UNL,)) + _with_secondary(listen_address(pad), sad) + bytes((command,))
+def addressed_command(pad: int, command: int, sad: Optional[int] = None,
+                      controller: Optional[int] = None) -> bytes:
+    """``[40+C] 3f 20+N [60+S] <command>`` for SDC, GET, GTL, LLO.
+
+    With ``controller`` the adapter's own talk address leads, the order NI
+    sends (``40 3f 38 01`` for go to local, §10.2.3, §10.7.4); without it the
+    sequence is the §6 table's.
+    """
+    lead = b'' if controller is None else bytes((talk_address(controller),))
+    return lead + bytes((CMD_UNL,)) + _with_secondary(listen_address(pad), sad) + bytes((command,))

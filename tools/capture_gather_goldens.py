@@ -11,14 +11,22 @@ Usage::
     QT_QPA_PLATFORM=offscreen python tools/capture_gather_goldens.py
 
 Writes ``tests/goldens/gather/<mode>_<variant>.json``, each holding the
-profile, the widget-derived overrides and the expected result.
+profile, the widget-derived overrides and the expected result. ``--out DIR``
+writes them somewhere else, to compare with the committed ones without
+touching them.
+
+The window needs a config file to open. It gets one in a temporary directory
+that is removed whatever happens, so a capture that fails half-way leaves
+nothing behind in the repository.
 
 Widget reads come from the window's own ``_overrides_from_widgets``, so the
 captured overrides are exactly what the GUI read.
 """
+import argparse
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -89,11 +97,30 @@ def capture(window, mode, variant):
     }
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument('--out', type=Path, default=GOLDEN_DIR,
+                        help="directory to write the goldens to")
+    golden_dir = parser.parse_args(argv).out
+
+    with tempfile.TemporaryDirectory(prefix="resistamet-goldens-") as scratch:
+        written = capture_all(golden_dir, Path(scratch) / "config.json")
+    for path in written:
+        print(f"wrote {_shown(path)}")
+
+
+def _shown(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def capture_all(golden_dir: Path, tmp_config: Path):
+    """Open the window on ``tmp_config`` and write every golden."""
     from PySide6.QtWidgets import QApplication
     from resistamet_gui import constants
 
-    tmp_config = REPO_ROOT / "tools" / "_golden_capture_config.json"
     constants.CONFIG_FILE = str(tmp_config)
 
     from resistamet_gui.config import ConfigManager
@@ -105,30 +132,29 @@ def main():
     )
     ResistanceMeterApp.select_user = lambda self: None
 
-    app = QApplication.instance() or QApplication([sys.argv[0]])
+    app = QApplication.instance() or QApplication([sys.argv[0]])  # noqa: F841
     window = ResistanceMeterApp()
-    window.config_manager.add_user("golden_user")
-    window.current_user = "golden_user"
-    window.user_settings = window.config_manager.get_user_settings("golden_user")
-    window.update_ui_from_settings()
+    try:
+        window.config_manager.add_user("golden_user")
+        window.current_user = "golden_user"
+        window.user_settings = window.config_manager.get_user_settings("golden_user")
+        window.update_ui_from_settings()
 
-    GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
-    written = []
-    for mode in MODES:
-        for variant in ('defaults', 'perturbed'):
-            if variant == 'perturbed':
-                perturb(window, mode)
-            golden = capture(window, mode, variant)
-            path = GOLDEN_DIR / f"{mode}_{variant}.json"
-            # allow_nan keeps fpp_temperature_c's NaN, which is the value the
-            # worker actually receives for "not measured".
-            path.write_text(json.dumps(golden, indent=2, sort_keys=True) + "\n")
-            written.append(path)
-
-    window.close()
-    tmp_config.unlink(missing_ok=True)
-    for path in written:
-        print(f"wrote {path.relative_to(REPO_ROOT)}")
+        golden_dir.mkdir(parents=True, exist_ok=True)
+        written = []
+        for mode in MODES:
+            for variant in ('defaults', 'perturbed'):
+                if variant == 'perturbed':
+                    perturb(window, mode)
+                golden = capture(window, mode, variant)
+                path = golden_dir / f"{mode}_{variant}.json"
+                # allow_nan keeps fpp_temperature_c's NaN, which is the value
+                # the worker actually receives for "not measured".
+                path.write_text(json.dumps(golden, indent=2, sort_keys=True) + "\n")
+                written.append(path)
+        return written
+    finally:
+        window.close()
 
 
 if __name__ == "__main__":

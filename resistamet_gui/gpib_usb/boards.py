@@ -11,6 +11,16 @@ no libusb handle outlives its usefulness (see ``transport``).
 A board's Controller is opened and attached on the first ``acquire`` and
 closed on the ``release`` that brings its session count to zero. Nothing
 here knows about pyvisa; ``visa_session`` sits on top.
+
+Locks: the registry's lock guards the board table and the session counts,
+and is held only for bookkeeping. Opening and closing an adapter happen
+under that board's own lock instead, because a close waits for whatever
+operation is in flight on the controller, which can be minutes; the other
+boards, and ``owns`` / ``board_names``, must not wait with it. The
+registry's lock is re-entrant because pyvisa closes a forgotten resource
+from ``__del__``, which the garbage collector may run on a thread that is
+inside ``acquire`` at that moment. Order: registry, then board, then
+controller; the registry's lock is never waited for while a board's is held.
 """
 import logging
 import os
@@ -27,15 +37,31 @@ logger = logging.getLogger(__name__)
 
 #: Every primary address; the controller skips its own.
 PROBE_ADDRESSES = tuple(range(31))
-#: Set to 0 / false / no / off to keep every transfer on the framed 0x0a / 0x0d
-#: instructions (the paths proven on the bench first) instead of the 0x0b /
-#: 0x0e raw paths NI's driver uses for large transfers. Read once per board
-#: open, here and nowhere else.
+#: Set to 1 / true / yes / on to use the instructions NI's driver was captured
+#: sending: 0x0b / 0x0e with the data raw on the alternate endpoints for large
+#: transfers, and 0x10 for the serial poll. Unset, 0 or anything else keeps
+#: what ran on the bench: every transfer framed (0x0a / 0x0d) and the serial
+#: poll as the §5.9 command sequence. NI's instructions have not run on an
+#: adapter of ours, and every read the application makes is large enough to
+#: take 0x0b. Read once per board open, here and nowhere else.
+NI_INSTRUCTIONS_ENV = 'RESISTAMET_GPIB_NI_INSTRUCTIONS'
+#: The switch's first name, from when it covered the transfers only. Still
+#: read, with the same spellings, when ``NI_INSTRUCTIONS_ENV`` is not set.
 RAW_TRANSFERS_ENV = 'RESISTAMET_GPIB_RAW_TRANSFERS'
 
 
-def raw_transfers_enabled() -> bool:
-    return os.environ.get(RAW_TRANSFERS_ENV, '1').strip().lower() not in ('0', 'false', 'no', 'off')
+def ni_instructions_enabled() -> bool:
+    value = os.environ.get(NI_INSTRUCTIONS_ENV)
+    if value is None:
+        value = os.environ.get(RAW_TRANSFERS_ENV, '0')
+    return value.strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _instructions_label(controller: Controller) -> str:
+    """Which instructions this board uses, for the attach log line."""
+    if not controller.ni_instructions:
+        return 'framed transfers, command-sequence serial poll'
+    return '%s transfers, 0x10 serial poll' % ('raw' if controller.raw_transfers else 'framed')
 
 
 def _linux_gpib_board_count() -> int:
@@ -66,6 +92,13 @@ class _Board:
         self.info = info
         self.controller: Optional[Controller] = None
         self.sessions = 0
+        #: Held while this board's adapter is being opened or closed.
+        self.lock = threading.Lock()
+
+    @property
+    def busy(self) -> bool:
+        """Sessions hold it, or its adapter is still being closed: its handle must stay."""
+        return bool(self.sessions) or self.lock.locked()
 
 
 class BoardRegistry:
@@ -76,7 +109,7 @@ class BoardRegistry:
         self._open_transport = open_transport
         self._first_board = first_board
         self._boards: Dict[str, _Board] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._enumerated = False
 
     def refresh(self) -> None:
@@ -96,7 +129,7 @@ class BoardRegistry:
             if name is None:
                 continue  # new adapter, numbered below
             current = self._boards[name]
-            if current.sessions:
+            if current.busy:
                 boards[name] = current       # in use: keep its handle, drop the duplicate
                 surplus.append(info)
             else:
@@ -105,7 +138,7 @@ class BoardRegistry:
         for name, board in self._boards.items():
             if name in boards:
                 continue
-            if board.sessions:
+            if board.busy:
                 boards[name] = board  # unplugged mid-session; its sessions still hold it
             else:
                 surplus.append(board.info)
@@ -145,26 +178,32 @@ class BoardRegistry:
             if not self._enumerated:
                 self._refresh_locked()
             entry = self._boards[board]
-            if entry.controller is None:
-                entry.controller = self._open(entry.info)
-                logger.info('GPIB%s: %s attached (%s transfers)', board, entry.info.label,
-                            'raw' if entry.controller.raw_transfers else 'framed')
-            entry.sessions += 1
-            return entry.controller
+            entry.sessions += 1  # counted before the open, so a refresh meanwhile keeps this handle
+        try:
+            with entry.lock:  # waits out a close of the same adapter that is still running
+                if entry.controller is None:
+                    entry.controller = self._open(entry.info)
+                    logger.info('GPIB%s: %s attached (%s)', board, entry.info.label,
+                                _instructions_label(entry.controller))
+                return entry.controller
+        except BaseException:
+            with self._lock:
+                entry.sessions -= 1
+                self._enumerated = False  # the hardware may have changed; look again next time
+            raise
 
     def _open(self, info: AdapterInfo) -> Controller:
         usb_transport: Optional[Transport] = None
         controller: Optional[Controller] = None
         try:
             usb_transport = self._open_transport(info)
-            controller = Controller(usb_transport, info.product_id, raw_transfers=raw_transfers_enabled())
+            controller = Controller(usb_transport, info.product_id, ni_instructions=ni_instructions_enabled())
             controller.attach()
         except Exception:  # noqa: BLE001 - whatever failed, the claimed interface must not leak
             if controller is not None:
                 controller.close()
             elif usb_transport is not None:
                 usb_transport.close()
-            self._enumerated = False  # the hardware may have changed; look again next time
             raise
         return controller
 
@@ -174,10 +213,19 @@ class BoardRegistry:
             if entry is None or entry.sessions == 0:
                 return
             entry.sessions -= 1
-            if entry.sessions == 0 and entry.controller is not None:
-                entry.controller.close()
-                entry.controller = None
+            if entry.sessions:
+                return
+            # Nobody can be opening this board: an opener counts itself in
+            # first. So this does not wait, and whoever opens the board from
+            # now on waits behind it until the close below is done.
+            entry.lock.acquire()
+        try:
+            controller, entry.controller = entry.controller, None
+            if controller is not None:
+                controller.close()  # may wait for an operation in flight; the registry's lock is free
                 logger.info('GPIB%s: closed', board)
+        finally:
+            entry.lock.release()
 
     def list_interfaces(self) -> List[str]:
         """``GPIB<n>::INTFC`` for every board. Enumerates USB (which opens handles for

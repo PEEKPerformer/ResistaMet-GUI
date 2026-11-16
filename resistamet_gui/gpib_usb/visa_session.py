@@ -49,6 +49,9 @@ logger = logging.getLogger(__name__)
 GPIB_INSTR = (constants.InterfaceType.gpib, 'INSTR')
 _REGISTRY = BoardRegistry()
 
+#: What VI_TMO_IMMEDIATE is sent as; see ``NiUsbGpibSession._device_timeout``.
+IMMEDIATE_TIMEOUT_S = 0.1
+
 #: A device address as the REN operations need it: (primary, secondary or None).
 DeviceAddress = Tuple[int, Optional[int]]
 
@@ -74,9 +77,20 @@ def ren_operation(controller: Controller, mode: constants.RENLineOperation,
                   timeout_s: Optional[float], device: Optional[DeviceAddress]) -> None:
     """One ``RENLineOperation`` on the bus; ``ValueError`` when it needs a device and has none.
 
-    REN itself is a register write (§5.6). The modes that address a device
-    or send it GTL/LLO are command bytes (§6) and need ``device``; an
-    interface session has no device to give.
+    The shape of each mode is what NI's driver sends on an instrument
+    session (§10.7.4): the REN register write (§5.6) even when REN is
+    already asserted, then the "address" step, then LLO as a lone
+    universal command byte; the go-to-local modes are command bytes to the
+    addressed device, and for ``deassert_gtl`` REN goes off after them. The
+    modes that involve the device need ``device``; an interface session
+    has none to give, and NI refuses those modes there too (§10.6.4).
+
+    One step differs. NI's "address" step is its presence-probe
+    instruction 0x02, whose effect on the bus §10.6.1 and §10.7.4 call not
+    established: that it addresses the device to listen is inferred, not
+    seen. This driver does not use 0x02 anywhere, so the step stays the
+    explicit listen addressing of §6, which is known to put a device with
+    REN true into remote state.
     """
     if mode == constants.RENLineOperation.asrt:
         controller.remote_enable(True)
@@ -88,14 +102,12 @@ def ren_operation(controller: Controller, mode: constants.RENLineOperation,
     elif device is None:
         raise ValueError(mode)
     elif mode == constants.RENLineOperation.asrt_address:
-        pad, sad = device
         controller.remote_enable(True)
-        controller.command(t.address_listener_command(controller.own_address, pad, sad),
-                           timeout_s)
+        _address_to_listen(controller, device, timeout_s)
     elif mode == constants.RENLineOperation.asrt_address_llo:
-        pad, sad = device
         controller.remote_enable(True)
-        ops.local_lockout(controller, pad, sad, timeout_s)
+        _address_to_listen(controller, device, timeout_s)
+        ops.local_lockout(controller, timeout_s=timeout_s)
     elif mode == constants.RENLineOperation.deassert_gtl:
         pad, sad = device
         ops.go_to_local(controller, pad, sad, timeout_s)
@@ -105,6 +117,12 @@ def ren_operation(controller: Controller, mode: constants.RENLineOperation,
         ops.go_to_local(controller, pad, sad, timeout_s)
     else:
         raise ValueError(mode)
+
+
+def _address_to_listen(controller: Controller, device: DeviceAddress, timeout_s: Optional[float]) -> None:
+    """The "address" step of the REN modes; see ``ren_operation`` for why it is not NI's 0x02."""
+    pad, sad = device
+    controller.command(t.address_listener_command(controller.own_address, pad, sad), timeout_s)
 
 
 def atn_operation(controller: Controller, mode: constants.ATNLineOperation) -> None:
@@ -167,17 +185,27 @@ class NiUsbGpibSession(Session):
     def _set_timeout(self, attribute: ResourceAttribute, value: int) -> StatusCode:
         status = super()._set_timeout(attribute, value)
         if self.timeout:
-            # Round to the device's table (§7.1) so pyvisa's own deadline agrees
-            # with what the adapter enforces; above the table, the longest row.
+            # Round to the device's table (§7.1) so the attribute reads back as
+            # the row whose code goes out; above the table, the longest row.
+            # That is the nominal limit. What the adapter then waits is the
+            # expiry of §7.3 (16.78 s or 20.0 s for the 10 s row, by unit),
+            # and the controller derives the host wait from the longer of
+            # those, not from this value.
             _, limit = p.effective_timeout(min(self.timeout, t.TIMEOUT_MAX_S))
             self.timeout = limit
         return status
 
     def _device_timeout(self) -> Optional[float]:
-        # VISA "immediate" (0) has no device analogue; the shortest device
-        # timeout, 10 us, is the honest reading. None stays infinite.
+        # VISA "immediate" (0) has no device analogue. The table's shortest
+        # row (10 us, code 0xf1) would go into every instruction of the
+        # operation, the addressing included, and no handshake completes in
+        # it: everything would time out. So immediate means the shortest
+        # timeout known to let a handshake finish: 100 ms, code 0xf9, the
+        # shortest code NI's driver was captured sending and the shortest
+        # whose expiry was timed (§7.1, §7.3). The codes below it are
+        # inherited, never seen on the wire. None stays infinite.
         if self.timeout == 0:
-            return 10e-6
+            return IMMEDIATE_TIMEOUT_S
         return self.timeout
 
     def _device(self) -> Optional[DeviceAddress]:
@@ -187,12 +215,14 @@ class NiUsbGpibSession(Session):
     def _termchar_byte(self) -> Optional[int]:
         """VI_ATTR_TERMCHAR as a byte when VI_ATTR_TERMCHAR_EN is on, else None.
 
-        NI fills the ``e`` byte of every read and write with the character
-        even with the compare off (§10.1.6, §10.5.1), but that was seen only
-        under NI's AUXRA 0x99 initialisation; ours is 0x81 (§2.6 row 3), under
-        which §5.2 still says error 4. With the compare off the byte does
-        nothing useful, so the bench-proven 0x00 is sent until hardware says
-        otherwise; the codec can send either.
+        For the ``e`` byte of a 0x0e write header, the one place it goes; a
+        read takes the character as its EOS compare instead. NI fills ``e``
+        of every read and write with the character even with the compare
+        off (§10.1.6, §10.5.1), but that was seen only under NI's AUXRA 0x99
+        initialisation; ours is 0x81 (§2.6 row 3), under which §5.2 still
+        says error 4 for a read. With the compare off the byte does nothing
+        useful, so the bench-proven 0x00 is sent until hardware says
+        otherwise; the codec can build either.
         """
         enabled, _ = self.get_attribute(ResourceAttribute.termchar_enabled)
         if not enabled:
@@ -306,13 +336,12 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
         if termchar_enabled and not 0 <= termchar <= 0xFF:
             return b'', StatusCode.error_nonsupported_attribute_state
         # With the character enabled the instruction compares on it (m = 0x14,
-        # §10.1.6); disabled, the proven ``00 00`` goes (see _termchar_byte).
+        # §10.1.6); disabled, the proven ``00 00`` goes.
         eos = termchar if termchar_enabled else None
         try:
             data, ended = controller.read(self._pad, sad=self._sad, max_bytes=count,
                                           timeout_s=self._device_timeout(), eos=eos,
-                                          eos_8bit=True, termchar=self._termchar_byte(),
-                                          readdress=self._readdress())
+                                          eos_8bit=True, readdress=self._readdress())
         except GpibTimeout as exc:
             return exc.partial, StatusCode.error_timeout
         except (GpibError, TransportError) as exc:
@@ -349,7 +378,8 @@ class NiUsbGpibInstrSession(NiUsbGpibSession):
     def read_stb(self) -> Tuple[int, StatusCode]:
         controller = self._controller()
         try:
-            return controller.serial_poll(self._pad, self._sad, self._device_timeout()), StatusCode.success
+            return ops.serial_poll(controller, self._pad, self._sad,
+                                   self._device_timeout()), StatusCode.success
         except (GpibError, TransportError) as exc:
             logger.debug('%s serial poll: %s', self._label(), exc)
             return 0, status_for(exc)

@@ -16,7 +16,10 @@ specification in one place: a read reply ends in a 16-byte trailer (status,
 ADR1, last-block count, pad, termination) with no embedded 0x09 status
 block; ``parse_read_reply`` follows the device and tolerates the longer
 form. Small reads arrive in 0x36 blocks, a 256-byte read in 0x37 blocks,
-and the filler after the valid bytes is stale data.
+and the filler after the valid bytes is stale data. A read that times out
+with nothing read still carries one 0x36 block on this unit, and its
+last-block-count byte then holds min(requested, 15), not zero (2026-09-21,
+§5.2): the 0x38 count field alone says how many bytes were read.
 """
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
@@ -51,7 +54,7 @@ BLOCK_DATA_15 = 0x36           # id + 15 data bytes
 BLOCK_DATA_30 = 0x37           # id + 00 + 30 data bytes
 BLOCK_READ_STATUS = 0x38
 BLOCK_SERIAL_POLL_STATUS = 0x39  # follows the 0x3a block (§10.5.4)
-BLOCK_SERIAL_POLL_RESULT = 0x3A  # ``3a P S sb``
+BLOCK_SERIAL_POLL_RESULT = 0x3A  # ``3a P S sb``; absent when the poll failed (§10.6.6)
 
 TERMINATION_BLOCK = b'\x04\x00\x00\x00'
 STATUS_BLOCK_LENGTH = 8
@@ -244,9 +247,10 @@ def _eos_byte(eos: Optional[int], name: str) -> int:
 def write_block(data: bytes, timeout_code: int, send_eoi: bool, eos_char: Optional[int] = None) -> bytes:
     """§5.1: ``0d cl ch t 00 e f 00 <data...>`` (unpadded).
 
-    ``e`` (byte 5) is 0x00 in the bench-proven form. NI fills it with the
-    session's termination character on every write (§10.5.1); whether it has
-    any effect was not tested, so callers choose.
+    ``e`` (byte 5) is 0x00 in the bench-proven form, which is all the driver
+    sends. NI fills it with the session's termination character on every
+    write (§10.5.1); ``eos_char`` exists so the capture tests can rebuild
+    NI's blocks byte for byte.
     """
     return (bytes((OP_WRITE,)) + encode_count16(len(data))
             + bytes((timeout_code, 0x00, _eos_byte(eos_char, 'termination character'),
@@ -254,9 +258,9 @@ def write_block(data: bytes, timeout_code: int, send_eoi: bool, eos_char: Option
             + data)
 
 
-def write_message(data: bytes, timeout_code: int, send_eoi: bool,
-                  eos_char: Optional[int] = None) -> bytes:
-    return build_message(write_block(data, timeout_code, send_eoi, eos_char))
+def write_message(data: bytes, timeout_code: int, send_eoi: bool) -> bytes:
+    """The framed write as this driver sends it: ``e`` = 0x00, the bench-proven form."""
+    return build_message(write_block(data, timeout_code, send_eoi))
 
 
 def write_raw_block(length: int, timeout_code: int, send_eoi: bool,
@@ -285,6 +289,8 @@ def read_eos_bytes(eos: Optional[int], eos_8bit: bool, termchar: Optional[int]) 
     ``m`` = 0x00 and ``e`` = ``termchar`` -- NI puts the session's
     termination character there with the compare disabled and never got
     error 4 (§10.1.6); ``termchar`` None keeps the bench-proven ``00 00``.
+    The controller never passes ``termchar``: it is here, and in the read
+    message builders, so the capture tests can rebuild NI's blocks.
     """
     if eos is None:
         return bytes((0x00, _eos_byte(termchar, 'termination character')))
@@ -330,8 +336,9 @@ def serial_poll_block(pad: int, timeout_code: int, sad: Optional[int] = None, fl
 
     ``x`` was 0x00 in a fresh session and 0x01 after an SRQ had been serviced;
     its meaning is not established, so 0x00 unless a caller knows better.
-    ``S`` is 0x60 | secondary as for the presence probe (§10.6.1); the
-    secondary form of 0x10 itself was not captured.
+    ``S`` is 0x60 | secondary, 0x00 without one: ``10 01 00 00 18 61 fc 00``
+    polled address 24 through secondary address 1, and the reply's 0x3a
+    block echoed both bytes (§10.5.4, sad_poll.pcap).
     """
     if not 0 <= pad <= 30:
         raise ValueError('primary address %d outside 0..30' % pad)
@@ -486,8 +493,9 @@ def parse_register_read_reply(reply: bytes, count: int) -> List[int]:
             values.extend(reply[offset + 1:offset + 4])
         elif block_id == BLOCK_REGISTER_END:
             # Observed on the GPIB-USB-HS: a termination block follows 0x35
-            # (12 bytes for one register). spec gap: the meaning of the 0x35
-            # count byte is still unsettled; it is not used.
+            # (12 bytes for one register). The 0x35 count byte is the number
+            # of registers read, for up to three reads (§3.5, §10.8); above
+            # three it is not established, and it is not used here.
             break
         else:
             raise ProtocolError('unexpected block 0x%02x in register-read reply: %s'
@@ -510,6 +518,10 @@ class ReadReply:
     #: embedded register writes) after the pad bytes; the GPIB-USB-HS does not
     #: send one. Kept when present, None otherwise.
     embedded_status: Optional[StatusBlock] = None
+    #: Item 5 of the §5.2 layout as the device sent it. Not what ``data`` is
+    #: cut to -- the count field is -- and stale when nothing was read: the
+    #: bench unit puts min(requested, block size) there on a timed-out read.
+    last_block_count: int = 0
 
     @property
     def end(self) -> bool:
@@ -528,7 +540,25 @@ def read_status_offset(reply: bytes) -> int:
 
 
 def parse_read_reply(reply: bytes, requested: int) -> ReadReply:
-    """Data blocks, then the fixed 28-byte trailer (§5.2 reply layout)."""
+    """Data blocks, then the trailer (§5.2 reply layout).
+
+    The trailer is 16 bytes as the bench adapter sends it for this driver's
+    message (0x38 status, ADR1, last-block count, two pad bytes,
+    termination) and 28 when a 0x09 status for the embedded register write
+    sits before the termination block, the form the specification first
+    derived; both parse.
+
+    How many bytes were read is the 0x38 count field's to say (§5.2): the
+    data is the first that many bytes of the data blocks joined, and the
+    filler behind them is never returned. The last-block-count byte is
+    reported, not trusted: on a timed-out 0x36-sized read the bench unit
+    sends one stale block and min(requested, 15) in that byte while the
+    count field says nothing was read, and a parser that sized the data by
+    the byte and then checked the field rejected every such read as
+    malformed, with a stop request and a re-attach in place of the timeout
+    the adapter had reported. The one malformed case is a count field
+    claiming more bytes than the blocks hold.
+    """
     payloads: List[bytes] = []
     offset = 0
     while offset < len(reply) and reply[offset] in _READ_LEADING_BLOCKS:
@@ -561,17 +591,13 @@ def parse_read_reply(reply: bytes, requested: int) -> ReadReply:
     if len(reply) >= tail + 4 and reply[tail] != OP_TERMINATION:
         raise ProtocolError('read reply does not end in a termination block: %s' % reply.hex())
 
-    if payloads:
-        if any(len(p) < 15 for p in payloads[:-1]) or last_block_count > len(payloads[-1]):
-            raise ProtocolError('data block shorter than its header implies: %s' % reply.hex())
-        data = b''.join(payloads[:-1]) + payloads[-1][:last_block_count]
-    else:
-        data = b''
-    expected = status.transferred(requested)
-    if len(data) != expected:
-        raise ProtocolError('read reply carries %d data bytes but the count field says %d'
-                            % (len(data), expected))
-    return ReadReply(data=data, status=status, embedded_status=embedded, adr1=adr1)
+    joined = b''.join(payloads)
+    transferred = status.transferred(requested)
+    if not 0 <= transferred <= len(joined):
+        raise ProtocolError('read reply count field says %d of %d bytes were read but its data '
+                            'blocks hold %d: %s' % (transferred, requested, len(joined), reply.hex()))
+    return ReadReply(data=joined[:transferred], status=status, embedded_status=embedded, adr1=adr1,
+                     last_block_count=last_block_count)
 
 
 def read_reply_buffer_size(max_bytes: int, max_packet_size: int) -> int:
@@ -687,18 +713,36 @@ def parse_raw_write_reply(reply: bytes) -> RawWriteReply:
 
 @dataclass(frozen=True)
 class SerialPollReply:
-    """A parsed 0x10 reply (§10.5.4): ``3a P S sb`` then a status block with id 0x39."""
+    """A parsed 0x10 reply: ``3a P S sb`` then a status block with id 0x39 (§10.5.4).
 
-    status_byte: int
-    pad: int
-    sad_byte: int
+    A poll that failed is answered with the status block alone (§10.6.6);
+    ``status_byte``, ``pad`` and ``sad_byte`` are then None and
+    ``status.error`` says why.
+    """
+
+    status_byte: Optional[int]
+    pad: Optional[int]
+    sad_byte: Optional[int]
     status: StatusBlock
 
 
 def parse_serial_poll_reply(reply: bytes) -> SerialPollReply:
+    """The 0x3a block is there exactly when the poll produced a status byte (§10.6.6).
+
+    Its absence next to error 0 would be a success without a result, which
+    is a ``ProtocolError``. Its presence next to an error is accepted: the
+    error decides, and the caller raises for it.
+    """
     blocks = split_reply_blocks(reply)
-    result = _single_block(blocks, BLOCK_SERIAL_POLL_RESULT, reply)
     status = parse_status_block(_single_block(blocks, BLOCK_SERIAL_POLL_STATUS, reply))
+    results = [block for block_id, block in blocks if block_id == BLOCK_SERIAL_POLL_RESULT]
+    if len(results) > 1:
+        raise ProtocolError('expected at most one 0x3a block, found %d: %s' % (len(results), reply.hex()))
+    if not results:
+        if status.error == t.ERR_SUCCESS:
+            raise ProtocolError('serial poll succeeded without a 0x3a block: %s' % reply.hex())
+        return SerialPollReply(status_byte=None, pad=None, sad_byte=None, status=status)
+    result = results[0]
     return SerialPollReply(status_byte=result[3], pad=result[1], sad_byte=result[2], status=status)
 
 
@@ -754,11 +798,13 @@ def readiness_reported(reply: bytes) -> bool:
 
 
 def effective_timeout(seconds: Optional[float]) -> Tuple[int, Optional[float]]:
-    """The device timeout code for ``seconds`` and the limit that code enforces (§7.1).
+    """The device timeout code for ``seconds`` and the nominal limit of that code (§7.1).
 
-    The code is the smallest table row with ``seconds`` <= limit; the limit is
-    what the device will wait, which is what the host wait must be derived
-    from. None or 0 disables the timeout; so does anything past 1000 s.
+    The code is the smallest table row with ``seconds`` <= limit. The limit
+    is the row's nominal value, not what the adapter waits: that is the
+    expiry of §7.3 (``tables.timeout_expiry_s``), which is what a host wait
+    is derived from. None or 0 disables the timeout; so does anything past
+    1000 s.
     """
     if seconds is None or seconds <= 0:
         return t.TIMEOUT_DISABLED_CODE, None
@@ -773,12 +819,36 @@ def timeout_code(seconds: Optional[float]) -> int:
     return effective_timeout(seconds)[0]
 
 
-def host_wait_s(device_limit_s: Optional[float], infinite_wait_s: float) -> float:
-    """How long the host waits for the bulk reply to a 0x0a/0x0c/0x0d (§7.2).
+#: §7.2: what the host waits beyond the adapter's own expiry. Nothing observed
+#: scales with the timeout -- on one unit the reply trailed the power of two
+#: by at most 1.9 ms at 0.13 s and at 33.6 s alike, on the other it was exact
+#: to the millisecond across repeats (§7.3) -- so the margin is fixed.
+HOST_WAIT_MARGIN_S = 2.0
 
-    ``device_limit_s`` is the effective device timeout from ``effective_timeout``,
-    not the requested one: the device waits the full table row.
+
+def host_wait_s(code: int, infinite_wait_s: float) -> float:
+    """How long the host waits for the reply to an instruction sent with ``code`` (§7.2).
+
+    The longest expiry either timed adapter showed under the code
+    (``tables.timeout_expiry_s``, §7.3) plus ``HOST_WAIT_MARGIN_S``, so the
+    adapter always ends the instruction first and says so in its reply.
+    The code on the wire decides, not the timeout asked for, and not the
+    code's nominal limit: a wait of nominal + max(2 s, 50 %) is 15 s for
+    0xfd, which one unit runs for 16.78 s and the other for 20.0 s. A wait
+    sized by the first unit alone, 18.78 s, reached the stop request on
+    the second 1.2 s before its own error 0x0a reply, and a timeout was
+    reported as an I/O error. For a code nobody timed the expiry is 1.25
+    times the larger of the nominal limit and the inferred power of two.
+    ``infinite_wait_s`` is returned for the disabled code 0xf0, where only
+    the host can end the wait.
+
+    This is the wait for one timed instruction. A message with two would
+    need the sum of their expiries (§7.2: NI's read messages carry a 0x0c
+    and a 0x0a / 0x0b); every message this driver builds carries one, the
+    addressing 0x0c being a message of its own and the register write that
+    rides with a read having no timeout code.
     """
-    if device_limit_s is None:
+    expiry = t.timeout_expiry_s(code)
+    if expiry is None:
         return infinite_wait_s
-    return device_limit_s + max(2.0, 0.5 * device_limit_s)
+    return expiry + HOST_WAIT_MARGIN_S

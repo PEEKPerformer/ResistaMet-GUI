@@ -1,0 +1,20 @@
+854898.837 RM open, scenario read_thresholds
+854899.515 viRead count 1025
+1025 -> 82 0
+854900.033 viRead count 1500
+1500 -> 82 0
+854900.548 viRead count 2000
+2000 -> 82 0
+854901.065 viRead count 2047
+2047 -> 82 0
+854901.581 viRead count 2048
+2048 -> 82 0
+854902.098 viRead count 2049
+2049 -> 82 0
+854902.615 viRead count 3000
+3000 -> 82 0
+854903.132 viRead count 4095
+4095 -> 82 0
+854903.648 viRead count 4096
+4096 -> 82 0
+854904.364 done
