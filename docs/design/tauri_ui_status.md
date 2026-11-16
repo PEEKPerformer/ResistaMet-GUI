@@ -1,6 +1,6 @@
 # Tauri Desktop UI — Status (steps 2 and 3)
 
-**Status:** On `phase0/reviewable-baseline`, pushed, CI green; backend bench-checked on the lab 2420 and on a 2400 over the NI USB driver; the UI bench's three blockers and five majors fixed
+**Status:** On `phase0/reviewable-baseline`, pushed, CI green; backend bench-checked on the lab 2420 and on a 2400 over the NI USB driver; the UI bench's three blockers and five majors fixed; the CI-built macOS bundle has driven the 2400 on a Mac through the driver (2026-09-21)
 **Date:** 2026-09-17
 **Depends on:** step 1 (`tauri_backend_split.md`, `tauri_backend_split_status.md`)
 
@@ -76,6 +76,14 @@ things landed for that:
   drivers; see `ni_usb_gpib_clean_room.md`. The frozen macOS backend
   bundles libusb, and CI asserts that the bundled copy loads from inside
   the bundle.
+- **A per-machine GPIB interface** (`gpib_interface`, 2026-09-19) for
+  Prologix-style adapters, under the backend choice. pyvisa-py sends
+  `GPIB<n>::<addr>::INSTR` to such an adapter only while its
+  `PRLGX-ASRL<n>::<device>::INTFC` or `PRLGX-TCPIP<n>::<host>::INTFC`
+  resource is open, so `visa_backend.resource_manager` opens it on the
+  manager and keeps it there (pyvisa holds sessions weakly; an unreferenced
+  interface closes at once). Ignored with a warning under a vendor library.
+  Scan, Identify and `--check-visa bus` report whether it opened.
 - **`resistamet-api --check-visa`**, which prints the resolved VISA
   implementation, its version, and whether the NI USB driver found libusb,
   as one JSON line. This is the diagnostic for "the app sees no
@@ -113,10 +121,10 @@ address 3 on this Mac. First contact found two things the specification had
 wrong — the read reply's tail is 16 bytes, not 28, and the 2400 drops
 addressing bytes that arrive within a millisecond of take control, which
 wedged the adapter until it was power-cycled — both fixed on the bench
-(`bc74095`, `beb1db1`). Through the driver: identify, three consecutive
+(`a967f91`, `13d92ca`). Through the driver: identify, three consecutive
 resistance runs (99.51 Ω at 10 mA), stop mid-settle, immediate restart,
 shutdown mid-run with the output confirmed off, and the compliance
-detection of `1568506`.
+detection of `adce01e`.
 
 ## NI's driver as the oracle, 2026-09-19
 
@@ -148,17 +156,111 @@ switch reinterpreting units) were found and fixed the same day; the
 sixteen minor and twelve cosmetic items are tracked outside the repo; the fixes were verified in the
 dev UI against the simulator (and on a 2400 for compliance), not yet on the
 PC. The first CI build also lacked a WebSocket implementation entirely
-(`websockets` was never a declared dependency), fixed in `f5d0e29`.
+(`websockets` was never a declared dependency), fixed in `4fbf2dc`.
+
+## The punch list and the spot model, 2026-09-19
+
+Of the UI bench's sixteen minor and twelve cosmetic items, all but four are
+closed, verified against the simulator (layout at 1284, 1100 and 950 px):
+marks on the live plot, a sweep legend, the instrument badge and the log
+surviving a reload (the UI backfills from the backend's event ring), an
+in-view notice with Retry when the backend is unreachable, final totals kept
+on screen, Greek symbols no longer uppercased, hints and headers that fit,
+and the copy. On the backend: file names keep their source value and a run
+can never be written over an existing file; a stop during the settle
+finalizes its file; van der Pauw announces `run_started`; log messages use
+the operator's words; files record which client wrote them; `SessionStatus`
+is in the exported contract; sweep compliance is bounded in its own unit,
+with the hazardous-voltage prompt proven to cover a current-sourced sweep.
+
+Four-point spots are now part of the record rather than of a widget
+(`four_point_probe_spots.md`): a run carries its spot and map, the file
+records it with per-spot statistics, maps are assembled from the run files
+and served at `/maps`, the PySide6 window sends the spot too, and the
+correction factor is known at any position on a circular or rectangular
+sample, so a spot near an edge is warned about with the error it costs.
+
+Left for a decision or for bench data: the runtime power stop that
+validation makes unreachable, the predicted maximum rate, ρ shown as 0 when
+the thickness is unknown, and the 45 s watchdog grace after the window dies.
+
+## The driver's second bench day and the UI on a Mac, 2026-09-21
+
+The adapter back on the Mac, the checklist from the audit run against the
+2400. Three defects in the driver, all in the protocol specification and
+fixed the same day from it: this unit's timeout expiries are not the
+captured unit's (1.25 × {0.1, 0.3, 1, 3, 16, 33} s against powers of two
+in microseconds), so the host wait now outlasts both; a timed-out
+1–15-byte read carries a stale last-block count that the parser trusted
+over the 0x38 count field; and a framed read whose answer exceeded about
+4.5 kB left the adapter unusable until unplugged — NI never frames a read
+above 1024 bytes, and the driver now does not either, reading long answers
+as 1024-byte pieces behind one addressing (35 kB in 6.3 s). The opt-in raw
+0x0b path reads the same data correctly but times out after 20 s whatever
+code it is sent on this unit, an open question in the specification. The
+0x10 serial poll works; framed writes up to 2048 bytes need no zero-length
+packet at a 512 multiple.
+
+Then the dev UI, against the backend on `@py`: Identify & save, a
+resistance run with live plot, Stop, a 21-point I-V sweep with its fit
+(99.58 Ω on the 100 Ω reference), all through the driver. Opening Settings
+crashed the dialog on a fresh config — `GET /profiles` returned the
+config-level `users` and `last_user` beside the sections and the patch
+builder walked the null — fixed on both sides. Pulling the USB cable
+during a run ended the run with a read error and a finalised file, and
+the next run started after the replug with no restart; but the cleanup's
+`:OUTP OFF` had no link to travel, so the instrument's output stayed on
+until the next session addressed it. That wants a rule (a warning the
+operator cannot miss, or a retry when the adapter returns) and is
+recorded as an open question. Cosmetic at a 714-pixel viewport: the
+sample name and the R² tile clip.
+
+The Auto-range compliance rule from the review was then checked on the
+2420 with a 1.05 MΩ part: auto-ohms sourced 10 µA on the 2 MΩ range,
+10.5 V across the part, `:SENS:VOLT:PROT?` 2.1 V with the output off and
+21 V with it on, no compliance bit in the status word. Every sample read
+`OK`; the rule this replaced would have flagged all of them, since the
+read-back frozen at configure (2.1 V, recorded in the header as
+`effective.voltage_compliance_V_at_configure`) is not the limit the
+instrument enforces once it has ranged up.
+
+Then the CI-built macOS bundle itself, opened from its dmg on the Mac
+with the adapter attached: the shell launched the frozen backend, which
+found the adapter through the bundled libusb; a profile was created,
+pyvisa-py chosen and the address identified from Settings; a resistance
+run (99.58 Ω, 63 samples) and a 21-point sweep (fit 99.57 Ω, R² = 1.000)
+ran from the window, their files landing in the app's own data folder
+and the address in this machine's `machine.json`. Headless, the same
+frozen backend also ran voltage source, current source and four-point on
+the 2400. vdP has not run on the Mac: its prompts want a person at the
+bench.
+
+A 45-minute soak followed, headless through the same frozen backend on the
+2400: 8551 samples at a steady 3.2 Hz, every one in the file, longest gap
+between readings 0.75 s, no warning in the driver or the run. A pulled
+cable earlier in the day is now reported as `output_unverified` with a
+banner, and the next connection turns the output off and says so.
 
 ## Not yet
 
-- **The UI fixes on the lab PC itself**, and the sixteen minor and twelve
-  cosmetic items from the UI bench.
-- **The new driver paths (raw reads/writes, serial poll, SRQ wait, INTFC) on a real adapter** — written from captures on 2026-09-19, never run.
-- **Prologix / AR488 adapters** need their `PRLGX-ASRL::…::INTFC` resource
-  opened before the instrument address resolves; the app does not do that.
-- **Backend items step 2 depends on** but works around for now: the 4PP spot
-  model (spots are summarised in the UI), cable null (not in the new UI yet),
-  persisting the safety-silence flag from a headless client.
+- **The UI fixes on the lab PC itself** — verified against the simulator
+  and, since 2026-09-21, in the macOS bundle against the 2400; the
+  installed Windows build has not been re-run.
+- **SRQ wait and the INTFC session on a real adapter** — never run. The
+  raw read/write paths and the 0x10 poll ran on 2026-09-21 (above); the
+  raw path stays opt-in until its timeout question is settled.
+- **The map in the Tauri UI** (spots panel from `/maps`, the sample outline,
+  the optional photo, the figure) — waits on the open questions in the spots
+  design.
+- **Prologix / AR488 adapters.** The interface is wired (`gpib_interface`)
+  but has never met an adapter: the tests run pyvisa-py against a scripted
+  stand-in on a socket. And a Keithley does not connect through it yet —
+  `VisaInstrument.connect` refuses an address that `list_resources()` does
+  not return, and pyvisa-py lists nothing behind a Prologix adapter. A
+  strict xfail in `test_visa_backend.py` holds the place. Also unverified:
+  on these sessions pyvisa-py rejects `read_termination`, so `connect`
+  leaves pyvisa's default `\r\n` write termination in place.
+- **Cable null** is not in the new UI yet; **persisting the safety-silence
+  flag** from a headless client is not done.
 - PySide6 remains the shipping UI until the above is closed and the bench
   check passes.

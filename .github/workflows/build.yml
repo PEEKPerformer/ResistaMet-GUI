@@ -7,7 +7,10 @@ name: build
 # ship a Mac build.
 
 on:
-  # Build on every push to a tag so each release auto-attaches a .exe.
+  # Build on every push to a tag and attach the .exe to that tag's release.
+  # The release itself is made by hand (gh release create): a published
+  # release is what Zenodo archives, so this workflow only ever uploads to
+  # one that exists and never creates one.
   push:
     tags:
       - 'v*'
@@ -18,10 +21,10 @@ jobs:
   build-windows:
     name: Build Windows .exe
     runs-on: windows-latest
-    # softprops/action-gh-release needs contents:write to update the
-    # release the tag push created. Without this the build succeeds but
-    # the .exe never lands on the release page — observed once on v1.9.0
-    # ("Resource not accessible by integration"), patched here.
+    # Uploading a release asset needs contents:write. Without this the
+    # build succeeds but the .exe never lands on the release page —
+    # observed once on v1.9.0 ("Resource not accessible by integration"),
+    # patched here.
     permissions:
       contents: write
     steps:
@@ -74,11 +77,21 @@ jobs:
           path: dist/ResistaMet.exe
           if-no-files-found: error
 
-      - name: Attach to GitHub release
+      - name: Attach to the GitHub release (upload only)
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/ResistaMet.exe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # gh release upload refuses when the tag has no release; it never
+          # creates or publishes one.
+          if ! found=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName 2>&1); then
+            echo "$found"
+            echo "::error::No release to attach to for $TAG. Create the release first with gh release create $TAG, then re-run this job."
+            exit 1
+          fi
+          gh release upload "$TAG" dist/ResistaMet.exe --repo "$GITHUB_REPOSITORY" --clobber
 
   regen-screenshots:
     name: Regenerate screenshots and commit any drift
@@ -127,6 +140,12 @@ jobs:
 
       - name: Commit and push if screenshots changed
         run: |
+          # main is what is checked out here. A v* tag cut from another
+          # branch says nothing about main and must not commit to it.
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" HEAD; then
+            echo "${{ github.ref_name }} is not on main; leaving main's screenshots alone."
+            exit 0
+          fi
           if [[ -z "$(git status --porcelain docs/screenshots/)" ]]; then
             echo "Screenshots already match generator output for ${{ github.ref_name }}."
             exit 0

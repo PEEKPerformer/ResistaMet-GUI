@@ -10,7 +10,7 @@ A **source measure unit (SMU)** can both source and measure on the same pair of 
 
 The maximum the *measured* quantity is allowed to reach before the instrument clamps. When you source 1 V into a short circuit, current would in principle be infinite; the **current compliance** prevents that by capping output current. Compliance protects both your DUT and the instrument.
 
-If a reading hits compliance, the Keithley reports a magic number (`9.91 × 10³⁷`) in the affected channel. ResistaMet GUI detects this via the SCPI STAT word's bit 3 and flags the row in the CSV's `compliance` column.
+ResistaMet flags a row in the file's `compliance` column on either of two signs: bit 3 of the status word the instrument returns with each reading, or the limited quantity sitting at 99 % or more of its limit. Resistance mode is the special case: the 2400 and 2420 were found on the bench (2026-09-18) not to set the status bit in the ohms function. In manual range the 99 % test, against the voltage limit the instrument reports after configuration, is therefore what flags a row. In Auto range the instrument moves its own limit with the ohms range, so there is nothing fixed to compare with, and a row is flagged only on the status bit or on the overflow value described [below](#compliance-magic-number-991-1037). See [Data outputs → Resistance](outputs.md#resistance).
 
 ## 2-wire vs 4-wire
 
@@ -81,6 +81,21 @@ The 4PP tab computes all three from V, I, geometric factors, and thickness. The 
 
 Four collinear probe tips, evenly spaced (default spacing `s = 0.1016 cm` = 40 mil for the Signatone SP4). Outer two source current, inner two measure voltage. Standards-aligned with ASTM F84-02; correction factors F₂ (geometry), F(w/S) (thickness), F_T (temperature, for n-/p-type silicon) compose multiplicatively to give the effective K.
 
+## Spots and maps
+
+A four-point characterization is rarely one number: you put the probe down in several places and report the sheet resistance per place and the spread between them. ResistaMet models that with two terms.
+
+- **A spot is a run.** One placement of the probe, N samples, one data file. The run carries the spot's description (a map id, an index, a label, optionally a position `x_mm`, `y_mm` from the center of the sample and an array angle) and writes it into the file header as `spot.*`. Every four-point file ends with the spot's statistics, `spot_stats.*`: mean, standard deviation, and the statistical, instrument and combined uncertainties of Rs, ρ and σ, over the samples that were not in compliance.
+- **A map is the runs that share a `map_id`.** Nothing else stores it. The backend assembles a map by reading the run files in the operator's data directory: the newest run of each index stands for that spot, older runs of the same index are listed as superseded (so repeating an index is how you redo a spot), and the spread between the spots' means is computed over the spots. The result is served at `GET /maps/{map_id}` and written beside the runs as `<map_id>_map.json`. Delete the summary and it is rebuilt; the archive of run files is the map.
+
+Because the description lives in the files, the per-spot means and the inter-spot spread can be reproduced from the archive alone, by any client or by your own script.
+
+**Who decides the map id.** A client that knows its map sends the id. The PySide6 window has no map display, so it mints one from its existing controls: a new map starts with the first four-point run after the application starts, after the user or the sample name changes, and after **Clear All**; the spot counter gives the index and the *Spot name* field the label. Its ids look like `20260919-185521_wafer-07_3fa2`. When in doubt it starts a new map, because two maps of one sample can be merged later from their files and two samples written into one map cannot be separated.
+
+**Position and edges.** The F84 and Smits correction tables assume the probe is at the center of the sample. When a spot has a position and the sample has an outline (a circle or a rectangle; see [Settings](settings.md#four-point-sample-outline-and-spot-position)), ResistaMet evaluates the closed-form geometry factor of a thin sheet with insulating edges at that position and compares it with the factor the rows actually use. A probe tip on or beyond the edge refuses the run before the output is turned on. A position that costs more than `fpp_edge_warn_pct` (default 1 %) produces a warning, and the file records the size of the effect. The effect is **reported, never applied**: every Rs in every row is ASTM F84 as written, and correcting for position is left to you. The closed form is checked against ASTM F84 Table 3 at the center; its off-center values have not been compared with measurements.
+
+Field-by-field definitions are in [Data outputs](outputs.md#spot-four-point-runs-that-carry-a-spot).
+
 ## Van der Pauw (vdP) quick anatomy
 
 Sheet resistance of arbitrary-shape samples with four periphery contacts. Procedure per ASTM F76-08 Method A: cable up four geometries in sequence (the GUI walks you through each), source `+I` then `−I` at each, for 8 voltage readings total. The implicit `f(Q)` factor is solved numerically. F76 §11.1 flags the sample as non-homogeneous when `|ρ_A − ρ_B|/ρ_avg > 10%`.
@@ -89,7 +104,7 @@ The per-geometry bar chart on the vdP result panel color-codes the four R values
 
 ## Compliance "magic number" (9.91 × 10³⁷)
 
-When a reading exceeds range or hits compliance, the Keithley 2400 family returns `+9.91E+37` for that channel as a sentinel — IEEE 754 "not-a-number"-ish. ResistaMet detects this via the SCPI STAT word's bit 3 and falls back to a threshold check for older firmwares. Detection bumps the row's `compliance` column to a flag string.
+When a reading exceeds range or hits compliance, the Keithley 2400 family returns `+9.91E+37` for that channel as a sentinel — IEEE 754 "not-a-number"-ish. ResistaMet flags compliance from the status word's bit 3 and from the 99 %-of-limit test described under [Compliance](#compliance); the sentinel itself is what flags a Resistance-mode row in Auto range, where neither of the other two signs is available.
 
 ## Touch-safety warning
 
@@ -100,6 +115,8 @@ Before any run whose gating voltage reaches the threshold, ResistaMet shows a wa
 - **Voltage Source mode**: the sourced V (`vsource_voltage`)
 - **Resistance / Current Source / Four-Point / Van der Pauw**: the configured V compliance — an open-circuit current source swings *up to* compliance, so even a 1 mA test current can put 200 V on the leads if compliance is set there
 - **I-V Sweep**: `max(|sweep_start|, |sweep_stop|)` when sourcing voltage, otherwise the compliance
+
+A run started through the [API](api.md) has no dialog to show, so the run itself stops at a `safety_voltage_ack` prompt before the instrument is opened and waits for a person to acknowledge or cancel; the desktop app presents that prompt as a dialog that cannot be dismissed.
 
 The threshold defaults to 30 V and is per-user-profile-configurable; set it to 0 to disable entirely. A "Don't show again" checkbox sets a sticky silence flag for the profile; Settings → Measurement has a re-enable toggle.
 
@@ -146,9 +163,35 @@ This is the standard treatment for *uncorrelated* error sources under the law of
 
 Full rationale + GUM citations in the docstring of [`resistance_uncertainty`](https://github.com/PEEKPerformer/ResistaMet-GUI/blob/main/resistamet_gui/accuracy.py).
 
-## Machine-local GPIB address
+## Machine-local settings
 
-`gpib_address` is the one setting that can't be portable across PCs: a 2400 wired up as `GPIB0::24::INSTR` on one machine might be `GPIB0::3::INSTR` on another. ResistaMet stores it keyed by hostname and strips it from user-profile and global-settings writes, so a NAS-shared `config.json` works across lab PCs without one machine's wiring shadowing another's. Any legacy single-address slot is auto-lifted into the per-machine entry on first save.
+Three settings describe a PC and its cabling and so cannot travel with an operator's profile: `gpib_address` (a 2400 wired up as `GPIB0::24::INSTR` on one machine might be `GPIB0::3::INSTR` on another), `visa_library` (which VISA implementation opens the bus; a Windows PC wants NI-VISA, a Mac wants pyvisa-py) and `gpib_interface` (a Prologix-style adapter's own resource). ResistaMet stores them keyed by hostname and strips them from user-profile and global-settings writes, so a shared `config.json` works across lab PCs without one machine's wiring shadowing another's. Any legacy single-address slot is auto-lifted into the per-machine entry on first save. Details in [Settings → Machine-local settings](settings.md#machine-local-settings); the backends in [GPIB and VISA backends](gpib.md).
+
+## Architecture: schema, session, API, clients
+
+The measuring code does not know which user interface is in front of it. Four layers, each usable without the ones above:
+
+```
+clients   PySide6 window        desktop app             your script
+          (in-process)          (Tauri + React)         (httpx, curl, ...)
+              |                       |                       |
+              |                       +--- HTTP + WebSocket --+
+              |                                   |
+API           |                 resistamet_gui.api  (localhost, bearer token)
+              |                                   |
+session   resistamet_gui.session   ContinuousRun, VdpRun, MeasurementSession,
+              |                    events, prompts, instrument lock
+schema    resistamet_gui.schema    settings models and bounds, the resolver
+              |                    (profile + overrides -> run settings), spot request
+below     instrument.py (VISA)  data_export.py (files)  calculations*.py  accuracy.py
+```
+
+- **Schema.** Every setting has a typed model with its default and bounds, and one function turns a stored profile plus the values a client sends into the settings a run uses. Both user interfaces resolve through it, so they start identical runs from identical inputs.
+- **Session.** The measurement procedures themselves (`ContinuousRun` for the four continuous modes and the sweep, `VdpRun` for van der Pauw), free of any GUI toolkit. A run reports everything as typed [events](api.md#events) and blocks on [prompts](api.md#prompts) when it needs a person. `MeasurementSession` drives one run at a time without a GUI. An operating-system lock per instrument address keeps two processes off one bus.
+- **API.** A thin localhost HTTP and WebSocket layer over one session, run as a separate process. See [Backend API](api.md).
+- **Clients.** The PySide6 window runs the session-layer procedures in-process on its own worker threads, without the API. The [desktop app](desktop.md) and any script go through the API. All of them produce the same [files](outputs.md).
+
+The PySide6 window is the released application. The desktop app and the API are on the development branch and have had one round of bench checks; each page says what was and was not verified on hardware.
 
 ## Rate-cap predictor
 

@@ -6,11 +6,18 @@ name: desktop
 # frozen backend talks to it through pyvisa at runtime, so nothing VISA-specific
 # is bundled. macOS is built too so the app can be developed and demoed off the
 # bench against the simulator.
+#
+# Releases: the desktop app has its own tags, desktop-v<version>, where
+# <version> is the one in tauri.conf.json. A plain v* tag belongs to the
+# PySide6 application (build.yml) and never builds or receives a desktop
+# bundle. The release is made by hand (gh release create): a published release
+# is what Zenodo archives, so this workflow only ever uploads to one that
+# exists and never creates one.
 
 on:
   push:
     tags:
-      - 'v*'
+      - 'desktop-v*'
     # The migration branch builds on every push so packaging problems surface
     # while the work is fresh, not at the first tag.
     branches:
@@ -45,11 +52,31 @@ jobs:
           - name: macOS arm64
             os: macos-latest
             bundles: dmg
+    # Read-only, and the token is not left in .git/config: pip, npm, cargo
+    # build scripts and third-party actions all run in this job, on every
+    # branch push and pull request. Only the attach job below can write.
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: The tag names the version being built
+        # Before the long steps: a bundle must not land on a release whose
+        # name says another version.
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        shell: python
+        run: |
+          import json, os, sys
+          tag = os.environ["GITHUB_REF_NAME"]
+          with open("desktop/src-tauri/tauri.conf.json", encoding="utf-8") as conf:
+              version = json.load(conf)["version"]
+          if tag != "desktop-v" + version:
+              print(f"::error::Tag {tag} does not match the app version {version} in "
+                    f"tauri.conf.json; the tag for this commit is desktop-v{version}.")
+              sys.exit(1)
 
       # --- the Python backend, frozen -------------------------------------
       - name: Set up Python
@@ -74,35 +101,95 @@ jobs:
         # bundle.resources picks it up.
         run: pyinstaller resistamet-api.spec --noconfirm --clean --distpath desktop/sidecar
 
-      - name: Smoke-test the frozen backend (handshake, /health, WebSocket upgrade)
+      - name: Smoke-test the frozen backend (handshake, /health, WebSocket upgrade, a CSV and an HDF5 run)
         shell: python
         run: |
-          import http.client, json, subprocess, sys, time, urllib.request, os
+          import http.client, json, os, subprocess, sys, tempfile, time, urllib.request
           from urllib.parse import urlsplit
-          exe = os.path.join("desktop", "sidecar", "resistamet-api",
-                             "resistamet-api.exe" if os.name == "nt" else "resistamet-api")
-          proc = subprocess.Popen([exe, "--port", "0", "--simulate", "--config", "ci-config.json"],
-                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-          line = proc.stdout.readline()
-          print("handshake:", line.strip())
-          info = json.loads(line)
-          with urllib.request.urlopen(info["url"] + "/health", timeout=10) as r:
-              assert r.status == 200, r.status
-          # The desktop UI lives on this socket. uvicorn answers 404 here when
-          # its WebSocket implementation did not make it into the bundle.
-          parts = urlsplit(info["url"])
-          conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
-          conn.request("GET", "/session/events/ws?token=" + info["token"], headers={
-              "Connection": "Upgrade", "Upgrade": "websocket",
-              "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
-          })
-          status = conn.getresponse().status
-          conn.close()
-          print("websocket upgrade:", status)
-          assert status == 101, f"WebSocket upgrade answered {status}, not 101"
-          proc.stdin.close()
-          proc.wait(timeout=60)
-          print("backend exited", proc.returncode)
+          exe = os.path.abspath(os.path.join(
+              "desktop", "sidecar", "resistamet-api",
+              "resistamet-api.exe" if os.name == "nt" else "resistamet-api"))
+          # A directory of its own: the runs below write their data files under
+          # the backend's working directory.
+          work = tempfile.mkdtemp(prefix="resistamet-smoke-")
+          proc = subprocess.Popen([exe, "--port", "0", "--simulate",
+                                   "--config", os.path.join(work, "ci-config.json")],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, cwd=work)
+
+          def call(method, path, body=None):
+              request = urllib.request.Request(
+                  info["url"] + path, method=method,
+                  data=None if body is None else json.dumps(body).encode(),
+                  headers={"Authorization": "Bearer " + info["token"],
+                           "Content-Type": "application/json"})
+              with urllib.request.urlopen(request, timeout=15) as reply:
+                  return json.loads(reply.read() or b"null")
+
+          def run_once(label):
+              """A short simulated resistance run: start, a few samples, stop.
+
+              PyInstaller only warns about a hidden import it cannot find, so
+              what a run imports late (the simulator, the exporters, h5py) is
+              proven by running one. Returns the finalized file's path.
+              """
+              run_id = call("POST", "/session/start", {
+                  "mode": "resistance", "sample_name": "smoke-" + label, "username": "ci",
+                  "overrides": {"res_test_current": 1e-3, "res_voltage_compliance": 5.0},
+              })["run_id"]
+              stopped, deadline = False, time.time() + 60
+              while time.time() < deadline:
+                  events = call("GET", f"/session/events?run_id={run_id}&limit=500")["events"]
+                  kinds = [event["type"] for event in events]
+                  if not stopped and kinds.count("sample") >= 3:
+                      call("POST", "/session/stop")
+                      stopped = True
+                  if "run_ended" in kinds:
+                      break
+                  time.sleep(0.2)
+              errors = [event for event in events if event["type"] == "error"]
+              assert not errors, f"{label}: the run reported {errors}"
+              finalized = [event for event in events if event["type"] == "file_finalized"]
+              assert finalized, f"{label}: no file_finalized among {sorted(set(kinds))}"
+              path = os.path.join(work, finalized[-1]["payload"]["path"])
+              print(f"{label}: {kinds.count('sample')} samples, finalized {path}")
+              return path
+
+          try:
+              line = proc.stdout.readline()
+              print("handshake:", line.strip())
+              info = json.loads(line)
+              with urllib.request.urlopen(info["url"] + "/health", timeout=10) as r:
+                  assert r.status == 200, r.status
+              # The desktop UI lives on this socket. uvicorn answers 404 here when
+              # its WebSocket implementation did not make it into the bundle.
+              parts = urlsplit(info["url"])
+              conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
+              conn.request("GET", "/session/events/ws?token=" + info["token"], headers={
+                  "Connection": "Upgrade", "Upgrade": "websocket",
+                  "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+              })
+              status = conn.getresponse().status
+              conn.close()
+              print("websocket upgrade:", status)
+              assert status == 101, f"WebSocket upgrade answered {status}, not 101"
+
+              call("POST", "/users", {"username": "ci"})
+              marker = "# --- run completed ---"
+              with open(run_once("csv"), encoding="utf-8", errors="replace") as handle:
+                  text = handle.read()
+              assert marker in text, "the CSV has no footer:\n" + text[-400:]
+              assert "ended_at" in text.split(marker)[-1], text[-400:]
+
+              # h5py is in requirements.txt and named in the spec; this is the
+              # only place a bundle built without it is found out.
+              call("PATCH", "/profiles/ci", {"output": {"format": "hdf5"}})
+              path = run_once("hdf5")
+              with open(path, "rb") as handle:
+                  assert handle.read(8) == b"\x89HDF\r\n\x1a\n", f"{path} is not an HDF5 file"
+          finally:
+              proc.stdin.close()
+              proc.wait(timeout=60)
+              print("backend exited", proc.returncode)
 
       - name: The frozen backend can load its VISA stack
         # A frozen app has no Homebrew or apt path to find libusb on, so the
@@ -110,9 +197,22 @@ jobs:
         # Windows the adapter belongs to NI's driver and nothing is bundled.
         shell: python
         run: |
-          import json, os, subprocess, sys
-          exe = os.path.join("desktop", "sidecar", "resistamet-api",
-                             "resistamet-api.exe" if os.name == "nt" else "resistamet-api")
+          import json, os, re, subprocess, sys
+          bundle = os.path.join("desktop", "sidecar", "resistamet-api")
+          exe = os.path.join(bundle, "resistamet-api.exe" if os.name == "nt" else "resistamet-api")
+          # libusb is LGPL-2.1: wherever a copy of it is in the bundle, put
+          # there by the spec or by PyInstaller's usb hook, its licence text
+          # is too. The spec fails the build otherwise; this checks what
+          # was actually collected.
+          libusb = re.compile(r"^(?:lib|cyg)?usb(?:-?[0-9.]+)*\.(?:dylib|dll|so(?:\.[0-9]+)*)$", re.I)
+          shipped = [os.path.join(folder, name) for folder, _, names in os.walk(bundle)
+                     for name in names if libusb.match(name)]
+          print("bundled libusb:", shipped or "none")
+          for path in shipped:
+              licence = os.path.join(os.path.dirname(path), "libusb-COPYING")
+              assert os.path.isfile(licence), f"{path} is bundled without {licence}"
+          if sys.platform == "darwin":
+              assert shipped, "no libusb in the macOS bundle"
           done = subprocess.run([exe, "--check-visa", "--visa-library", "@py",
                                  "--config", "ci-config.json"],
                                 capture_output=True, text=True, timeout=120)
@@ -136,10 +236,14 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        # Pinned to a commit of the action's stable branch, which is why the
+        # toolchain has to be named here.
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
 
       - name: Cache cargo
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: desktop/src-tauri
 
@@ -165,11 +269,46 @@ jobs:
             desktop/src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
-      - name: Attach to the release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+  attach:
+    name: Attach the bundles to the release
+    # The only job with a token that can write, and it runs nothing from the
+    # repository: no checkout, no dependency install, no build. It takes the
+    # bundles the build jobs uploaded and hands them to gh. Both platforms
+    # must have built; a release never gets half of its bundles.
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the bundles
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          files: |
-            desktop/src-tauri/target/release/bundle/msi/*.msi
-            desktop/src-tauri/target/release/bundle/nsis/*.exe
-            desktop/src-tauri/target/release/bundle/dmg/*.dmg
+          pattern: resistamet-desktop-*
+          path: bundles
+          merge-multiple: true
+
+      - name: Attach to the release (upload only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # gh release upload refuses when the tag has no release; it never
+          # creates or publishes one.
+          if ! found=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName 2>&1); then
+            echo "$found"
+            echo "::error::No release to attach to for $TAG. Create the release first with gh release create $TAG, then re-run this job."
+            exit 1
+          fi
+          bundles=()
+          while IFS= read -r file; do
+            bundles+=("$file")
+          done < <(find bundles -type f \( -name '*.msi' -o -name '*.exe' -o -name '*.dmg' \) | sort)
+          printf 'found: %s\n' "${bundles[@]}"
+          for kind in msi exe dmg; do
+            if ! printf '%s\n' "${bundles[@]}" | grep -q "\.${kind}\$"; then
+              echo "::error::No .${kind} among the downloaded bundles."
+              exit 1
+            fi
+          done
+          gh release upload "$TAG" "${bundles[@]}" --repo "$GITHUB_REPOSITORY" --clobber

@@ -650,7 +650,7 @@
     },
     "run_ended": {
       "additionalProperties": false,
-      "description": "Always the last event of a run, whatever ended it.",
+      "description": "Always the last event of a run, whatever ended it.\n\n``output_verified`` is False when the cleanup could not confirm the\ninstrument output is off: its ``:OUTP OFF`` raised, or ``:OUTP?`` did not\nread back 0. The source may still be driving the sample; a ``log`` with\ncode ``output_unverified`` says so before this event.",
       "properties": {
         "duration_s": {
           "default": 0.0,
@@ -660,6 +660,11 @@
         "ok": {
           "default": true,
           "title": "Ok",
+          "type": "boolean"
+        },
+        "output_verified": {
+          "default": true,
+          "title": "Output Verified",
           "type": "boolean"
         },
         "path": {

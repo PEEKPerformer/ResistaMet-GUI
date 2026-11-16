@@ -45,6 +45,10 @@ export interface SessionSnapshot {
   } | null;
   log: LogLine[];
   gap: boolean;
+  /** The last run could not confirm the instrument output is off, so the
+   *  source may still be driving the sample. Stays until the operator
+   *  dismisses it or the backend reports the output off or reconnects. */
+  outputUnverified: boolean;
 }
 
 const MAX_LOG_LINES = 500;
@@ -57,6 +61,7 @@ let snapshot: SessionSnapshot = {
   lastRunEnded: null,
   log: [],
   gap: false,
+  outputUnverified: false,
 };
 
 const listeners = new Set<() => void>();
@@ -161,6 +166,14 @@ function appendLog(line: LogLine): LogLine[] {
   return log;
 }
 
+/** What a log code says about the instrument output: the run could not
+ *  confirm it off, the backend has since turned it off, or nothing. */
+function outputUnverifiedAfter(code: string, current: boolean): boolean {
+  if (code === "output_unverified") return true;
+  if (code === "output_off_recovered") return false;
+  return current;
+}
+
 /** Fold one event into the snapshot. Samples are handled elsewhere. */
 export function applyEvent(event: AnyEvent): void {
   switch (event.type) {
@@ -177,6 +190,7 @@ export function applyEvent(event: AnyEvent): void {
           code: event.payload.code,
           message: event.payload.message,
         }),
+        outputUnverified: outputUnverifiedAfter(event.payload.code, snapshot.outputUnverified),
       });
       return;
     case "error":
@@ -202,6 +216,9 @@ export function applyEvent(event: AnyEvent): void {
           maxSourceI: event.payload.max_source_i ?? null,
           maxPowerW: event.payload.max_power_w ?? null,
         },
+        // A run that reconnected resets the instrument before it configures
+        // anything, and that reset leaves the output off.
+        outputUnverified: false,
       });
       return;
     case "run_started":
@@ -217,6 +234,7 @@ export function applyEvent(event: AnyEvent): void {
           durationS: event.payload.duration_s ?? null,
           samples: event.payload.samples ?? null,
         },
+        outputUnverified: event.payload.output_verified === false ? true : snapshot.outputUnverified,
       });
       return;
     case "prompt_resolved":
@@ -229,4 +247,9 @@ export function applyEvent(event: AnyEvent): void {
 
 export function clearLog(): void {
   publish({ ...snapshot, log: [] });
+}
+
+/** The operator has checked the front panel. */
+export function dismissOutputNotice(): void {
+  if (snapshot.outputUnverified) publish({ ...snapshot, outputUnverified: false });
 }

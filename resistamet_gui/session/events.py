@@ -329,13 +329,20 @@ class RunStatePayload(EventModel):
 
 
 class RunEndedPayload(EventModel):
-    """Always the last event of a run, whatever ended it."""
+    """Always the last event of a run, whatever ended it.
+
+    ``output_verified`` is False when the cleanup could not confirm the
+    instrument output is off: its ``:OUTP OFF`` raised, or ``:OUTP?`` did not
+    read back 0. The source may still be driving the sample; a ``log`` with
+    code ``output_unverified`` says so before this event.
+    """
 
     reason: str
     ok: bool = True
     samples: int = 0
     duration_s: float = 0.0
     path: Optional[str] = None
+    output_verified: bool = True
 
 
 class Event(EventModel):
