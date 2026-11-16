@@ -119,6 +119,13 @@
   text-overflow: ellipsis;
 }
 
+.axes {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
 .columnPicker {
   width: 200px;
 }
@@ -140,6 +147,18 @@
 
 .metaBody {
   overflow: auto;
+}
+
+.metaHeading {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: var(--sp-2) 0 var(--sp-1);
+}
+
+.metaHeading:first-child {
+  padding-top: 0;
 }
 
 .metaTable {

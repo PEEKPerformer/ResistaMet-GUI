@@ -20,12 +20,16 @@ import { useSession } from "../../state/session";
 import { useLatestSample } from "../../state/samples";
 import { useUi } from "../../state/ui";
 import { seedOverrides, setOverride, useOverrides } from "../../state/overrides";
+import { useSpots } from "../../state/spots";
 import { Badge, Button, Notice, Panel } from "../../components/ui";
 import { BackendNotice } from "../../components/BackendNotice";
 import { Icons } from "../../components/icons";
 import { LivePlot, type TraceSpec } from "../../components/plot/LivePlot";
+import { isMarkKey } from "../../lib/markKey";
 import { FieldRow, SettingsForm } from "../../components/forms/SettingsForm";
 import { FourPointPanel } from "./FourPointPanel";
+import { describeClearance, preflightFor, prepareSpot, useMapSync } from "./fourPointSpot";
+import { MapPanel } from "./MapPanel";
 import styles from "./ContinuousView.module.css";
 
 type ContinuousMode = Exclude<Mode, "sweep" | "vdp">;
@@ -94,6 +98,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
   const session = useSession();
   const ui = useUi();
   const overrides = useOverrides(mode);
+  const { warning: spotWarning, pending: pendingSpot } = useSpots();
   const [resolved, setResolved] = useState<Resolved | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [windowS, setWindowS] = useState(300);
@@ -112,9 +117,12 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
   );
   useEffect(() => {
     if (!ui.username) return;
+    // Seed the operator the profile was fetched for: by the time it answers,
+    // another may have been selected.
+    const username = ui.username;
     api
-      .profile(ui.username)
-      .then((profile) => seedOverrides(mode, fieldKeys, profile.measurement ?? {}))
+      .profile(username)
+      .then((profile) => seedOverrides(mode, fieldKeys, profile.measurement ?? {}, username))
       .catch(() => undefined);
   }, [api, ui.username, mode, fieldKeys]);
 
@@ -137,19 +145,34 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
 
   const onChange = useCallback((key: string, value: unknown) => setOverride(mode, key, value), [mode]);
 
+  // Four-point runs belong to a map of one operator on one sample name.
+  const owner = useMemo(
+    () => (mode === "four_point" && ui.username ? { user: ui.username, sample: ui.sampleName } : null),
+    [mode, ui.username, ui.sampleName],
+  );
+  useMapSync(api, owner);
+  // What the run would use: the backend's resolution, the tab's values until it answers.
+  const measurement = resolved?.settings.measurement ?? overrides;
+
   // M marks the moment, as in the PySide6 app — unless the operator is typing.
   useEffect(() => {
     if (!thisModeRunning) return;
     const onKey = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
-      if (e.key === "m" || e.key === "M") void api.mark();
+      const targetTag = (e.target as HTMLElement | null)?.tagName ?? null;
+      const { key, metaKey, ctrlKey, altKey, repeat } = e;
+      if (isMarkKey({ key, metaKey, ctrlKey, altKey, repeat, targetTag })) void api.mark();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [api, thisModeRunning]);
 
+  // The backend refuses a spot with a tip off the sample; the same test here
+  // saves the round trip. How much a spot near an edge costs is the backend's.
+  const spotPreflight = owner ? preflightFor(measurement, pendingSpot) : null;
+  const spotOffSample = spotPreflight?.state === "off";
+
   const canStart =
+    !spotOffSample &&
     session.backendReachable === true && !locked && ui.username !== null && ui.sampleName.trim() !== "" && resolved !== null && resolved.ok && !busy;
 
   const start = async () => {
@@ -157,7 +180,9 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
     setBusy(true);
     setStartError(null);
     try {
-      await api.start({ mode, sample_name: ui.sampleName.trim(), username: ui.username, overrides });
+      const request = { mode, sample_name: ui.sampleName.trim(), username: ui.username, overrides };
+      // A four-point run is a spot of a map, and says which.
+      await api.start(owner ? { ...request, spot: await prepareSpot(api, owner) } : request);
     } catch (e) {
       setStartError(e instanceof ApiError ? e.detail : String(e));
     } finally {
@@ -222,6 +247,10 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
 
         <BackendNotice />
         {startError ? <Notice tone="danger">{startError}</Notice> : null}
+        {spotOffSample && !locked ? (
+          <Notice tone="warn">The spot is off the sample: {describeClearance(spotPreflight!)}. Move it or clear its position.</Notice>
+        ) : null}
+        {mode === "four_point" && spotWarning?.refused ? <Notice tone="danger">{spotWarning.message} Nothing was measured.</Notice> : null}
         {otherModeRunning ? (
           <Notice tone="info">A {MODE_LABEL[status!.mode!]} run is in progress. Stop it before starting another.</Notice>
         ) : null}
@@ -245,24 +274,34 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
           bodyClassName={styles.plotBody}
           title="Live"
           actions={
-            <div className={styles.windowPicker} role="group" aria-label="Time window">
-              {WINDOWS.map((w) => (
-                <button
-                  key={w.seconds}
-                  type="button"
-                  data-active={w.seconds === windowS}
-                  onClick={() => setWindowS(w.seconds)}
-                >
-                  {w.label}
-                </button>
-              ))}
-            </div>
+            <>
+              {/* The stream lost part of this run; the backend's file did not. */}
+              {session.gap && status?.mode === mode ? <Badge tone="warn">Plot partial — file is complete</Badge> : null}
+              <ThinnedBadge mode={mode} />
+              <div className={styles.windowPicker} role="group" aria-label="Time window">
+                {WINDOWS.map((w) => (
+                  <button
+                    key={w.seconds}
+                    type="button"
+                    data-active={w.seconds === windowS}
+                    onClick={() => setWindowS(w.seconds)}
+                  >
+                    {w.label}
+                  </button>
+                ))}
+              </div>
+            </>
           }
         >
           <LivePlot traces={TRACES[mode]} mode={mode} windowS={windowS} />
         </Panel>
 
-        {mode === "four_point" ? <FourPointPanel running={thisModeRunning} /> : null}
+        {mode === "four_point" ? (
+          <>
+            <FourPointPanel running={thisModeRunning} owner={owner} edgeWarnPct={numberSetting(measurement, "fpp_edge_warn_pct", 1)} />
+            <MapPanel owner={owner} measurement={measurement} running={thisModeRunning} start={{ enabled: canStart, run: () => void start() }} />
+          </>
+        ) : null}
       </div>
 
       <aside className={styles.settings}>
@@ -307,8 +346,24 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
   );
 }
 
+function numberSetting(settings: Record<string, unknown>, key: string, fallback: number): number {
+  const value = settings[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+/** Shown once the series store has thinned the older part of a long run. */
+function ThinnedBadge({ mode }: { mode: Mode }) {
+  const sample = useLatestSample();
+  if (!sample || sample.mode !== mode || !sample.thinned) return null;
+  return (
+    <span title="Older samples are drawn as their minimum and maximum; the newest are drawn in full. The file has every sample.">
+      <Badge>Older history: min/max</Badge>
+    </span>
+  );
+}
+
 function RunState({ mode }: { mode: Mode }) {
-  const { status, lastRunEnded } = useSession();
+  const { status, lastRunEnded, gap } = useSession();
   const sample = useLatestSample();
   const latest = sample && sample.mode === mode ? sample : null;
   if (status && status.state !== "idle" && status.mode === mode) {
@@ -318,7 +373,8 @@ function RunState({ mode }: { mode: Mode }) {
         <Badge tone={tone}>{STATE_LABEL[status.state] ?? status.state}</Badge>
         {latest ? (
           <span className={`${styles.runMeta} num`}>
-            {formatElapsed(latest.elapsedS)} · {latest.count} samples
+            {/* With a gap the local count is only what reached this screen. */}
+            {formatElapsed(latest.elapsedS)} · {gap ? "≥ " : ""}{latest.count} samples
           </span>
         ) : null}
       </span>

@@ -42,7 +42,8 @@ export function engineering(value: number, unit = "", digits = 4): Engineering {
 }
 
 /** Axis tick labels: one prefix for the whole axis, and as many decimals as
- *  the tick spacing needs so neighbouring ticks never read the same. A
+ *  the ticks need so that none reads the same as its neighbour or as a value
+ *  it is not. A
  *  resistance trace lives in the last digits (10.075 … 10.080 Ω), which four
  *  significant figures cannot show. */
 export function axisLabels(ticks: number[], unit = ""): string[] {
@@ -51,7 +52,12 @@ export function axisLabels(ticks: number[], unit = ""): string[] {
   const scaled = ticks.map((v) => v / scale);
   let spacing = Number.POSITIVE_INFINITY;
   for (let i = 1; i < scaled.length; i++) spacing = Math.min(spacing, Math.abs(scaled[i]! - scaled[i - 1]!));
-  const decimals = Number.isFinite(spacing) && spacing > 0 ? Math.min(10, Math.max(0, Math.ceil(-Math.log10(spacing) - 1e-9))) : 0;
+  let decimals = Number.isFinite(spacing) && spacing > 0 ? Math.min(10, Math.max(0, Math.ceil(-Math.log10(spacing) - 1e-9))) : 0;
+  // The spacing's own decimals are not always enough: ticks step by 2.5 as
+  // well as 1, 2 and 5, and 2.5 at zero decimals reads "3". Add decimals
+  // until every label is its tick, to within floating-point noise.
+  const noise = Number.isFinite(spacing) ? spacing * 1e-6 : 0;
+  while (decimals < 10 && scaled.some((v) => Math.abs(Number(v.toFixed(decimals)) - v) > noise)) decimals += 1;
   const suffix = prefix + unit ? ` ${prefix}${unit}` : "";
   return scaled.map((v) => (Math.abs(v) < 0.5 * 10 ** -decimals ? (0).toFixed(decimals) : v.toFixed(decimals)) + suffix);
 }
@@ -88,21 +94,14 @@ export function formatPercent(fraction: number): string {
   return `${(fraction * 100).toFixed(1)} %`;
 }
 
-/** Parse what an operator typed into a numeric field: accepts engineering
- *  suffixes ("100m", "1.5k", "10u", "3 µA") and plain numbers. */
-export function parseEngineering(text: string): number | null {
-  const cleaned = text.trim().replace(/\s+/g, "");
-  if (cleaned === "") return null;
-  const match = /^([-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)([TGMkmuµnpf]?)/i.exec(cleaned);
-  if (!match) return null;
-  const base = Number(match[1]);
-  if (!Number.isFinite(base)) return null;
-  const suffix = match[2] ?? "";
-  const factor: Record<string, number> = {
-    T: 1e12, G: 1e9, M: 1e6, k: 1e3, m: 1e-3, u: 1e-6, "µ": 1e-6, n: 1e-9, p: 1e-12, f: 1e-15,
-  };
-  if (suffix === "") return base;
-  // "M" and "m" differ; every other suffix is case-insensitive in practice.
-  const key = suffix === "M" || suffix === "m" ? suffix : suffix.toLowerCase() === "k" ? "k" : suffix;
-  return base * (factor[key] ?? 1);
+/** A mean with its uncertainty under one prefix, the mean carried to the
+ *  uncertainty's second significant figure: "5.6512 ± 0.0036 Ω/sq". Without
+ *  a usable uncertainty it is the plain value. */
+export function formatWithUncertainty(mean: number | null | undefined, u: number | null | undefined, unit = ""): string {
+  if (typeof mean !== "number" || !Number.isFinite(mean)) return "—";
+  if (typeof u !== "number" || !Number.isFinite(u) || u <= 0) return formatEngineering(mean, unit);
+  const { scale, prefix } = prefixFor(Math.max(Math.abs(mean), u), unit);
+  const decimals = Math.min(9, Math.max(0, 1 - Math.floor(Math.log10(u / scale))));
+  const suffix = prefix + unit ? ` ${prefix}${unit}` : "";
+  return `${(mean / scale).toFixed(decimals)} ± ${(u / scale).toFixed(decimals)}${suffix}`;
 }

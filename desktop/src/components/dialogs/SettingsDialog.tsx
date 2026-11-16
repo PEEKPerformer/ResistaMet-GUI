@@ -1,15 +1,18 @@
 // Profile settings: the knobs that live with the operator rather than on a
-// tab. Edits go straight to PATCH /profiles/{user} on Save, one section at a
-// time, so the backend's validation is the only validation.
+// tab. Save sends PATCH /profiles/{user} the keys that were edited and no
+// others, so the backend's validation is the only validation.
 //
 // The instrument address is machine-local and shown apart from the profile:
-// the same operator's profile on another PC has a different bus.
+// the same operator's profile on another PC has a different bus. Only the
+// Instrument section stores it; Save never sends it.
 
 import { useEffect, useMemo, useState } from "react";
 import { useApi } from "../../app/AppContext";
 import { FIELD_META } from "../../generated/settings";
 import type { FieldSpec } from "../../lib/fields";
-import type { InstrumentInfo, Profile, VisaBackend } from "../../lib/api";
+import { patchIssues, type PatchIssue } from "../../lib/patchIssues";
+import { profilePatch, withMachineLocal } from "../../lib/profilePatch";
+import type { InstrumentInfo, Issue, Profile, VisaBackend } from "../../lib/api";
 import { ApiError } from "../../lib/api";
 import { setIdentifiedInstrument, useSession } from "../../state/session";
 import { setTheme, useUi } from "../../state/ui";
@@ -74,6 +77,8 @@ export function SettingsDialog({ onClose }: Props) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [draft, setDraft] = useState<Profile>({});
   const [error, setError] = useState<string | null>(null);
+  /** What the backend refused in the last Save, shown at the fields. */
+  const [issues, setIssues] = useState<PatchIssue[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -90,33 +95,51 @@ export function SettingsDialog({ onClose }: Props) {
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   }, [api, ui.username]);
 
-  const dirtySections = useMemo(() => {
-    if (!profile) return [];
-    return (Object.keys(draft) as (keyof Profile)[]).filter(
-      (s) => JSON.stringify(draft[s]) !== JSON.stringify(profile[s]),
-    );
-  }, [draft, profile]);
+  const patch = useMemo(() => (profile ? profilePatch(profile, draft) : {}), [draft, profile]);
+  const dirtySections = Object.keys(patch);
 
-  const set = (sectionName: string, key: string, value: unknown) =>
+  const set = (sectionName: string, key: string, value: unknown) => {
     setDraft((d) => ({ ...d, [sectionName]: { ...(d[sectionName] ?? {}), [key]: value } }));
+    setIssues((all) => all.filter((i) => !(i.section === sectionName && i.key === key)));
+  };
+
+  const issueFor = (sectionName: string, key: string): Issue | undefined => {
+    const found = issues.find((i) => i.section === sectionName && i.key === key);
+    return found ? { key, message: found.message, severity: "error" } : undefined;
+  };
 
   const save = async () => {
     if (!ui.username) return;
     setSaving(true);
     setError(null);
+    setIssues([]);
     try {
-      const patch: Partial<Profile> = {};
-      for (const s of dirtySections) patch[s] = draft[s];
       const updated = await api.patchProfile(ui.username, patch);
       setProfile(updated);
       setDraft(structuredClone(updated));
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } catch (e) {
-      setError(e instanceof ApiError ? e.detail : String(e));
+      const refused = e instanceof ApiError ? patchIssues(e.detail) : [];
+      setIssues(refused);
+      // Nothing was stored. The fields may be in a section that is not open.
+      setError(
+        refused.length > 0
+          ? `Not saved: ${refused.map((i) => i.key).join(", ")}`
+          : e instanceof ApiError
+            ? e.detail
+            : String(e),
+      );
     } finally {
       setSaving(false);
     }
+  };
+
+  // Identify stored a new address: the loaded profile and the draft take it,
+  // and edits waiting in other sections stay as they are.
+  const onMachineLocalStored = (stored: Profile) => {
+    setProfile((p) => (p ? withMachineLocal(p, stored) : stored));
+    setDraft((d) => withMachineLocal(d, stored));
   };
 
   const measurement = draft.measurement ?? {};
@@ -166,12 +189,13 @@ export function SettingsDialog({ onClose }: Props) {
                     meta={meta("InstrumentSettings")[spec.key] ?? {}}
                     value={measurement[spec.key]}
                     onChange={(v) => set("measurement", spec.key, v)}
+                    issue={issueFor("measurement", spec.key)}
                     disabled={running}
                   />
                 ))
               : null}
 
-            {profile && section === "instrument" ? <InstrumentSection running={running} /> : null}
+            {profile && section === "instrument" ? <InstrumentSection running={running} onStored={onMachineLocalStored} /> : null}
 
             {profile && section === "aux"
               ? AUX.map((spec) => (
@@ -181,6 +205,7 @@ export function SettingsDialog({ onClose }: Props) {
                     meta={meta("AuxSensorSettings")[spec.key] ?? {}}
                     value={measurement[spec.key]}
                     onChange={(v) => set("measurement", spec.key, v)}
+                    issue={issueFor("measurement", spec.key)}
                     disabled={running}
                   />
                 ))
@@ -194,6 +219,7 @@ export function SettingsDialog({ onClose }: Props) {
                     meta={meta("SafetySettings")[spec.key] ?? {}}
                     value={measurement[spec.key]}
                     onChange={(v) => set("measurement", spec.key, v)}
+                    issue={issueFor("measurement", spec.key)}
                     disabled={running}
                   />
                 ))
@@ -208,6 +234,7 @@ export function SettingsDialog({ onClose }: Props) {
                     meta={meta("FileSettings")[spec.key] ?? {}}
                     value={(draft.file ?? {})[spec.key]}
                     onChange={(v) => set("file", spec.key, v)}
+                    issue={issueFor("file", spec.key)}
                     disabled={running}
                   />
                 ))}
@@ -219,6 +246,7 @@ export function SettingsDialog({ onClose }: Props) {
                     meta={meta("OutputSettings")[spec.key] ?? {}}
                     value={(draft.output ?? {})[spec.key]}
                     onChange={(v) => set("output", spec.key, v)}
+                    issue={issueFor("output", spec.key)}
                     disabled={running}
                   />
                 ))}
@@ -257,7 +285,7 @@ function describeBackend(backend: VisaBackend): string {
 
 /** Address and backend are machine-local; identifying touches the bus, so
  *  it is refused while a run holds it and the backend says so. */
-function InstrumentSection({ running }: { running: boolean }) {
+function InstrumentSection({ running, onStored }: { running: boolean; onStored: (stored: Profile) => void }) {
   const api = useApi();
   const ui = useUi();
   const [address, setAddress] = useState("");
@@ -285,13 +313,14 @@ function InstrumentSection({ running }: { running: boolean }) {
 
   const save = async () => {
     if (!ui.username) return;
-    await api.patchProfile(ui.username, {
+    const stored = await api.patchProfile(ui.username, {
       measurement: {
         gpib_address: address.trim(),
         visa_library: library,
         gpib_interface: gpibInterface.trim(),
       },
     });
+    onStored(stored);
   };
 
   const run = async (fn: () => Promise<void>) => {

@@ -1,9 +1,17 @@
 /* Keeps its height: the workspace column scrolls instead of squeezing it. */
 .row {
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) minmax(0, 1.4fr);
+  grid-template-columns: minmax(300px, 0.8fr) minmax(0, 1.6fr);
   gap: var(--sp-3);
   flex: none;
+}
+
+/* The table has seven columns; beside the statistics it needs a wide
+   window. Below that the two panels stack and the column scrolls. */
+@media (max-width: 1500px) {
+  .row {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .stats,
@@ -11,11 +19,11 @@
   min-height: 0;
 }
 
-/* As many columns as fit a whole "-24126 Ω/sq"; two at the default window
-   width, three when there is room. */
+/* As many columns as fit a whole "453.2 ± 1.4 Ω/sq": three when the panel
+   has the workspace's width, two beside the table. */
 .statGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: var(--sp-3) var(--sp-4);
 }
 
@@ -45,27 +53,111 @@
   white-space: nowrap;
 }
 
-.saveRow {
+.nextRow {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: var(--sp-2);
-  margin-top: var(--sp-4);
+  margin-bottom: var(--sp-3);
+}
+
+.nextIndex {
+  color: var(--fg-faint);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.redo {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.statsHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+
+.statsLabel {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pendingStats {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--text-sm);
+}
+
+.faint {
+  color: var(--fg-faint);
+}
+
+.edgeNote {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  color: var(--warn);
+  font-size: var(--text-sm);
 }
 
 .spotsTitle {
   display: inline-flex;
   align-items: baseline;
   gap: var(--sp-3);
+  min-width: 0;
+  max-width: 100%;
 }
 
-.across {
-  color: var(--fg-muted);
+/* The map id is a file-name stem: shown as written, cut in the middle of
+   nowhere rather than wrapped. */
+.mapId {
+  color: var(--fg-faint);
   font-weight: 400;
+  font-size: var(--text-xs);
+  letter-spacing: 0;
+  text-transform: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .spotsBody {
   overflow: auto;
-  max-height: 200px;
+  max-height: 240px;
+}
+
+.error {
+  color: var(--danger);
+  font-size: var(--text-sm);
+  margin-bottom: var(--sp-2);
+}
+
+.between {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-5);
+  margin-top: var(--sp-3);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+
+.skipped {
+  color: var(--warn);
+  cursor: help;
+}
+
+.hint {
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
+  cursor: help;
 }
 
 .empty {
@@ -92,6 +184,23 @@
 .table td {
   padding: 3px var(--sp-3) 3px 0;
   border-top: 1px solid var(--border);
+}
+
+.table td {
+  white-space: nowrap;
+}
+
+.table td:nth-child(2) {
+  white-space: normal;
+}
+
+.table td[data-tone="warn"] {
+  color: var(--warn);
+  cursor: help;
+}
+
+.table tr[data-redo="true"] td {
+  background: var(--accent-muted);
 }
 
 .table td:last-child {
