@@ -57,13 +57,17 @@ _V_MEAS_2400 = (
     AccuracySpec(range_max=200.0, pct_reading=0.00015, offset=10e-3),    # 200 V
 )
 
-# 2410 adds a 1000 V range; lower ranges match the 2400.
-_V_MEAS_2410 = _V_MEAS_2400[:3] + (
+# 2410 adds a 1000 V range. The 200 mV and 2 V rows match the 2400; the
+# 20 V row does not (1 mV offset, against the 2400's 1.5 mV).
+_V_MEAS_2410 = _V_MEAS_2400[:2] + (
+    AccuracySpec(range_max=20.0,   pct_reading=0.00015, offset=1e-3),    # 20 V
     AccuracySpec(range_max=1000.0, pct_reading=0.00015, offset=50e-3),   # 1000 V
 )
 
 # 2420 tops out at 60 V (no 200 V); accuracy on 60 V is 0.015% + 3 mV.
-_V_MEAS_2420 = _V_MEAS_2400[:3] + (
+# Its 20 V row carries the 1 mV offset too.
+_V_MEAS_2420 = _V_MEAS_2400[:2] + (
+    AccuracySpec(range_max=20.0, pct_reading=0.00015, offset=1e-3),      # 20 V
     AccuracySpec(range_max=60.0, pct_reading=0.00015, offset=3e-3),      # 60 V
 )
 
@@ -96,13 +100,17 @@ _I_MEAS_2410 = _I_MEAS_2400[:4] + (
     AccuracySpec(range_max=20e-3,  pct_reading=0.00035, offset=1.2e-6),   # 20 mA
 ) + _I_MEAS_2400[5:]
 
-# 2420 starts at 10 µA (no 1 µA), adds a 3 A range.
-_I_MEAS_2420 = _I_MEAS_2400[1:] + (
+# 2420 starts at 10 µA (no 1 µA), adds a 3 A range. The 10 µA to 100 mA
+# rows are the 2400's; the 1 A row is NOT (0.066 %, against the 2400's
+# 0.22 %), so the slice stops before it.
+_I_MEAS_2420 = _I_MEAS_2400[1:6] + (
+    AccuracySpec(range_max=1.0,    pct_reading=0.00066, offset=570e-6),   # 1 A
     AccuracySpec(range_max=3.0,    pct_reading=0.00052, offset=1.71e-3),  # 3 A
 )
 
-# 2440 starts at 10 µA, tops at 5 A.
-_I_MEAS_2440 = _I_MEAS_2400[1:] + (
+# 2440 starts at 10 µA, tops at 5 A. Its 1 A row is its own too (0.060 %).
+_I_MEAS_2440 = _I_MEAS_2400[1:6] + (
+    AccuracySpec(range_max=1.0,    pct_reading=0.00060, offset=570e-6),   # 1 A
     AccuracySpec(range_max=5.0,    pct_reading=0.0010,  offset=3.42e-3),  # 5 A
 )
 
@@ -150,12 +158,16 @@ _I_SRC_2400 = (
 _I_SRC_2410 = _I_SRC_2400[:4] + (
     AccuracySpec(range_max=20e-3,  pct_reading=0.00045, offset=4e-6),     # 20 mA
 ) + _I_SRC_2400[5:]
-_I_SRC_2420 = _I_SRC_2400[1:] + (
-    AccuracySpec(range_max=3.0,    pct_reading=0.00059, offset=2.7e-3),
+# 2420 and 2440: the 10 µA to 100 mA rows are the 2400's, the 1 A row is
+# their own (0.067 %, against the 2400's 0.27 %), so the slice stops
+# before the 2400's 1 A row.
+_I_SRC_2420 = _I_SRC_2400[1:6] + (
+    AccuracySpec(range_max=1.0,    pct_reading=0.00067, offset=900e-6),   # 1 A
+    AccuracySpec(range_max=3.0,    pct_reading=0.00059, offset=2.7e-3),   # 3 A
 )
-_I_SRC_2440 = _I_SRC_2400[1:] + (
-    AccuracySpec(range_max=1.0,    pct_reading=0.00067, offset=900e-6),
-    AccuracySpec(range_max=5.0,    pct_reading=0.0010,  offset=5.4e-3),
+_I_SRC_2440 = _I_SRC_2400[1:6] + (
+    AccuracySpec(range_max=1.0,    pct_reading=0.00067, offset=900e-6),   # 1 A
+    AccuracySpec(range_max=5.0,    pct_reading=0.0010,  offset=5.4e-3),   # 5 A
 )
 
 
@@ -188,6 +200,14 @@ _R_ENH_2400 = (
 # ---------------------------------------------------------------------------
 # Per-model lookup. Mirrors instrument._MODELS so callers can pass the
 # model string straight from IDN parsing.
+#
+# The 2425 and 2430 are NOT in the datasheet this module cites (it covers
+# the 2400, 2401, 2410, 2420 and 2440). They are given the 2420's rows here
+# as a stand-in, not from a source. Their top voltage range is 100 V, not
+# the 2420's 60 V (2400 Series User's Manual 2400S-900-01 Rev. K, Table 3-1,
+# p. 3-5: 200 mV, 2 V, 20 V, 100 V), and no 100 V accuracy row is tabulated
+# here: a reading above 63 V on these models is given the 60 V row's
+# numbers. The current ranges (10 µA to 3 A in DC) do match the 2420's.
 # ---------------------------------------------------------------------------
 
 _V_MEASURE: dict[str, Sequence[AccuracySpec]] = {
@@ -195,7 +215,7 @@ _V_MEASURE: dict[str, Sequence[AccuracySpec]] = {
     "2401": _V_MEAS_2400[:3],   # no 200 V range
     "2410": _V_MEAS_2410,
     "2420": _V_MEAS_2420,
-    "2425": _V_MEAS_2420,       # same V coverage as 2420
+    "2425": _V_MEAS_2420,       # stand-in; see the note above
     "2430": _V_MEAS_2420,
     "2440": _V_MEAS_2440,
 }
@@ -378,7 +398,9 @@ def resistance_uncertainty(
 
     σ_R = R × √((σ_V/V)² + (σ_I/I)²), where R = V/I. The V and I
     uncertainties come from the per-range accuracy tables. Returns NaN
-    when V or I aren't usable (NaN, zero current, etc).
+    when V or I aren't usable (NaN, infinite, zero current). A reading of
+    exactly 0 V is usable: R is 0 and σ_R is σ_V/|I|, the limit of the
+    expression above.
 
     NOTE on RSS vs linear sum: Keithley's user manual (Section 4, Ohms
     accuracy calculations) sums the relative V and I uncertainties
@@ -421,9 +443,13 @@ def resistance_uncertainty(
             return spec.uncertainty(r)
     sigma_v = voltage_uncertainty(voltage, model, nplc)
     sigma_i = current_uncertainty(current, model, nplc)
-    rel_v = sigma_v / voltage if voltage != 0.0 else float("inf")
-    rel_i = sigma_i / current
-    return abs(r) * math.sqrt(rel_v ** 2 + rel_i ** 2)
+    # The same expression with |R| taken inside the root:
+    #   |R| * sqrt((σ_V/V)² + (σ_I/I)²) = sqrt(σ_V² + (R σ_I)²) / |I|
+    # which is GUM Eq. 10 for R = V/I before it is divided through by R². In
+    # this form V = 0 gives σ_V/|I| instead of 0 × inf = NaN, and a
+    # vanishing V cannot overflow: (σ_V/V) ** 2 raised OverflowError for
+    # |V| below 2.2e-158 (at 1 PLC). math.hypot returns inf where `**` raises.
+    return math.hypot(sigma_v, abs(r) * sigma_i) / abs(current)
 
 
 def voltage_source_uncertainty(
