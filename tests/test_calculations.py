@@ -460,10 +460,23 @@ class TestF2FiniteDiameter:
         result = f2_finite_diameter(s, d)
         assert 4.524 < result < 4.528
 
-    def test_clamps_above_tabulated_range(self):
-        # F84 Table 3 stops at S/D = 0.10; clamp rather than extrapolate.
+    def test_closed_form_above_tabulated_range(self):
+        # F84 Table 3 stops at S/D = 0.10. Its last row (4.171) used to be
+        # returned for every smaller disc; the factor goes on falling.
+        from resistamet_gui.calculations_geometry import circle_factor
         s, d = 0.1, 0.1 / 0.15  # S/D = 0.15
-        assert f2_finite_diameter(s, d) == pytest.approx(4.171, abs=1e-3)
+        assert f2_finite_diameter(s, d) == pytest.approx(circle_factor(d, s), rel=1e-12)
+        assert f2_finite_diameter(s, d) == pytest.approx(3.7926, abs=5e-4)
+
+    def test_table_and_closed_form_meet_at_the_last_row(self):
+        s = 0.1
+        at_row = f2_finite_diameter(s, s / 0.100)
+        just_past = f2_finite_diameter(s, s / 0.1001)
+        assert at_row == pytest.approx(4.171, abs=1e-9)
+        assert just_past == pytest.approx(at_row, abs=1e-3)
+
+    def test_no_factor_for_a_disc_the_probe_does_not_fit_on(self):
+        assert math.isnan(f2_finite_diameter(0.1, 0.25))  # D < 3 S
 
 
 class TestGeometryCorrectionNonCircular:
@@ -471,20 +484,25 @@ class TestGeometryCorrectionNonCircular:
 
     F84 only tabulates circular wafers. Most non-Si materials labs measure
     on cut squares or rectangles, so the broader Smits table matters. These
-    tests pin values typed from Smits's printed table, and where the probe
-    fits on the sample (length > 3 s) check each against the closed-form
-    image series of calculations_geometry, which is derived independently
-    of any table.
+    tests hold the factor to the closed-form image series of
+    calculations_geometry wherever the probe fits on the sample (length >
+    3 s), and that series to the values typed from Smits's printed table,
+    which it was derived independently of.
     """
 
     @staticmethod
     def _check(geometry, aspect_ratio, d_over_s, expected):
         s = 0.1
         value = f2_finite_diameter(s, d_over_s * s, geometry=geometry)
-        assert value == pytest.approx(expected, abs=5e-4)
         if aspect_ratio * d_over_s > 3.0:
+            # Where the probe fits the value is the series itself, which the
+            # printed table matches to 6 parts in 10 000.
             series = rectangle_factor(d_over_s, aspect_ratio * d_over_s, 1.0)
-            assert value == pytest.approx(series, rel=6e-4)
+            assert value == pytest.approx(series, rel=1e-12)
+            assert value == pytest.approx(expected, rel=6e-4)
+        else:
+            # End tips on the edge: only the printed row exists.
+            assert value == pytest.approx(expected, abs=5e-4)
 
     @pytest.mark.parametrize("d_over_s,expected", [
         (3.0, 2.4575), (4.0, 3.1137), (5.0, 3.5098), (7.5, 4.0095),
@@ -515,13 +533,6 @@ class TestGeometryCorrectionNonCircular:
     def test_rectangle_4_against_table(self, d_over_s, expected):
         self._check('rectangle_4', 4.0, d_over_s, expected)
 
-    WIDE_TABLE_GAP = pytest.mark.xfail(strict=True, reason=(
-        "_SMITS_GEOMETRY_CF jumps from D/s = 40 to a 1e9 sentinel row and "
-        "_linear_interp draws a straight line between them, so a square or "
-        "rectangle 1e4 spacings wide gets the D/s = 40 value (4.5120 / "
-        "4.5129) instead of about 4.532. calculations.py, "
-        "f2_finite_diameter; also pinned in test_property_calculations.py."))
-
     @pytest.mark.parametrize("d_over_s", [
         1e4, 1e10,
     ])
@@ -533,8 +544,6 @@ class TestGeometryCorrectionNonCircular:
         # F84 Table 3 rounds this to 4.532; we accept either rounding. A
         # finite D goes through each geometry's own lookup (diameter=None
         # returns 4.532 before the geometry is looked at).
-        if geom != 'circle' and d_over_s == 1e4:
-            request.applymarker(self.WIDE_TABLE_GAP)
         assert f2_finite_diameter(0.1, 0.1 * d_over_s, geom) == \
                pytest.approx(4.5324, abs=5e-4)
 
@@ -547,11 +556,11 @@ class TestGeometryCorrectionNonCircular:
     def test_unknown_geometry_returns_nan(self):
         assert math.isnan(f2_finite_diameter(0.1, 1.0, geometry='hexagon'))
 
-    def test_square_below_lowest_clamps(self):
-        # Square table starts at D/s = 3. Below that, clamp not extrapolate.
+    def test_square_the_probe_does_not_fit_on_has_no_factor(self):
+        # The probe is three spacings long. A square two spacings wide used
+        # to be given the D/s = 3 value, 2.4575.
         s = 0.1
-        result = f2_finite_diameter(s, s * 2.0, geometry='square')
-        assert result == pytest.approx(2.4575, abs=5e-4)  # value at D/s=3
+        assert math.isnan(f2_finite_diameter(s, s * 2.0, geometry='square'))
 
     def test_geometry_matters_at_finite_size(self):
         # At D/s = 10 a square sample's CF (4.2209) should differ from
