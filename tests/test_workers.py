@@ -1088,7 +1088,9 @@ class TestFourPointDeltaReadRetry:
     @staticmethod
     def _fail_first_delta_reads(monkeypatch, worker, failures):
         """Make the first ``failures`` delta reads raise, then read normally."""
-        real_read_delta = worker._read_delta
+        # The run procedure owns the delta read; the worker is the adapter.
+        run = worker._run
+        real_read_delta = run._read_delta
         state = {'calls': 0}
 
         def flaky():
@@ -1097,7 +1099,7 @@ class TestFourPointDeltaReadRetry:
                 raise OSError(f"simulated delta failure {state['calls']}")
             return real_read_delta()
 
-        monkeypatch.setattr(worker, '_read_delta', flaky)
+        monkeypatch.setattr(run, '_read_delta', flaky)
         monkeypatch.setattr(time, 'sleep', lambda s: None)
         return state
 
@@ -1170,3 +1172,46 @@ class TestEventMarkerQueue:
 
         assert marked == ["ONE; TWO"]
         assert spies.error_occurred == []
+
+
+class TestRunControlQueueing:
+    """Marker queue semantics live in RunControl now; the worker delegates."""
+
+    def _worker(self, tmp_path):
+        return MeasurementWorker("resistance", "wafer1", "alice",
+                                 _resistance_settings(tmp_path))
+
+    def test_worker_delegates_to_control(self, tmp_path):
+        worker = self._worker(tmp_path)
+        worker.mark_event("A")
+        assert worker._control.event_marker == "A"
+        assert worker.event_marker == "A"
+
+    def test_running_and_paused_delegate(self, tmp_path):
+        worker = self._worker(tmp_path)
+        worker.running = True
+        worker.paused = True
+        assert (worker._control.running, worker._control.paused) == (True, True)
+        worker._control.paused = False
+        assert worker.paused is False
+
+
+class TestInvalidReadingMessage:
+    """A malformed reading must report the reading, not raise."""
+
+    def test_message_quotes_the_reading(self):
+        from resistamet_gui.session.configure import ResistanceState
+        from resistamet_gui.session.samples import parse_resistance
+
+        messages = []
+
+        class _Out:
+            def status_update(self, message):
+                messages.append(message)
+
+        data, status, kind = parse_resistance(
+            ['nan', 'nan', 'nan', '0'], 0, False, {'res_voltage_compliance': 5.0}, 1.0,
+            '2400', ResistanceState(cable_null=0.0), _Out(), reading_str='nan,nan,nan,0',
+        )
+        assert any('nan,nan,nan,0' in m for m in messages)
+        assert status == 'OK'

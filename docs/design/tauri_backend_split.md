@@ -801,7 +801,12 @@ the capture tool now calls the window's `_overrides_from_widgets` instead of kee
 - **PR-15 (Refactor):** `gather_settings_for_mode` delegates to the resolver (widget reads stay).
   Landed: main_window −32/+23 lines, goldens re-captured against the refactored window are byte-identical.
 
-**Phase 2: de-Qt the workers in place, then move** (tests unchanged throughout)
+**Phase 2: de-Qt the workers in place, then move** (tests unchanged throughout) — **landed**,
+15 commits, 705 tests green. `workers.py` 1696 → 221 lines: two QThread adapters plus the outputs facade.
+Deviations from the plan, all called out in their commits: PR-23b also collapsed the two duplicate path
+sanitizers (the deferred item) and routed vdP through `create_base_path`; the parse/row-build functions
+needed `nplc`, `use_delta` and `reading_str` passed explicitly; `session/delta.py` did not appear —
+`_read_delta` stayed with `ContinuousRun`, which is where its state lives.
 - **PR-20 (Mech):** every `self.<signal>.emit(` → `self._out.<signal>(`; `_QtOutputs` forwarder.
 - **PR-21 (Refactor):** literal `RunControl` (`running`, `paused`, `event_marker`, `proceed_event`);
   worker properties delegate; `session/control.py`, `test_session_no_qt.py`.
