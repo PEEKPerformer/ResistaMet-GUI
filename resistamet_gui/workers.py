@@ -5,7 +5,7 @@ import time
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pyvisa
@@ -63,7 +63,7 @@ class MeasurementWorker(QThread):
         self._state_lock = threading.Lock()
         self._running = False
         self._paused = False
-        self._event_marker = ""
+        self._event_markers: List[str] = []
         self._csv_error_count = 0  # Track consecutive CSV write failures
         self._max_csv_errors = 3   # Max consecutive errors before escalation
 
@@ -115,21 +115,15 @@ class MeasurementWorker(QThread):
 
     @property
     def event_marker(self) -> str:
-        """Thread-safe access to event marker."""
+        """Thread-safe view of the marks waiting for the next sample."""
         with self._state_lock:
-            return self._event_marker
-
-    @event_marker.setter
-    def event_marker(self, value: str) -> None:
-        """Thread-safe setter for event marker."""
-        with self._state_lock:
-            self._event_marker = value
+            return "; ".join(self._event_markers)
 
     def get_and_clear_event_marker(self) -> str:
-        """Atomically get and clear the event marker."""
+        """Atomically take every pending mark, joined in arrival order."""
         with self._state_lock:
-            marker = self._event_marker
-            self._event_marker = ""
+            marker = "; ".join(self._event_markers)
+            self._event_markers = []
             return marker
 
     def run(self):
@@ -650,21 +644,32 @@ class MeasurementWorker(QThread):
                                  self.keithley is not None)
 
                     if use_delta:
-                        try:
-                            reading_str = self._read_delta()
-                            last_measurement_time = time.time()
-                            read_success = True
-                            consecutive_errors = 0
-                        except Exception as e:
-                            consecutive_errors += 1
-                            if consecutive_errors >= max_retries:
-                                self.error_occurred.emit(f"Delta read error after {consecutive_errors} failures: {str(e)}. Stopping.")
-                            else:
-                                self.status_update.emit(f"Delta read error (attempt {consecutive_errors}): {str(e)[:50]}")
-                                try:
-                                    self.keithley.write("*CLS")
-                                except Exception:
-                                    pass
+                        for retry in range(max_retries):
+                            try:
+                                reading_str = self._read_delta()
+                                last_measurement_time = time.time()
+                                read_success = True
+                                if retry > 0:
+                                    self.status_update.emit(f"Delta read recovered after {retry} retries")
+                                consecutive_errors = 0
+                                break
+                            except Exception as e:
+                                consecutive_errors += 1
+                                if retry < max_retries - 1:
+                                    delay = 0.1 * (2 ** retry)
+                                    self.status_update.emit(
+                                        f"Delta read error (retry {retry + 1}/{max_retries}): {str(e)[:50]}... "
+                                        f"Retrying in {delay:.1f}s"
+                                    )
+                                    time.sleep(delay)
+                                    try:
+                                        self.keithley.write("*CLS")
+                                    except Exception:
+                                        pass
+                                else:
+                                    self.error_occurred.emit(
+                                        f"Delta read error after {max_retries} retries: {str(e)}. Stopping."
+                                    )
                     else:
                         for retry in range(max_retries):
                             try:
@@ -1179,7 +1184,14 @@ class MeasurementWorker(QThread):
         return user_dir / base_name
 
     def mark_event(self, name: str = "MARK") -> None:
-        self.event_marker = name
+        """Queue a mark for the next sample.
+
+        Marks queue rather than overwrite: two keystrokes between samples
+        are two things the operator did, and dropping the first loses a
+        record the run cannot reconstruct.
+        """
+        with self._state_lock:
+            self._event_markers.append(name)
 
     def pause_measurement(self) -> None:
         if self.running:
