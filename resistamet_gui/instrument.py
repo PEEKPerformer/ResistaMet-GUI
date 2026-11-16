@@ -7,6 +7,7 @@ from typing import Optional
 import pyvisa
 
 from . import visa_backend
+from .constants import MAX_SWEEP_POINTS
 
 
 @dataclass(frozen=True)
@@ -243,6 +244,14 @@ class Keithley2400(VisaInstrument):
             nplc: Integration time
             source_delay: Delay per step in seconds
         """
+        points = int(round(abs(stop - start) / step)) + 1 if step != 0 else 1
+        if points > MAX_SWEEP_POINTS:
+            # Checked before anything is sent. The trigger count tops out at
+            # 2500; a larger one is rejected, the count stays at 1, and the
+            # "sweep" is a single point that the log calls complete.
+            raise ValueError(
+                f"A sweep of {points} points is more than the instrument's "
+                f"{MAX_SWEEP_POINTS}. Use a larger step.")
         self.write(":SENS:FUNC:CONC OFF")
         if source_func == 'VOLT':
             self.write(":SOUR:FUNC VOLT")
@@ -264,7 +273,6 @@ class Keithley2400(VisaInstrument):
             self.write(":SOUR:CURR:MODE SWE")
         self.write(":SOUR:SWE:SPAC LIN")
         self.write(":SOUR:SWE:RANG AUTO")
-        points = int(round(abs(stop - start) / step)) + 1 if step != 0 else 1
         self.write(f":TRIG:COUN {points}")
         self.write(f":SOUR:DEL {source_delay}")
         self.write(":FORM:ELEM VOLT,CURR,STAT")

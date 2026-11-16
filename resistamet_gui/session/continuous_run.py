@@ -25,6 +25,7 @@ from ..formatting import format_power
 from ..instrument import Keithley2400, humanize_connection_error
 from ..sensors import aux_column_names, make_sensor, reading_to_columns
 from ..system_utils import SleepInhibitor
+from ..timing import TimingSettings
 from .control import RunStopped
 from .instrument_lock import HeldInstrument, InstrumentBusy
 from .configure import (
@@ -97,6 +98,7 @@ class ContinuousRun:
         self._instrument_lock = instrument_lock
         # Set by the configure step: the frozen per-mode state the loop reads.
         self._mode_state = None
+        self._reading_time_s = 1.0
         # Set by each delta read: the per-polarity values the row builder logs.
         self._last_delta = None
         #: The negative-V/I warning is given once per run, not per sample.
@@ -280,9 +282,16 @@ class ContinuousRun:
                 if self._control.stopped():
                     raise RunStopped()
                 self.keithley.write(":OUTP ON")
-                # Increase timeout for long sweeps
+                # One :READ? returns the whole sweep, so it has to be given
+                # the whole sweep's time: every point's conversions (NPLC,
+                # averaging, auto-zero) and its step delay. A flat second a
+                # point timed out any sweep slower than that, with no rows.
                 if self.keithley.dev:
-                    self.keithley.dev.timeout = max(10000, self._mode_state.points * 1000)
+                    delay_s = max(0.0, float(
+                        self.settings['measurement'].get('sweep_delay', 0.0) or 0.0))
+                    per_point_s = self._reading_time_s + delay_s
+                    self.keithley.dev.timeout = max(
+                        10000, int(self._mode_state.points * per_point_s * 1500) + 5000)
                 response = self.keithley.query(":READ?").strip()
                 self.keithley.write(":OUTP OFF")
 
@@ -366,10 +375,54 @@ class ContinuousRun:
                 # First writer wins, so the 'completed' below leaves this be.
                 self._control.finish('sweep_error')
                 self._events.error('sweep_error', 'smu', f"Sweep error: {str(e)}")
+                self._abort_sweep()
             # Sweep is done — skip to finalization
             self._control.finish('completed')
             # Fall through to cleanup below
 
+
+    def _abort_sweep(self) -> None:
+        """Stop a sweep the instrument may still be running.
+
+        After a failed bulk read the sweep engine can still be stepping the
+        source with the output on. A device clear is what interrupts it; the
+        output-off that the shutdown sends next would otherwise wait behind
+        the sweep. Best effort: the shutdown reads the output state back
+        whatever happens here.
+        """
+        for action in (lambda: self.keithley.dev.clear(),
+                       lambda: self.keithley.write(":ABOR")):
+            try:
+                action()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _estimate_reading_time_s(measurement_settings, line_freq) -> float:
+        """How long one reading takes at these settings, by the timing model."""
+        try:
+            rate = TimingSettings.from_dict(measurement_settings).max_rate_hz(line_freq)
+            return 1.0 / rate if rate > 0 else 1.0
+        except Exception:
+            return 1.0
+
+    def _allow_for_reading_time(self) -> None:
+        """Give :READ? at least three readings' time before it times out.
+
+        The session's 5 s is ample for most settings and too short for the
+        slow ones a profile may hold (10 PLC averaged ten times with
+        auto-zero on is about 5 s a reading): every read then timed out and
+        the run ended with no rows.
+        """
+        dev = getattr(self.keithley, 'dev', None)
+        if dev is None:
+            return
+        needed_ms = int(self._reading_time_s * 3000) + 2000
+        try:
+            if dev.timeout is not None and dev.timeout < needed_ms:
+                dev.timeout = needed_ms
+        except Exception:
+            pass
 
     def _write_sweep_row(self, row_data) -> None:
         """Write one sweep point; a row that cannot be written is reported.
@@ -717,6 +770,9 @@ class ContinuousRun:
 
                 self.keithley.write(":TRIG:DEL 0")
                 self.keithley.write(":SOUR:DEL:AUTO ON")
+                self._reading_time_s = self._estimate_reading_time_s(
+                    measurement_settings, line_freq)
+                self._allow_for_reading_time()
             except Exception as e:
                 self._events.error('configure_failed', 'smu', f"Error configuring instrument: {str(e)}")
                 self._control.finish('configure_failed')
@@ -824,8 +880,9 @@ class ContinuousRun:
                     if use_delta:
                         for retry in range(max_retries):
                             try:
+                                read_began = time.time()
                                 reading_str = self._read_delta()
-                                last_measurement_time = time.time()
+                                read_ended = time.time()
                                 read_success = True
                                 if retry > 0:
                                     self._events.log('recovered', f"Delta read recovered after {retry} retries")
@@ -853,8 +910,9 @@ class ContinuousRun:
                     else:
                         for retry in range(max_retries):
                             try:
+                                read_began = time.time()
                                 reading_str = self.keithley.query(":READ?").strip()
-                                last_measurement_time = time.time()
+                                read_ended = time.time()
                                 read_success = True
                                 if retry > 0:
                                     self._events.log('recovered', f"Communication recovered after {retry} retries")
@@ -887,7 +945,17 @@ class ContinuousRun:
                         self._control.finish('read_error')
                         break
 
-                    elapsed_time = now - self.start_time
+                    # The next reading is due one interval after this one was
+                    # asked for. Counting from when it came back added the
+                    # read time to every period: 10 Hz asked for with a 50 ms
+                    # read ran at 6 Hz under a header that said 10.
+                    last_measurement_time = now
+                    # The middle of the read that produced the row. The
+                    # instrument integrates across that whole span (half a
+                    # second with ten averaged conversions), and the time of
+                    # the request put every row that much early, further
+                    # still after a retry.
+                    elapsed_time = (read_began + read_ended) / 2.0 - self.start_time
                     compliance_status = 'OK'
                     compliance_type = None
                     data_dict: Dict[str, float] = {}
