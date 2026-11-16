@@ -37,7 +37,15 @@ def parse_resistance(parts, stat_word, hw_compliance, measurement_settings, nplc
     except Exception:
         voltage = float('nan'); current = float('nan'); value = float('nan')
     compliance_type = 'Voltage'
-    if hw_compliance:
+    # The ohms function does not set the compliance bit (2400 and 2420,
+    # bench 2026-09-18), and in manual range it reports the programmed
+    # current, so V/I under compliance is a wrong number that looks fine.
+    # Detect it the way the source modes do: the measured voltage sitting at
+    # the limit the instrument actually has.
+    comp_limit_v = getattr(mode_state, 'voltage_compliance_v', float('inf'))
+    if not np.isfinite(comp_limit_v) or comp_limit_v <= 0:
+        comp_limit_v = float(measurement_settings.get('res_voltage_compliance', float('inf')) or float('inf'))
+    if hw_compliance or (np.isfinite(voltage) and abs(voltage) >= comp_limit_v * 0.99):
         compliance_status = 'V_COMP'
     if not np.isfinite(value):
         value = float('nan')

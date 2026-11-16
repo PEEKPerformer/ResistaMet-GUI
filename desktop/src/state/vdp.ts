@@ -33,10 +33,20 @@ export function resetVdp(runId: string | null): void {
   publish({ runId, geometries: [], result: null });
 }
 
+/** Events belong to the run that run_started announced. A replay after a
+ *  reconnect can carry the previous run's geometries and result; those must
+ *  not land on top of the run in progress. (Bench: an aborted run showed the
+ *  previous run's complete result badged Done.) */
+function forThisRun(runId: string | null | undefined): boolean {
+  return state.runId === null || runId === undefined || runId === null || runId === state.runId;
+}
+
 export function applyVdpGeometry(event: Event<"vdp_geometry_complete">): void {
+  if (!forThisRun(event.run_id)) return;
   publish({ ...state, runId: event.run_id ?? state.runId, geometries: [...state.geometries, event.payload] });
 }
 
 export function applyVdpResult(event: Event<"vdp_result">): void {
+  if (!forThisRun(event.run_id)) return;
   publish({ ...state, runId: event.run_id ?? state.runId, result: event.payload });
 }

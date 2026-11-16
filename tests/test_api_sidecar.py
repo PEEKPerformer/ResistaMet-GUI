@@ -79,6 +79,57 @@ class TestHandshake:
             _stop(process)
 
 
+def _websocket_upgrade_status(url: str, token: str) -> int:
+    """Send a bare WebSocket handshake and return the HTTP status uvicorn answers.
+
+    No client library: what is being tested is the server process's ability
+    to upgrade at all, which Starlette's in-process test client never asks
+    of uvicorn.
+    """
+    import http.client
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    connection = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
+    try:
+        connection.request('GET', f"/session/events/ws?token={token}", headers={
+            'Connection': 'Upgrade',
+            'Upgrade': 'websocket',
+            'Sec-WebSocket-Version': '13',
+            'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
+        })
+        return connection.getresponse().status
+    finally:
+        connection.close()
+
+
+class TestEventsWebSocket:
+    """The real server process must upgrade, not just serve HTTP.
+
+    uvicorn has no WebSocket implementation of its own; without one it logs
+    "No supported WebSocket library detected" and answers 404. The desktop
+    UI then never receives an event and shows "Reconnecting" for ever, which
+    is exactly what the first frozen build did on the lab PC.
+    """
+
+    def test_the_server_process_accepts_the_upgrade(self, tmp_path):
+        process, handshake = _spawn(tmp_path)
+        try:
+            assert _websocket_upgrade_status(handshake['url'], handshake['token']) == 101
+        finally:
+            _stop(process)
+
+    def test_a_bad_token_is_refused_not_ignored(self, tmp_path):
+        process, handshake = _spawn(tmp_path)
+        try:
+            status = _websocket_upgrade_status(handshake['url'], 'wrong')
+            # Accepted then closed with 4401, or refused outright: either is
+            # the server speaking WebSocket. 404 would mean it cannot.
+            assert status != 404
+        finally:
+            _stop(process)
+
+
 class TestShutdown:
     def test_closing_stdin_stops_the_process(self, tmp_path):
         """A killed parent must not leave a process holding the instrument."""

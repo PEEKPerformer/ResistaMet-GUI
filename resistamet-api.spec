@@ -23,7 +23,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from PyInstaller.utils.hooks import copy_metadata
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 
 
 def _version_metadata():
@@ -126,12 +126,12 @@ a = Analysis(
         "uvicorn.protocols.http.h11_impl",
         "uvicorn.protocols.websockets",
         "uvicorn.protocols.websockets.auto",
+        # uvicorn's auto selection has moved between these two across
+        # releases; ship both so the pick at runtime always resolves.
         "uvicorn.protocols.websockets.websockets_impl",
+        "uvicorn.protocols.websockets.websockets_sansio_impl",
         "uvicorn.lifespan",
         "uvicorn.lifespan.on",
-        "websockets",
-        "websockets.legacy",
-        "websockets.legacy.server",
         # pydantic v2 keeps its core in a compiled module
         "pydantic",
         "pydantic_core",
@@ -145,6 +145,11 @@ a = Analysis(
         "h5py.utils",
         "h5py.h5ac",
         "h5py._proxy",
+        # The WebSocket implementation uvicorn loads by name at runtime.
+        # Without it every upgrade is answered 404 and the desktop UI sits
+        # on "Reconnecting"; the whole package, so the impl uvicorn picks
+        # always has what it imports.
+        *collect_submodules("websockets"),
     ],
     hookspath=[],
     hooksconfig={},

@@ -25,15 +25,35 @@ export interface Engineering {
  *  shown at face value: "50 mcm" is not a thing. */
 const PREFIXABLE = new Set(["", "Ω", "V", "A", "W", "s", "Hz", "F", "H", "S", "Ω·cm", "S/cm"]);
 
+/** The SI prefix a magnitude is shown with, and the factor that goes with it. */
+export function prefixFor(value: number, unit = ""): { scale: number; prefix: string } {
+  if (!PREFIXABLE.has(unit) || !Number.isFinite(value) || value === 0) return { scale: 1, prefix: "" };
+  const magnitude = Math.abs(value);
+  const [scale, prefix] = PREFIXES.find(([s]) => magnitude >= s * 0.9995) ?? PREFIXES[PREFIXES.length - 1]!;
+  return { scale, prefix };
+}
+
 /** Split a value into a mantissa and a prefixed unit. NaN yields "—". */
 export function engineering(value: number, unit = "", digits = 4): Engineering {
   if (!Number.isFinite(value)) return { mantissa: "—", unit };
   if (value === 0) return { mantissa: "0", unit };
-  if (!PREFIXABLE.has(unit)) return { mantissa: toSignificant(value, digits), unit };
-  const magnitude = Math.abs(value);
-  const [scale, prefix] = PREFIXES.find(([s]) => magnitude >= s * 0.9995) ?? PREFIXES[PREFIXES.length - 1]!;
-  const scaled = value / scale;
-  return { mantissa: toSignificant(scaled, digits), unit: prefix + unit };
+  const { scale, prefix } = prefixFor(value, unit);
+  return { mantissa: toSignificant(value / scale, digits), unit: prefix + unit };
+}
+
+/** Axis tick labels: one prefix for the whole axis, and as many decimals as
+ *  the tick spacing needs so neighbouring ticks never read the same. A
+ *  resistance trace lives in the last digits (10.075 … 10.080 Ω), which four
+ *  significant figures cannot show. */
+export function axisLabels(ticks: number[], unit = ""): string[] {
+  const largest = ticks.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+  const { scale, prefix } = prefixFor(largest || 1, unit);
+  const scaled = ticks.map((v) => v / scale);
+  let spacing = Number.POSITIVE_INFINITY;
+  for (let i = 1; i < scaled.length; i++) spacing = Math.min(spacing, Math.abs(scaled[i]! - scaled[i - 1]!));
+  const decimals = Number.isFinite(spacing) && spacing > 0 ? Math.min(10, Math.max(0, Math.ceil(-Math.log10(spacing) - 1e-9))) : 0;
+  const suffix = prefix + unit ? ` ${prefix}${unit}` : "";
+  return scaled.map((v) => (Math.abs(v) < 0.5 * 10 ** -decimals ? (0).toFixed(decimals) : v.toFixed(decimals)) + suffix);
 }
 
 export function formatEngineering(value: number, unit = "", digits = 4): string {

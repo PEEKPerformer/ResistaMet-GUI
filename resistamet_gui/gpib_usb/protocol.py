@@ -9,6 +9,14 @@ padding, terminators and status bits checkable byte-for-byte against the
 worked examples in the specification (§3.6) without hardware.
 
 Section numbers in comments refer to that specification.
+
+Bench notes (GPIB-USB-HS 01CEE482, 2026-09-18): every host-to-device
+message here was accepted as built. Replies differed from the
+specification in one place: a read reply ends in a 16-byte trailer (status,
+ADR1, last-block count, pad, termination) with no embedded 0x09 status
+block; ``parse_read_reply`` follows the device and tolerates the longer
+form. Small reads arrive in 0x36 blocks, a 256-byte read in 0x37 blocks,
+and the filler after the valid bytes is stale data.
 """
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
@@ -41,7 +49,13 @@ STATUS_BLOCK_LENGTH = 8
 STATUS_REPLY_LENGTH = 12
 REGISTER_WRITE_REPLY_LENGTH = 16
 REGISTER_READ_REPLY_LENGTH = 32
-READ_REPLY_TRAILER_LENGTH = 28
+#: Observed on GPIB-USB-HS 01CEE482: status block (8) + ADR1 + last-block
+#: count + 2 pad + termination (4). The specification derived 28 bytes with
+#: an embedded 0x09 status block that the device does not send.
+READ_REPLY_TRAILER_LENGTH = 16
+#: Receive buffers are sized for the longer, specification-derived trailer
+#: so a firmware that does send the embedded status still fits.
+READ_REPLY_TRAILER_MAX = 28
 
 MAX_COMMAND_BYTES = 16       # §5.3, all models
 MAX_TRANSFER_BYTES = 0xFFFF  # §5.1, §5.2
@@ -87,6 +101,10 @@ class AdapterNotReady(GpibError):
 
 class ProtocolError(GpibError):
     """A reply did not have the shape the specification gives it."""
+
+
+class NoReply(ProtocolError):
+    """A message was accepted but never answered, not even after a stop request."""
 
 
 def error_for_code(code: int, operation: str) -> GpibError:
@@ -293,8 +311,10 @@ def parse_status_reply(reply: bytes, expected_id: int) -> StatusBlock:
     if status.id != expected_id:
         raise ProtocolError('reply id 0x%02x, expected 0x%02x: %s'
                             % (status.id, expected_id, reply.hex()))
-    # spec gap: the trailing 4 bytes are implied to be 04 00 00 00 but not
-    # verified, so they are not checked.
+    # Observed on the GPIB-USB-HS: the trailing 4 bytes are the termination
+    # block; anything else means the pipes are out of step.
+    if reply[8:] != TERMINATION_BLOCK:
+        raise ProtocolError('status reply does not end in a termination block: %s' % reply.hex())
     return status
 
 
@@ -320,9 +340,9 @@ def parse_register_read_reply(reply: bytes, count: int) -> List[int]:
         if block_id == BLOCK_REGISTER_VALUES:
             values.extend(reply[offset + 1:offset + 4])
         elif block_id == BLOCK_REGISTER_END:
-            # spec gap: the meaning of the 0x35 count byte is unsettled; it is
-            # not used. Whether a termination block follows is also unsettled,
-            # so nothing after 0x35 is inspected.
+            # Observed on the GPIB-USB-HS: a termination block follows 0x35
+            # (12 bytes for one register). spec gap: the meaning of the 0x35
+            # count byte is still unsettled; it is not used.
             break
         else:
             raise ProtocolError('unexpected block 0x%02x in register-read reply: %s'
@@ -339,9 +359,12 @@ class ReadReply:
     """A parsed 0x0a reply (§5.2)."""
 
     data: bytes
-    status: StatusBlock          # id 0x38
-    embedded_status: StatusBlock  # id 0x09, the two AUXMR writes
-    adr1: int                    # bit 7 = EOI seen with the last byte; §5.2 says ignore
+    status: StatusBlock  # id 0x38
+    adr1: int            # bit 7 = EOI seen with the last byte; §5.2 says ignore
+    #: The specification describes a second status block (id 0x09, for the
+    #: embedded register writes) after the pad bytes; the GPIB-USB-HS does not
+    #: send one. Kept when present, None otherwise.
+    embedded_status: Optional[StatusBlock] = None
 
     @property
     def end(self) -> bool:
@@ -377,9 +400,15 @@ def parse_read_reply(reply: bytes, requested: int) -> ReadReply:
                             % (status.id, reply.hex()))
     adr1 = reply[offset + 8]
     last_block_count = reply[offset + 9]
-    embedded = parse_status_block(reply, offset + 12)
-    if embedded.id != OP_REGISTER_WRITE:
-        raise ProtocolError('embedded write status id 0x%02x: %s' % (embedded.id, reply.hex()))
+    tail = offset + 12
+    embedded: Optional[StatusBlock] = None
+    if len(reply) >= tail + 8 and reply[tail] == OP_REGISTER_WRITE:
+        # The specification's layout: the embedded register write reports
+        # separately before the termination block. Not seen on the HS.
+        embedded = parse_status_block(reply, tail)
+        tail += 12
+    if len(reply) >= tail + 4 and reply[tail] != OP_TERMINATION:
+        raise ProtocolError('read reply does not end in a termination block: %s' % reply.hex())
 
     if payloads:
         if any(len(p) < 15 for p in payloads[:-1]) or last_block_count > len(payloads[-1]):
@@ -398,7 +427,7 @@ def read_reply_buffer_size(max_bytes: int, max_packet_size: int) -> int:
     """Host receive buffer for a read of ``max_bytes`` (§5.2, §8.6)."""
     blocks_30 = -(-max_bytes // 30) * 32
     blocks_15 = -(-max_bytes // 15) * 16
-    total = max(blocks_30, blocks_15) + READ_REPLY_TRAILER_LENGTH
+    total = max(blocks_30, blocks_15) + READ_REPLY_TRAILER_MAX
     return -(-total // max_packet_size) * max_packet_size
 
 

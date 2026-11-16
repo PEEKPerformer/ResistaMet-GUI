@@ -289,12 +289,18 @@ def build_metadata(
     settings: Dict[str, Any],
     instrument_idn: str = "",
     start_time: Optional[datetime] = None,
-    aux_columns: Optional[List[str]] = None
+    aux_columns: Optional[List[str]] = None,
+    effective: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build metadata dictionary for export. Shared schema across all backends.
 
     ``aux_columns`` is the aux-sensor column list (sensors.aux_column_names),
     passed explicitly by the worker when co-logging is active.
+
+    ``effective`` is what the instrument reported after configuration where
+    that differs from what was asked — the voltage limit auto-ohms imposes,
+    for one. ``params`` stays the request; a reader comparing the two sees
+    exactly what the instrument overrode.
     """
     from .constants import __version__
 
@@ -394,6 +400,9 @@ def build_metadata(
         meta['params']['aux_sensor_driver'] = measurement_settings.get('aux_driver')
         meta['params']['aux_sensor_address'] = measurement_settings.get('aux_address')
         meta['params']['aux_channels'] = list(aux_columns) if aux_columns else None
+
+    if effective:
+        meta['effective'] = dict(effective)
 
     return meta
 

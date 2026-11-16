@@ -13,6 +13,7 @@ import type { InstrumentInfo, Profile, VisaBackend } from "../../lib/api";
 import { ApiError } from "../../lib/api";
 import { useSession } from "../../state/session";
 import { setTheme, useUi } from "../../state/ui";
+import { ErrorBoundary } from "../ErrorBoundary";
 import { FieldRow } from "../forms/SettingsForm";
 import { Button, Dialog, Field, Input, Notice, Select } from "../ui";
 import styles from "./dialogs.module.css";
@@ -153,85 +154,87 @@ export function SettingsDialog({ onClose }: Props) {
           ))}
         </nav>
         <div className={styles.settingsBody}>
-          {error ? <Notice tone="danger">{error}</Notice> : null}
-          {profile === null && !error ? <div className={styles.muted}>Loading…</div> : null}
+          <ErrorBoundary scope="the settings dialog" onDismiss={onClose} key={section}>
+            {error ? <Notice tone="danger">{error}</Notice> : null}
+            {profile === null && !error ? <div className={styles.muted}>Loading…</div> : null}
 
-          {profile && section === "timing"
-            ? TIMING.map((spec) => (
-                <FieldRow
-                  key={spec.key}
-                  spec={spec}
-                  meta={meta("InstrumentSettings")[spec.key] ?? {}}
-                  value={measurement[spec.key]}
-                  onChange={(v) => set("measurement", spec.key, v)}
-                  disabled={running}
-                />
-              ))
-            : null}
+            {profile && section === "timing"
+              ? TIMING.map((spec) => (
+                  <FieldRow
+                    key={spec.key}
+                    spec={spec}
+                    meta={meta("InstrumentSettings")[spec.key] ?? {}}
+                    value={measurement[spec.key]}
+                    onChange={(v) => set("measurement", spec.key, v)}
+                    disabled={running}
+                  />
+                ))
+              : null}
 
-          {profile && section === "instrument" ? <InstrumentSection running={running} /> : null}
+            {profile && section === "instrument" ? <InstrumentSection running={running} /> : null}
 
-          {profile && section === "aux"
-            ? AUX.map((spec) => (
-                <FieldRow
-                  key={spec.key}
-                  spec={spec}
-                  meta={meta("AuxSensorSettings")[spec.key] ?? {}}
-                  value={measurement[spec.key]}
-                  onChange={(v) => set("measurement", spec.key, v)}
-                  disabled={running}
-                />
-              ))
-            : null}
+            {profile && section === "aux"
+              ? AUX.map((spec) => (
+                  <FieldRow
+                    key={spec.key}
+                    spec={spec}
+                    meta={meta("AuxSensorSettings")[spec.key] ?? {}}
+                    value={measurement[spec.key]}
+                    onChange={(v) => set("measurement", spec.key, v)}
+                    disabled={running}
+                  />
+                ))
+              : null}
 
-          {profile && section === "safety"
-            ? SAFETY.map((spec) => (
-                <FieldRow
-                  key={spec.key}
-                  spec={spec}
-                  meta={meta("SafetySettings")[spec.key] ?? {}}
-                  value={measurement[spec.key]}
-                  onChange={(v) => set("measurement", spec.key, v)}
-                  disabled={running}
-                />
-              ))
-            : null}
+            {profile && section === "safety"
+              ? SAFETY.map((spec) => (
+                  <FieldRow
+                    key={spec.key}
+                    spec={spec}
+                    meta={meta("SafetySettings")[spec.key] ?? {}}
+                    value={measurement[spec.key]}
+                    onChange={(v) => set("measurement", spec.key, v)}
+                    disabled={running}
+                  />
+                ))
+              : null}
 
-          {profile && section === "files" ? (
-            <>
-              {FILES.map((spec) => (
-                <FieldRow
-                  key={spec.key}
-                  spec={spec}
-                  meta={meta("FileSettings")[spec.key] ?? {}}
-                  value={(draft.file ?? {})[spec.key]}
-                  onChange={(v) => set("file", spec.key, v)}
-                  disabled={running}
-                />
-              ))}
-              <div className={styles.subhead}>Output</div>
-              {OUTPUT.map((spec) => (
-                <FieldRow
-                  key={spec.key}
-                  spec={spec}
-                  meta={meta("OutputSettings")[spec.key] ?? {}}
-                  value={(draft.output ?? {})[spec.key]}
-                  onChange={(v) => set("output", spec.key, v)}
-                  disabled={running}
-                />
-              ))}
-            </>
-          ) : null}
+            {profile && section === "files" ? (
+              <>
+                {FILES.map((spec) => (
+                  <FieldRow
+                    key={spec.key}
+                    spec={spec}
+                    meta={meta("FileSettings")[spec.key] ?? {}}
+                    value={(draft.file ?? {})[spec.key]}
+                    onChange={(v) => set("file", spec.key, v)}
+                    disabled={running}
+                  />
+                ))}
+                <div className={styles.subhead}>Output</div>
+                {OUTPUT.map((spec) => (
+                  <FieldRow
+                    key={spec.key}
+                    spec={spec}
+                    meta={meta("OutputSettings")[spec.key] ?? {}}
+                    value={(draft.output ?? {})[spec.key]}
+                    onChange={(v) => set("output", spec.key, v)}
+                    disabled={running}
+                  />
+                ))}
+              </>
+            ) : null}
 
-          {section === "display" ? (
-            <Field label="Theme" hint="Stored on this computer, not in the profile.">
-              <Select value={ui.theme} onChange={(e) => setTheme(e.target.value as typeof ui.theme)}>
-                <option value="dark">Dark</option>
-                <option value="light">Light</option>
-                <option value="system">Follow system</option>
-              </Select>
-            </Field>
-          ) : null}
+            {section === "display" ? (
+              <Field label="Theme" hint="Stored on this computer, not in the profile.">
+                <Select value={ui.theme} onChange={(e) => setTheme(e.target.value as typeof ui.theme)}>
+                  <option value="dark">Dark</option>
+                  <option value="light">Light</option>
+                  <option value="system">Follow system</option>
+                </Select>
+              </Field>
+            ) : null}
+          </ErrorBoundary>
         </div>
       </div>
     </Dialog>
