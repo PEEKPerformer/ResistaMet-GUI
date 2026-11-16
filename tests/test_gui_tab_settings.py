@@ -70,6 +70,8 @@ OTHER_PROFILE = {
     'fpp_power_warn_w': 0.02,
     'fpp_power_stop_w': 0.2,
     'fpp_stop_on_overpower': not _DEFAULTS['fpp_stop_on_overpower'],
+    'fpp_autoselect_current': not _DEFAULTS['fpp_autoselect_current'],
+    'fpp_autoselect_sigfigs': 5,
     'sweep_source': 'current',
     'sweep_start': -1.0,
     'sweep_stop': 40.0,

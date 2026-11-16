@@ -53,7 +53,7 @@ export interface PendingPrompt {
   detail: {
     [k: string]: unknown | undefined;
   };
-  kind: "vdp_geometry" | "safety_voltage_ack" | "cable_null_shorted";
+  kind: "vdp_geometry" | "safety_voltage_ack" | "cable_null_shorted" | "fpp_current_decision";
   options: string[];
   prompt_id: string;
   requires_human: boolean;

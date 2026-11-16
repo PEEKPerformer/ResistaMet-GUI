@@ -171,6 +171,13 @@ export const FOUR_POINT_FIELDS: FieldGroup<Keys<FourPointSettings>>[] = [
     ],
   },
   {
+    title: "Auto-select current",
+    fields: [
+      { key: "fpp_autoselect_current", label: "Probe and select", hint: "Source current is the probe current." },
+      { key: "fpp_autoselect_sigfigs", label: "Target sig figs", showWhen: { key: "fpp_autoselect_current", in: [true] } },
+    ],
+  },
+  {
     title: "Delta mode",
     fields: [
       { key: "fpp_delta_mode", label: "Current reversal" },

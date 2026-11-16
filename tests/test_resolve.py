@@ -110,7 +110,8 @@ class TestOverrideKeysPerMode:
             'fpp_sample_diameter_mm', 'fpp_sample_width_mm', 'fpp_sample_length_mm',
             'fpp_position_correction', 'fpp_edge_warn_pct', 'fpp_array_angle_deg',
             'fpp_temperature_c', 'fpp_dopant_type', 'fpp_delta_mode', 'fpp_delta_settling',
-            'fpp_power_warn_w', 'fpp_power_stop_w', 'fpp_stop_on_overpower'}),
+            'fpp_power_warn_w', 'fpp_power_stop_w', 'fpp_stop_on_overpower',
+            'fpp_autoselect_current', 'fpp_autoselect_sigfigs'}),
     ])
     def test_exactly_the_mode_s_keys_and_the_shared_ones(self, mode, own):
         assert allowed_override_keys(mode) == own | SHARED_OVERRIDE_KEYS

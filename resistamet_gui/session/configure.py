@@ -8,7 +8,7 @@ explicitly, so nothing here needs a worker.
 The SCPI order in these functions is bench-verified; see ``instrument.py`` for
 the 2400-series quirks it works around.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 import pyvisa
@@ -309,11 +309,31 @@ def configure_four_point(keithley, events, measurement_settings, nplc):
         'Delta Mode': state.delta_mode,
     }
     csv_headers = ['Timestamp (Unix)', 'Elapsed Time (s)', 'Voltage (V)', 'Current (A)', 'V/I (Ohms)', 'Sheet Rs (Ohms/sq)', 'Resistivity (Ohm*cm)', 'Conductivity (S/cm)', 'Compliance Status', 'Event']
-    source_value_str = f"{source_current*1000:.2f}mA"
-    if state.delta_mode:
-        source_value_str += "_delta"
+    source_value_str = _four_point_fragment(state)
 
     return state, metadata, csv_headers, source_value_str
+
+
+def _four_point_fragment(state: FourPointState) -> str:
+    """The source part of a 4PP file name."""
+    fragment = f"{state.source_current*1000:.2f}mA"
+    if state.delta_mode:
+        fragment += "_delta"
+    return fragment
+
+
+def four_point_at_current(state: FourPointState, source_current: float):
+    """The configured 4PP state re-issued for another source current.
+
+    For the pre-run current finder, which decides the current after the
+    configure step. The state is frozen, so this is a new one. The caller
+    has already programmed the instrument.
+
+    Returns (state, source_value_str).
+    """
+    state = replace(state, source_current=source_current)
+    return state, _four_point_fragment(state)
+
 
 def configure_sweep(keithley, events, measurement_settings, nplc):
     """Bulk linear sweep, set up on the instrument's own sweep engine.
