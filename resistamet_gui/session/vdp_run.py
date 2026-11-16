@@ -18,6 +18,7 @@ from ..data_export import (build_metadata, effective_filter_type, get_column_con
                            make_exporter)
 from ..instrument import Keithley2400, humanize_connection_error
 from ..system_utils import SleepInhibitor
+from .configure import rejected_settings
 from .control import RunStopped
 from .events import PAYLOAD_MODELS
 from .instrument_lock import HeldInstrument, InstrumentBusy
@@ -410,6 +411,11 @@ class VdpRun:
             self.keithley.write(f":SENS:AVER:TCON {ftype}")
             self.keithley.write(f":SENS:AVER:COUN {fcount}")
             self.keithley.write(":SENS:AVER ON")
+
+        refused_settings = rejected_settings(self.keithley)
+        if refused_settings:
+            raise RuntimeError("The instrument refused a setting: "
+                               + "; ".join(refused_settings) + ". The run was not started.")
 
         self._i_mag = i_mag
         self._v_comp = v_comp

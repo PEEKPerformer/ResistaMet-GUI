@@ -72,6 +72,34 @@ def _read_back_voltage_limit(keithley, events, max_source_v: Optional[float]) ->
     return value
 
 
+def rejected_settings(keithley, limit: int = 10) -> list:
+    """The instrument's error queue after configuration, emptied.
+
+    A setting the instrument refuses changes nothing and says so only here:
+    a source level above the model's range leaves the level at 0 V, and the
+    run used to go on, its header recording the request. Every configure
+    sequence a run sends leaves this queue empty on a 2420 (bench,
+    2026-11-16), so anything in it is a setting that did not take.
+
+    An instrument that will not answer the query is not a refusal; the run's
+    own reads will report that.
+    """
+    found = []
+    for _ in range(limit):
+        try:
+            reply = keithley.query(":SYST:ERR?").strip()
+        except (pyvisa.errors.VisaIOError, ValueError):
+            break
+        code = reply.split(',', 1)[0].strip()
+        try:
+            if int(float(code)) == 0:
+                break
+        except ValueError:
+            pass
+        found.append(reply)
+    return found
+
+
 @dataclass(frozen=True)
 class FourPointState:
     """What the 4PP configure step decided: delta mode and the power envelope."""

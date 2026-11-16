@@ -31,7 +31,7 @@ from .control import RunStopped
 from .instrument_lock import HeldInstrument, InstrumentBusy
 from .configure import (
     configure_four_point, configure_resistance, configure_source_i,
-    configure_source_v, configure_sweep, four_point_at_current,
+    configure_source_v, configure_sweep, four_point_at_current, rejected_settings,
 )
 from .run_files import create_base_path, open_exporter
 from .spot_map import write_map_summary
@@ -826,6 +826,14 @@ class ContinuousRun:
                     # 1 ms (bench, 2026-11-16), and the header recorded a
                     # delay the points never had.
                     self.keithley.write(":SOUR:DEL:AUTO ON")
+                refused_settings = rejected_settings(self.keithley)
+                if refused_settings:
+                    self._events.error('configure_rejected', 'smu',
+                        "The instrument refused a setting: "
+                        + "; ".join(refused_settings)
+                        + ". The run was not started.")
+                    self._control.finish('configure_failed')
+                    return
                 self._reading_time_s = self._estimate_reading_time_s(
                     measurement_settings, line_freq)
                 self._allow_for_reading_time()
