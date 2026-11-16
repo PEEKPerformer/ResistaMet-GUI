@@ -96,6 +96,21 @@ class RunControl:
         with self._lock:
             return self._finish_reason
 
+    def begin(self) -> bool:
+        """Arm the run, unless it was stopped before it began. False = stopped.
+
+        One step under the lock, so a stop that lands while the run thread is
+        starting is either seen here or arrives after and is seen by the next
+        ``stopped()`` check. Setting ``running = True`` unconditionally on
+        entry overwrote it.
+        """
+        with self._lock:
+            if self._finish_reason is not None:
+                return False
+            self._running = True
+            self._paused = False
+            return True
+
     def finish(self, reason: str) -> None:
         """End the run, recording why. First writer wins.
 
@@ -213,6 +228,21 @@ class RunControl:
         """
         with self._lock:
             self._event_markers.append(name)
+
+    def pending_marks(self) -> List[str]:
+        """The marks waiting for a row, in arrival order. Takes nothing."""
+        with self._lock:
+            return list(self._event_markers)
+
+    def consume_marks(self, count: int) -> None:
+        """Drop the first ``count`` marks: the ones a row has just carried.
+
+        Separate from reading them so that a row which fails to write leaves
+        its marks queued for the next one, and by count so that a mark made
+        while the row was being written is not dropped with them.
+        """
+        with self._lock:
+            del self._event_markers[:max(0, count)]
 
     def get_and_clear_event_marker(self) -> str:
         """Atomically take every pending mark."""

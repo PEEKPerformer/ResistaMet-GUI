@@ -5,11 +5,11 @@
 // dozen readings, but the arithmetic is over the whole run and there is no
 // need to do it fifty times a second.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getSeries } from "../../state/samples";
 import { addSpot, clearSpots, meanSd, removeSpot, useSpots } from "../../state/spots";
 import { useUi } from "../../state/ui";
-import { formatEngineering, formatPercent } from "../../lib/format";
+import { engineering, formatEngineering, formatPercent } from "../../lib/format";
 import { Button, IconButton, Input, Panel } from "../../components/ui";
 import { Icons } from "../../components/icons";
 import styles from "./FourPointPanel.module.css";
@@ -66,12 +66,12 @@ export function FourPointPanel({ running }: { running: boolean }) {
     <div className={styles.row}>
       <Panel title="This spot" className={styles.stats}>
         <div className={styles.statGrid}>
-          <Stat label="n" value={String(stats.n)} />
-          <Stat label="Rs mean" value={formatEngineering(stats.rs.mean, "Ω/sq")} />
-          <Stat label="Rs σ" value={formatEngineering(stats.rs.sd, "Ω/sq")} />
+          <Stat label={<Sym>n</Sym>} value={String(stats.n)} />
+          <Stat label={<><Sym>Rs</Sym> mean</>} {...quantity(stats.rs.mean, "Ω/sq")} />
+          <Stat label={<><Sym>Rs</Sym> SD</>} {...quantity(stats.rs.sd, "Ω/sq")} />
           <Stat label="RSD" value={formatPercent(rsd)} />
-          <Stat label="ρ mean" value={formatEngineering(stats.rho.mean, "Ω·cm")} />
-          <Stat label="σ mean" value={formatEngineering(stats.sigma.mean, "S/cm")} />
+          <Stat label={<><Sym>ρ</Sym> mean</>} {...quantity(stats.rho.mean, "Ω·cm")} />
+          <Stat label={<><Sym>σ</Sym> mean</>} {...quantity(stats.sigma.mean, "S/cm")} />
         </div>
         <div className={styles.saveRow}>
           <Input
@@ -111,16 +111,16 @@ export function FourPointPanel({ running }: { running: boolean }) {
         bodyClassName={styles.spotsBody}
       >
         {spots.length === 0 ? (
-          <div className={styles.empty}>Measure a spot, stop, then Save spot. Repeat across the sample.</div>
+          <div className={styles.empty}>None yet.</div>
         ) : (
           <table className={styles.table}>
             <thead>
               <tr>
                 <th>Spot</th>
-                <th>n</th>
-                <th>Rs</th>
-                <th>σ</th>
-                <th>ρ</th>
+                <th><Sym>n</Sym></th>
+                <th><Sym>Rs</Sym></th>
+                <th>SD</th>
+                <th><Sym>ρ</Sym></th>
                 <th />
               </tr>
             </thead>
@@ -147,11 +147,26 @@ export function FourPointPanel({ running }: { running: boolean }) {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+/** A quantity symbol in a label that is otherwise uppercased. */
+function Sym({ children }: { children: ReactNode }) {
+  return <span className="sym">{children}</span>;
+}
+
+/** Number and unit apart, so a narrow cell can put the unit on its own line
+ *  instead of cutting the value short. */
+function quantity(value: number, unit: string): { value: string; unit: string } {
+  const e = engineering(value, unit);
+  return { value: e.mantissa, unit: e.unit };
+}
+
+function Stat({ label, value, unit }: { label: ReactNode; value: string; unit?: string }) {
   return (
     <div className={styles.stat}>
       <span className={styles.statLabel}>{label}</span>
-      <span className={`${styles.statValue} num`}>{value}</span>
+      <span className={`${styles.statValue} num`}>
+        {value}
+        {unit ? <> <span className={styles.statUnit}>{unit}</span></> : null}
+      </span>
     </div>
   );
 }

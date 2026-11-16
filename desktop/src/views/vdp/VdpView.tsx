@@ -11,12 +11,14 @@ import { useApi } from "../../app/AppContext";
 import { FIELD_META, type Mode } from "../../generated/settings";
 import { MODE_FIELDS, MODE_LABEL, MODE_TIMING, TIMING_FIELDS } from "../../lib/fields";
 import { ApiError, type PendingPrompt, type Resolved } from "../../lib/api";
+import { NAME_THE_SAMPLE } from "../../lib/copy";
 import { formatEngineering } from "../../lib/format";
 import { useSession } from "../../state/session";
 import { useVdp } from "../../state/vdp";
 import { useUi } from "../../state/ui";
 import { seedOverrides, setOverride, useOverrides } from "../../state/overrides";
 import { Badge, Button, Notice, Panel } from "../../components/ui";
+import { BackendNotice } from "../../components/BackendNotice";
 import { Icons } from "../../components/icons";
 import { FieldRow, SettingsForm } from "../../components/forms/SettingsForm";
 import { STATE_LABEL } from "../continuous/ContinuousView";
@@ -92,7 +94,7 @@ export function VdpView() {
     }
   };
 
-  const canStart = !running && ui.username !== null && ui.sampleName.trim() !== "" && resolved?.ok === true && !busy;
+  const canStart = session.backendReachable === true && !running && ui.username !== null && ui.sampleName.trim() !== "" && resolved?.ok === true && !busy;
   const start = () =>
     run(() => api.start({ mode: MODE, sample_name: ui.sampleName.trim(), username: ui.username!, overrides }));
   const measure = (p: PendingPrompt) => run(() => api.answerPrompt(p.prompt_id, "proceed"));
@@ -132,9 +134,10 @@ export function VdpView() {
           </div>
         </header>
 
+        <BackendNotice />
         {error ? <Notice tone="danger">{error}</Notice> : null}
         {running && !thisRunning ? <Notice tone="info">Another run is in progress.</Notice> : null}
-        {ui.sampleName.trim() === "" && !running ? <Notice tone="info">Name the sample in the top bar to enable Start.</Notice> : null}
+        {ui.sampleName.trim() === "" && !running ? <Notice tone="info">{NAME_THE_SAMPLE}</Notice> : null}
 
         <div className={own.body}>
           <Panel className={own.wizard} bodyClassName={own.wizardBody} title={<Stepper done={done} active={geometry?.index ?? null} running={thisRunning} />}>
@@ -166,7 +169,7 @@ export function VdpView() {
                   <Button variant="primary" size="lg" disabled={busy} onClick={() => void measure(geometryPrompt!)}>
                     <Icons.check /> Measure
                   </Button>
-                  <div className={own.muted}>Output is off while you rewire.</div>
+                  {geometry.index === 0 ? <div className={own.muted}>Output is off while you rewire.</div> : null}
                 </div>
               </div>
             ) : thisRunning ? (
@@ -178,9 +181,7 @@ export function VdpView() {
             ) : (
               <div className={own.centered}>
                 <ContactDiagram geometry={null} />
-                <div className={own.muted}>
-                  Four wirings, rewired by hand between each. Press Start; the first configuration will be shown here.
-                </div>
+                <div className={own.muted}>Four wirings, rewired by hand. Press Start.</div>
               </div>
             )}
           </Panel>

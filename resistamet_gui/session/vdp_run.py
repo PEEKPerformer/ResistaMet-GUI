@@ -1,6 +1,6 @@
 """One van der Pauw run, ASTM F76-08 Method A.
 
-Moved out of ``workers.py`` unchanged. Four physical cabling configurations,
+Began as part of ``workers.py``. Four physical cabling configurations,
 rewired by hand between geometries, so the procedure waits on the control's
 proceed gate; current reversal at each geometry is automated, giving the eight
 voltage readings F76 averages. Reports through an outputs facade, no Qt.
@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
+from ..constants import KEITHLEY_STAT_BIT_COMPLIANCE as _STAT_BIT_COMPLIANCE
 from ..data_export import build_metadata, get_column_config, make_exporter
 from ..instrument import Keithley2400, humanize_connection_error
 from ..system_utils import SleepInhibitor
@@ -19,10 +20,6 @@ from .instrument_lock import HeldInstrument, InstrumentBusy
 from .run_files import create_base_path
 
 logger = logging.getLogger(__name__)
-
-# Keithley 2400 series STATUS word bit masks (24-bit)
-# Bit 3: Compliance — source is in real compliance
-_STAT_BIT_COMPLIANCE = 1 << 3
 
 
 class _VdpAborted(Exception):
@@ -60,6 +57,7 @@ class VdpRun:
         self._start_time = 0.0
         self._i_mag = 0.0
         self.filename = ""
+        self._shut_down_started = False   # _shut_down runs once per run
 
     @property
     def running(self) -> bool:
@@ -156,9 +154,9 @@ class VdpRun:
         return False
 
     def execute(self) -> None:
-        self.running = True
-        # True when the run is turned away before it reaches the instrument:
-        # reported as not ok whatever the reason, a stop included.
+        began = self._control.begin()
+        # True when the run is turned away, or stopped, before it reaches the
+        # instrument: reported as not ok whatever the reason.
         refused = False
         # Everything from run_started on is inside this try, so a fault in
         # any step still ends in the finally below: the lock released and a
@@ -175,6 +173,10 @@ class VdpRun:
                 'settings': self.settings,
                 'started_at': time.time(),
             })
+            if not began:
+                # Stopped before it began: nothing is opened, nothing re-armed.
+                refused = True
+                return
             address = self.settings.get('measurement', {}).get('gpib_address', '')
             try:
                 if self._instrument_lock is None:
@@ -184,28 +186,42 @@ class VdpRun:
                 self._control.finish('instrument_busy')
                 self._events.error('instrument_busy', 'smu', str(exc))
                 return
+            if self._control.stopped():
+                # The wait for the lock can take seconds.
+                refused = True
+                return
 
             if self._safety_prompt_declined():
                 refused = True
                 # finish() keeps the first reason, so a timeout reports as one.
                 self._control.finish('cancelled')
                 return
+            if self._control.stopped():
+                refused = True
+                return
 
             self._connect_and_configure()
             self._run_geometries()
             self._compute_and_emit_result()
-        except RunStopped:
+        except (RunStopped, _VdpAborted):
             self._control.finish('user_stop')
-            self._events.log('aborted', "vdP measurement aborted by user")
-        except _VdpAborted:
-            self._control.finish('user_stop')
-            self._events.log('aborted', "vdP measurement aborted by user")
+            if self._control.finish_reason == 'prompt_timeout':
+                # Nobody aborted it: nobody answered.
+                self._events.log('aborted', "vdP measurement abandoned: no answer at the prompt")
+            else:
+                self._events.log('aborted', "vdP measurement aborted by user")
         except Exception as e:
             self._control.finish('worker_error')
             logger.exception("vdP measurement failed")
             self._events.error('worker_error', 'run', f"vdP error: {e}")
         finally:
             self.running = False
+            # A no-op after a run that completed: it shut down with its
+            # result. Every other way out comes through here.
+            try:
+                self._shut_down()
+            except Exception as e:
+                logger.warning(f"vdP shutdown failed: {e}")
             samples = self.exporter.row_count if self.exporter else 0
             self._cleanup()
             reason = self._control.finish_reason or 'completed'
@@ -298,6 +314,11 @@ class VdpRun:
 
         self._i_mag = i_mag
 
+        # A stop during the connect and configure: no file for a run that
+        # measured nothing. The output has not been on.
+        if self._control.stopped():
+            raise _VdpAborted()
+
         # Output data file via the configured exporter.
         base_path = create_base_path(
             self.settings['file']['data_directory'], self.username,
@@ -324,6 +345,10 @@ class VdpRun:
         )
         primary_paths = self.exporter.output_paths
         self.filename = str(primary_paths[0]) if primary_paths else str(base_path)
+        # The typed event every other mode sends: without it a headless
+        # client learned a vdP file's path only from run_ended.
+        self._events.emit('file_opened', {
+            'path': self.filename, 'columns': list(columns), 'units': list(units)})
         names = ", ".join(p.name for p in primary_paths)
         self._events.log('file_opened', f"Data file: {names}")
 
@@ -480,6 +505,8 @@ class VdpRun:
             'sheet_resistance_uncertainty': u_rs,
             'rho_avg_uncertainty': u_rho,
         }
+        # The file first: a result that cannot be announced is still recorded.
+        self._shut_down(result_dict)
         self._events.emit('vdp_result', result_dict)
         self._events.log('completed', 
             f"vdP done: Rs={result.sheet_resistance:.4g} Ω/sq, "
@@ -487,10 +514,54 @@ class VdpRun:
             f"asym={result.asymmetry_pct:.2f}% "
             f"({'homogeneous' if result.homogeneous else 'NON-homogeneous'})"
         )
+
+    def _shut_down(self, result_dict=None) -> None:
+        """The end of a run that got as far as its instrument: output off,
+        then the file's footer.
+
+        ``_cleanup`` runs after this on every exit and would also turn the
+        output off and close the file, but silently and with no footer, so a
+        stopped or failed run read afterwards like one that completed. The
+        footer says why the run ended, and carries the result when there is
+        one. Runs once, as in ContinuousRun.
+        """
+        if self._shut_down_started:
+            return
+        self._shut_down_started = True
+        if self.keithley:
+            try:
+                self.keithley.write(":OUTP OFF")
+                self._events.log('output_off', "Output turned OFF.")
+            except Exception as e:
+                self._events.warn('output_off_failed', f"Warning: Could not turn off output - {str(e)}")
+        if not self.exporter:
+            return
         try:
-            self.exporter.finalize({'vdp_result': result_dict})
-        except Exception:
-            logger.warning("vdP: finalize with result failed", exc_info=True)
+            end_metadata = {
+                'ended_at': datetime.now().isoformat(),
+                'total_samples': self.exporter.row_count,
+                'duration_s': time.time() - self._start_time,
+                'end_reason': self._control.finish_reason or 'completed',
+            }
+            if result_dict is not None:
+                end_metadata['vdp_result'] = result_dict
+            self.exporter.finalize(end_metadata)
+            self._take_final_path()
+            self._events.emit('file_finalized', {
+                'path': self.filename, 'end_metadata': end_metadata})
+        except Exception as e:
+            self._events.warn('finalize_failed', f"Warning: Error finalizing export - {str(e)}")
+
+    def _take_final_path(self) -> None:
+        """After finalize: the file as it is now on disk.
+
+        Compression replaces ``run.csv`` with ``run.csv.gz``. Every event
+        after this point, and the session's status, names the file a reader
+        can open, not the one that no longer exists.
+        """
+        paths = self.exporter.output_paths if self.exporter else []
+        if paths:
+            self.filename = str(paths[0])
 
     def _release_instrument_lock(self) -> None:
         held = getattr(self, '_instrument_lock', None)

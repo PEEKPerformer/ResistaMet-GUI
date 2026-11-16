@@ -14,12 +14,14 @@ import { FIELD_META, MODE_MODEL, type Mode } from "../../generated/settings";
 import { MODE_FIELDS, MODE_LABEL, MODE_TIMING, TIMING_FIELDS } from "../../lib/fields";
 import type { Resolved } from "../../lib/api";
 import { ApiError } from "../../lib/api";
+import { NAME_THE_SAMPLE } from "../../lib/copy";
 import { formatElapsed, formatEngineering } from "../../lib/format";
 import { useSession } from "../../state/session";
 import { useLatestSample } from "../../state/samples";
 import { useUi } from "../../state/ui";
 import { seedOverrides, setOverride, useOverrides } from "../../state/overrides";
 import { Badge, Button, Notice, Panel } from "../../components/ui";
+import { BackendNotice } from "../../components/BackendNotice";
 import { Icons } from "../../components/icons";
 import { LivePlot, type TraceSpec } from "../../components/plot/LivePlot";
 import { FieldRow, SettingsForm } from "../../components/forms/SettingsForm";
@@ -148,7 +150,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
   }, [api, thisModeRunning]);
 
   const canStart =
-    !locked && ui.username !== null && ui.sampleName.trim() !== "" && resolved !== null && resolved.ok && !busy;
+    session.backendReachable === true && !locked && ui.username !== null && ui.sampleName.trim() !== "" && resolved !== null && resolved.ok && !busy;
 
   const start = async () => {
     if (!ui.username) return;
@@ -179,13 +181,16 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
   const maxRate = typeof resolved?.derived.max_rate_hz === "number" ? resolved.derived.max_rate_hz : null;
   const requestedRate = typeof overrides.sampling_rate === "number" ? overrides.sampling_rate : null;
   const rateTooHigh = maxRate !== null && requestedRate !== null && requestedRate > maxRate;
+  // The achievable rate is stated once: in the banner when the request
+  // exceeds it, as a quiet line under the timing fields otherwise.
+  const rateBanner = rateTooHigh && !locked;
 
   return (
     <div className={styles.view}>
       <div className={styles.workspace}>
         <header className={styles.controls}>
           <div className={styles.title}>
-            <h1>{MODE_LABEL[mode]}</h1>
+            <h1 title={MODE_LABEL[mode]}>{MODE_LABEL[mode]}</h1>
             <RunState mode={mode} />
           </div>
           <div className={styles.buttons}>
@@ -215,24 +220,25 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
           </div>
         </header>
 
+        <BackendNotice />
         {startError ? <Notice tone="danger">{startError}</Notice> : null}
         {otherModeRunning ? (
           <Notice tone="info">A {MODE_LABEL[status!.mode!]} run is in progress. Stop it before starting another.</Notice>
         ) : null}
-        {ui.sampleName.trim() === "" && !locked ? <Notice tone="info">Name the sample in the top bar to enable Start.</Notice> : null}
+        {ui.sampleName.trim() === "" && !locked ? <Notice tone="info">{NAME_THE_SAMPLE}</Notice> : null}
         {hazard && !locked ? (
           <Notice tone="warn">
             {hazard.reason} = {hazard.voltage_v} V is at or above the {hazard.threshold_v} V touch-safety threshold. You will be asked to
             acknowledge before the output turns on.
           </Notice>
         ) : null}
-        {rateTooHigh && !locked ? (
+        {rateBanner ? (
           <Notice tone="warn">
             {requestedRate} Hz exceeds what these timing settings can deliver (~{maxRate!.toFixed(1)} Hz). The run will sample as fast as it can.
           </Notice>
         ) : null}
 
-        <Readout mode={mode} />
+        <Readout mode={mode} final={!thisModeRunning} />
 
         <Panel
           className={styles.plotPanel}
@@ -281,7 +287,7 @@ export function ContinuousView({ mode }: { mode: ContinuousMode }) {
               disabled={locked}
             />
           ))}
-          {maxRate !== null ? (
+          {maxRate !== null && !rateBanner ? (
             <div className={styles.derived}>
               Max rate with these settings: <span className="num">{maxRate.toFixed(1)} Hz</span>
             </div>
@@ -319,23 +325,35 @@ function RunState({ mode }: { mode: Mode }) {
     );
   }
   if (lastRunEnded && status?.mode === mode) {
+    // The run's totals stay on screen until the next Start: the backend's
+    // own figures when it sent them, the last sample's otherwise.
+    const durationS = lastRunEnded.durationS ?? latest?.elapsedS ?? null;
+    const samples = lastRunEnded.samples ?? latest?.count ?? null;
     return (
       <span className={styles.runState}>
         <Badge tone={lastRunEnded.ok ? undefined : "danger"}>ended: {lastRunEnded.reason.replace(/_/g, " ")}</Badge>
+        {durationS !== null && samples !== null ? (
+          <span className={`${styles.runMeta} num`}>
+            {formatElapsed(durationS)} · {samples} samples
+          </span>
+        ) : null}
       </span>
     );
   }
   return <Badge>Idle</Badge>;
 }
 
-function Readout({ mode }: { mode: ContinuousMode }) {
+/** `final`: no run of this mode is going, so whatever is shown is the last
+ *  run's closing reading, not a live one — dimmed and tagged to say so. */
+function Readout({ mode, final }: { mode: ContinuousMode; final: boolean }) {
   const sample = useLatestSample();
   // Another mode's samples are not this view's numbers.
   const latest = sample && sample.mode === mode ? sample : null;
+  const stale = final && latest !== null;
   const specs = READOUTS[mode];
   const derived = mode === "four_point" ? latest?.derived : null;
   return (
-    <div className={styles.readout}>
+    <div className={styles.readout} data-final={stale || undefined}>
       {specs.map((spec) => {
         const raw = latest?.values[spec.key];
         const value = typeof raw === "number" ? raw : NaN;
@@ -358,6 +376,11 @@ function Readout({ mode }: { mode: ContinuousMode }) {
       {latest && latest.compliance !== "OK" ? (
         <div className={styles.readoutCell}>
           <Badge tone="danger">{latest.compliance === "V_COMP" ? "Voltage compliance" : "Current compliance"}</Badge>
+        </div>
+      ) : null}
+      {stale ? (
+        <div className={styles.readoutFinal}>
+          <Badge>final</Badge>
         </div>
       ) : null}
     </div>

@@ -3,9 +3,13 @@
 **Status:** design, 2026-09-19. Steps 1–5 of §5 have landed: the geometry
 math, the schema, the spot in the file and the events, the map with its API,
 and the spot sent with every four-point run the PySide6 window starts.
-Steps 6–7 wait on the questions in §7. The position-aware correction is
-reported, never applied: the schema accepts only `warn` until question 1 is
-answered.
+Steps 6–7 have landed in the Tauri UI on defaults for questions 2–5 of §7,
+each a one-line change (listed under step 7 in §5). The two backend routes
+the map was waiting for exist — the image kept beside the runs
+(`PUT /maps/{map_id}/image`) and the exact factor before Start
+(`POST /spots/preflight`) — and the Tauri UI does not call them yet. The
+position-aware correction is reported, never applied: the schema accepts
+only `warn` until question 1 is answered.
 **Depends on:** `tauri_backend_split.md` (run layer, events, contract)
 
 ## 1. What is wrong today
@@ -225,7 +229,38 @@ bare outline, and a picture, when given, sits under it.
 - *The image is data.* It is copied beside the runs as
   `<map_id>_sample.<ext>` with its SHA-256 in the map summary; the original
   is never modified; registration is stored as numbers, not baked into
-  pixels.
+  pixels. The routes (`api/routes_maps.py`, storage in
+  `session/spot_map.py`), all with `?user=` and the bearer token:
+  - `PUT /maps/{map_id}/image` — the body is the image, `Content-Type` one
+    of `image/png`, `image/jpeg`, `image/webp`, `image/tiff`; the first
+    bytes must agree with it (415), at most 25 MB (413), nothing is decoded.
+    Answers `{file, sha256, bytes, replaced}`: 201 when stored, 200 when
+    the map already holds these bytes, 409 when it holds others. With
+    `&replace=true` the old file is renamed to
+    `<name>.replaced-<UTC stamp>` — never deleted — and `replaced` names it.
+    A map may get its image before its first spot.
+  - `PUT /maps/{map_id}/registration` — a `MapImageRegistration`: `sha256`
+    of the image it was fitted to (409 for any other, 404 with no image),
+    `image_width_px`, `image_height_px`, `mm_per_px`, `centre_x_mm`,
+    `centre_y_mm`, `rotation_deg`, `calibrated`, and an optional two-point
+    `calibration`. Kept in `<map_id>_map_image.json`. A new image starts
+    without one.
+  - `GET /maps/{map_id}/image` — the bytes, with their content type. The
+    route wants the token, so the UI fetches it and shows a blob URL; an
+    `<img src>` cannot.
+  - `GET /maps/{map_id}` carries `image: {file, sha256, bytes,
+    registration}`, hashed from the file as it is on disk, or `null`; so
+    does `<map_id>_map.json`.
+- *The factor before Start.* `POST /spots/preflight` with
+  `{username, overrides, spot?}` — the body of a four-point Start without
+  `mode` and `sample_name` — answers a `SpotPreflight`: the header's
+  `edge_clearance_s`, `factor_here`, `factor_centre`, `factor_rows`,
+  `relative_error`, `relative_error_rows`, with `off_sample`, `near_edge`,
+  `compared_with` and the `message` the run would raise, and the centred
+  `geometry_factor` of the outline, present with no position and with no
+  spot. It calls `spot_record_from_settings`, as the run does; no
+  instrument, no lock, no event, nothing written. 422 where Start would
+  be 422.
 
 ## 3. Settings
 
@@ -280,11 +315,29 @@ identical numbers (a test pins this).
    first run after *Clear All* each start a new map. The window still
    computes the numbers it shows; it does not yet read `spot_complete`.)*
 6. Tauri: spots panel reads the map; settings form shows the geometry and
-   the factor.
-7. Tauri: the map canvas, registration, figure export.
+   the factor. *(landed: every four-point Start sends a spot; `state/spots.ts`
+   holds the current map and caches `GET /maps/{id}`; the panel shows
+   `spot_complete` and the map, never its own arithmetic; Redo; a refusal is
+   a notice, a near-edge warning sits with the spot; a "Sample" settings
+   group. The form does not show the factor yet: `POST /spots/preflight`
+   without a spot returns `geometry_factor` and `factor_rows` for it.)*
+7. Tauri: the map canvas, registration, figure export. *(landed:
+   `lib/map/` — geometry and the y flip, viridis, the figure as a list of
+   primitives rendered on screen and into the SVG, the CSV — with
+   `npm test`; `views/continuous/MapPanel.tsx`; `state/mapPhoto.ts`.
+   Defaults taken for the open questions, each one line: Q2 one array angle
+   per map, the setting (`useFigureInputs` in `MapPanel.tsx`); Q3 the
+   PySide6 rule, a new map on application start
+   (`NEW_MAP_ON_APP_START` in `state/spots.ts`); Q4 σ when the map has any,
+   else Rs, labels off (`defaultQuantity` in `lib/map/figure.ts`,
+   `DEFAULTS` in `state/mapView.ts`); Q5 no outline = the photograph is the
+   canvas, no edge check, a two-point scale. Not done in the UI: the image
+   is still kept as name, size, SHA-256 and registration in `localStorage`
+   and the pre-flight edge check is distance-only; the routes of §2 layer 3
+   that replace both exist and are not called yet.)*
 
 Steps 1–5 change no measurement behaviour and have landed without waiting
-for the questions below. Steps 6–7 depend on them.
+for the questions below. Steps 6–7 were built on defaults for them.
 
 ## 6. Verification
 
@@ -346,3 +399,13 @@ From building steps 2–5:
     readable form or lead with the epoch?
 12. **Rectangle proportions.** The math handles any side ratio; should the
     schema bound it anyway as a typo guard?
+
+From building the image and pre-flight routes:
+
+13. **The image sidecar in the results list.** `GET /results` lists every
+    `.json` that is not a `_map.json`, so `<map_id>_map_image.json` shows
+    up there as if it were a legacy run. It should be skipped the way the
+    map summary is (`MAP_IMAGE_SIDECAR_SUFFIX` in `session/spot_map.py`).
+14. **Who may replace an image.** `replace=true` is open to any holder of
+    the token, like every other map route; the replaced file is kept. Is
+    that enough, or should the UI role be required?

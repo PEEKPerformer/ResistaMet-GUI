@@ -5,13 +5,13 @@ calls the session, and maps the two failure modes: ``SessionBusy`` is 409
 (the instrument is doing something else) and a rejected run request is 422
 (the settings could not be resolved).
 """
-from typing import Any, Dict, Optional
+from typing import Annotated, Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel, Field, StringConstraints
 
-from ..schema.settings_modes import ClientInfo
-from ..schema.spots import SpotRequest
+from ..schema.settings_modes import RunRequest
+from ..schema.spots import LABEL_PATTERN
 from ..session.instrument_lock import InstrumentBusy
 from ..session.manager import MeasurementSession, SessionBusy
 from .app import UI_ROLE, busy_as_conflict, get_session, require_token
@@ -19,26 +19,21 @@ from .app import UI_ROLE, busy_as_conflict, get_session, require_token
 router = APIRouter(prefix="/session", tags=["session"])
 
 
-class StartRequest(BaseModel):
-    mode: str
-    sample_name: str = Field(min_length=1)
-    username: str = Field(min_length=1)
-    overrides: Dict[str, Any] = Field(default_factory=dict)
-    prompt_timeout_s: float = Field(default=900.0, gt=0.0)
-    # Four-point only; the session refuses it for any other mode.
-    spot: Optional[SpotRequest] = None
-    # Which program is asking, for the file header. Optional.
-    client: Optional[ClientInfo] = None
-
-
 class AnswerRequest(BaseModel):
     prompt_id: str
     choice: str
     fields: Dict[str, Any] = Field(default_factory=dict)
+    # Prompt ids repeat from run to run ("safety_voltage_ack-1"). A client
+    # that says which run it is answering cannot have a dialog left over from
+    # the last run answer this one's question.
+    run_id: Optional[str] = None
 
 
 class MarkRequest(BaseModel):
-    label: str = 'MARK'
+    # Written into a row of the data file: one line, and short, like the
+    # label of a spot.
+    label: Annotated[str, StringConstraints(
+        strip_whitespace=True, min_length=1, max_length=80, pattern=LABEL_PATTERN)] = 'MARK'
 
 
 @router.get("")
@@ -59,26 +54,45 @@ def shutdown(request: Request, session: MeasurementSession = Depends(get_session
 
 
 @router.get("/events")
-def read_events(request: Request, since_seq: int = 0, run_id: str = "",
-                 limit: int = 500, role: str = Depends(require_token)):
+def read_events(request: Request, since_seq: int = Query(default=0, ge=0),
+                 run_id: str = "",
+                 since_cursor: Optional[int] = Query(default=None, ge=0),
+                 limit: int = Query(default=500, ge=1, le=10000),
+                 role: str = Depends(require_token)):
     """Poll for events. The same stream the WebSocket carries.
 
     Request/response clients — the MCP layer among them — should not have to
     hold a socket open to follow a run.
+
+    Page with ``since_cursor``: pass back the ``cursor`` of the last reply
+    (0 to start). It counts across runs, so a poller neither repeats nor
+    skips an event when a new run begins, which ``since_seq`` cannot promise
+    because ``seq`` restarts with every run (``EventHub.history``).
     """
     hub = request.app.state.api.hub
-    events, gap = hub.history(run_id or None, since_seq, limit)
+    events, gap = hub.history(run_id or None, since_seq, limit, since_cursor=since_cursor)
+    if events:
+        cursor = events[-1].cursor
+    else:
+        cursor = since_cursor if since_cursor is not None else hub.cursor
     return {
         'events': [event.model_dump() for event in events],
         'gap': gap,
         'last_seq': events[-1].seq if events else since_seq,
+        'cursor': cursor,
     }
 
 
 @router.post("/start", status_code=status.HTTP_202_ACCEPTED)
-def start(body: StartRequest, request: Request,
+def start(body: RunRequest, request: Request,
            session: MeasurementSession = Depends(get_session),
            role: str = Depends(require_token)):
+    """Start a run. The body is the exported ``RunRequest`` contract itself.
+
+    Not a look-alike of it: the desktop's types are generated from that
+    model, and it forbids unknown fields, so a misspelt one is a 422 naming
+    it rather than a run that quietly ignored what the client asked for.
+    """
     profile = request.app.state.api.profile_provider(body.username)
     try:
         run_id = session.start(profile, body.mode, body.sample_name, body.username,
@@ -144,20 +158,46 @@ def mark(body: MarkRequest, session: MeasurementSession = Depends(get_session),
 def answer_prompt(body: AnswerRequest,
                    session: MeasurementSession = Depends(get_session),
                    role: str = Depends(require_token)):
-    pending = session.status()['pending_prompt']
+    """Answer the pending prompt.
+
+    409 when there is nothing to answer, or the answer is for another prompt
+    or another run; 403 when the prompt needs a person and the caller is not
+    one; 422 when the choice is not one the prompt offered, with the options
+    in the detail. A refused answer leaves the prompt pending.
+    """
+    current = session.status()
+    pending = current['pending_prompt']
     if pending is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                              detail="no prompt is pending")
+    if body.run_id is not None and body.run_id != current['run_id']:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                             detail=f"the pending prompt belongs to {current['run_id']}, "
+                                    f"not {body.run_id}")
     if pending['requires_human'] and role != UI_ROLE:
         # D4: a client that is not a person at the bench may not assert that
         # leads were rewired or that a hazardous voltage was acknowledged.
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                              detail="this prompt requires a human answer")
+    if body.prompt_id == pending['prompt_id'] and body.choice not in pending['options']:
+        # Checked here as well as in the control, which refuses it too: the
+        # session reports that refusal as a plain False, and "not one of the
+        # options" is a different thing to tell a client than "too late".
+        raise _not_an_option(body.choice, pending['options'])
     try:
         accepted = session.answer_prompt(body.prompt_id, body.choice, body.fields)
     except SessionBusy as exc:
         raise busy_as_conflict(exc)
+    except ValueError:
+        raise _not_an_option(body.choice, pending['options'])
     if not accepted:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                              detail="prompt_id is stale or already answered")
     return session.status()
+
+
+def _not_an_option(choice: str, options) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=f"{choice!r} is not an answer to this prompt; "
+               f"the options are: {', '.join(options)}")

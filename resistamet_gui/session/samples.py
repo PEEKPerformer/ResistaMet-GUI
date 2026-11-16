@@ -1,6 +1,6 @@
 """Turning one instrument reading into a data dict and a CSV row.
 
-Split out of ``workers.py`` unchanged. Called once per sample by the
+Began as part of ``workers.py``. Called once per sample by the
 acquisition loop: parse the reading for this mode, then build the row in the
 column order ``data_export.get_column_config`` declares.
 """
@@ -14,10 +14,6 @@ from ..accuracy import (
 )
 from ..constants import KEITHLEY_COMPLIANCE_MAGIC_NUMBER
 from ..data_export import splice_before_tail
-
-# Keithley 2400 series STATUS word bit masks (24-bit)
-# Bit 3: Compliance — source is in real compliance
-_STAT_BIT_COMPLIANCE = 1 << 3
 
 
 def _is_overflow(reading) -> bool:

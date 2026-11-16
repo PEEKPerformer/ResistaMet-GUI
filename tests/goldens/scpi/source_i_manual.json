@@ -1,0 +1,29 @@
+{
+  "mode": "source_i",
+  "measurement": {
+    "isource_current": 0.001,
+    "isource_voltage_compliance": 5.0,
+    "isource_voltage_range_auto": false,
+    "isource_duration_hours": 0.0
+  },
+  "writes": [
+    "*RST",
+    "*CLS",
+    ":SYST:AZER:STAT ON",
+    ":SENS:FUNC:CONC OFF",
+    ":OUTP:SMOD HIMP",
+    ":SYST:RSEN OFF",
+    ":SENS:FUNC 'VOLT:DC'",
+    ":SOUR:FUNC CURR",
+    ":SOUR:CURR:RANG 0.001",
+    ":SOUR:CURR 0.001",
+    ":SENS:VOLT:PROT 5.0",
+    ":SENS:VOLT:RANG:AUTO OFF",
+    ":SENS:VOLT:RANG 5.0",
+    ":SENS:VOLT:NPLC 1.0",
+    ":FORM:ELEM VOLT,CURR,STAT",
+    ":TRIG:DEL 0",
+    ":SOUR:DEL:AUTO ON",
+    ":OUTP ON"
+  ]
+}

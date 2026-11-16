@@ -13,6 +13,13 @@ Two rules, both about the acquisition thread:
 * **A failing sink cannot kill the run.** Delivery errors are logged and
   swallowed, the way the existing defensive blocks around emits in
   ``workers.py`` do.
+
+And one about the stream: **nothing is stamped after ``run_ended``.** Stop,
+pause and resume emit from the caller's thread whatever state the run is in,
+so without this a stop that arrived as the run was ending put events after
+the one that is promised to be last. Because the sink is called outside the
+lock, an event stamped just before ``run_ended`` on another thread can still
+be delivered just after it; its ``seq`` is lower, which is how a client tells.
 """
 import logging
 import threading
@@ -34,9 +41,13 @@ class EventEmitter:
         self._clock = clock
         self._lock = threading.Lock()
         self._seq = 0
+        self._closed = False
 
-    def emit(self, event_type: str, payload: Optional[Dict[str, Any]] = None) -> Event:
-        """Stamp and deliver one event; returns what was sent."""
+    def emit(self, event_type: str, payload: Optional[Dict[str, Any]] = None) -> Optional[Event]:
+        """Stamp and deliver one event; returns what was sent.
+
+        None once ``run_ended`` has been stamped: the event is dropped.
+        """
         payload = dict(payload or {})
         model = PAYLOAD_MODELS.get(event_type)
         if model is not None:
@@ -45,6 +56,11 @@ class EventEmitter:
             payload = model(**payload).model_dump()
 
         with self._lock:
+            if self._closed:
+                logger.debug(f"dropped {event_type}: the run has ended")
+                return None
+            if event_type == 'run_ended':
+                self._closed = True
             self._seq += 1
             seq = self._seq
         event = Event(type=event_type, run_id=self._run_id, seq=seq,
@@ -56,13 +72,13 @@ class EventEmitter:
             logger.error(f"Event sink failed on {event_type}: {exc}")
         return event
 
-    def log(self, code: str, message: str, level: str = 'info') -> Event:
+    def log(self, code: str, message: str, level: str = 'info') -> Optional[Event]:
         return self.emit('log', {'level': level, 'code': code, 'message': message})
 
-    def warn(self, code: str, message: str) -> Event:
+    def warn(self, code: str, message: str) -> Optional[Event]:
         return self.log(code, message, level='warning')
 
-    def error(self, code: str, source: str, message: str, fatal: bool = True) -> Event:
+    def error(self, code: str, source: str, message: str, fatal: bool = True) -> Optional[Event]:
         return self.emit('error', {'code': code, 'source': source,
                                     'message': message, 'fatal': fatal})
 

@@ -1,6 +1,6 @@
 """One continuous-mode or sweep run, start to finalize.
 
-Moved out of ``workers.py`` unchanged. The procedure owns the instrument
+Began as the body of ``workers.py``. The procedure owns the instrument
 session, the exporter and the acquisition loop; it reports through an outputs
 facade and reads stop/pause from a :class:`~resistamet_gui.session.control.RunControl`,
 so the QThread adapter in ``workers.py`` and the headless session drive the same
@@ -16,7 +16,10 @@ from typing import Dict, Optional
 import numpy as np
 import pyvisa
 
-from ..constants import AUX_READY_TIMEOUT_S, MODE_DISPLAY_NAMES
+from ..constants import (
+    AUX_READY_TIMEOUT_S, MODE_DISPLAY_NAMES,
+    KEITHLEY_STAT_BIT_COMPLIANCE as _STAT_BIT_COMPLIANCE,
+)
 from ..data_export import AUX_LOG_MODES, splice_before_tail
 from ..formatting import format_power
 from ..instrument import Keithley2400, humanize_connection_error
@@ -38,9 +41,27 @@ from .samples import (
 
 logger = logging.getLogger(__name__)
 
-# Keithley 2400 series STATUS word bit masks (24-bit)
-# Bit 3: Compliance — source is in real compliance
-_STAT_BIT_COMPLIANCE = 1 << 3
+
+def _aux_connection_message(exc: BaseException, address: str) -> str:
+    """Why the auxiliary sensor did not open, in the sensor's own terms.
+
+    ``humanize_connection_error`` is written for the SMU: it says to power on
+    the Keithley and to pick another GPIB address, neither of which helps
+    with a thermocouple board on a serial port.
+    """
+    where = address or 'the configured port'
+    text = str(exc)
+    lowered = text.lower()
+    code = getattr(exc, 'error_code', None)
+    status = pyvisa.constants.StatusCode
+    if code == status.error_resource_busy:
+        return f"{where} is open in another program."
+    if code == status.error_timeout or 'timeout' in lowered:
+        return f"no data from {where} in time. Check that the sensor is streaming."
+    if (code == status.error_resource_not_found or 'not found' in lowered
+            or 'rsrc_nfound' in lowered):
+        return f"nothing found at {where}. Check the USB cable and the port in Settings."
+    return f"could not open {where}: {text}"
 
 
 class ContinuousRun:
@@ -174,10 +195,10 @@ class ContinuousRun:
                 )
             except Exception as e:
                 self._events.error('aux_connect_failed', 'aux', 
-                    "Auxiliary sensor: " + humanize_connection_error(e, aux_address)
+                    "Auxiliary sensor: " + _aux_connection_message(e, aux_address)
                 )
                 self._control.finish('aux_connect_failed')
-                return
+                return False
         return True
 
     def _effective_settings(self):
@@ -234,7 +255,7 @@ class ContinuousRun:
         except Exception as e:
             self._events.error('file_create_failed', 'file', f"Error creating output files: {str(e)}")
             self._control.finish('file_create_failed')
-            return
+            return False
         return True
 
     def _run_sweep(self):
@@ -247,6 +268,8 @@ class ContinuousRun:
                 planned = f"{self._mode_state.points} points"
             self._events.log('sweep_started', f"Running I-V sweep ({planned})...")
             try:
+                if self._control.stopped():
+                    raise RunStopped()
                 self.keithley.write(":OUTP ON")
                 # Increase timeout for long sweeps
                 if self.keithley.dev:
@@ -270,11 +293,7 @@ class ContinuousRun:
                     comp_list.append(comp_status)
 
                     # Write each point to export
-                    row_data = [i // 3, v, c, comp_status]
-                    try:
-                        self.exporter.write_row(row_data)
-                    except Exception:
-                        pass
+                    self._write_sweep_row([i // 3, v, c, comp_status])
 
                 # What the closing log line reports: every point in the file,
                 # both legs of an up-then-down sweep. It used to give the
@@ -295,6 +314,9 @@ class ContinuousRun:
                         stop_q = self.keithley.query(":SOUR:CURR:STOP?").strip()
                         self.keithley.write(f":SOUR:CURR:START {stop_q}")
                         self.keithley.write(f":SOUR:CURR:STOP {start_q}")
+                    if self._control.stopped():
+                        # The forward leg is in the file; the reverse is not run.
+                        raise RunStopped()
                     self.keithley.write(":OUTP ON")
                     response2 = self.keithley.query(":READ?").strip()
                     self.keithley.write(":OUTP OFF")
@@ -312,11 +334,7 @@ class ContinuousRun:
                         rev_i.append(c)
                         comp_status = 'COMP' if (stat & _STAT_BIT_COMPLIANCE) else 'OK'
                         rev_comp.append(comp_status)
-                        row_data = [len(voltages) + i // 3, v, c, comp_status]
-                        try:
-                            self.exporter.write_row(row_data)
-                        except Exception:
-                            pass
+                        self._write_sweep_row([len(voltages) + i // 3, v, c, comp_status])
                     points_summary = (f"{len(voltages) + len(rev_v)} points acquired "
                                       f"({len(voltages)} forward, {len(rev_v)} reverse)")
                     # Report both directions
@@ -332,12 +350,41 @@ class ContinuousRun:
                         'currents': currents, 'compliance': comp_list})
 
                 self._events.log('sweep_finished', f"Sweep complete: {points_summary}")
+            except RunStopped:
+                # Not a sweep error: execute() shuts the run down.
+                raise
             except Exception as e:
+                # First writer wins, so the 'completed' below leaves this be.
+                self._control.finish('sweep_error')
                 self._events.error('sweep_error', 'smu', f"Sweep error: {str(e)}")
             # Sweep is done — skip to finalization
             self._control.finish('completed')
             # Fall through to cleanup below
 
+
+    def _write_sweep_row(self, row_data) -> None:
+        """Write one sweep point; a row that cannot be written is reported.
+
+        The same policy as the sampling loop: each failure is a warning that
+        names the row, and three in a row is an error that ends the run as
+        'write_error'. The points are already measured by then, so the rest
+        are still attempted and the sweep_segment events still carry them
+        all; only the file is short, and the run says so.
+        """
+        try:
+            self.exporter.write_row(row_data)
+            self._csv_error_count = 0
+        except Exception as e:
+            self._csv_error_count += 1
+            self._events.warn('write_failed',
+                f"Warning: Error writing sweep row {row_data[0]} "
+                f"({self._csv_error_count}/{self._max_csv_errors}): {str(e)}")
+            if self._csv_error_count == self._max_csv_errors:
+                self._events.error('write_failed', 'file',
+                    f"CRITICAL: {self._csv_error_count} consecutive write failures at sweep "
+                    f"row {row_data[0]}. Possible disk full or write permission issue. "
+                    f"The data file is incomplete.")
+                self._control.finish('write_error')
 
     def _enter_instrument_lock(self, address):
         """Hold the address for this run; released in _cleanup.
@@ -478,12 +525,11 @@ class ContinuousRun:
         return False
 
     def execute(self):
-        self.running = True
-        self.paused = False
+        began = self._control.begin()
         instrument_ready = False
         file_ready = False
-        # True when the run is turned away before it reaches the instrument:
-        # reported as not ok whatever the reason, a stop included.
+        # True when the run ends before its output was ever on -- turned away,
+        # or stopped on the way there: reported as not ok whatever the reason.
         refused = False
 
         # Everything from run_started on is inside this try. The steps before
@@ -498,6 +544,10 @@ class ContinuousRun:
                 'settings': self.settings,
                 'started_at': time.time(),
             })
+            if not began:
+                # Stopped before it began: nothing is opened, nothing re-armed.
+                refused = True
+                return
             address = self.settings.get('measurement', {}).get('gpib_address', '')
             try:
                 self._instrument_lock = self._enter_instrument_lock(address)
@@ -505,6 +555,10 @@ class ContinuousRun:
                 refused = True
                 self._control.finish('instrument_busy')
                 self._events.error('instrument_busy', 'smu', str(exc))
+                return
+            if self._control.stopped():
+                # The wait for the lock can take seconds.
+                refused = True
                 return
 
             if self._spot_refused():
@@ -516,6 +570,10 @@ class ContinuousRun:
                 refused = True
                 # finish() keeps the first reason, so a timeout reports as one.
                 self._control.finish('cancelled')
+                return
+            if self._control.stopped():
+                # Acknowledged and stopped at once: the stop wins.
+                refused = True
                 return
 
             measurement_settings = self.settings['measurement']
@@ -600,7 +658,9 @@ class ContinuousRun:
 
             try:
                 if self.mode == 'resistance':
-                    configured = configure_resistance(self.keithley, self._events, measurement_settings, nplc)
+                    configured = configure_resistance(
+                        self.keithley, self._events, measurement_settings, nplc,
+                        max_source_v=self._model_spec.max_source_v if self._model_spec else None)
                 elif self.mode == 'source_v':
                     configured = configure_source_v(self.keithley, self._events, measurement_settings, nplc)
                 elif self.mode == 'source_i':
@@ -634,9 +694,20 @@ class ContinuousRun:
                 self._control.finish('configure_failed')
                 return
 
+            # Connecting and configuring take seconds on a real bus. A stop
+            # that landed meanwhile ends the run here, with the output never
+            # on and no file for a run that measured nothing; _cleanup closes
+            # the instrument.
+            if self._control.stopped():
+                refused = True
+                return
+
             if not self._open_aux_sensor(measurement_settings):
                 return
 
+            if self._control.stopped():
+                refused = True
+                return
             if not self._open_output_file(measurement_settings, source_value_str):
                 return
             file_ready = True
@@ -653,6 +724,8 @@ class ContinuousRun:
                 # Continuous measurement modes: turn on output and enter polling loop
                 self._events.log('starting', "Starting measurement...")
                 try:
+                    if self._control.stopped():
+                        raise RunStopped()
                     self.keithley.write(":OUTP ON")
                     self._events.log('settling', f"Waiting for settling time ({settling_time}s)...")
                     self._control.sleep(settling_time)
@@ -901,8 +974,11 @@ class ContinuousRun:
                                     f"warn threshold {format_power(warn_w)}"
                                 )
 
-                    # Atomically get and clear event marker (thread-safe)
-                    event_marker = self.get_and_clear_event_marker()
+                    # Read the pending marks without taking them: they come
+                    # off the queue only once the row that carries them is
+                    # in the file.
+                    pending_marks = self._control.pending_marks()
+                    event_marker = "; ".join(pending_marks)
                     if event_marker:
                         self._events.log('event_marked', f"Event marked at {elapsed_time:.3f}s: {event_marker}")
 
@@ -921,6 +997,7 @@ class ContinuousRun:
                     try:
                         self.exporter.write_row(row_data)
                         self._csv_error_count = 0  # Reset error count on success
+                        self._control.consume_marks(len(pending_marks))
                     except Exception as e:
                         self._csv_error_count += 1
                         error_msg = f"Error writing data ({self._csv_error_count}/{self._max_csv_errors}): {str(e)}"
@@ -1067,10 +1144,16 @@ class ContinuousRun:
                     'total_samples': self.exporter.row_count,
                     'duration_s': time.time() - self.start_time
                 }
+                # Marks made after the last row, or whose rows never reached
+                # the file: the footer is the only place left for them.
+                leftover_marks = self._control.pending_marks()
+                if leftover_marks:
+                    end_metadata['marks_unwritten'] = "; ".join(leftover_marks)
                 spot_stats = self._spot_statistics(nplc)
                 if spot_stats is not None:
                     end_metadata['spot_stats'] = spot_stats
                 self.exporter.finalize(end_metadata)
+                self._take_final_path()
                 self._events.emit('file_finalized', {
                     'path': self.filename, 'end_metadata': end_metadata})
             except Exception as e:
@@ -1081,6 +1164,17 @@ class ContinuousRun:
             final_message = f"Measurement ({self._mode_name}) completed! Data saved to: {self.filename}"
         self._events.log('completed', final_message)
         self._events.emit('acquisition_finished', {'mode': self.mode})
+
+    def _take_final_path(self) -> None:
+        """After finalize: the file as it is now on disk.
+
+        Compression replaces ``run.csv`` with ``run.csv.gz``. Every event
+        after this point, and the session's status, names the file a reader
+        can open, not the one that no longer exists.
+        """
+        paths = self.exporter.output_paths if self.exporter else []
+        if paths:
+            self.filename = str(paths[0])
 
     def _warn_once_if_ratio_negative(self, data_dict, compliance_status):
         """Say so, once, when a four-point sample's V/I is negative.

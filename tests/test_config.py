@@ -387,6 +387,77 @@ class TestSaveRobustness:
         assert manager.get_users() == []
 
 
+class TestReadOnly:
+    """A diagnostic looks at the configuration; it does not change it."""
+
+    def test_a_missing_config_is_not_created(self, temp_config_file, machine_file):
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                                read_only=True)
+
+        assert manager.get_gpib_address() == DEFAULT_SETTINGS['measurement']['gpib_address']
+        assert list(Path(temp_config_file).parent.iterdir()) == []
+
+    def test_no_migration_touches_an_old_config(self, temp_config_file, machine_file):
+        old = {'users': ['alice'], 'machines': {'HOST-A': {'visa_library': '@py'}},
+               'user_settings': {'alice': {'output': {'format': 'hdf5'}}}}
+        Path(temp_config_file).write_text(json.dumps(old))
+
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                                hostname='HOST-A', read_only=True)
+
+        assert manager.get_visa_library() == '@py'
+        assert json.loads(Path(temp_config_file).read_text()) == old
+        assert not os.path.exists(machine_file)
+        assert sorted(p.name for p in Path(temp_config_file).parent.iterdir()) == \
+            ['test_config.json']
+
+    def test_it_refuses_to_save(self, temp_config_file, machine_file):
+        from resistamet_gui.config import ConfigSaveError
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                                read_only=True)
+        with pytest.raises(ConfigSaveError):
+            manager.add_user('alice')
+        assert not os.path.exists(temp_config_file)
+
+
+class TestOpeningWithoutWriting:
+    """persist_on_open=False: migrated in memory, on disk only with a real save."""
+
+    OLD = {'users': ['alice'], 'machines': {'HOST-A': {'visa_library': '@py'}},
+           'user_settings': {'alice': {'output': {'format': 'hdf5'},
+                                       'measurement': {'nplc': 2.0}}}}
+
+    def test_a_missing_config_is_not_created(self, temp_config_file, machine_file):
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                                persist_on_open=False)
+        assert manager.get_users() == []
+        assert list(Path(temp_config_file).parent.iterdir()) == []
+
+    def test_an_old_config_is_migrated_in_memory_only(self, temp_config_file, machine_file):
+        Path(temp_config_file).write_text(json.dumps(self.OLD))
+
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                                hostname='HOST-A', persist_on_open=False)
+
+        assert manager.get_user_settings('alice')['output']['format'] == 'csv'
+        assert manager.get_visa_library() == '@py'
+        assert json.loads(Path(temp_config_file).read_text()) == self.OLD
+        assert sorted(p.name for p in Path(temp_config_file).parent.iterdir()) == \
+            ['test_config.json']
+
+    def test_the_first_save_carries_the_migration(self, temp_config_file, machine_file):
+        Path(temp_config_file).write_text(json.dumps(self.OLD))
+        manager = ConfigManager(config_file=temp_config_file, machine_file=machine_file,
+                                persist_on_open=False)
+
+        manager.add_user('bob')
+
+        saved = json.loads(Path(temp_config_file).read_text())
+        assert saved['users'] == ['alice', 'bob']
+        assert saved['migrations'] == ['output_reset_1_13']
+        assert saved['user_settings']['alice'] == {'measurement': {'nplc': 2.0}}
+
+
 class TestDefaultMerging:
     """Tests for merging defaults with loaded config."""
 
@@ -542,6 +613,34 @@ class TestMachineLocalGpib:
         assert manager.config['measurement'].get('gpib_address') in (
             None, DEFAULT_SETTINGS['measurement']['gpib_address'])
         assert manager.config['measurement']['sampling_rate'] == 42.0
+
+
+class TestTheSuiteStaysOutOfTheRealHome:
+    """The machine file's real home is ~/.resistamet; no test may reach it.
+
+    conftest's autouse ``_private_machine_settings`` redirects the default.
+    If that fixture is removed or renamed, these fail, instead of some test
+    quietly writing a simulated address into the developer's own settings.
+    """
+
+    def test_the_default_path_is_redirected(self):
+        from resistamet_gui import config as config_module
+
+        default = Path(config_module.default_machine_file()).resolve()
+        real = (Path.home() / '.resistamet').resolve()
+
+        assert real != default.parent and real not in default.parents
+
+    def test_a_manager_built_without_a_path_gets_the_redirected_one(self, temp_config_file):
+        from resistamet_gui import config as config_module
+
+        manager = ConfigManager(config_file=temp_config_file)
+        manager.set_gpib_address('GPIB0::25::INSTR')
+
+        assert manager.machine_file == config_module.default_machine_file()
+        assert Path(manager.machine_file).exists()
+        assert not (Path.home() / '.resistamet' / 'machine.json').exists() or \
+            'GPIB0::25::INSTR' not in (Path.home() / '.resistamet' / 'machine.json').read_text()
 
 
 class TestMachineFileMigration:

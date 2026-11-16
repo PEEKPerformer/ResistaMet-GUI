@@ -81,7 +81,7 @@ def _drive_timed_run(window, tab, label, seconds, app):
 def test_resistance_records_ohms_law(sim_window, app):
     ts, _, _, rs = _drive_timed_run(
         sim_window, sim_window.tab_resistance, "Resistance Measurement",
-        seconds=1.5, app=app,
+        seconds=3.0, app=app,
     )
     assert len(ts) >= 3, f"too few points: {len(ts)}"
     finite_rs = [r for r in rs if r is not None and not math.isnan(r)]
@@ -94,7 +94,7 @@ def test_voltage_source_records_correct_current(sim_window, app):
     # Default sourced voltage is 1.0 V into 100 Ω → I = 10 mA.
     ts, vs, is_, _ = _drive_timed_run(
         sim_window, sim_window.tab_voltage_source, "Voltage Source",
-        seconds=1.5, app=app,
+        seconds=3.0, app=app,
     )
     assert len(ts) >= 3, f"too few points: {len(ts)}"
     bad_v = [v for v in vs if v is not None and abs(v - 1.0) > 1e-3]
@@ -107,7 +107,7 @@ def test_current_source_records_correct_voltage(sim_window, app):
     # Default sourced current is 1 mA into 100 Ω → V = 0.1 V.
     ts, vs, is_, _ = _drive_timed_run(
         sim_window, sim_window.tab_current_source, "Current Source",
-        seconds=1.5, app=app,
+        seconds=3.0, app=app,
     )
     assert len(ts) >= 3, f"too few points: {len(ts)}"
     bad_v = [v for v in vs if v is not None and abs(v - 0.1) > 1e-4]
@@ -151,7 +151,7 @@ def test_iv_sweep_writes_linear_csv(sim_window, app, tmp_path):
     app.processEvents()
     assert _wait_until(
         lambda: not sim_window.measurement_running,
-        timeout=10.0, app=app,
+        timeout=30.0, app=app,
     ), "sweep did not finish within timeout"
 
     csvs = sorted(glob.glob("measurement_data/**/*.csv", recursive=True))
@@ -255,7 +255,10 @@ def test_voltage_compliance_clamps_and_flags(sim_window, app):
     w.vsource_current_compliance.setValue(1e-4) # but compliance is 100 µA
     w.start_button.click()
     app.processEvents()
-    _pump_for(1.5, app)
+    assert _wait_until(
+        lambda: len(list(sim_window.data_buffers["source_v"].compliance_status)) >= 2,
+        timeout=15.0, app=app,
+    ), "no source_v points landed"
     sim_window.stop_current_measurement()
     assert _wait_until(
         lambda: not sim_window.measurement_running, timeout=3.0, app=app
@@ -327,10 +330,12 @@ def test_pause_then_resume_preserves_data(sim_window, app):
     tab = sim_window.tab_resistance
     tab.start_button.click()
     app.processEvents()
-    # Give the worker generous startup time — CI runners can be slow.
-    _pump_for(1.5, app)
+    # Wait for the points rather than assume a rate; CI runners can be slow.
+    assert _wait_until(
+        lambda: len(list(sim_window.data_buffers["resistance"].timestamps)) >= 2,
+        timeout=15.0, app=app,
+    ), "too few pre-pause points"
     pre_pause = len(list(sim_window.data_buffers["resistance"].timestamps))
-    assert pre_pause >= 2, f"too few pre-pause points: {pre_pause}"
 
     # Toggle pause ON
     tab.pause_button.setChecked(True)
@@ -346,11 +351,10 @@ def test_pause_then_resume_preserves_data(sim_window, app):
     # Toggle pause OFF (resume)
     tab.pause_button.setChecked(False)
     app.processEvents()
-    _pump_for(1.2, app)
-    resumed = len(list(sim_window.data_buffers["resistance"].timestamps))
-    assert resumed > paused + 2, (
-        f"resume didn't produce new points: paused={paused}, resumed={resumed}"
-    )
+    assert _wait_until(
+        lambda: len(list(sim_window.data_buffers["resistance"].timestamps)) > paused + 2,
+        timeout=15.0, app=app,
+    ), f"resume didn't produce new points: paused={paused}, now={len(list(sim_window.data_buffers['resistance'].timestamps))}"
 
     sim_window.stop_current_measurement()
     _wait_until(lambda: not sim_window.measurement_running, timeout=3.0, app=app)
@@ -369,9 +373,11 @@ def test_four_point_save_spot_then_clear(sim_window, app):
     for _ in range(2):
         tab.start_button.click()
         app.processEvents()
-        # 4PP now runs in accuracy mode (~0.6 s per sample); 1.5 s leaves
-        # comfortable headroom for ≥1 sample to land before Stop.
-        _pump_for(1.5, app)
+        # 4PP runs in accuracy mode (~0.6 s per sample). Wait for a reading
+        # rather than assume a rate: Save Spot has nothing to save otherwise.
+        assert _wait_until(
+            lambda: len(getattr(tab, "_fpp_rows", [])) >= 1, timeout=15.0, app=app
+        ), "no 4PP reading landed"
         sim_window.stop_current_measurement()
         assert _wait_until(
             lambda: not sim_window.measurement_running, timeout=3.0, app=app
@@ -400,23 +406,29 @@ def test_four_point_spots_are_linked_in_their_files(sim_window, app):
     import json
 
     from resistamet_gui.data_export import parse_metadata
-    from .e2e_utils import newest_csv
-
     _switch_to(sim_window, "4-Point Probe", app)
     tab = sim_window.tab_four_point
 
     def measure_spot():
+        before = set(glob.glob("measurement_data/**/*_4PP_*.csv", recursive=True))
+        saved = tab.fpp_spots_table.rowCount()
         tab.start_button.click()
         app.processEvents()
-        _pump_for(1.5, app)
+        # Wait for a reading rather than assume a rate: a Save Spot with no
+        # rows saves nothing, and the next run would still be spot 1.
+        assert _wait_until(
+            lambda: len(getattr(tab, "_fpp_rows", [])) >= 1, timeout=15.0, app=app
+        ), "no 4PP reading landed"
         sim_window.stop_current_measurement()
         assert _wait_until(
             lambda: not sim_window.measurement_running, timeout=3.0, app=app
         )
-        path = newest_csv("measurement_data/**/*_4PP_*.csv")
+        new = set(glob.glob("measurement_data/**/*_4PP_*.csv", recursive=True)) - before
+        assert len(new) == 1, f"expected one new 4PP file, got {sorted(new)}"
         sim_window._save_fpp_spot()
         app.processEvents()
-        return parse_metadata(path, text_keys=("spot.map_id", "spot.label"))
+        assert tab.fpp_spots_table.rowCount() == saved + 1
+        return parse_metadata(new.pop(), text_keys=("spot.map_id", "spot.label"))
 
     tab.fpp_spot_name.setText("centre")
     first = measure_spot()

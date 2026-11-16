@@ -57,7 +57,15 @@ class PositionEffect(NamedTuple):
 
     ``relative_error`` is ``factor_centre / factor_here - 1``: the fractional
     error in a sheet resistance computed with the centred factor. Positive
-    means the centred factor overstates Rs, which is what an edge does.
+    means the centred factor overstates Rs.
+
+    Positive is what an edge does on a disc, and on a rectangle whose shorter
+    side is at least 3.5 spacings (``tests/test_property_geometry.py`` holds
+    both over drawn positions and angles). It is not universal: on a strip
+    narrower than the probe is long, where the probe only fits at a slant,
+    moving off centre can raise the factor slightly. A 1.276 s by 3.244 s
+    strip with the probe at 159 degrees and 0.17 s off centre gives -0.24 %.
+    Judge the size of the effect by ``abs(relative_error)``.
     """
 
     factor_here: float
@@ -66,9 +74,19 @@ class PositionEffect(NamedTuple):
 
 
 def probe_tips(centre: Point, angle: float, spacing: float) -> Tuple[complex, complex, complex, complex]:
-    """The four tip positions as complex numbers, first current tip first."""
+    """The four tip positions as complex numbers, first current tip first.
+
+    Raises ``ValueError`` for a spacing that is not positive and finite, and
+    for a position or an angle that is not finite: NaN compares false with
+    everything, so it would otherwise pass every "is the tip inside" test
+    that follows and come out as a NaN factor.
+    """
     if not (math.isfinite(spacing) and spacing > 0):
         raise ValueError("probe spacing must be positive and finite")
+    if not (math.isfinite(centre[0]) and math.isfinite(centre[1])):
+        raise ValueError("probe position must be finite")
+    if not math.isfinite(angle):
+        raise ValueError("probe angle must be finite")
     origin = complex(centre[0], centre[1])
     direction = cmath.exp(1j * angle)
     return tuple(origin + (k - 1.5) * spacing * direction for k in range(4))  # type: ignore[return-value]
@@ -91,18 +109,37 @@ def circle_factor(diameter: float, spacing: float,
     of the same sign at the inverse point ``R**2 / conj(Q)``; written without
     the division it stays finite for a source at the centre.
 
-    Raises ``ValueError`` when a tip is not inside the disc.
+    Raises ``ValueError`` when a tip is not inside the disc, and when the
+    spacing is so small against the diameter (below about 1e-16 of it) that
+    the tips cannot be told apart in floating point.
     """
     _require_positive(diameter, "diameter")
     radius = diameter / 2.0
     tips = probe_tips(centre, angle, spacing)
-    if circle_edge_clearance(diameter, spacing, centre, angle) <= 0:
+    # "not > 0" rather than "<= 0": a clearance that overflowed to NaN is
+    # not inside the sample either.
+    if not circle_edge_clearance(diameter, spacing, centre, angle) > 0:
         raise ValueError("a probe tip is on or outside the edge of the sample")
 
-    def kernel(p: complex, q: complex) -> float:
-        return math.log(abs(p - q) * abs(radius * radius - q.conjugate() * p))
+    # In units of the radius. The factor depends on ratios of lengths only,
+    # and the constant this drops from the kernel cancels in the bracket.
+    # Written with the lengths as given, R**2 overflows for a diameter above
+    # 2.7e154 (the factor came back NaN); for a D/s = 10 disc the product
+    # goes subnormal below a diameter of about 1e-104 (the factor was wrong
+    # from the sixth digit, then 4.5324 at 1e-107) and reaches log(0) at
+    # 1e-108.
+    scaled = tuple(t / radius for t in tips)
 
-    return _factor_from(kernel, tips)
+    def kernel(p: complex, q: complex) -> float:
+        return math.log(abs(p - q) * abs(1.0 - q.conjugate() * p))
+
+    try:
+        factor = _factor_from(kernel, scaled)
+    except (ValueError, ZeroDivisionError, OverflowError):
+        factor = float("nan")
+    if not math.isfinite(factor):
+        raise ValueError("the spacing is too small against the diameter to evaluate the factor")
+    return factor
 
 
 def rectangle_factor(width: float, length: float, spacing: float,
@@ -124,7 +161,7 @@ def rectangle_factor(width: float, length: float, spacing: float,
     _require_positive(width, "width")
     _require_positive(length, "length")
     tips = probe_tips(centre, angle, spacing)
-    if rectangle_edge_clearance(width, length, spacing, centre, angle) <= 0:
+    if not rectangle_edge_clearance(width, length, spacing, centre, angle) > 0:
         raise ValueError("a probe tip is on or outside the edge of the sample")
 
     # The image sum has a closed form along one axis and converges

@@ -23,6 +23,8 @@ import json
 import math
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -94,6 +96,18 @@ class ApiState:
         return self._config
 
     @property
+    def stored_config(self):
+        """The ConfigManager, unless the app was given profiles and no config.
+
+        A caller that injects ``profile_provider`` has said where settings
+        come from. A route that only needs to know where an operator's files
+        are must not open the ambient ``./config.json`` behind its back.
+        """
+        if self._config is None and self._profile_provider is not None:
+            return None
+        return self.config
+
+    @property
     def profile_provider(self):
         return self._profile_provider or self.config.get_user_settings
 
@@ -120,7 +134,9 @@ def _default_config():
     """The config file the sidecar was pointed at."""
     from ..config import ConfigManager
 
-    return ConfigManager(raise_on_save_error=True)
+    # persist_on_open=False: this is built the first time a route wants it,
+    # which may be a GET, and a read must not rewrite the file.
+    return ConfigManager(raise_on_save_error=True, persist_on_open=False)
 
 
 #: Origins the desktop shell and the UI dev server load the page from.
@@ -145,6 +161,7 @@ def create_app(session: MeasurementSession, token: Optional[str] = None,
     from .routes_results import router as results_router
     from .routes_session import router as session_router
     from .routes_settings import router as settings_router
+    from .routes_spots import router as spots_router
 
     app = FastAPI(title="ResistaMet", version="2.0-dev",
                    default_response_class=NullNanJSONResponse)
@@ -164,7 +181,17 @@ def create_app(session: MeasurementSession, token: Optional[str] = None,
     app.include_router(settings_router)
     app.include_router(results_router)
     app.include_router(maps_router)
+    app.include_router(spots_router)
     app.include_router(events_router)
+
+    @app.exception_handler(RequestValidationError)
+    async def _unprocessable(request: Request, exc: RequestValidationError):
+        # FastAPI's own 422 body, rendered the way every other reply here is.
+        # The errors echo the offending input, and an input of Infinity or NaN
+        # -- refused for being exactly that -- cannot be written as JSON: the
+        # stock handler raised while reporting it and the client got a 500.
+        return NullNanJSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                   content={"detail": jsonable_encoder(exc.errors())})
 
     @app.exception_handler(ConfigSaveError)
     async def _settings_not_saved(request: Request, exc: ConfigSaveError):

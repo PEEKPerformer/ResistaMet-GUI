@@ -11,7 +11,7 @@ import { FIELD_META } from "../../generated/settings";
 import type { FieldSpec } from "../../lib/fields";
 import type { InstrumentInfo, Profile, VisaBackend } from "../../lib/api";
 import { ApiError } from "../../lib/api";
-import { useSession } from "../../state/session";
+import { setIdentifiedInstrument, useSession } from "../../state/session";
 import { setTheme, useUi } from "../../state/ui";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { FieldRow } from "../forms/SettingsForm";
@@ -30,7 +30,7 @@ const SECTIONS: { id: Section; label: string }[] = [
 ];
 
 const TIMING: FieldSpec[] = [
-  { key: "nplc", label: "NPLC", hint: "Power-line cycles per reading. Tabs may override." },
+  { key: "nplc", label: "NPLC", hint: "Power-line cycles per reading. A mode's own setting overrides this." },
   { key: "sampling_rate", label: "Sampling rate", unit: "Hz" },
   { key: "settling_time", label: "Settle before first reading", unit: "s" },
   { key: "auto_zero", label: "Auto zero", options: { on: "On", once: "Once", off: "Off" } },
@@ -262,6 +262,8 @@ function InstrumentSection({ running }: { running: boolean }) {
   const ui = useUi();
   const [address, setAddress] = useState("");
   const [library, setLibrary] = useState("");
+  const [gpibInterface, setGpibInterface] = useState("");
+  const [openInterface, setOpenInterface] = useState<string | null>(null);
   const [resources, setResources] = useState<string[] | null>(null);
   const [backend, setBackend] = useState<VisaBackend | null>(null);
   const [info, setInfo] = useState<InstrumentInfo | null>(null);
@@ -276,6 +278,7 @@ function InstrumentSection({ running }: { running: boolean }) {
         const measurement = p.measurement ?? {};
         setAddress(String(measurement.gpib_address ?? ""));
         setLibrary(String(measurement.visa_library ?? ""));
+        setGpibInterface(String(measurement.gpib_interface ?? ""));
       })
       .catch(() => undefined);
   }, [api, ui.username]);
@@ -283,7 +286,11 @@ function InstrumentSection({ running }: { running: boolean }) {
   const save = async () => {
     if (!ui.username) return;
     await api.patchProfile(ui.username, {
-      measurement: { gpib_address: address.trim(), visa_library: library },
+      measurement: {
+        gpib_address: address.trim(),
+        visa_library: library,
+        gpib_interface: gpibInterface.trim(),
+      },
     });
   };
 
@@ -314,6 +321,18 @@ function InstrumentSection({ running }: { running: boolean }) {
           ))}
         </Select>
       </Field>
+      <Field
+        label="GPIB interface (Prologix)"
+        hint="pyvisa-py only. PRLGX-ASRL::/dev/cu.usbserial-…::INTFC, PRLGX-ASRL::5::INTFC (COM5), PRLGX-TCPIP::host::INTFC."
+        stacked
+      >
+        <Input
+          className="mono"
+          value={gpibInterface}
+          onChange={(e) => setGpibInterface(e.target.value)}
+          disabled={running}
+        />
+      </Field>
       <Field label="Address" hint="Machine-local: saved for this PC, not carried with the profile." stacked>
         <div className={styles.addressRow}>
           <Input className="mono" value={address} onChange={(e) => setAddress(e.target.value)} disabled={running} list="visa-resources" />
@@ -322,9 +341,10 @@ function InstrumentSection({ running }: { running: boolean }) {
             disabled={busy || running}
             onClick={() =>
               void run(async () => {
-                const reply = await api.resources(library);
+                const reply = await api.resources(library, gpibInterface.trim());
                 setResources(reply.resources);
                 setBackend(reply.backend);
+                setOpenInterface(reply.gpib_interface);
               })
             }
           >
@@ -334,7 +354,9 @@ function InstrumentSection({ running }: { running: boolean }) {
             disabled={busy || running || address.trim() === ""}
             onClick={() =>
               void run(async () => {
-                setInfo(await api.identify(address.trim(), library));
+                const identified = await api.identify(address.trim(), library, gpibInterface.trim());
+                setInfo(identified);
+                setIdentifiedInstrument(identified);
                 await save();
               })
             }
@@ -344,6 +366,7 @@ function InstrumentSection({ running }: { running: boolean }) {
         </div>
       </Field>
       {backend ? <div className={styles.muted}>Answered by {describeBackend(backend)}.</div> : null}
+      {openInterface ? <div className={styles.muted}>Interface {openInterface} open; instruments behind it are not listed.</div> : null}
       {resources !== null && resources.length === 0 ? <div className={styles.muted}>VISA sees no resources.</div> : null}
       {info ? (
         <div className={styles.instrumentInfo}>

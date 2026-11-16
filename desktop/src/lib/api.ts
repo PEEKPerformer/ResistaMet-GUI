@@ -6,43 +6,27 @@
 // backend gave rather than one it made up.
 
 import type { BackendInfo } from "./backend";
-import type { Mode } from "../generated/settings";
+import type { ClientInfo, Mode, RunRequest } from "../generated/settings";
 import type { EventEnvelope } from "../generated/events";
+import type { InstrumentInfo, SessionStatus } from "../generated/session";
+import type { SpotMap } from "../generated/maps";
+import { version as packageVersion } from "../../package.json";
 
-export type SessionState =
-  | "idle"
-  | "identifying"
-  | "running"
-  | "paused"
-  | "awaiting_prompt"
-  | "stopping";
+/** Written into the header of every file a run started from here produces,
+ *  so desktop output can be told from the PySide6 app's. */
+const CLIENT: ClientInfo = { name: "resistamet-desktop", version: packageVersion };
 
-export interface PendingPrompt {
-  prompt_id: string;
-  kind: "vdp_geometry" | "safety_voltage_ack" | "cable_null_shorted";
-  options: string[];
-  requires_human: boolean;
-  detail: Record<string, unknown>;
-}
+// What GET /session and the session commands answer with: generated from the
+// backend's SessionStatus model, re-exported here so callers keep one import.
+export type { InstrumentInfo, PendingPrompt, SessionStatus } from "../generated/session";
+export type SessionState = SessionStatus["state"];
 
-// Mirrors MeasurementSession.status(). Not part of the exported contract yet;
-// when it is, this moves to src/generated.
-export interface SessionStatus {
-  state: SessionState;
-  run_id: string | null;
-  mode: Mode | null;
-  path: string | null;
-  last_seq: number;
-  pending_prompt: PendingPrompt | null;
-}
-
-export interface StartRequest {
-  mode: Mode;
-  sample_name: string;
-  username: string;
+/** What a view hands to start(): the backend's RunRequest, which is the model
+ *  POST /session/start validates and which refuses a field it does not know.
+ *  `client` is filled in here, not by the views. `spot` is four-point only. */
+export type StartRequest = Omit<RunRequest, "client" | "overrides"> & {
   overrides?: Record<string, unknown>;
-  prompt_timeout_s?: number;
-}
+};
 
 export interface Issue {
   key: string;
@@ -71,15 +55,6 @@ export interface ModeSchema {
   override_keys: string[];
 }
 
-export interface InstrumentInfo {
-  address: string;
-  idn: string;
-  model: string | null;
-  max_source_v: number | null;
-  max_source_i: number | null;
-  max_power_w: number | null;
-}
-
 /** Which VISA implementation answered: a vendor library ("ivi"), pyvisa-py
  *  ("py"), or something that does not say ("unknown"). */
 export interface VisaBackend {
@@ -92,6 +67,8 @@ export interface VisaBackend {
 export interface ResourceList {
   resources: string[];
   backend: VisaBackend;
+  /** The Prologix interface resource that is open, or null. */
+  gpib_interface: string | null;
 }
 
 export interface EventPage {
@@ -130,7 +107,7 @@ export class ApiClient {
   }
 
   start(request: StartRequest): Promise<{ run_id: string }> {
-    return this.request("POST", "/session/start", request);
+    return this.request("POST", "/session/start", { ...request, client: CLIENT });
   }
 
   stop(): Promise<SessionStatus> {
@@ -238,17 +215,34 @@ export class ApiClient {
     return this.request("GET", "/results/directory");
   }
 
+  // --- four-point maps ---------------------------------------------------
+
+  /** The map ids the operator's four-point runs name. */
+  maps(user: string): Promise<{ user: string; maps: string[] }> {
+    return this.request("GET", `/maps?user=${encodeURIComponent(user)}`);
+  }
+
+  /** The map as the run files describe it now. 404 until a run names it. */
+  map(mapId: string, user: string): Promise<SpotMap> {
+    return this.request("GET", `/maps/${encodeURIComponent(mapId)}?user=${encodeURIComponent(user)}`);
+  }
+
   // --- instruments -------------------------------------------------------
 
-  /** `visaLibrary` undefined = this machine's saved backend. */
-  resources(visaLibrary?: string): Promise<ResourceList> {
-    const query = visaLibrary === undefined ? "" : `?visa_library=${encodeURIComponent(visaLibrary)}`;
+  /** `visaLibrary` / `gpibInterface` undefined = this machine's saved value. */
+  resources(visaLibrary?: string, gpibInterface?: string): Promise<ResourceList> {
+    const params = new URLSearchParams();
+    if (visaLibrary !== undefined) params.set("visa_library", visaLibrary);
+    if (gpibInterface !== undefined) params.set("gpib_interface", gpibInterface);
+    const encoded = params.toString();
+    const query = encoded ? `?${encoded}` : "";
     return this.request("GET", `/instruments/resources${query}`);
   }
 
-  identify(address: string, visaLibrary?: string): Promise<InstrumentInfo> {
-    const body: { address: string; visa_library?: string } = { address };
+  identify(address: string, visaLibrary?: string, gpibInterface?: string): Promise<InstrumentInfo> {
+    const body: { address: string; visa_library?: string; gpib_interface?: string } = { address };
     if (visaLibrary !== undefined) body.visa_library = visaLibrary;
+    if (gpibInterface !== undefined) body.gpib_interface = gpibInterface;
     return this.request("POST", "/instruments/identify", body);
   }
 
