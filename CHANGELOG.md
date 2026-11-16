@@ -55,6 +55,7 @@ Development branch `phase0/reviewable-baseline`. The measuring code is separated
 - **Stop is immediate during a settling delay**, and a timed run's duration counts measuring time, so a run paused past its deadline no longer ends on resume.
 - **Log messages use the mode names on the tabs** ("Four-point probe", not `four_point`).
 
+- **The backend has its own version: `2.0.0rc4`.** It was held equal to `CITATION.cff`, which names the last archived release, so development builds of 2.0 stamped files `software_version: 1.12.3`, a version a different program had written. The code's version is now the one in `constants.py` and `pyproject.toml`; the desktop app carries the same build as `2.0.0-4`; `CITATION.cff` stays at the newest released version.
 ### Fixed
 - **Compliance was never flagged in Resistance mode.** The 2400 and 2420 do not set the status word's compliance bit in the ohms function (bench, 2026-09-18), so rows measured in compliance were written as `OK` with a plausible, wrong resistance. In manual range a row is now `V_COMP` when the measured voltage reaches 99 % of the limit the instrument reports; in Auto range, where the instrument moves its own limit, on the status bit or the overflow value.
 - **Output format and compression settings never reached a run.** They were saved and ignored; every run wrote uncompressed CSV. They now apply. Because a long-forgotten HDF5 or compression choice would otherwise change the next run's file without warning, stored Output choices are reset to the CSV defaults once on upgrade.
