@@ -1,0 +1,4 @@
+1106119.317 RM open, scenario ren_deassert
+1106119.895 control_ren deassert
+1106120.397 *IDN? afterwards
+-> VI_ERROR_TMO (-1073807339): Timeout expired before operation completed. (20 s timeout; no "done" line: the scenario ended on the exception, and a fresh session afterwards answered *IDN? normally)

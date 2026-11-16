@@ -45,6 +45,11 @@ class Model:
     #: which case only the framed 0x0a / 0x0d paths are used.
     endpoint_out_raw: Optional[int] = None
     endpoint_in_raw: Optional[int] = None
+    #: NI's driver was captured driving this model (§10), so the raw use of its
+    #: alternate pair and NI's other instructions are established on it. The
+    #: GPIB-USB-HS only: for the others the endpoint numbers are inherited and
+    #: what the alternate pair carries is not established (§1.2, §11.4).
+    ni_captured: bool = False
 
     @property
     def raw_endpoints(self) -> bool:
@@ -55,9 +60,10 @@ MODELS: Dict[int, Model] = {
     PID_USB_B: Model('GPIB-USB-B', PID_USB_B, 0x02, 0x82, 0x84, False, False, False),
     PID_USB_B_PRE_FIRMWARE: Model('GPIB-USB-B (no firmware)', PID_USB_B_PRE_FIRMWARE,
                                   0x02, 0x82, 0x84, True, False, False),
-    # The raw pair was observed on the HS (§10); the KUSB-488A and USB-488 share
-    # its endpoints and protocol (§1.1), the HS+ has its own alternate pair (§1.2).
-    PID_HS: Model('GPIB-USB-HS', PID_HS, 0x02, 0x84, 0x81, False, True, False, 0x06, 0x88),
+    # The raw pair was observed on the HS (§10). The KUSB-488A and USB-488 are
+    # said to share its endpoints and protocol, the HS+ has its own alternate
+    # pair (§1.1, §1.2); all three are inherited, and none takes NI's instructions.
+    PID_HS: Model('GPIB-USB-HS', PID_HS, 0x02, 0x84, 0x81, False, True, False, 0x06, 0x88, ni_captured=True),
     PID_HS_PLUS: Model('GPIB-USB-HS+', PID_HS_PLUS, 0x01, 0x82, 0x83, False, True, True, 0x04, 0x85),
     PID_KUSB_488A: Model('KUSB-488A', PID_KUSB_488A, 0x02, 0x84, 0x81, False, True, False, 0x06, 0x88),
     PID_MC_USB_488: Model('USB-488', PID_MC_USB_488, 0x02, 0x84, 0x81, False, True, False, 0x06, 0x88),
@@ -181,23 +187,39 @@ TIMEOUT_MAX_S = TIMEOUT_TABLE[-1][0]
 
 #: §7.3: how long GPIB-USB-HS 013CC9DF waits under a code before it ends the
 #: instruction itself with error 0x0a, in seconds, timed on the wire with
-#: NI's driver. The limits above are nominal; these are one of the two tables
-#: a host wait has to outlast. Where a code was timed more than once the
-#: longest figure is kept (0xfc: six cases, 4.195316-4.196156; 0xfe: two).
-#: Each is a power of two in microseconds plus 0.8-1.9 ms, but no rounding of
-#: the nominal value gives all six exponents, so the figures are table facts,
-#: not computed.
+#: NI's driver from the submission of the OUT to the completion of the reply.
+#: The limits above are nominal; these are one unit's figures. Where a code
+#: was timed more than once the longest is kept here, for host waits (0xfc:
+#: seven cases, 4.195316-4.196156; 0xfb and 0xfe include a 0x0b cut off
+#: with data arriving, 1.050232 and 33.555506), and the shortest below, for
+#: choosing a code. Each is a power of two in microseconds plus 0.8-1.9 ms,
+#: but no rounding of the nominal value gives all ten exponents, so the
+#: figures are table facts, not computed.
 TIMEOUT_EXPIRY_MEASURED_S: Dict[int, float] = {
-    0xF9: 0.132272,    # nominal 100 ms
-    0xFA: 0.263541,    # nominal 300 ms: the one code that expires early
-    0xFB: 1.049837,    # nominal 1 s
+    0xF5: 0.002285,    # nominal 1 ms
+    0xF6: 0.005465,    # nominal 3 ms
+    0xF7: 0.017785,    # nominal 10 ms
+    0xF8: 0.034093,    # nominal 30 ms
+    0xF9: 0.132455,    # nominal 100 ms
+    0xFA: 0.263887,    # nominal 300 ms: the one code that expires early
+    0xFB: 1.050232,    # nominal 1 s
     0xFC: 4.196156,    # nominal 3 s
     0xFD: 16.778423,   # nominal 10 s
-    0xFE: 33.555345,   # nominal 30 s
+    0xFE: 33.555506,   # nominal 30 s
 }
-#: The most a reply was seen to trail the power of two behind its expiry, in
-#: twelve timed-out instructions (§7.2).
-TIMEOUT_EXPIRY_JITTER_S = 1.9e-3
+#: The shortest of the same unit's figures per code (§7.3).
+TIMEOUT_EXPIRY_MEASURED_SHORTEST_S: Dict[int, float] = {
+    0xF5: 0.002285,
+    0xF6: 0.005348,
+    0xF7: 0.017719,
+    0xF8: 0.034088,
+    0xF9: 0.132272,
+    0xFA: 0.263436,
+    0xFB: 1.049837,
+    0xFC: 4.195316,
+    0xFD: 16.778260,
+    0xFE: 33.555258,
+}
 
 #: §7.3, "A second unit expires at other times": how long GPIB-USB-HS
 #: 01CEE482 waits under a code, in seconds, timed on the bench with this
@@ -207,10 +229,15 @@ TIMEOUT_EXPIRY_JITTER_S = 1.9e-3
 #: nominal limit up to 0xfc and, to the second, the other unit's power of two
 #: for 0xfd and 0xfe. The 0xf9 figure is a session total; its wire was not
 #: logged. Whether the unit, its firmware or the message differs is not
-#: established, so a host wait outlasts both tables. The comment on each row
-#: is the ratio to the 013CC9DF figure above.
+#: established, so a host wait outlasts both tables and a code is chosen
+#: from the shorter of the two. The comment on each row is the ratio to the
+#: 013CC9DF figure above. The codes below 0xf9 were timed on this unit on
+#: 2026-09-23 (§10.11), at 1.0 (the log's resolution), 4.0, 13.0 and 38.0
+#: ms, and are not in the table; the estimate ``timeout_expiry_s`` makes
+#: for them in its place is above each. The same day's 0xf9 on the wire,
+#: 0.125 s, is below the session total kept here.
 TIMEOUT_EXPIRY_BENCH_S: Dict[int, float] = {
-    0xF9: 0.127,       # nominal 100 ms; 0.96
+    0xF9: 0.127,       # nominal 100 ms; 0.96; a session total, the wire not logged
     0xFA: 0.375,       # nominal 300 ms; 1.42
     0xFB: 1.250,       # nominal 1 s; 1.19
     0xFC: 3.750,       # nominal 3 s; 0.89
@@ -220,50 +247,93 @@ TIMEOUT_EXPIRY_BENCH_S: Dict[int, float] = {
 #: The factor between the second unit's expiry and its round figure (§7.3).
 TIMEOUT_EXPIRY_BENCH_RATIO = 1.25
 
-#: §7.3, inference and not measurement: for the codes nobody timed, the
+#: §7.3, inference and not measurement, for the codes nobody timed: the
 #: smallest power of two in microseconds not below the nominal limit. It is
 #: the larger of the specification's two candidates, which §7.2 says a host
 #: wait should assume. No code timed on 013CC9DF exceeded it; 01CEE482 does
 #: under 0xfb, 0xfd and 0xfe, so ``timeout_expiry_s`` does not use it bare.
+#: The four codes it predicted before they were timed, 0xf5-0xf8, came out as
+#: it said and are in the measured table.
 TIMEOUT_EXPIRY_INFERRED_S: Dict[int, float] = {
     0xF1: 16e-6, 0xF2: 32e-6, 0xF3: 128e-6, 0xF4: 512e-6,
-    0xF5: 1024e-6, 0xF6: 4096e-6, 0xF7: 16384e-6, 0xF8: 32768e-6,
     0xFF: 134.217728, 0x01: 536.870912, 0x02: 1073.741824,
+}
+#: The other candidate of §7.3's inference table: the power of two nearest the
+#: nominal limit on a logarithmic scale. For 0xf1, 0xf4 and 0x01 it falls below
+#: the nominal limit, as the measured 0xfa does (0.2635 s for 300 ms).
+TIMEOUT_EXPIRY_INFERRED_NEAREST_S: Dict[int, float] = {
+    0xF1: 8e-6, 0xF2: 32e-6, 0xF3: 128e-6, 0xF4: 256e-6,
+    0xFF: 134.217728, 0x01: 268.435456, 0x02: 1073.741824,
 }
 
 #: The nominal limit of §7.1 by code.
 TIMEOUT_NOMINAL_S: Dict[int, float] = {code: limit for limit, code in TIMEOUT_TABLE}
 
 
-def timeout_expiry_s(code: int) -> Optional[float]:
-    """The longest either timed adapter waits under ``code`` before ending the instruction (§7.3).
+def _power_of_two_not_below(seconds: float) -> float:
+    """The smallest power of two in microseconds not below ``seconds`` (§7.3's inference rule)."""
+    return (1 << (round(seconds * 1e6) - 1).bit_length()) / 1e6
 
-    Two GPIB-USB-HS units were timed and disagree: 013CC9DF under NI's
-    driver (``TIMEOUT_EXPIRY_MEASURED_S``) and 01CEE482 under this one
+
+def _check_timeout_code(code: int) -> None:
+    if code not in TIMEOUT_NOMINAL_S:
+        raise ValueError('0x%02x is not a device timeout code' % code)
+
+
+def timeout_expiry_s(code: int) -> Optional[float]:
+    """The longest either timed adapter may wait under ``code`` before ending the instruction (§7.3).
+
+    For host waits (§7.2), which must outlast it. Two GPIB-USB-HS units
+    were timed and disagree: 013CC9DF under NI's driver
+    (``TIMEOUT_EXPIRY_MEASURED_S``) and 01CEE482 under this one
     (``TIMEOUT_EXPIRY_BENCH_S``). §7.3 says a host wait must outlast both
     until the cause is established, so for a code both were timed under
-    this is the larger figure. For a code neither was timed under it is
-    1.25 times the larger of the nominal limit (§7.1) and the power of two
-    of §7.3's inference column. That rule is the second unit's pattern
-    made safe for the first: its round figure was the nominal limit for
-    0xf9-0xfc and, to the second, the first unit's power of two for 0xfd
-    and 0xfe, and of the rules §7.3 offers this is the one that, applied
-    to the six timed codes, gives a figure not below either unit's expiry
-    under any of them (0xfd: 1.25 x 16.78 = 20.97 s against the 20.0 s
-    measured; the bare power of two, 16.78 s, falls short, and 1.25 x
-    nominal, 12.5 s, further). None for the disabled code 0xf0, which
-    never expires.
+    this is the larger figure. Where the 01CEE482 table has no figure --
+    0xf5-0xf8, whose times on that unit are not entered, and the codes
+    nobody timed -- its figure is
+    estimated as 1.25 times the larger of the nominal limit (§7.1) and
+    the power of two of §7.3's inference column, the rule §7.2 gives, and
+    the larger of that and any measured figure is returned. That rule is
+    the second unit's pattern made safe for the first: its round figure
+    was the nominal limit for 0xf9-0xfc and, to the second, the first
+    unit's power of two for 0xfd and 0xfe, and applied to the six codes
+    both units were timed under it gives a figure not below either unit's
+    expiry (0xfd: 1.25 x 16.78 = 20.97 s against the 20.0 s measured; the
+    bare power of two, 16.78 s, falls short, and 1.25 x nominal, 12.5 s,
+    further). None for the disabled code 0xf0, which never expires.
     """
     if code == TIMEOUT_DISABLED_CODE:
         return None
+    _check_timeout_code(code)
     timed = [table[code] for table in (TIMEOUT_EXPIRY_MEASURED_S, TIMEOUT_EXPIRY_BENCH_S) if code in table]
+    if code not in TIMEOUT_EXPIRY_BENCH_S:
+        nominal = TIMEOUT_NOMINAL_S[code]
+        timed.append(TIMEOUT_EXPIRY_BENCH_RATIO * max(_power_of_two_not_below(nominal), nominal))
+    return max(timed)
+
+
+def timeout_expiry_least_s(code: int) -> Optional[float]:
+    """The least any adapter is known to wait under ``code`` before ending the instruction (§7.3).
+
+    For choosing a code: a VISA timeout is the least time to wait before
+    reporting one, so the code for a timeout must not expire before it.
+    For a code that was timed, the shortest figure entered here of every
+    unit timed under it (for 0xf5-0xf8, 013CC9DF's). For a code nobody
+    timed, the smallest of its nominal limit and the two powers of two of
+    §7.3's inference table: §7.2's estimate, the larger power of two, is
+    an upper figure for host waits, and the one measured code that ends
+    early, 0xfa, ended at the smaller candidate, below nominal and far
+    below the larger (0.262 s against 0.524 s). None for the disabled
+    code 0xf0.
+    """
+    if code == TIMEOUT_DISABLED_CODE:
+        return None
+    _check_timeout_code(code)
+    timed = [table[code] for table in (TIMEOUT_EXPIRY_MEASURED_SHORTEST_S, TIMEOUT_EXPIRY_BENCH_S)
+             if code in table]
     if timed:
-        return max(timed)
-    try:
-        power_of_two = TIMEOUT_EXPIRY_INFERRED_S[code]
-    except KeyError:
-        raise ValueError('0x%02x is not a device timeout code' % code) from None
-    return TIMEOUT_EXPIRY_BENCH_RATIO * max(power_of_two, TIMEOUT_NOMINAL_S[code])
+        return min(timed)
+    return min(TIMEOUT_NOMINAL_S[code], TIMEOUT_EXPIRY_INFERRED_S[code], TIMEOUT_EXPIRY_INFERRED_NEAREST_S[code])
 
 # --------------------------------------------------------------------------
 # §2.6 / §2.7 / §2.9 register sequences
@@ -425,6 +495,32 @@ def serial_poll_enable_command(controller: int, pad: int, sad: Optional[int] = N
 
 
 SERIAL_POLL_DISABLE_COMMAND = bytes((CMD_SPD, CMD_UNT))
+
+
+def address_listener_command_ni(controller: int, pad: int, sad: Optional[int] = None) -> bytes:
+    """Controller talks, instrument listens, in NI's order: ``40+C 3f 20+N [60+S]`` (§10.2.3).
+
+    What NI puts before every 0x0d and 0x0e of an instrument session
+    (``40 3f 38`` for PAD 24, idn.pcap 0.5133); the talker form is the same
+    as ``address_talker_command``.
+    """
+    return bytes((talk_address(controller), CMD_UNL)) + _with_secondary(listen_address(pad), sad)
+
+
+#: The timeout code of every addressing 0x0c inside NI's instrument-session
+#: messages, whatever the session's timeout (§10.1.9: 354 of 367 blocks).
+NI_ADDRESSING_CODE = 0xFD
+#: Bank-2 register 0x03 := 1, the last block of every NI instrument-session
+#: message (§10.2.5). Sent alone, it arms one interrupt push for a service
+#: request (§10.11); what else it means is not established.
+BANK2_SESSION_MARK_WRITE: Tuple[int, int, int] = (2, 0x03, 0x01)
+
+
+def bank2_session_writes(pad: int, sad: Optional[int], code: int) -> Tuple[Tuple[int, int, int], ...]:
+    """NI's bank-2 session configuration (§10.2.4): 0x04 := 1, 0x05 := PAD, 0x06 := SAD byte, 0x07 := code."""
+    _check_primary(pad)
+    return ((2, 0x04, 0x01), (2, 0x05, pad),
+            (2, 0x06, 0x00 if sad is None else secondary_address(sad)), (2, 0x07, code))
 
 
 def addressed_command(pad: int, command: int, sad: Optional[int] = None,

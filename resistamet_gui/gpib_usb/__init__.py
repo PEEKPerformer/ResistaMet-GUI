@@ -10,16 +10,18 @@ this package when an NI adapter is plugged in, and through whatever
 pyvisa-py had before otherwise. Nothing here imports Qt.
 
 Layers, bottom up: ``protocol`` (bytes, pure), ``transport`` (pyusb),
-``controller`` (sequencing over one adapter), ``visa_session`` and
+``controller`` (sequencing over one adapter, with its parts in ``link``,
+``transfers``, ``srq`` and ``attach``), ``visa_session`` and
 ``visa_intfc`` (pyvisa-py).
 """
 import logging
 
 from . import transport as _transport
-from .protocol import AdapterNotReady, GpibError, GpibTimeout, NoListener, NoReply, ProtocolError
-from .transport import AdapterInfo, TransportError, TransportTimeout, find_adapters
+from .protocol import AdapterGone, AdapterNotReady, GpibError, GpibTimeout, NoListener, NoReply, ProtocolError
+from .transport import AdapterInfo, TransportAccessDenied, TransportError, TransportTimeout, find_adapters
 
 __all__ = [
+    'AdapterGone',
     'AdapterInfo',
     'AdapterNotReady',
     'GpibError',
@@ -27,6 +29,7 @@ __all__ = [
     'NoListener',
     'NoReply',
     'ProtocolError',
+    'TransportAccessDenied',
     'TransportError',
     'TransportTimeout',
     'available',

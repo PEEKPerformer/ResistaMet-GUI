@@ -31,9 +31,9 @@ from resistamet_gui.gpib_usb.transport import TransportError  # noqa: E402
 from resistamet_gui.gpib_usb.visa_intfc import (GPIB_INTFC, NiUsbGpibIntfcDispatch,  # noqa: E402
                                                 NiUsbGpibIntfcSession)
 from resistamet_gui.gpib_usb.visa_session import GPIB_INSTR, NiUsbGpibDispatch  # noqa: E402
-from tests.test_gpib_usb_visa import (FakeInstrument, Sentinel, SimulatedAdapter,  # noqa: E402,F401
-                                      enumeration, h, ni_instructions, session_registry,
-                                      switch_unset)
+from tests.fakes.gpib_usb import FakeInstrument, SimulatedAdapter, fake_adapter_info, h  # noqa: E402
+from tests.fakes.gpib_usb_visa import (Sentinel, enumeration, ni_instructions,  # noqa: E402,F401
+                                       session_registry, switch_unset)
 
 UNL, MTA0, MLA0, LAD24, TAD24, UNT = 0x3F, 0x40, 0x20, 0x38, 0x58, 0x5F
 REN, ATN = constants.RENLineOperation, constants.ATNLineOperation
@@ -137,7 +137,6 @@ class TestListResources:
         assert NiUsbGpibIntfcDispatch.list_resources() == ['GPIB0::INTFC']
 
     def test_a_second_adapter_lists_as_the_next_board(self, board, enumeration):
-        from tests.test_gpib_usb_visa import fake_adapter_info
         enumeration['adapters'].append(fake_adapter_info(serial='SECOND', address=9))
         assert NiUsbGpibIntfcSession.list_resources() == ['GPIB0::INTFC', 'GPIB1::INTFC']
 
@@ -235,7 +234,7 @@ class TestLines:
         assert intf.get_visa_attribute(constants.VI_ATTR_GPIB_REN_STATE) == constants.LineState.asserted
 
     def test_ren_assert_llo_sends_llo_to_the_bus_with_the_session_timeout(self, intf, board):
-        intf.timeout = 300
+        intf.timeout = 250
         intf.control_ren(REN.asrt_llo)
         writes = [m for m in board.messages if m[0] == p.OP_REGISTER_WRITE]
         assert writes[-1] == p.register_write_message([t.REN_ON_WRITE])
@@ -317,7 +316,7 @@ class TestData:
     def test_write_goes_to_whoever_listens_without_readdressing(self, intf, board):
         intf.send_command(bytes((UNL, MTA0, LAD24)))
         commands = len(board.instructions(p.OP_COMMAND))
-        intf.timeout = 300
+        intf.timeout = 250
         assert intf.write('*IDN?') == 7
         assert len(board.instructions(p.OP_COMMAND)) == commands
         assert board.instructions(p.OP_WRITE)[-1] == p.write_message(b'*IDN?\r\n', 0xFA, send_eoi=True)
@@ -362,7 +361,7 @@ class TestData:
     @pytest.mark.parametrize('opcode', [p.OP_READ, p.OP_READ_RAW])
     def test_read_termination_selects_eos(self, rm, board, monkeypatch, opcode):
         if opcode == p.OP_READ_RAW:
-            monkeypatch.setenv('RESISTAMET_GPIB_NI_INSTRUCTIONS', '1')
+            monkeypatch.setenv('NI_GPIB_USB_INSTRUCTIONS', '1')
         intf = rm.open_resource('GPIB0::INTFC', read_termination='\n')
         intf.send_command(bytes((UNL, MTA0, LAD24)))
         intf.write('*IDN?')
@@ -411,7 +410,7 @@ class TestData:
         assert len(board.messages) == before
 
     def test_clear_is_a_universal_device_clear(self, intf, board):
-        intf.timeout = 300
+        intf.timeout = 250
         board.instruments[24].pending = b'stale'
         intf.clear()
         assert last_command(board) == bytes((t.CMD_DCL,))
@@ -425,9 +424,9 @@ class TestData:
             intf.read_stb()
         assert info.value.error_code == StatusCode.error_nonsupported_operation
 
-    def test_timeout_is_rounded_to_the_device_table(self, intf):
+    def test_the_timeout_reads_back_as_set_up_to_the_longest_the_table_offers(self, intf):
         intf.timeout = 5000
-        assert intf.timeout == 10000
+        assert intf.timeout == 5000
         intf.timeout = 2_000_000
         assert intf.timeout == 1_000_000
 

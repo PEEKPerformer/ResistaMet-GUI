@@ -35,7 +35,6 @@ OP_PRESENCE_PROBE = 0x02       # §10.6.1
 OP_STATUS_SNAPSHOT = 0x03      # §10.2.2
 OP_TERMINATION = 0x04
 OP_GO_TO_STANDBY = 0x06
-OP_PARALLEL_POLL = 0x07
 OP_REGISTER_READ = 0x08
 OP_REGISTER_WRITE = 0x09
 OP_READ = 0x0A
@@ -47,7 +46,6 @@ OP_INTERFACE_CLEAR = 0x0F
 OP_SERIAL_POLL = 0x10          # §10.5.4
 
 BLOCK_PAD = 0x11               # ``11 00 00 00``, four before a 0x37 run (§10.1.5); skip
-BLOCK_STATUS_QUERY = 0x21      # the 0x21 control request's reply id (§10.3.5)
 BLOCK_REGISTER_VALUES = 0x34   # up to 3 register values
 BLOCK_REGISTER_END = 0x35
 BLOCK_DATA_15 = 0x36           # id + 15 data bytes
@@ -66,7 +64,7 @@ REGISTER_READ_REPLY_LENGTH = 32
 #: its writes-completed word, the 0x0b status with its EOI tail.
 REPLY_BLOCK_LENGTHS = {
     OP_TAKE_CONTROL: 8, OP_STATUS_SNAPSHOT: 8, OP_GO_TO_STANDBY: 8, OP_COMMAND: 8,
-    OP_WRITE: 8, OP_WRITE_RAW: 8, OP_INTERFACE_CLEAR: 8, BLOCK_STATUS_QUERY: 8,
+    OP_WRITE: 8, OP_WRITE_RAW: 8, OP_INTERFACE_CLEAR: 8,
     BLOCK_SERIAL_POLL_STATUS: 8,
     OP_PRESENCE_PROBE: 12, OP_REGISTER_WRITE: 12, OP_READ_RAW: 12, BLOCK_READ_STATUS: 12,
     BLOCK_PAD: 4, BLOCK_REGISTER_VALUES: 4, BLOCK_REGISTER_END: 4, BLOCK_SERIAL_POLL_RESULT: 4,
@@ -79,6 +77,10 @@ SMALL_REPLY_BUFFER = 512
 #: The 8-byte interrupt push of §10.4.2: ``30 18 00 sb 31 a1 01 00``.
 SRQ_PUSH_LENGTH = 8
 SRQ_PUSH_ID = 0x30
+#: The 4-byte packet unit 013CC9DF sent instead, ``31 a5 nn 00`` with ``nn``
+#: counting up, carrying no status byte (§10.12).
+SRQ_NOTICE_LENGTH = 4
+SRQ_NOTICE_PREFIX = b'\x31\xa5'
 #: Observed on GPIB-USB-HS 01CEE482: status block (8) + ADR1 + last-block
 #: count + 2 pad + termination (4). The specification derived 28 bytes with
 #: an embedded 0x09 status block that the device does not send.
@@ -135,6 +137,14 @@ class NoListener(GpibError):
 
 class AdapterNotReady(GpibError):
     """The adapter did not come up, or cannot be driven (firmware missing, not attached)."""
+
+
+class AdapterGone(AdapterNotReady):
+    """The adapter left the USB bus (unplugged, or its power lost); replug it.
+
+    Raised by the operation that found it gone and by every later one on the
+    same controller, which then touch no USB at all.
+    """
 
 
 class ProtocolError(GpibError):
@@ -331,6 +341,70 @@ def read_raw_message(max_bytes: int, timeout_code: int,
                          register_write_block(READ_RAW_FOLLOWING_WRITES))
 
 
+# --------------------------------------------------------------------------
+# §10 NI's instrument-session messages, for the opt-in raw paths
+# --------------------------------------------------------------------------
+
+
+def ni_read_raw_message(own_address: int, pad: int, sad: Optional[int], max_bytes: int, timeout_code: int,
+                        eos: Optional[int] = None, eos_8bit: bool = False,
+                        termchar: Optional[int] = None) -> bytes:
+    """NI's 40-byte read message (§10.1.2): snapshot, addressing, 0x0b, clear END, bank-2 mark.
+
+    ``03 | 0c fd 00 fd 3f 20+C 40+N [60+S] | 0b m e t c0..c3 | 09 01 00 01
+    0a 55 | 09 01 00 02 03 01 | 04``: the addressing carries 0xfd whatever
+    the session's code, and no 0x06 stands between it and the 0x0b, which
+    releases ATN itself (§10.1.2, §10.1.9). ``m e`` as in ``read_eos_bytes``,
+    ``termchar`` being the session's character, which NI sends in ``e``
+    with the compare off (§10.1.6).
+    """
+    return build_message(
+        status_snapshot_block(),
+        command_block(t.address_talker_command(own_address, pad, sad), t.NI_ADDRESSING_CODE),
+        read_raw_block(max_bytes, timeout_code, eos, eos_8bit, termchar),
+        register_write_block(READ_RAW_FOLLOWING_WRITES),
+        register_write_block((t.BANK2_SESSION_MARK_WRITE,)))
+
+
+def ni_write_raw_message(own_address: int, pad: int, sad: Optional[int], length: int, timeout_code: int,
+                         send_eoi: bool, eos_char: Optional[int]) -> bytes:
+    """NI's 36-byte write message (§10.5.2): snapshot, addressing, 0x0e, bank-2 mark.
+
+    ``03 | 0c fd 00 fd 40+C 3f 20+N [60+S] | 0e 00 00 t 00 e f 00 c0..c3 |
+    09 01 00 02 03 01 | 04``, the data following raw on the alternate OUT;
+    ``e`` is the session's termination character (§10.5.1, §10.5.2).
+    """
+    return build_message(
+        status_snapshot_block(),
+        command_block(t.address_listener_command_ni(own_address, pad, sad), t.NI_ADDRESSING_CODE),
+        write_raw_block(length, timeout_code, send_eoi, eos_char),
+        register_write_block((t.BANK2_SESSION_MARK_WRITE,)))
+
+
+def ni_session_open_message(pad: int, sad: Optional[int], timeout_code: int) -> bytes:
+    """NI's bank-2 session configuration as an open sends it (§10.3.2, open.pcap 0.0070, 32 bytes)."""
+    return build_message(status_snapshot_block(), register_write_block((t.BANK2_SESSION_MARK_WRITE,)),
+                         register_write_block(t.bank2_session_writes(pad, sad, timeout_code)))
+
+
+def ni_session_update_message(pad: int, sad: Optional[int], timeout_code: int) -> bytes:
+    """The same without the snapshot, as a change of the timeout code sends it (§10.2.4, 28 bytes)."""
+    return build_message(register_write_block((t.BANK2_SESSION_MARK_WRITE,)),
+                         register_write_block(t.bank2_session_writes(pad, sad, timeout_code)))
+
+
+def ni_session_mark_message() -> bytes:
+    """The 12-byte bank-2 0x03 write alone (§10.2.5), which NI sends before the 28-byte update
+    when a new timeout changes the code (§10.10.1)."""
+    return build_message(register_write_block((t.BANK2_SESSION_MARK_WRITE,)))
+
+
+def ni_session_close_message() -> bytes:
+    """The close of the last session on an address (§10.3.3, open.pcap 1.0126, 20 bytes): 0x04 := 0."""
+    return build_message(register_write_block((t.BANK2_SESSION_MARK_WRITE,)),
+                         register_write_block(((2, 0x04, 0x00),)))
+
+
 def serial_poll_block(pad: int, timeout_code: int, sad: Optional[int] = None, flag: int = 0x00) -> bytes:
     """§10.5.4: ``10 01 00 x P S t 00``.
 
@@ -393,30 +467,14 @@ class StatusBlock:
     def transferred(self, requested: int) -> int:
         return requested - self.bytes_not_transferred
 
-    # ibsta bits the specification calls reliable (§4.2), plus END.
+    # The ibsta bits something here reads (§4.2); the rest are in ``ibsta``.
     @property
     def end(self) -> bool:
         return bool(self.ibsta & t.IBSTA_END)
 
     @property
-    def srqi(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_SRQI)
-
-    @property
-    def lok(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_LOK)
-
-    @property
-    def rem(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_REM)
-
-    @property
     def cic(self) -> bool:
         return bool(self.ibsta & t.IBSTA_CIC)
-
-    @property
-    def atn(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_ATN)
 
     @property
     def tacs(self) -> bool:
@@ -425,20 +483,6 @@ class StatusBlock:
     @property
     def lacs(self) -> bool:
         return bool(self.ibsta & t.IBSTA_LACS)
-
-    # Derived from ibsta as reported; §4.2 says to trust the error code for
-    # ERR/TIMO instead, so these are informational.
-    @property
-    def err(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_ERR)
-
-    @property
-    def timo(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_TIMO)
-
-    @property
-    def cmpl(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_CMPL)
 
 
 def parse_status_block(buf: bytes, offset: int = 0) -> StatusBlock:
@@ -748,26 +792,46 @@ def parse_serial_poll_reply(reply: bytes) -> SerialPollReply:
 
 @dataclass(frozen=True)
 class SrqPush:
-    """The 8-byte interrupt push on a service request (§10.4.2)."""
+    """A packet on the interrupt endpoint for a service request (§10.4.2, §10.12).
 
-    ibsta: int        # 0x1800 = SRQI | RQS in both captures
-    status_byte: int  # the instrument's status byte, already serial-polled by the adapter
+    Two forms have been seen. The 8-byte push carries an ibsta and the
+    status byte the adapter polled from the device itself (§10.4.2; unit
+    01CEE482 on the bench, §10.11). The 4-byte packet of unit 013CC9DF
+    carries neither, and that unit did not poll the device (§10.12): both
+    fields are None then.
+    """
+
+    ibsta: Optional[int]        # 0x1800 = SRQI | RQS in both captures; 0x0300 from unit 01CEE482 (§10.11)
+    status_byte: Optional[int]  # the instrument's status byte, already serial-polled by the adapter; None: 4-byte form
     raw: bytes
 
     @property
     def srqi(self) -> bool:
-        return bool(self.ibsta & t.IBSTA_SRQI)
+        return self.ibsta is not None and bool(self.ibsta & t.IBSTA_SRQI)
 
 
 def parse_srq_push(push: bytes) -> SrqPush:
-    """``30 18 00 sb 31 a1 01 00``: ibsta big-endian at 1-2, the status byte at 3.
+    """``30 18 00 sb 31 a1 01 00``, or ``31 a5 nn 00`` with no status byte (§10.4.2, §10.12).
 
-    Bytes 4-7 are not established. Byte 0 was 0x30 in every push captured;
-    it is not checked, since no other push has been seen to compare with.
+    The 8-byte form: ibsta big-endian at 1-2, the status byte at 3. Bytes
+    4-7 are not established. Byte 0 was 0x30 in every such push; it is not
+    checked. Unit 01CEE482 pushed ``30 03 00 60 31 a1 01 00`` on the bench,
+    bytes 1-2 not SRQI (§10.11), so nothing here relies on them. A read
+    that returned more than 8 bytes is cut to the first 8.
+
+    The 4-byte form came from unit 013CC9DF on the bench, ``31 a5 01 00``,
+    ``31 a5 02 00``, ``31 a5 03 00`` on three rounds (§10.12): byte 2
+    counts up, and what it counts is not established. Only exactly 4 bytes
+    starting ``31 a5`` are taken as it. Any other packet shorter than 8
+    bytes has not been seen and raises ``ProtocolError``, so that nothing
+    unknown is taken for a service request or dropped without a word.
     """
+    if len(push) == SRQ_NOTICE_LENGTH and push[:len(SRQ_NOTICE_PREFIX)] == SRQ_NOTICE_PREFIX:
+        return SrqPush(ibsta=None, status_byte=None, raw=bytes(push))
     if len(push) < SRQ_PUSH_LENGTH:
-        raise ProtocolError('interrupt push of %d bytes, expected %d: %s'
-                            % (len(push), SRQ_PUSH_LENGTH, push.hex()))
+        raise ProtocolError('interrupt push of %d bytes, expected %d, or %d starting %s: %s'
+                            % (len(push), SRQ_PUSH_LENGTH, SRQ_NOTICE_LENGTH, SRQ_NOTICE_PREFIX.hex(),
+                               push.hex()))
     return SrqPush(ibsta=int.from_bytes(push[1:3], 'big'), status_byte=push[3], raw=bytes(push[:SRQ_PUSH_LENGTH]))
 
 
@@ -797,26 +861,44 @@ def readiness_reported(reply: bytes) -> bool:
 # --------------------------------------------------------------------------
 
 
-def effective_timeout(seconds: Optional[float]) -> Tuple[int, Optional[float]]:
-    """The device timeout code for ``seconds`` and the nominal limit of that code (§7.1).
+def timeout_code(seconds: Optional[float]) -> int:
+    """The device timeout code for a timeout of ``seconds`` (§7.1, §7.3).
 
-    The code is the smallest table row with ``seconds`` <= limit. The limit
-    is the row's nominal value, not what the adapter waits: that is the
-    expiry of §7.3 (``tables.timeout_expiry_s``), which is what a host wait
-    is derived from. None or 0 disables the timeout; so does anything past
-    1000 s.
+    The longer of two codes: NI's, the smallest nominal limit not below the
+    timeout (§7.1, §10.10.1), and the smallest code under which no adapter
+    timed in §7.3 ends an instruction before ``seconds`` have passed
+    (``tables.timeout_expiry_least_s``: the shortest figure of each unit
+    that timed the code, and for the codes nobody timed the lowest of §7.3's
+    estimates). NI's keeps the slack NI's own driver gives, which every
+    code has on some unit -- 3.001-3.75 s, 10.001-16.78 s and 30.001-33.55
+    s would otherwise go out a code shorter than NI's, and 2 ms and 5 ms as
+    0xf5 and 0xf6, whose figures come from one unit only. The second breaks
+    NI's rule where it waits less than asked: 0xfa ends at 0.2635 s on the
+    captured unit, so from about 264 to 300 ms NI's code is too short, and
+    those go out as 0xfb. Of the codes nobody timed, 0x01 may end as early
+    as 268 s (§7.3's nearer power of two), so 300 s goes out as 0x02, not
+    as NI's 0x01. Everything else takes NI's code.
+
+    What the ends of the range map to:
+
+    - None and anything <= 0 (at this level "no timeout"): 0xf0, the
+      disabled code; the host then waits the controller's infinite wait.
+      The pyvisa-py session sends VI_TMO_INFINITE this way and turns
+      VI_TMO_IMMEDIATE into 0.1 s before it gets here, which is 0xf9
+      (``visa_session.IMMEDIATE_TIMEOUT_S``).
+    - Above the least expiry of 0x02 (1000 s): 0xf0 as well, the fall-back
+      §7.1 gives for requests above 1000 s. The session caps VISA
+      timeouts at 1000 s, so from VISA the longest code is 0x02.
     """
     if seconds is None or seconds <= 0:
-        return t.TIMEOUT_DISABLED_CODE, None
-    for limit, code in t.TIMEOUT_TABLE:
-        # A hair of slack so 3.0 s rounded through milliseconds still lands on 0xfc.
-        if seconds <= limit * 1.001:
-            return code, limit
-    return t.TIMEOUT_DISABLED_CODE, None
-
-
-def timeout_code(seconds: Optional[float]) -> int:
-    return effective_timeout(seconds)[0]
+        return t.TIMEOUT_DISABLED_CODE
+    codes = [code for _, code in t.TIMEOUT_TABLE]
+    # A part in 10^9 of slack, so that 3000 ms through floating point is still 3 s.
+    ni = next((index for index, (limit, _) in enumerate(t.TIMEOUT_TABLE) if seconds <= limit * (1 + 1e-9)), None)
+    covered = next((index for index, code in enumerate(codes) if seconds <= t.timeout_expiry_least_s(code)), None)
+    if ni is None or covered is None:
+        return t.TIMEOUT_DISABLED_CODE
+    return codes[max(ni, covered)]
 
 
 #: §7.2: what the host waits beyond the adapter's own expiry. Nothing observed
@@ -837,16 +919,19 @@ def host_wait_s(code: int, infinite_wait_s: float) -> float:
     0xfd, which one unit runs for 16.78 s and the other for 20.0 s. A wait
     sized by the first unit alone, 18.78 s, reached the stop request on
     the second 1.2 s before its own error 0x0a reply, and a timeout was
-    reported as an I/O error. For a code nobody timed the expiry is 1.25
-    times the larger of the nominal limit and the inferred power of two.
+    reported as an I/O error. Where the second unit's table has no figure
+    (0xf5-0xf8, and the codes nobody timed) its expiry is taken as 1.25 times
+    the larger of the nominal limit and the power of two of §7.3 (§7.2).
     ``infinite_wait_s`` is returned for the disabled code 0xf0, where only
     the host can end the wait.
 
     This is the wait for one timed instruction. A message with two would
     need the sum of their expiries (§7.2: NI's read messages carry a 0x0c
-    and a 0x0a / 0x0b); every message this driver builds carries one, the
+    and a 0x0a / 0x0b). The framed paths send one per message, the
     addressing 0x0c being a message of its own and the register write that
-    rides with a read having no timeout code.
+    rides with a read having no timeout code; the opt-in raw paths send
+    NI's messages, and their waits add the addressing block's expiry
+    (``AdapterLink.transfer_wait_s``).
     """
     expiry = t.timeout_expiry_s(code)
     if expiry is None:
