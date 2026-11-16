@@ -100,7 +100,9 @@ class TestTheSamplingRateIsTheOneAskedFor:
             rows = [r for r in csv.reader(handle) if r and not r[0].startswith('#')]
         elapsed = [float(r[0]) for r in rows[1:9]]
         periods = [b - a for a, b in zip(elapsed, elapsed[1:])]
-        mean_period = sum(periods) / len(periods)
+        # The median: one slow first period on a busy runner (0.32 s was seen
+        # on Windows) put the mean over the line with every other period right.
+        typical = sorted(periods)[len(periods) // 2]
         # 0.100 s asked for; 0.15 s and more with the read time added. The
         # loop polls every tenth of the interval, hence the allowance.
-        assert mean_period < 0.135, periods
+        assert typical < 0.135, periods
