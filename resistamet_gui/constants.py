@@ -230,6 +230,10 @@ MODE_DISPLAY_NAMES = {
 # Bit 3: Compliance -- the source is in real compliance.
 KEITHLEY_STAT_BIT_COMPLIANCE = 1 << 3
 
+# The 2400 series' largest trigger count, and so its longest sweep
+# (user's manual, :TRIGger:COUNt).
+MAX_SWEEP_POINTS = 2500
+
 # Keithley compliance heuristics
 KEITHLEY_COMPLIANCE_MAGIC_NUMBER = 9.9e37
 COMPLIANCE_THRESHOLD_FACTOR = 1.0
